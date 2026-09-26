@@ -61,7 +61,7 @@ export const ideaRefinement = createMachine(
           ],
         },
       },
-      // Purpose and research run independently; the brief writer starts only after both finish.
+      // Purpose and research run independently; the writer starts only after both finish.
       assessAndResearch: {
         type: 'parallel',
         states: {

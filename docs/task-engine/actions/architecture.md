@@ -165,4 +165,5 @@ workflow-specific artifacts. These actions follow the same producer-owned output
 principles, but use cycle/revision paths rather than finite delivery's current-round helper.
 Purpose and research, and each council reviewer, write distinct paths so parallel invocations do
 not share writable output. The brief writer consumes both assessments; verdict routing consumes
-all three results for the same exact brief revision. Source updates belong to explicit actions.
+all three results for the same exact refined idea revision. Source updates belong to explicit
+actions.

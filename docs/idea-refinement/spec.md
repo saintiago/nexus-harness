@@ -8,18 +8,26 @@ project evidence.
 
 ## Purpose
 
-Turn a submitted idea into a concise, evidence-backed brief that is ready for requirements and
-architecture work, or return it to its author with specific feedback. The workflow must not keep an
-idea waiting in an internal holding state. Approval means **ready for design**, not ready for
-implementation or movement into the delivery queue.
+Turn a submitted idea into a concise, evidence-backed refined idea that is ready for requirements
+and architecture work, or return it to its author with specific feedback. The workflow must not
+keep an idea waiting in an internal holding state. Approval means **ready for design**, not ready
+for implementation or movement into the delivery queue.
 
 An idea describes a desirable change in software, why it matters, and the principle behind it—without yet committing to implementation.
 
+The refined idea states that idea in clear parts: `idea` states the desirable change, why it
+matters and the principle behind it, without yet committing to implementation; `projectFit` states
+why it belongs in this project; `feasibility` states a plausible path given the known constraints
+and evidence, not a design or implementation plan; and `openQuestions` lists only the material
+questions the next workflow must answer, and may be absent. It stays concise and on point,
+preserves the author's intent and leaves detailed research in its research artifact. Council
+decisions and history live in their own artifacts, separate from the refined idea's substance.
+
 An initial submission may lack evidence, the proposed change, why it matters or the principle
 behind it; that is not an intake rejection, because refinement develops those elements. A finished
-brief still needs enough clarity and substance for the council's idea-stage decision, and the
-council may object when it cannot decide. Refinement works on the idea as the author proposed it:
-it preserves that concept and intent rather than replacing it with a different or more generic
+refined idea still needs enough clarity and substance for the council's idea-stage decision, and
+the council may object when it cannot decide. Refinement works on the idea as the author proposed
+it: it preserves that concept and intent rather than replacing it with a different or more generic
 need. The idea stage decides whether the idea is worth developing and its smallest useful scope;
 exact selection, configuration and implementation belong to Requirements and Design. An
 architectural idea may name its direction at concept level, and architecture documents are
@@ -39,37 +47,38 @@ keeps rhetorical and implementation prose out. No role depends on reading this s
 the role prompts below add only role-specific duties.
 
 Refinement tests purpose, substance and simplicity while change is cheap. The result is a decision
-aid, not a design document: about 300–500 words whose `idea` field states the author's proposed
-change, why it matters and the principle behind it, with the strongest supporting evidence,
-meaningful alternatives, smallest plausible scope and key uncertainty. It does not design the
-solution, write implementation requirements, modify project code or create a To Do delivery
-ticket. Research detail stays in its research artifact. A separate Requirements and Design workflow
-may consume an approved brief later.
+aid, not a design document: a refined idea of about 150–200 words across its four parts, with only
+material detail and plain, direct language. Each part gets one to three short sentences, and open
+questions stay at a few. The length is a default, not a rigid cap: keep any context the council
+needs to decide. The strongest supporting evidence, meaningful alternatives, smallest plausible
+scope and key uncertainty stay in the purpose and research reports it draws on. It does not design
+the solution, write implementation requirements, modify project code or create a To Do delivery
+ticket. Research detail stays in its research artifact. A separate Requirements and Design
+workflow may consume an approved refined idea later.
 
 ## Expected outcomes
 
-- **Ready for design:** every council reviewer approves the exact current brief revision. Save
-  one handoff artifact with the source issue workspace and references to the captured idea,
-  approved brief, purpose assessment, research and council decisions. Later workflows can read
-  the full retained history from that workspace. Publish the approved brief to Jira for the
-  Requirements and Design workflow; keep internal agent feedback in artifacts and logs. The
-  published brief reports the council cycles used and the cumulative summary of what refinement
-  changed. Move the source item to its configured approved state. For HARN Jira, this is
-  `Idea Refinement -> Draft`. No automatic move to To Do.
+- **Ready for design:** every council reviewer approves the exact current refined idea revision.
+  Save one handoff artifact with the source issue workspace and references to the captured idea,
+  approved refined idea, purpose assessment, research and council decisions. Later workflows can
+  read the full retained history from that workspace. Publish the approved refined idea to Jira
+  for the Requirements and Design workflow; keep internal agent feedback in artifacts and logs.
+  The published refined idea reports the council cycles used and the cumulative summary of what
+  refinement changed. Move the source item to its configured approved state. For HARN Jira, this
+  is `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
   revision cannot converge. Publish a concise, actionable human-facing comment and move the item
   to its configured waiting-for-feedback state. The comment states the plain outcome — returned
-  for feedback, or attempts exhausted after the cycles used — reproduces the latest idea from the
-  brief's one `idea` field with the cycle count and cumulative change summary, lists the
-  actionable corrections under what stopped approval, and closes with the single next step. An
-  exhausted return keeps every distinct material correction and never reads as rejection; a
-  return reports that the council did not approve the idea, never that the idea has no worth. For
-  HARN Jira, this is `Idea Refinement -> Waiting for Feedback`. The author replies in a Jira
-  comment with their feedback or revised idea and moves the item back to `Idea` to resubmit it;
-  this run ends. The original idea, latest brief, research and complete council feedback remain in
-  artifacts and logs; raw reviewer summaries, council verdict names, criteria, evidence, code
-  citations and tool transcripts are not published. Internal agent feedback is not published to
-  Jira.
+  for feedback, or attempts exhausted after the cycles used — reproduces the latest refined idea
+  with the cycle count and cumulative change summary, lists the actionable corrections under what
+  stopped approval, and closes with the single next step. An exhausted return keeps every distinct
+  material correction and never reads as rejection; a return reports that the council did not
+  approve the idea, never that the idea has no worth. For HARN Jira, this is
+  `Idea Refinement -> Waiting for Feedback`. The author replies in a Jira comment with their
+  feedback or revised idea and moves the item back to `Idea` to resubmit it; this run ends. The
+  original idea, latest refined idea, research and complete council feedback remain in artifacts
+  and logs; raw reviewer summaries, council verdict names, criteria, evidence, code citations and
+  tool transcripts are not published. Internal agent feedback is not published to Jira.
 - **Execution fault:** inaccessible project sources, agent/tool failure, malformed output or
   source update failure is an operational fault, not a council verdict. Application handles it
   under the common execution-fault contract. Never manufacture approval.
@@ -82,10 +91,11 @@ The workflow never silently waits for author input.
 Each time an item enters `Idea`, selection captures one immutable input: source key, author,
 current text, links, revision and complete relevant Jira conversation. Every agent receives that
 input and the saved workspace artifacts available when its stage starts, including earlier
-submissions, briefs and feedback when present, as content or readable references. The current
-cycle's inputs are supplied directly; earlier material stays available as references that agents
-read selectively, guided by the latest cumulative brief summary rather than restating obsolete
-reports. The same context rule applies on first submission, resubmission and internal revision.
+submissions, refined ideas and feedback when present, as content or readable references. The
+current cycle's inputs are supplied directly; earlier material stays available as references that
+agents read selectively, guided by the latest cumulative change summary rather than restating
+obsolete reports. The same context rule applies on first submission, resubmission and internal
+revision.
 The current captured input is authoritative for what the author now proposes; earlier artifacts
 supply history. In this spec, `original idea` means the input captured for the current entry, not
 the first version ever submitted. Council reviewers do not receive one another's pending verdicts
@@ -128,25 +138,28 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    needed, infers purpose from code and commit history. They work independently and write
    separate reports. The writer starts only after both reports exist.
 4. Brief Writer creates revision 1. It sees the current captured idea, both reports, earlier
-   briefs and feedback when present, and every council criterion below. It records a decision aid
-   of about 300–500 words. The brief's one `idea` field states the author's idea coherently: the
-   proposed change, why it matters and the principle behind it, rather than separate problem, value
-   and project-fit essays or a more generic restatement. Concrete requirements and design belong to
-   Requirements and Design. The other fields carry the strongest supporting evidence, meaningful
-   alternatives, smallest plausible scope and key uncertainty, which the existing assumptions list
-   holds. Alternatives are idea-level options for meeting the need, including how the project does
-   it today; scope is the idea's smallest useful boundary. Neither chooses mechanisms or assigns
-   ownership. Research detail stays in the research artifact. The brief must not prescribe
-   implementation or settle design decisions: no mechanism selection, detailed requirements,
-   command syntax, file or line inventories, schemas, component placement, acceptance criteria or
-   resolution of design tradeoffs.
+   refined ideas and feedback when present, and every council criterion below. It records a short
+   refined idea revision of about 150–200 words across its four parts, concise and on point, with
+   one to three short sentences per part, at most a few open questions, only material detail and
+   plain, direct language. Length is a default, not a rigid cap: keep any context the council
+   needs to decide. The `idea` part states the author's idea: the proposed change, why it matters
+   and the principle behind it, without committing to implementation. The `projectFit` part states
+   why it belongs in this project. The `feasibility` part states a plausible path given the known
+   constraints and evidence, not a design or implementation plan. The `openQuestions` part lists
+   only the material questions the next workflow must answer, and may be absent. It preserves the
+   author's intent. The strongest supporting evidence, meaningful alternatives, smallest plausible
+   scope and key uncertainty stay in the purpose and research reports it draws on.
    `changeSummary` is the cumulative account of what refinement changed across the submission's
-   cycles, and the brief's cycle number records how many council cycles were used. It must make
-   purpose, value, evidence and scope clear enough for the council to decide, and distinguish
-   evidence from proposal.
-5. Three council reviewers run concurrently and independently on the same immutable brief revision.
-   They see the current captured idea, brief and available history, but not one another's
-   current-cycle verdicts before submitting their own. Each emits exactly one verdict:
+   cycles, and the revision's cycle number records how many council cycles were used; both are
+   reporting metadata, and council decisions and history stay in their own artifacts. The revision
+   must make purpose, value, evidence and scope clear enough for the council to decide, and
+   distinguish evidence from proposal. It must not prescribe implementation or settle design
+   decisions: no mechanism selection, detailed requirements, command syntax, file or line
+   inventories, schemas, component placement, acceptance criteria or resolution of design
+   tradeoffs.
+5. Three council reviewers run concurrently and independently on the same immutable refined idea
+   revision. They see the current captured idea, refined idea and available history, but not one
+   another's current-cycle verdicts before submitting their own. Each emits exactly one verdict:
    `approve`, `minor_corrections`, `major_rework` or `idea_not_working`. A nonapproval names the
    failed criterion, evidence and correction, and writes that correction as a short, plain-language
    request the author can act on, distinct from the internal evidence and summary. Every council
@@ -155,30 +168,32 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    ambiguity in the stated idea, or show that it should not proceed (`idea_not_working`);
    preventing a bad idea is a real improvement. An objection never silently replaces the author's
    proposal with a different or more generic idea. Factual or design nitpicks that do not improve
-   the idea-stage outcome are not objections, incidental implementation detail the brief should not
-   contain is not an objection, and the brief's length alone is never a fault. An unresolved design
-   choice is a blocker only when it changes the idea-stage decision: whether the idea is worth
-   developing, its purpose fit, value, evidence or smallest useful scope. Otherwise it belongs to
-   Requirements and Design. Every finding keeps its parts distinct and author-facing: the criterion
-   names the standard that failed, the evidence carries the internal justification, and the
-   correction is the short request in plain language that the author can act on, standing alone
-   without the reviewer's evidence or summary. The standard adds no output field and no route.
+   the idea-stage outcome are not objections, incidental implementation detail the refined idea
+   should not contain is not an objection, and the refined idea's length alone is never a fault. An
+   unresolved design choice is a blocker only when it changes the idea-stage decision: whether the
+   idea is worth developing, its purpose fit, value, evidence or smallest useful scope. Otherwise
+   it belongs to Requirements and Design. Every finding keeps its parts distinct and
+   author-facing: the criterion names the standard that failed, the evidence carries the internal
+   justification, and the correction is the short request in plain language that the author can
+   act on, standing alone without the reviewer's evidence or summary. The standard adds no output
+   field and no route.
 6. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
    artifacts even when one result determines routing. Unanimous approval alone advances to the
    approved state. Do not post internal council feedback or revision requests to Jira.
-7. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
-   reruns Purpose Verifier and Researcher concurrently with the current captured idea and all
-   available workspace artifacts, including the current brief and council feedback. Their next
-   reports must address the objections; the writer then creates a new brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
-   revision independently.
+7. Minor corrections return to Brief Writer using existing purpose and research reports. Major
+   rework reruns Purpose Verifier and Researcher concurrently with the current captured idea and
+   all available workspace artifacts, including the current refined idea and council feedback.
+   Their next reports must address the objections; the writer then creates a new refined idea
+   revision. Any rewrite invalidates every earlier approval. The council reviews the new revision
+   independently.
 8. The configured maximum number of council cycles bounds internal work. If another revision would
    exceed it, return to the author as unable to converge: the comment says that attempts were
    exhausted after the cycles used and lists every distinct material correction. An
    `idea_not_working` verdict returns immediately with the corrections that stopped approval. Both
-   routes state the plain outcome, the latest idea, the cycles used, the cumulative change summary,
-   what stopped approval and the single next step; a return reports that the council did not
-   approve the idea rather than that it has no worth. Both post a concise human-facing comment to
+   routes state the plain outcome, the latest refined idea, the cycles used, the cumulative change
+   summary, what stopped approval and the single next step; a return reports that the council did
+   not approve the idea rather than that it has no worth. Both post a concise human-facing comment to
    Jira, then set `Waiting for Feedback`; their decision artifacts retain distinct reasons and full
    feedback. Publication never dumps raw reviewer summaries, verdict names, criteria, evidence,
    code citations or tool transcripts, and exhaustion never reads as rejection of the idea.
@@ -218,8 +233,8 @@ another's pending outputs.
 > long-term direction behind the idea, then ground every conclusion in evidence. Find this
 > project's purpose, charter and long-term vision in its documentation. If those documents
 > are absent or incomplete, inspect the connected project's code and commit history
-> and infer its direction as well as the evidence permits. Read the supplied prior briefs and
-> feedback when present; assess the current captured idea against the discovered purpose or
+> and infer its direction as well as the evidence permits. Read the supplied prior refined ideas
+> and feedback when present; assess the current captured idea against the discovered purpose or
 > provisional inference. Read the retained history selectively: consult only the artifacts that
 > bear on the current decision. Identify where it supports or conflicts with the project's
 > direction and the smallest steering that would improve fit, including when the conflict makes
@@ -251,38 +266,40 @@ another's pending outputs.
 
 ### Brief Writer
 
-> Write the smallest coherent idea brief from the current captured idea, purpose assessment,
-> research, and the supplied earlier briefs and feedback. Be witty when a light, precise turn
-> of phrase makes the brief clearer; keep the substance and tone suitable for a project decision.
+> Write the smallest coherent refined idea from the current captured idea, purpose assessment,
+> research, and the supplied earlier refined ideas and feedback. Be witty when a light, precise turn
+> of phrase makes it clearer; keep the substance and tone suitable for a project decision.
 > Preserve intent while applying justified steering: work on the author's idea as submitted,
 > keeping its proposed concept and direction rather than replacing it with a different or more
-> generic idea. Aim for a decision aid of about 300-500 words. State the author's idea in the
-> brief's one `idea` field: the proposed change, why it matters and the principle behind it, as
-> prose rather than separate problem, value and project-fit essays. Concrete requirements and
-> design belong to Requirements and Design. The remaining fields carry the strongest supporting
-> evidence, meaningful existing alternatives, smallest plausible scope and key uncertainty.
-> Alternatives are idea-level options for meeting the need, including how the project does it
-> today; scope is the idea's smallest useful boundary. Neither chooses mechanisms or assigns
-> ownership. Keep research detail in the research artifact and cite it selectively. Do not
-> prescribe implementation or settle design decisions: no mechanism selection, detailed
-> requirements, command syntax, file or line inventories, schemas, component placement, acceptance
-> criteria or resolution of design tradeoffs. Write changeSummary as the cumulative account of what
-> refinement has changed across cycles, not only the latest edit. Address each prior objection
-> explicitly. The council will check fidelity, evidence and simplicity. Return a complete brief
-> revision and a short cumulative change summary.
+> generic idea. Keep the refined idea short by default: about 150-200 words across all four parts,
+> with only material detail and plain, direct language. Give each part one to three short sentences
+> and keep open questions to at most a few. That length is a default, not a rigid cap: keep any
+> context the council needs to decide.
+> The `idea` part states the desirable change, why it matters and the principle behind it, without
+> committing to implementation. The `projectFit` part states why it belongs in this project. The
+> `feasibility` part states a plausible path given the known constraints and evidence; it is not a
+> design or implementation plan. The `openQuestions` part lists only the material questions the
+> next workflow must answer, and may be omitted when there are none. Keep detailed research in the
+> research artifact and cite it selectively. Do not prescribe implementation or settle design
+> decisions: no mechanism selection, detailed requirements, command syntax, file or line
+> inventories, schemas, component placement, acceptance criteria or resolution of design tradeoffs.
+> Keep council history and what refinement changed out of the idea's parts; write changeSummary as
+> the cumulative account of what refinement has changed across cycles, not only the latest edit.
+> Address each prior objection explicitly. The council will check fidelity, evidence and simplicity.
+> Return a complete refined idea revision and a short cumulative change summary.
 
 ### Purpose Council Reviewer
 
 > Be unforgiving about material gaps, pragmatic about what the project can use, and precise
-> in your reasoning. Independently review the exact supplied brief revision against the
+> in your reasoning. Independently review the exact supplied refined idea revision against the
 > original idea and the Purpose Verifier's cited documents or provisional inference from code
 > and commits. Check project fit, coherent value, evidence quality and fidelity to the stated
-> idea; flag a genuine ambiguity instead of letting the brief silently substitute a different or
+> idea; flag a genuine ambiguity instead of letting the revision silently substitute a different or
 > more generic proposal. Object only to gaps that materially affect the idea-stage
-> decision; do not request implementation detail the brief should not contain, and do not fail
+> decision; do not request implementation detail the refined idea should not contain, and do not fail
 > it on length or style. Read the retained history selectively. Keep your summary short and
 > internal and report only the few findings that change the idea-stage decision. Choose exactly
-> one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework when
+> one: approve when criteria are met; minor_corrections for a refined-idea-only fix; major_rework when
 > purpose or research must be revisited; idea_not_working when revision is unlikely to make the
 > idea worthwhile. Do not raise severity for style or personality. For any objection, name the
 > criterion, cite evidence and give a concise correction the author can act on. Do not review
@@ -291,32 +308,32 @@ another's pending outputs.
 ### Evidence Council Reviewer
 
 > Be unforgiving about unsupported claims, pragmatic about the evidence needed for a useful
-> decision, and precise in every finding. Independently review the exact supplied brief
+> decision, and precise in every finding. Independently review the exact supplied refined idea
 > revision against the research and its cited sources. Check that the idea's need, value and fit
 > are substantiated, duplicates and alternatives are represented fairly, sources support the
 > claims, and uncertainty is explicit. Object only to material gaps in the idea-stage evidence;
 > do not demand implementation detail, file inventories or resolved design tradeoffs, and do not
-> fail the brief on length or style. Read the retained history selectively. Keep your summary
+> fail the refined idea on length or style. Read the retained history selectively. Keep your summary
 > short and internal and report only the few findings that change the idea-stage decision. Choose
-> exactly one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework
-> when purpose or research must be revisited; idea_not_working when revision is unlikely to make
-> the idea worthwhile. Keep severity proportionate to the material gap. For any objection, name
-> the criterion, cite evidence and give a concise correction the author can act on. Do not review
-> other council verdicts or invent missing evidence.
+> exactly one: approve when criteria are met; minor_corrections for a refined-idea-only fix;
+> major_rework when purpose or research must be revisited; idea_not_working when revision is
+> unlikely to make the idea worthwhile. Keep severity proportionate to the material gap. For any
+> objection, name the criterion, cite evidence and give a concise correction the author can act on.
+> Do not review other council verdicts or invent missing evidence.
 
 ### Simplicity Council Reviewer
 
 > Be unforgiving about avoidable complexity, pragmatic about the smallest useful scope,
-> and precise about what to remove. Independently review the exact supplied brief revision.
+> and precise about what to remove. Independently review the exact supplied refined idea revision.
 > Challenge unnecessary features, process, configuration, abstractions and promised guarantees
-> relative to the stated need and evidence. Check that the brief is understandable and leaves
-> design decisions to the next workflow. Object only when avoidable complexity or an oversized
-> promise materially affects the idea-stage decision; do not demand implementation detail or
-> resolved design tradeoffs, and do not fail the brief on length or style. Read the retained
-> history selectively. Keep your summary short and internal and report only the few findings that
-> change the idea-stage decision. Choose exactly one: approve when criteria are met;
-> minor_corrections for a brief-only fix; major_rework when purpose or research must be revisited;
-> idea_not_working when revision is unlikely to make the idea worthwhile. Keep severity
+> relative to the stated need and evidence. Check that the refined idea is concise, on point and
+> leaves design decisions to the next workflow. Object only when avoidable complexity or an
+> oversized promise materially affects the idea-stage decision; do not demand implementation detail
+> or resolved design tradeoffs, and do not fail the refined idea on length or style. Read the
+> retained history selectively. Keep your summary short and internal and report only the few
+> findings that change the idea-stage decision. Choose exactly one: approve when criteria are met;
+> minor_corrections for a refined-idea-only fix; major_rework when purpose or research must be
+> revisited; idea_not_working when revision is unlikely to make the idea worthwhile. Keep severity
 > proportionate to the material gap. For any objection, name the criterion, cite evidence and give
 > a concise correction the author can act on. Do not review other council verdicts.
 
@@ -338,7 +355,7 @@ artifacts/
     cycles/<m>/
       purpose.json
       research.json
-      brief.json
+      refined-idea.json
       council/purpose.json
       council/evidence.json
       council/simplicity.json
@@ -349,22 +366,27 @@ artifacts/
 Submission and cycle numbers are positive integers. The submission number is a storage identity,
 not a different workflow path. Minor revision may reuse the current submission's preceding
 purpose/research reports by reference, never by falsely relabeling them as new work. Major revision
-writes new reports. Each council result names the immutable brief artifact it reviewed, its
+writes new reports. Each council result names the immutable refined idea artifact it reviewed, its
 reviewer identity, verdict, criteria and feedback. A council set is valid only when all three
-results name the current brief artifact. Captured inputs, decisions and prior cycles are
+results name the current refined idea artifact. Captured inputs, decisions and prior cycles are
 retained in the workspace. The decision artifact records the route, strongest verdict, full
 feedback and source update evidence, including the human-facing Jira comment when applicable.
-A brief revision's `cycle` is the number of council cycles used for the submission, and its
-`changeSummary` is the cumulative account of what refinement changed. These existing fields carry
-the reporting publication needs, so briefs retained from earlier runs stay readable without
-migration. A brief written before the `idea` field keeps being read: its problem, value and project
-fit are presented as the one idea they already express. That compatibility is read-time only:
-retained artifacts and interrupted state are never rewritten, and new briefs write `idea` alone.
+A refined idea revision's `cycle` is the number of council cycles used for the submission, and
+its `changeSummary` is the cumulative account of what refinement changed. These metadata fields
+carry the reporting publication needs; the idea's parts stay separate from the council's decisions
+and feedback. Revisions retained from earlier runs stay readable without migration: a brief kept
+at its own `brief.json` path, in either earlier shape, is read as the refined idea it expresses,
+with its problem and value presented as the idea part, and its project fit and smallest scope as
+the project-fit and feasibility parts. That compatibility is read-time only: retained artifacts
+and interrupted state are never rewritten, and new revisions write the refined idea's parts at
+`refined-idea.json`. Council results, decisions and the handoff keep naming the reviewed revision
+through the stored `brief` reference field they already used, so records saved before this change
+stay readable.
 An approval also writes the single `handoff.json` with the shared issue workspace and references to
-the captured input, approved brief, purpose assessment, research and council decisions. SelectIdea's
-selection record sits beside the idea-refinement execution's workflow state; StartIdeaRound writes
-the captured input's retained `input.json` copy when it opens the submission, and every role reads
-that copy as the current captured idea.
+the captured input, approved refined idea, purpose assessment, research and council decisions.
+SelectIdea's selection record sits beside the idea-refinement execution's workflow state;
+StartIdeaRound writes the captured input's retained `input.json` copy when it opens the
+submission, and every role reads that copy as the current captured idea.
 These artifact paths are specific to idea refinement; finite delivery's round layout at the
 shared issue root is unchanged. Later workflows may read all retained artifacts in the issue
 workspace without changing refinement state.
@@ -391,9 +413,9 @@ results. StartIdeaRound uses the shared round storage functions for history and 
 Its role selection and cycle policy are idea-specific; it does not apply finite delivery's repair
 counters or developer ladder.
 
-Actions write complete outputs before returning a transition outcome. A changed brief invalidates
-all council results for that brief. Concurrent roles have distinct artifact paths and no shared
-writable output. XState control state is separate from these business artifacts.
+Actions write complete outputs before returning a transition outcome. A changed refined idea
+invalidates all council results for that revision. Concurrent roles have distinct artifact paths
+and no shared writable output. XState control state is separate from these business artifacts.
 
 ## Workflow pseudocode
 
@@ -402,7 +424,7 @@ named operations and return outcomes; XState owns parallelism, joins, guards and
 
 ```ts
 machine IdeaRefinement {
-  context: { cycle, maxCycles, inputRef, roundPlanRef, currentBriefRef, verdictRefs: [] }
+  context: { cycle, maxCycles, inputRef, roundPlanRef, currentRefinedIdeaRef, verdictRefs: [] }
 
   selectIdea -> startIdeaRound("new") // captures input; HARN: Idea -> Idea Refinement
 
@@ -424,7 +446,7 @@ machine IdeaRefinement {
 
   state writeBrief {
     invoke BriefWriter
-    onDone(briefRef) -> reviewCouncil
+    onDone(refinedIdeaRef) -> reviewCouncil
   }
 
   state reviewCouncil parallel {
@@ -435,7 +457,7 @@ machine IdeaRefinement {
   }
 
   state routeVerdicts {
-    entry: collectAllFeedbackAndValidateSameBriefRevision
+    entry: collectAllFeedbackAndValidateSameRefinedIdeaRevision
     always [
       if any(idea_not_working) -> returnToAuthor,
       if all(approve)         -> publishApproved,
@@ -479,18 +501,23 @@ the operator sees the same milestone line without internal paths.
   earlier approvals. Limits and an unworkable verdict return a complete feedback package. The
   human-facing comment is a concise decision aid and never publishes reviewer summaries, verdict
   names, criteria, evidence, code citations or tool transcripts.
-- The brief is a decision aid of about 300–500 words: one `idea` stating the author's proposed
-  change, why it matters and the principle behind it, the strongest supporting evidence, meaningful
-  alternatives, smallest plausible scope and key uncertainty, without prescribing implementation,
-  requirements, code detail or design resolutions. Its length is guidance for the writer and never
-  a validated execution gate.
-- The published brief and the returned comment report the council cycles used and the cumulative
-  change summary. A returned comment states the plain outcome, reproduces the latest idea alone,
-  lists the actionable corrections under what stopped approval and closes with the reply-and-move
-  next step; it never publishes reviewer summaries, verdict names, criteria, evidence, code
-  citations, research detail, alternatives or tool text. An exhausted return says that attempts
-  were exhausted and keeps every distinct material correction without implying rejection; a
-  return reports that the council did not approve, never that the idea has no worth.
+- The refined idea is a short decision aid of about 150–200 words across its four parts, concise
+  and on point, in plain, direct language: one to three short sentences per part, at most a few
+  open questions, and only material detail. `idea` states the author's proposed change, why it
+  matters and the principle behind it; `projectFit` states why it belongs in this project;
+  `feasibility` states a plausible path given the known constraints and evidence; and
+  `openQuestions` states only the material questions the next workflow must answer, or is absent.
+  It neither prescribes implementation, requirements, code detail or design resolutions, nor
+  carries the supporting evidence, alternatives and uncertainty that stay in the purpose and
+  research reports. Its length is guidance for the writer and never a validated execution gate or
+  rigid cap; necessary context is never dropped to fit it.
+- The published refined idea and the returned comment report the council cycles used and the
+  cumulative change summary. A returned comment states the plain outcome, reproduces the latest
+  refined idea, lists the actionable corrections under what stopped approval and closes with the
+  reply-and-move next step; it never publishes reviewer summaries, verdict names, criteria,
+  evidence, code citations, research detail, alternatives or tool text. An exhausted return says
+  that attempts were exhausted and keeps every distinct material correction without implying
+  rejection; a return reports that the council did not approve, never that the idea has no worth.
 - Council reviewers apply one shared objection standard: an objection must improve the idea. It may
   sharpen, narrow or correct the idea as the author proposed it, name a genuine ambiguity in the
   stated idea, or show that it should not proceed (`idea_not_working`); preventing a bad idea is a
@@ -503,9 +530,10 @@ the operator sees the same milestone line without internal paths.
 - Every role invocation receives the shared definition of *idea*, the separate idea-stage guidance
   and the shared communication rule exactly once each, ahead of its role-specific context. Role
   prompts carry only role-specific duties and do not repeat that text.
-- A retained brief written before the `idea` field stays readable: its problem, value and project
-  fit are read as one idea for the next revision and for publication, and the artifact itself is
-  never rewritten.
+- A retained brief stays readable at its own path in either earlier shape: its problem and value
+  are read as the idea part, its project fit and smallest scope as the project-fit and feasibility
+  parts, and a brief whose single `idea` field stood alone is read without a project fit. Retained
+  artifacts are never rewritten.
 - The Purpose Verifier searches project documents. Missing purpose documents trigger code and commit
   investigation, with cited provisional inferences and uncertainty, rather than an operational fault.
   The purpose council evaluates that evidence without treating missing documents alone as a veto.

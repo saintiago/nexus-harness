@@ -27,7 +27,7 @@ import {
 /**
  * StartIdeaRound plans and opens one council cycle. XState supplies the route it took after
  * collecting the council results: "new" opens the next submission at cycle 1 with all six roles,
- * "minor" repeats the brief writer and the council, and "major" repeats purpose, research, the
+ * "minor" repeats the writer and the council, and "major" repeats purpose, research, the
  * writer and the council. The action reads the refinement area's retained history, opens the next
  * cycle and replaces the current-round record. The configured council-cycle limit bounds internal
  * work: a route that would exceed it returns exhausted without opening a cycle.

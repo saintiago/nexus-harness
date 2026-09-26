@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { briefArtifact } from '../src/task-engine/actions/brief-writer/artifacts.js';
+import { retainedBriefArtifactPath } from '../src/task-engine/actions/brief-writer/artifacts.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
@@ -74,7 +74,7 @@ async function area(options: {
     const cycleRoot = ideaCycleDirectory(root, options.plan.submission, options.completedCycle);
     await mkdir(cycleRoot, { recursive: true });
     await writeFile(
-      path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot),
+      path.join(cycleRoot, retainedBriefArtifactPath),
       // A retained cycle from before the `idea` field: opening the next cycle never rewrites it.
       JSON.stringify({
         revision: options.completedCycle,
@@ -99,7 +99,7 @@ async function area(options: {
           verdict: 'approve',
           summary: 'approved',
           findings: [],
-          brief: path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot),
+          brief: path.join(cycleRoot, retainedBriefArtifactPath),
           revision: options.completedCycle,
         }),
       );
@@ -201,7 +201,7 @@ describe('StartIdeaRound', () => {
     // Earlier cycles and their artifacts remain as history, including the pre-`idea` brief shape.
     expect(await listIdeaCycles(started.root, 1)).toEqual([1, 2]);
     const retainedBrief = await readFile(
-      path.join(ideaCycleDirectory(started.root, 1, 1), briefArtifact.pathFromArtifactsRoot),
+      path.join(ideaCycleDirectory(started.root, 1, 1), retainedBriefArtifactPath),
       'utf8',
     );
     expect(retainedBrief).toContain('"problem"');

@@ -2,7 +2,8 @@
  * Focused integration tests: the idea refinement role actions and the decision publication over a
  * temporary refinement area. The agent runtime, Jira source and Git adapter are controlled; the
  * artifact storage is real. They establish the context every role receives, the produced artifacts,
- * the council's binding to one brief revision and the two source-updating publication routes.
+ * the council's binding to one refined idea revision and the two source-updating publication
+ * routes.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -14,7 +15,11 @@ import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
-import { briefArtifact, type Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
+import {
+  refinedIdeaArtifact,
+  retainedBriefArtifactPath,
+  type RefinedIdea,
+} from '../src/task-engine/actions/brief-writer/artifacts.js';
 import { createBriefWriter } from '../src/task-engine/actions/brief-writer/index.js';
 import {
   ideaCycleDirectory,
@@ -99,7 +104,22 @@ const researchReport: ResearchReport = {
   sources: [{ title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' }],
 };
 
-function briefOf(revision: number, submission = 1): Brief {
+/** One refined idea revision as the writer stores it. */
+function refinedIdeaOf(revision: number, submission = 1) {
+  return {
+    revision,
+    submission,
+    cycle: revision,
+    idea: 'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    projectFit: 'The project already enforces checks in CI.',
+    feasibility: `Enable the smallest lint gate first (revision ${String(revision)}).`,
+    openQuestions: [`Is generated code in scope? (revision ${String(revision)})`],
+    changeSummary: `Refined idea revision ${String(revision)}.`,
+  };
+}
+
+/** One retained brief written in the shape that already stated one `idea` field. */
+function previousBriefOf(revision: number, submission = 1) {
   return {
     revision,
     submission,
@@ -113,7 +133,7 @@ function briefOf(revision: number, submission = 1): Brief {
   };
 }
 
-/** One retained brief revision written before `idea` replaced the three separate fields. */
+/** One retained brief written before `idea` replaced the three separate fields. */
 function legacyBriefOf(revision: number, submission = 1) {
   return {
     revision,
@@ -311,17 +331,15 @@ describe('idea role actions', () => {
     expect(await area.read(1, researchArtifact.pathFromArtifactsRoot)).toEqual(researchReport);
   });
 
-  it('writes the brief revision with the reports in force and reuses it when repeated', async () => {
+  it('writes the refined idea revision with the reports in force and reuses it when repeated', async () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
     const agent = scriptedRuntime([
       {
         idea: 'idea',
-        evidence: ['docs/purpose.md'],
-        alternatives: [],
-        scope: 'scope',
-        assumptions: [],
+        projectFit: 'project fit',
+        feasibility: 'feasibility',
         changeSummary: 'initial',
       },
     ]);
@@ -337,8 +355,25 @@ describe('idea role actions', () => {
     expect(context).toContain('The idea serves the project purpose.');
     expect(context).toContain('Linters keep reviews focused.');
     expect(context).toContain('No earlier council objections exist');
-    const brief = await area.read<Brief>(1, briefArtifact.pathFromArtifactsRoot);
-    expect(brief).toMatchObject({ revision: 1, submission: 1, cycle: 1, idea: 'idea' });
+    expect(context).toContain('Keep detailed research in the research artifact');
+    // The writer is told the refined idea's parts and what each states.
+    const guidance = context.replace(/\s+/gu, ' ');
+    expect(guidance).toContain('`projectFit` states why it belongs in this project');
+    expect(guidance).toContain('`feasibility` states a plausible path');
+    const refinedIdea = await area.read<Record<string, unknown>>(
+      1,
+      refinedIdeaArtifact.pathFromArtifactsRoot,
+    );
+    expect(refinedIdea).toMatchObject({
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+      idea: 'idea',
+      projectFit: 'project fit',
+      feasibility: 'feasibility',
+    });
+    // Open questions are optional; a refined idea that states none keeps the field absent.
+    expect(refinedIdea).not.toHaveProperty('openQuestions');
 
     // A repeated invocation reuses the revision it already wrote.
     await expect(action()).resolves.toBe('written');
@@ -388,7 +423,7 @@ describe('idea role actions', () => {
     const area = await refinementArea({ cycle: 2, route: 'minor' });
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
@@ -396,7 +431,7 @@ describe('idea role actions', () => {
         councilReport(
           reviewer,
           reviewer === 'purpose' ? 'minor_corrections' : 'approve',
-          briefFile,
+          refinedIdeaFile,
           1,
         ),
       );
@@ -404,10 +439,8 @@ describe('idea role actions', () => {
     const agent = scriptedRuntime([
       {
         idea: 'idea',
-        evidence: [],
-        alternatives: [],
-        scope: 'scope',
-        assumptions: [],
+        projectFit: 'project fit',
+        feasibility: 'feasibility',
         changeSummary: 'addressed the objection',
       },
     ]);
@@ -422,17 +455,24 @@ describe('idea role actions', () => {
     const context = agent.requests[0]?.context ?? '';
     expect(context).toContain('Address each objection of the preceding council cycle');
     expect(context).toContain('purpose correction');
-    expect(context).toContain('Latest earlier brief revision (cycle 1)');
+    expect(context).toContain('Latest earlier refined idea (cycle 1)');
     expect(context).toContain('Its cumulative change summary');
     expect(context).toContain('Purpose assessment in force (cycle 1)');
-    expect(context).toContain('about 300-500 words');
+    // The writer keeps the short-default guidance on every revision, not only the first.
+    const guidance = context.replace(/\s+/gu, ' ');
+    expect(guidance).toContain('about 150-200 words');
+    expect(guidance).toContain('one to three short sentences');
+    expect(guidance).toContain('not a rigid cap');
+    expect(guidance).toContain('keep any context the council needs to decide');
     // The prior objections arrive as corrections; their raw reports stay at their paths.
     expect(context).not.toContain('purpose evidence');
     expect(context).not.toContain('"verdict": "minor_corrections"');
     expect(context).toContain(
       path.join(area.cycleDirectory(1), councilArtifacts.purpose.pathFromArtifactsRoot),
     );
-    expect(await area.read<Brief>(2, briefArtifact.pathFromArtifactsRoot)).toMatchObject({
+    expect(
+      await area.read<RefinedIdea>(2, refinedIdeaArtifact.pathFromArtifactsRoot),
+    ).toMatchObject({
       revision: 2,
       cycle: 2,
     });
@@ -442,7 +482,11 @@ describe('idea role actions', () => {
     const area = await refinementArea({ cycle: 2, route: 'minor' });
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    const legacyFile = await area.write(
+      1,
+      { pathFromArtifactsRoot: retainedBriefArtifactPath },
+      legacyBriefOf(1),
+    );
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
@@ -458,10 +502,8 @@ describe('idea role actions', () => {
     const agent = scriptedRuntime([
       {
         idea: 'idea',
-        evidence: [],
-        alternatives: [],
-        scope: 'scope',
-        assumptions: [],
+        projectFit: 'project fit',
+        feasibility: 'feasibility',
         changeSummary: 'addressed the objection',
       },
     ]);
@@ -475,21 +517,62 @@ describe('idea role actions', () => {
 
     const context = agent.requests[0]?.context ?? '';
     // The retained revision is readable history, and its cumulative summary carries forward.
-    expect(context).toContain(`cycle 1 brief revision: ${legacyFile}`);
+    expect(context).toContain(`cycle 1 refined idea revision: ${legacyFile}`);
     expect(context).toContain('Its cumulative change summary');
     expect(context).toContain('Brief revision 1.');
-    // The retained artifact stays as it was; the new revision states only the one idea.
+    // The retained artifact stays as it was; the new revision states the refined idea's parts.
     expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
     const written = await readFile(
-      path.join(area.cycleDirectory(2), briefArtifact.pathFromArtifactsRoot),
+      path.join(area.cycleDirectory(2), refinedIdeaArtifact.pathFromArtifactsRoot),
       'utf8',
     );
-    expect(written).toContain('"idea"');
     expect(written).not.toContain('"problem"');
-    expect(written).not.toContain('"projectFit"');
+    expect(written).not.toContain('"value"');
+    expect(written).not.toContain('"scope"');
   });
 
-  it('rejects writing a brief without the reports it must build on', async () => {
+  it('reads a retained brief whose idea field stood alone as a refined idea without project fit', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'minor' });
+    await area.write(1, purposeArtifact, purposeReport);
+    await area.write(1, researchArtifact, researchReport);
+    const retainedFile = await area.write(
+      1,
+      { pathFromArtifactsRoot: retainedBriefArtifactPath },
+      previousBriefOf(1),
+    );
+    for (const reviewer of councilReviewers) {
+      await area.write(
+        1,
+        councilArtifacts[reviewer],
+        councilReport(reviewer, 'approve', retainedFile, 1),
+      );
+    }
+    const agent = scriptedRuntime([
+      {
+        idea: 'idea',
+        projectFit: 'project fit',
+        feasibility: 'feasibility',
+        changeSummary: 'addressed the objection',
+      },
+    ]);
+    const action = createBriefWriter({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(action()).resolves.toBe('written');
+
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain(`cycle 1 refined idea revision: ${retainedFile}`);
+    expect(context).toContain('Its cumulative change summary');
+    expect(context).toContain('Brief revision 1.');
+    expect(
+      await area.read<RefinedIdea>(2, refinedIdeaArtifact.pathFromArtifactsRoot),
+    ).toMatchObject({ revision: 2, cycle: 2, idea: 'idea' });
+  });
+
+  it('rejects writing a refined idea without the reports it must build on', async () => {
     const area = await refinementArea();
     const agent = scriptedRuntime([{}]);
     const action = createBriefWriter({
@@ -528,10 +611,8 @@ describe('idea role actions', () => {
       researcher: researchReport,
       'brief-writer': {
         idea: 'idea',
-        evidence: [],
-        alternatives: [],
-        scope: 'scope',
-        assumptions: [],
+        projectFit: 'project fit',
+        feasibility: 'feasibility',
         changeSummary: 'initial',
       },
       'purpose-council': { verdict: 'approve', summary: 'approved', findings: [] },
@@ -603,13 +684,13 @@ describe('idea role actions', () => {
 });
 
 describe('council reviewers', () => {
-  it('binds its verdict to the exact brief revision and hides the pending siblings', async () => {
+  it('binds its verdict to the exact refined idea revision and hides the pending siblings', async () => {
     const area = await refinementArea();
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     const sibling = await area.write(
       1,
       councilArtifacts.evidence,
-      councilReport('evidence', 'approve', briefFile, 1),
+      councilReport('evidence', 'approve', refinedIdeaFile, 1),
     );
     const agent = scriptedRuntime([
       {
@@ -628,7 +709,7 @@ describe('council reviewers', () => {
     await expect(action()).resolves.toBe('minor_corrections');
 
     const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(briefFile);
+    expect(context).toContain(refinedIdeaFile);
     expect(context).toContain('the author\u2019s idea');
     expect(context).not.toContain(sibling);
     expect(context).not.toContain('evidence council result');
@@ -639,7 +720,7 @@ describe('council reviewers', () => {
       expect.objectContaining({
         reviewer: 'purpose',
         verdict: 'minor_corrections',
-        brief: briefFile,
+        brief: refinedIdeaFile,
         revision: 1,
       }),
     );
@@ -650,13 +731,13 @@ describe('council reviewers', () => {
     });
   });
 
-  it('reuses its saved result for the same brief revision', async () => {
+  it('reuses its saved result for the same refined idea revision', async () => {
     const area = await refinementArea();
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     await area.write(
       1,
       councilArtifacts.simplicity,
-      councilReport('simplicity', 'major_rework', briefFile, 1),
+      councilReport('simplicity', 'major_rework', refinedIdeaFile, 1),
     );
     const agent = scriptedRuntime([{ verdict: 'approve', summary: '', findings: [] }]);
     const action = createCouncilReviewer({
@@ -668,7 +749,7 @@ describe('council reviewers', () => {
 
     await expect(action()).resolves.toBe('major_rework');
     expect(agent.requests).toEqual([]);
-    // The reused outcome names the verdict artifact the reviewer saved, not the input brief.
+    // The reused outcome names the verdict artifact the reviewer saved, not the input revision.
     expect(area.events.at(-1)).toMatchObject({
       source: 'SimplicityCouncil',
       type: 'outcome',
@@ -681,9 +762,13 @@ describe('council reviewers', () => {
     });
   });
 
-  it('reviews a retained brief written before the idea field as the one idea it expresses', async () => {
+  it('reviews a retained brief written before the idea field as the refined idea it expresses', async () => {
     const area = await refinementArea();
-    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    const legacyFile = await area.write(
+      1,
+      { pathFromArtifactsRoot: retainedBriefArtifactPath },
+      legacyBriefOf(1),
+    );
     const agent = scriptedRuntime([{ verdict: 'approve', summary: 'approved', findings: [] }]);
     const action = createCouncilReviewer({
       reviewer: 'evidence',
@@ -695,12 +780,13 @@ describe('council reviewers', () => {
     await expect(action()).resolves.toBe('approve');
 
     const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(
-      'Reviewers spend time on style defects. Reviews focus on behaviour. ' +
-        'The project already enforces checks in CI.',
-    );
+    // Its problem and value read as the idea, and its project fit and scope keep their own parts.
+    expect(context).toContain('Reviewers spend time on style defects. Reviews focus on behaviour.');
+    expect(context).toContain('"projectFit": "The project already enforces checks in CI."');
+    expect(context).toContain('"feasibility": "Enable the smallest lint gate (revision 1)."');
     // The retained shape does not leak into the reviewer's reading of the revision.
     expect(context).not.toContain('"problem"');
+    expect(context).not.toContain('"value"');
     expect(
       await area.read<CouncilReport>(1, councilArtifacts.evidence.pathFromArtifactsRoot),
     ).toEqual(
@@ -713,9 +799,48 @@ describe('council reviewers', () => {
     );
   });
 
+  it('reviews a retained brief whose idea field stood alone without a project fit', async () => {
+    const area = await refinementArea();
+    const retainedFile = await area.write(
+      1,
+      { pathFromArtifactsRoot: retainedBriefArtifactPath },
+      previousBriefOf(1),
+    );
+    const agent = scriptedRuntime([{ verdict: 'approve', summary: 'approved', findings: [] }]);
+    const action = createCouncilReviewer({
+      reviewer: 'purpose',
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: () => undefined,
+    });
+
+    await expect(action()).resolves.toBe('approve');
+
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain(
+      '"idea": "Reviewers spend time on style defects; a lint gate would keep reviews on behaviour."',
+    );
+    // A retained brief that carried no separate project fit reads as one that states none.
+    expect(context).toContain('"projectFit": null');
+    expect(context).toContain('"feasibility": "Enable the smallest lint gate (revision 1)."');
+    // The retained brief's supporting sections stay out of the refined idea the reviewer reads.
+    expect(context).not.toContain('"alternatives"');
+    expect(context).not.toContain('"assumptions"');
+    expect(
+      await area.read<CouncilReport>(1, councilArtifacts.purpose.pathFromArtifactsRoot),
+    ).toEqual(
+      expect.objectContaining({
+        reviewer: 'purpose',
+        verdict: 'approve',
+        brief: retainedFile,
+        revision: 1,
+      }),
+    );
+  });
+
   it('rejects an approval with unresolved findings and a nonapproval without any', async () => {
     const area = await refinementArea();
-    await area.write(1, briefArtifact, briefOf(1));
+    await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     const withFindings = scriptedRuntime([
       {
         verdict: 'approve',
@@ -805,16 +930,16 @@ describe('decision publication', () => {
     });
   }
 
-  it('publishes the approved brief, moves the item and leaves a handoff of references', async () => {
+  it('publishes the approved refined idea, moves the item and leaves a handoff of references', async () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
         councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', briefFile, 1),
+        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
       );
     }
     const jira = source();
@@ -827,15 +952,17 @@ describe('decision publication', () => {
     expect(jira.transitions).toEqual(['21']);
     expect(jira.comments).toHaveLength(1);
     const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published).toContain('Approved idea brief (revision 1)');
+    expect(published).toContain('Approved refined idea (revision 1)');
     expect(published.match(/Idea: /gu)).toHaveLength(1);
     expect(published).toContain(
       'Idea: Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
     );
-    expect(published).toContain('Enable the smallest lint gate (revision 1)');
+    expect(published).toContain('Project fit: The project already enforces checks in CI.');
+    expect(published).toContain('Feasibility: Enable the smallest lint gate first (revision 1).');
+    expect(published).toContain('Open questions:');
+    expect(published).toContain('- Is generated code in scope? (revision 1)');
     expect(published).toContain('Council cycles used: 1');
-    expect(published).toContain('What refinement changed: Brief revision 1.');
-    expect(published).toContain('Key uncertainty and assumptions: none recorded.');
+    expect(published).toContain('What refinement changed: Refined idea revision 1.');
     expect(published).not.toContain('purpose review');
 
     const decision = JSON.parse(
@@ -847,7 +974,7 @@ describe('decision publication', () => {
     expect(decision).toMatchObject({
       decision: 'approved',
       strongestVerdict: 'approve',
-      brief: briefFile,
+      brief: refinedIdeaFile,
       revision: 1,
       source: { transition: { id: '21', to: 'Draft' }, status: 'Draft', commentId: 'c2' },
     });
@@ -858,18 +985,22 @@ describe('decision publication', () => {
     expect(handoff).toMatchObject({
       issue: { id: '10518', key: 'NEX-1' },
       capturedInput: ideaSubmissionInputFile(area.root, 1),
-      brief: briefFile,
+      brief: refinedIdeaFile,
     });
     expect(handoff.purpose).toBe(
       path.join(area.cycleDirectory(), purposeArtifact.pathFromArtifactsRoot),
     );
   });
 
-  it('publishes a retained brief written before the idea field as the one idea it expresses', async () => {
+  it('publishes a retained brief written before the idea field as the refined idea it expresses', async () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    const legacyFile = await area.write(
+      1,
+      { pathFromArtifactsRoot: retainedBriefArtifactPath },
+      legacyBriefOf(1),
+    );
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
@@ -884,12 +1015,12 @@ describe('decision publication', () => {
     const published = JSON.stringify(jira.comments[0]?.body);
     expect(published.match(/Idea: /gu)).toHaveLength(1);
     expect(published).toContain(
-      'Idea: Reviewers spend time on style defects. Reviews focus on behaviour. ' +
-        'The project already enforces checks in CI.',
+      'Idea: Reviewers spend time on style defects. Reviews focus on behaviour.',
     );
+    expect(published).toContain('Project fit: The project already enforces checks in CI.');
+    expect(published).toContain('Feasibility: Enable the smallest lint gate (revision 1).');
     expect(published).not.toContain('Problem:');
     expect(published).not.toContain('Expected value:');
-    expect(published).not.toContain('Project fit:');
     // Publication reads the retained artifact; it never rewrites it.
     expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
   });
@@ -898,21 +1029,21 @@ describe('decision publication', () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     await area.write(
       1,
       councilArtifacts.purpose,
-      councilReport('purpose', 'approve', briefFile, 1),
+      councilReport('purpose', 'approve', refinedIdeaFile, 1),
     );
     await area.write(
       1,
       councilArtifacts.evidence,
-      councilReport('evidence', 'minor_corrections', briefFile, 1),
+      councilReport('evidence', 'minor_corrections', refinedIdeaFile, 1),
     );
     await area.write(
       1,
       councilArtifacts.simplicity,
-      councilReport('simplicity', 'idea_not_working', briefFile, 1),
+      councilReport('simplicity', 'idea_not_working', refinedIdeaFile, 1),
     );
     const jira = source();
 
@@ -923,15 +1054,17 @@ describe('decision publication', () => {
     expect(jira.transitions).toEqual(['22']);
     const published = JSON.stringify(jira.comments[0]?.body);
     expect(published).toContain('Returned for feedback: the council did not approve this idea');
-    expect(published).toContain('Latest idea (revision 1)');
+    expect(published).toContain('Latest refined idea (revision 1)');
     expect(published).toContain(
       'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
     );
+    expect(published).toContain('Project fit: The project already enforces checks in CI.');
+    expect(published).toContain('Feasibility: Enable the smallest lint gate first (revision 1).');
     expect(published).toContain('What stopped approval:');
     expect(published).toContain('- simplicity correction');
     expect(published).toContain('back to \\"Idea\\" to resubmit it.');
     expect(published).toContain('Council cycles used: 1');
-    expect(published).toContain('What refinement changed: Brief revision 1.');
+    expect(published).toContain('What refinement changed: Refined idea revision 1.');
     // The reviewer's summary, verdict name and criterion label stay internal.
     expect(published).not.toContain('simplicity review');
     expect(published).not.toContain('idea_not_working');
@@ -955,21 +1088,21 @@ describe('decision publication', () => {
 
   it('reports exhaustion with the latest idea, cycles used, change summary and corrections', async () => {
     const area = await refinementArea({ cycle: 2, route: 'minor' });
-    const briefFile = await area.write(2, briefArtifact, briefOf(2));
+    const refinedIdeaFile = await area.write(2, refinedIdeaArtifact, refinedIdeaOf(2));
     await area.write(
       2,
       councilArtifacts.purpose,
-      councilReport('purpose', 'minor_corrections', briefFile, 2),
+      councilReport('purpose', 'minor_corrections', refinedIdeaFile, 2),
     );
     await area.write(
       2,
       councilArtifacts.evidence,
-      councilReport('evidence', 'minor_corrections', briefFile, 2),
+      councilReport('evidence', 'minor_corrections', refinedIdeaFile, 2),
     );
     await area.write(
       2,
       councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', briefFile, 2),
+      councilReport('simplicity', 'approve', refinedIdeaFile, 2),
     );
     const jira = source();
 
@@ -981,16 +1114,16 @@ describe('decision publication', () => {
     expect(published).toContain(
       'Attempts exhausted after 2 cycles: the council did not approve this idea.',
     );
-    expect(published).toContain('Latest idea (revision 2)');
+    expect(published).toContain('Latest refined idea (revision 2)');
     expect(published).toContain(
       'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
     );
-    // The returned comment reproduces the latest idea alone, not the whole brief.
-    expect(published).not.toContain('Last brief');
+    expect(published).toContain('Open questions:');
+    expect(published).toContain('- Is generated code in scope? (revision 2)');
+    // The returned comment never publishes the research detail the refined idea leaves out.
     expect(published).not.toContain('Strongest supporting evidence');
     expect(published).not.toContain('Meaningful alternatives');
-    expect(published).not.toContain('Smallest plausible scope');
-    expect(published).toContain('What refinement changed: Brief revision 2.');
+    expect(published).toContain('What refinement changed: Refined idea revision 2.');
     expect(published).toContain('Council cycles used: 2');
     expect(published).toContain('What stopped approval:');
     // Every non-approving reviewer's material objection reaches the exhausted return.
@@ -1015,18 +1148,18 @@ describe('decision publication', () => {
 
   it('keeps every distinct material correction once on an exhausted return', async () => {
     const area = await refinementArea({ cycle: 2, route: 'minor' });
-    const briefFile = await area.write(2, briefArtifact, briefOf(2));
+    const refinedIdeaFile = await area.write(2, refinedIdeaArtifact, refinedIdeaOf(2));
     const shared = {
       criterion: 'internal criterion',
       evidence: 'internal evidence',
       correction: 'Narrow the promise to the smallest useful scope.',
     };
     await area.write(2, councilArtifacts.purpose, {
-      ...councilReport('purpose', 'minor_corrections', briefFile, 2),
+      ...councilReport('purpose', 'minor_corrections', refinedIdeaFile, 2),
       findings: [shared],
     });
     await area.write(2, councilArtifacts.evidence, {
-      ...councilReport('evidence', 'minor_corrections', briefFile, 2),
+      ...councilReport('evidence', 'minor_corrections', refinedIdeaFile, 2),
       findings: [
         shared,
         {
@@ -1039,7 +1172,7 @@ describe('decision publication', () => {
     await area.write(
       2,
       councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', briefFile, 2),
+      councilReport('simplicity', 'approve', refinedIdeaFile, 2),
     );
     const jira = source();
 
@@ -1060,12 +1193,12 @@ describe('decision publication', () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
         councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', briefFile, 1),
+        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
       );
     }
     const jira = source();
@@ -1082,12 +1215,12 @@ describe('decision publication', () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     for (const reviewer of councilReviewers) {
       await area.write(
         1,
         councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', briefFile, 1),
+        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
       );
     }
     const jira = source();
@@ -1115,7 +1248,7 @@ describe('decision publication', () => {
     ) as IdeaHandoff;
     expect(handoff).toMatchObject({
       issue: { id: '10518', key: 'NEX-1' },
-      brief: briefFile,
+      brief: refinedIdeaFile,
       decision: path.join(
         area.root,
         'artifacts/submissions/1',
@@ -1128,21 +1261,21 @@ describe('decision publication', () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
     await area.write(1, researchArtifact, researchReport);
-    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
     await area.write(
       1,
       councilArtifacts.purpose,
-      councilReport('purpose', 'approve', briefFile, 1),
+      councilReport('purpose', 'approve', refinedIdeaFile, 1),
     );
     await area.write(
       1,
       councilArtifacts.evidence,
-      councilReport('evidence', 'major_rework', briefFile, 1),
+      councilReport('evidence', 'major_rework', refinedIdeaFile, 1),
     );
     await area.write(
       1,
       councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', briefFile, 1),
+      councilReport('simplicity', 'approve', refinedIdeaFile, 1),
     );
     const jira = source();
 
@@ -1151,7 +1284,7 @@ describe('decision publication', () => {
     );
     expect(jira.comments).toEqual([]);
 
-    // A council result bound to another brief revision invalidates the set.
+    // A council result bound to another refined idea revision invalidates the set.
     await area.write(
       1,
       councilArtifacts.evidence,

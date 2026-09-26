@@ -56,7 +56,7 @@ Workflow state and mutable worktrees do not become handoff artifacts.
 The [idea refinement specification](idea-refinement/spec.md#artifacts-and-revision-binding)
 defines the stable `refinement/` area within the issue workspace. Each entry from `Idea`
 reuses that area when present and adds a new numbered submission history. Artifacts are keyed by
-submission, council cycle and brief revision. Idea refinement's StartIdeaRound owns its own
+submission, council cycle and refined idea revision. Idea refinement's StartIdeaRound owns its own
 `state/current-round.json` plan with idea roles and cycle identity; it does not use finite
 delivery's developer ladder or writable delivery worktree. The same WorkspaceRef value identifies
 the refinement area. Nexus owns artifact writes; agents use the prepared project worktree

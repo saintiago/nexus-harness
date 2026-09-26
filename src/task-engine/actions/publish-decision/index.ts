@@ -7,7 +7,7 @@ import type {
 } from '../../../adapters/jira.js';
 import { fault, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import { briefArtifact, readBriefRevision, type Brief } from '../brief-writer/artifacts.js';
+import { readRefinedIdeaRevision, type RefinedIdea } from '../brief-writer/artifacts.js';
 import { cycleCouncilReports, publishIdeaOutcome } from '../idea-context.js';
 import {
   ideaCycleDirectory,
@@ -39,11 +39,12 @@ import {
 
 /**
  * PublishDecision applies one terminal route to the source and records it. An approval publishes
- * the approved brief, moves the item to its configured approved state and leaves one handoff
- * artifact with references to the captured idea, brief, purpose assessment, research and council
- * decisions. A return publishes concise human-facing feedback and moves the item to its configured
- * waiting-for-feedback state; internal council feedback stays in the cycle's artifacts. Publication
- * uses the captured selection snapshot without reading the issue or its conversation again.
+ * the approved refined idea, moves the item to its configured approved state and leaves one handoff
+ * artifact with references to the captured idea, refined idea, purpose assessment, research and
+ * council decisions. A return publishes concise human-facing feedback and moves the item to its
+ * configured waiting-for-feedback state; internal council feedback stays in the cycle's artifacts.
+ * Publication uses the captured selection snapshot without reading the issue or its conversation
+ * again.
  */
 
 export type PublishDecisionSettings = {
@@ -92,67 +93,64 @@ function documentOf(text: string): JiraDocument {
   };
 }
 
-/** One bullet list's lines, or a line stating that the list is empty. */
-function bullets(label: string, items: readonly string[]): string[] {
-  return items.length === 0
-    ? [`${label}: none recorded.`]
-    : [`${label}:`, ...items.map((item) => `- ${item}`)];
-}
-
-/** The concise brief every human-facing comment reproduces: a decision aid, not the full case. */
-function briefSection(brief: Brief, heading: string): string[] {
+/**
+ * The refined idea every human-facing comment reproduces: its stated parts, in order, with the
+ * parts a retained revision never carried left out.
+ */
+function refinedIdeaSection(idea: RefinedIdea, heading: string): string[] {
   return [
-    `${heading} (revision ${String(brief.revision)})`,
+    `${heading} (revision ${String(idea.revision)})`,
     '',
-    `Idea: ${brief.idea}`,
-    '',
-    ...bullets('Strongest supporting evidence', brief.evidence),
-    ...bullets('Meaningful alternatives', brief.alternatives),
-    '',
-    `Smallest plausible scope: ${brief.scope}`,
-    ...bullets('Key uncertainty and assumptions', brief.assumptions),
+    `Idea: ${idea.idea}`,
+    ...(idea.projectFit === null ? [] : ['', `Project fit: ${idea.projectFit}`]),
+    ...(idea.feasibility === null ? [] : ['', `Feasibility: ${idea.feasibility}`]),
+    ...(idea.openQuestions.length === 0
+      ? []
+      : ['', 'Open questions:', ...idea.openQuestions.map((question) => `- ${question}`)]),
   ];
 }
 
-/** The approved brief as the human-facing comment the Requirements and Design workflow reads. */
-function approvedComment(brief: Brief): string {
+/**
+ * The approved refined idea as the human-facing comment the Requirements and Design workflow
+ * reads, with the council history kept to the cycles used and the cumulative change summary.
+ */
+function approvedComment(idea: RefinedIdea): string {
   return [
-    ...briefSection(brief, 'Approved idea brief'),
+    ...refinedIdeaSection(idea, 'Approved refined idea'),
     '',
-    `Council cycles used: ${String(brief.cycle)}`,
-    `What refinement changed: ${brief.changeSummary}`,
+    `Council cycles used: ${String(idea.cycle)}`,
+    `What refinement changed: ${idea.changeSummary}`,
   ].join('\n');
 }
 
 /**
- * The human-facing comment for one returned idea: the plain outcome, the latest idea, the cycles
- * used with the cumulative change summary, and the actionable corrections that stopped approval,
- * followed by the single next step. Exhaustion is reported as exhaustion and a return reports
- * that the council did not approve; neither judges the idea's worth. Raw reviewer summaries,
- * verdict names, criteria, evidence, code citations and tool transcripts stay in the artifacts.
+ * The human-facing comment for one returned idea: the plain outcome, the latest refined idea, the
+ * cycles used with the cumulative change summary, and the actionable corrections that stopped
+ * approval, followed by the single next step. Exhaustion is reported as exhaustion and a return
+ * reports that the council did not approve; neither judges the idea's worth. Raw reviewer
+ * summaries, verdict names, criteria, evidence, code citations and tool transcripts stay in the
+ * artifacts.
  */
 function returnedComment(
-  brief: Brief,
+  idea: RefinedIdea,
   decision: IdeaDecision,
   findings: readonly CouncilFinding[],
   submittedStatus: string,
 ): string {
   const outcome =
     decision === 'unable-to-converge'
-      ? `Attempts exhausted after ${String(brief.cycle)} ` +
-        `${brief.cycle === 1 ? 'cycle' : 'cycles'}: the council did not approve this idea.`
+      ? `Attempts exhausted after ${String(idea.cycle)} ` +
+        `${idea.cycle === 1 ? 'cycle' : 'cycles'}: the council did not approve this idea.`
       : 'Returned for feedback: the council did not approve this idea.';
   // Distinct corrections only: two reviewers requesting the same change are one request.
   const corrections = [...new Set(findings.map((finding) => finding.correction))];
   return [
     outcome,
     '',
-    `Latest idea (revision ${String(brief.revision)}):`,
+    ...refinedIdeaSection(idea, 'Latest refined idea'),
     '',
-    brief.idea,
-    '',
-    `Council cycles used: ${String(brief.cycle)}`,
-    `What refinement changed: ${brief.changeSummary}`,
+    `Council cycles used: ${String(idea.cycle)}`,
+    `What refinement changed: ${idea.changeSummary}`,
     ...(corrections.length === 0
       ? []
       : ['', 'What stopped approval:', ...corrections.map((correction) => `- ${correction}`)]),
@@ -209,14 +207,14 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const decision = decisionOf(input);
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const brief = await readBriefRevision(cycleRoot);
-    if (brief === null) {
+    const refinedIdea = await readRefinedIdeaRevision(cycleRoot);
+    if (refinedIdea === null) {
       throw new Error(
-        `No brief revision exists for submission ${String(plan.submission)} cycle ` +
-          `${String(plan.cycle)}; the decision needs the reviewed brief.`,
+        `No refined idea revision exists for submission ${String(plan.submission)} cycle ` +
+          `${String(plan.cycle)}; the decision needs the reviewed refined idea.`,
       );
     }
-    const briefFile = path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot);
+    const refinedIdeaFile = refinedIdea.path;
     const terminal: IdeaTerminal = decision === 'approved' ? 'approved' : 'waiting-for-feedback';
     const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
 
@@ -235,7 +233,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     }
 
     /**
-     * Write the approval's handoff for the reviewed brief revision. The handoff is a required
+     * Write the approval's handoff for the reviewed refined idea revision. The handoff is a required
      * output of the approved route: a repeated invocation that finds the decision already saved
      * establishes it before reporting the same outcome.
      */
@@ -245,7 +243,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
         issue: { id: selection.source.issueId, key: selection.taskKey },
         issueWorkspace: selection.issueWorkspace.root,
         capturedInput: ideaSubmissionInputFile(root, plan.submission),
-        brief: briefFile,
+        brief: refinedIdeaFile,
         purpose: references.purpose,
         research: references.research,
         council: {
@@ -276,11 +274,11 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
 
     const reports = await cycleCouncilReports(root, plan);
     for (const report of reports) {
-      if (report.brief !== briefFile || report.revision !== brief.revision) {
+      if (report.brief !== refinedIdeaFile || report.revision !== refinedIdea.value.revision) {
         throw new Error(
-          `The ${report.reviewer} council result names brief "${report.brief}" revision ` +
-            `${String(report.revision)}, not the current "${briefFile}" revision ` +
-            `${String(brief.revision)}.`,
+          `The ${report.reviewer} council result names refined idea "${report.brief}" revision ` +
+            `${String(report.revision)}, not the current "${refinedIdeaFile}" revision ` +
+            `${String(refinedIdea.value.revision)}.`,
         );
       }
     }
@@ -316,8 +314,13 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
         : strongestReport.findings;
     const text =
       decision === 'approved'
-        ? approvedComment(brief)
-        : returnedComment(brief, decision, blockingFindings, settings.statuses.submitted);
+        ? approvedComment(refinedIdea.value)
+        : returnedComment(
+            refinedIdea.value,
+            decision,
+            blockingFindings,
+            settings.statuses.submitted,
+          );
     const comment = await publishDocument(
       jira,
       selection.source.issueId,
@@ -337,8 +340,8 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const record: IdeaDecisionRecord = {
       decision,
       strongestVerdict: strongest,
-      brief: briefFile,
-      revision: brief.revision,
+      brief: refinedIdeaFile,
+      revision: refinedIdea.value.revision,
       feedback: reports,
       comment: text,
       source: {

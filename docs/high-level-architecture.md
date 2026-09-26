@@ -27,7 +27,7 @@ Nexus
 │       ├── CompleteTask
 │       ├── StartIdeaRound
 │       ├── Purpose and research
-│       ├── Brief writing
+│       ├── Refined idea writing
 │       ├── Council review
 │       └── Decision publication
 ├── AgentRuntime
@@ -197,7 +197,7 @@ and commits where documents are absent or incomplete. Every entry from `Idea` us
 selection path and stable issue workspace. StartIdeaRound opens a council cycle and records its role
 plan from the refinement area's history. The approved handoff keeps references to the shared
 workspace and its artifacts for subsequent workflows. Purpose and research run in parallel,
-followed by a brief writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
+followed by the writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
 approval, minor correction, major rework or return to author. Selection moves the idea to its
 active state before agents run. Approval publishes a ready-for-design handoff and moves it to the
 approved state. A nonapproval posts human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent

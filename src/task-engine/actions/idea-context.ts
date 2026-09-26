@@ -4,7 +4,7 @@ import type { IdeaRole } from '../../agent-runtime/index.js';
 import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
 import type { ArtifactDeclaration } from './artifacts.js';
-import { briefArtifact, readBriefRevision } from './brief-writer/artifacts.js';
+import { readRefinedIdeaRevision } from './brief-writer/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from './documents.js';
 import {
   ideaCycleDirectory,
@@ -49,14 +49,14 @@ export const ideaDefinitionText = [
  * definition. It keeps refinement on the idea as the author proposed it, states what the stage
  * decides and leaves exact selection, configuration and implementation to Requirements and
  * Design. An initial submission may lack parts of the definition; refinement develops them, while
- * a finished brief must still let the council decide.
+ * a finished refined idea must still let the council decide.
  */
 export const ideaStageGuidanceText = [
   'Idea stage (shared by every idea refinement role): an initial submission may lack the proposed',
   'change, why it matters or the principle behind it; that is not an intake rejection, because',
-  'refinement develops those elements. A finished brief still needs enough clarity and substance',
-  'for the council\u2019s idea-stage decision, and the council may object when it cannot decide.',
-  'Work on the idea as the author proposed it: preserve that concept and intent rather than',
+  'refinement develops those elements. A finished refined idea still needs enough clarity and',
+  'substance for the council\u2019s idea-stage decision, and the council may object when it cannot',
+  'decide. Work on the idea as the author proposed it: preserve that concept and intent rather than',
   'replacing it with a different or more generic need. The stage decides whether the idea is worth',
   'developing and its smallest useful scope. Exact selection, configuration and implementation',
   'belong to Requirements and Design; architecture documents are evidence of existing capabilities',
@@ -89,9 +89,13 @@ type CycleHistoryEntry = {
   readonly label: string;
   /** The reviewer whose pending result this is, or null for shared history. */
   readonly pendingReviewer: CouncilReviewer | null;
-  readonly declaration: ArtifactDeclaration;
-  /** Reads the artifact; a brief revision also accepts the retained shape written before `idea`. */
-  readonly read: (cycleRoot: string) => Promise<unknown | null>;
+  /**
+   * Reads the artifact and names the file it was found at; a refined idea also reads the retained
+   * path and shapes written before it.
+   */
+  readonly read: (
+    cycleRoot: string,
+  ) => Promise<{ readonly file: string; readonly value: unknown } | null>;
 };
 
 /** One history entry that reads its declared artifact as it is stored. */
@@ -103,8 +107,12 @@ function artifactEntry(
   return {
     label,
     pendingReviewer,
-    declaration,
-    read: (cycleRoot) => readCycleArtifact(cycleRoot, declaration),
+    read: async (cycleRoot) => {
+      const value = await readCycleArtifact(cycleRoot, declaration);
+      return value === null
+        ? null
+        : { file: path.join(cycleRoot, declaration.pathFromArtifactsRoot), value };
+    },
   };
 }
 
@@ -113,10 +121,12 @@ const cycleHistory: readonly CycleHistoryEntry[] = [
   artifactEntry('purpose assessment', null, purposeArtifact),
   artifactEntry('research report', null, researchArtifact),
   {
-    label: 'brief revision',
+    label: 'refined idea revision',
     pendingReviewer: null,
-    declaration: briefArtifact,
-    read: readBriefRevision,
+    read: async (cycleRoot) => {
+      const read = await readRefinedIdeaRevision(cycleRoot);
+      return read === null ? null : { file: read.path, value: read.value };
+    },
   },
   ...councilReviewers.map((reviewer) =>
     artifactEntry(`${reviewer} council result`, reviewer, councilArtifacts[reviewer]),
@@ -156,10 +166,10 @@ export async function retainedHistoryText(
     return 'Retained workspace history: none yet.';
   }
   const lines = [
-    'Retained workspace history (the author\u2019s earlier submissions, briefs, purpose and',
+    'Retained workspace history (the author\u2019s earlier submissions, refined ideas, purpose and',
     'research reports and council feedback). Read it selectively: open only the artifacts that',
-    'bear on your current decision, and use the latest brief\u2019s cumulative changeSummary to',
-    'understand what refinement has already changed:',
+    'bear on your current decision, and use the latest refined idea\u2019s cumulative changeSummary',
+    'to understand what refinement has already changed:',
   ];
   for (const submission of submissions) {
     lines.push(`- Submission ${String(submission)}:`);
@@ -170,13 +180,9 @@ export async function retainedHistoryText(
         if (isPending(entry, plan, { reviewer: options.reviewer, submission, cycle })) {
           continue;
         }
-        if ((await entry.read(cycleRoot)) !== null) {
-          lines.push(
-            `  - cycle ${String(cycle)} ${entry.label}: ${path.join(
-              cycleRoot,
-              entry.declaration.pathFromArtifactsRoot,
-            )}`,
-          );
+        const found = await entry.read(cycleRoot);
+        if (found !== null) {
+          lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${found.file}`);
         }
       }
     }
@@ -198,7 +204,7 @@ export function capturedIdeaText(root: string, plan: IdeaRoundPlan, input: IdeaI
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',
-    'submissions, briefs and council feedback are history, not the current proposal.',
+    'submissions, refined ideas and council feedback are history, not the current proposal.',
     JSON.stringify({ issue: input.issue, conversation: input.conversation }, null, 2),
     `Captured input artifact: ${ideaSubmissionInputFile(root, plan.submission)}`,
     `Connected project worktree: ${path.join(root, worktreeDirectory)}`,

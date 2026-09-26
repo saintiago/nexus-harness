@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
-import { briefArtifact, readBriefRevision } from '../brief-writer/artifacts.js';
+import { readRefinedIdeaRevision } from '../brief-writer/artifacts.js';
 import {
   capturedIdeaText,
   invokeIdeaRole,
@@ -26,10 +26,11 @@ import {
 } from './artifacts.js';
 
 /**
- * One council reviewer runs its role against the exact current brief revision and saves exactly
- * one verdict with the criterion, evidence and correction of every objection. The three reviewers
- * run independently: each invocation omits the other reviewers' current-cycle results from its
- * context. A repeated invocation for the same brief revision reuses the result it already saved.
+ * One council reviewer runs its role against the exact current refined idea revision and saves
+ * exactly one verdict with the criterion, evidence and correction of every objection. The three
+ * reviewers run independently: each invocation omits the other reviewers' current-cycle results
+ * from its context. A repeated invocation for the same refined idea revision reuses the result it
+ * already saved.
  */
 
 /**
@@ -44,13 +45,13 @@ export const councilObjectionStandard = [
   'show that it should not proceed (idea_not_working): preventing a bad idea is a real improvement.',
   'An objection never silently replaces the author\u2019s proposal with a different or more generic',
   'idea. Factual or design nitpicks that do not change the idea-stage outcome are not objections,',
-  'incidental implementation detail the brief should not contain is not an objection, and the',
-  'brief\u2019s length alone is never a fault. An unresolved design choice is a blocker only when it',
-  'changes the idea-stage decision: whether the idea is worth developing, its purpose fit, value,',
-  'evidence or smallest useful scope. Otherwise it belongs to Requirements and Design. Keep every',
-  'finding\u2019s parts distinct and author-facing: the criterion names the standard that failed, the',
-  'evidence carries the internal justification, and the correction is the short request in plain',
-  'language that the author can act on, standing alone without your evidence or summary.',
+  'incidental implementation detail the refined idea should not contain is not an objection, and',
+  'the refined idea\u2019s length alone is never a fault. An unresolved design choice is a blocker',
+  'only when it changes the idea-stage decision: whether the idea is worth developing, its purpose',
+  'fit, value, evidence or smallest useful scope. Otherwise it belongs to Requirements and Design.',
+  'Keep every finding\u2019s parts distinct and author-facing: the criterion names the standard that',
+  'failed, the evidence carries the internal justification, and the correction is the short request',
+  'in plain language that the author can act on, standing alone without your evidence or summary.',
 ].join('\n');
 
 /** The operation name each reviewer's invocation boundary carries. */
@@ -106,16 +107,20 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const input = await readIdeaInput(root, plan.submission);
-    const brief = await readBriefRevision(cycleRoot);
-    if (brief === null) {
+    const refinedIdea = await readRefinedIdeaRevision(cycleRoot);
+    if (refinedIdea === null) {
       throw new Error(
-        `No brief revision exists for submission ${String(plan.submission)} cycle ` +
-          `${String(plan.cycle)}; the council reviews a written brief.`,
+        `No refined idea revision exists for submission ${String(plan.submission)} cycle ` +
+          `${String(plan.cycle)}; the council reviews a written refined idea.`,
       );
     }
-    const briefFile = path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot);
+    const refinedIdeaFile = refinedIdea.path;
     const existing = await readCycleArtifact(cycleRoot, artifact);
-    if (existing !== null && existing.brief === briefFile && existing.revision === brief.revision) {
+    if (
+      existing !== null &&
+      existing.brief === refinedIdeaFile &&
+      existing.revision === refinedIdea.value.revision
+    ) {
       // This reviewer already answered for this exact revision; reuse the saved verdict.
       report(
         existing.verdict,
@@ -128,15 +133,17 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
 
     const guidance = await projectGuidanceText(root);
     const context = [
-      `Independently review brief revision ${String(brief.revision)} of the current captured idea.`,
+      `Independently review refined idea revision ${String(refinedIdea.value.revision)} of the ` +
+        'current captured idea.',
       councilObjectionStandard,
       'Object only to material gaps that affect the idea-stage decision. Do not request',
       'implementation detail, file inventories, acceptance criteria or resolved design tradeoffs',
-      'the brief should not contain, and do not fail it on word count or style. Keep your summary',
-      'short and internal, and read the retained history selectively.',
+      'the refined idea should not contain, and do not fail it on word count or style. Keep your',
+      'summary short and internal, and read the retained history selectively.',
       reviewFocus[settings.reviewer],
       capturedIdeaText(root, plan, input),
-      `The exact brief revision you review: ${briefFile}\n` + JSON.stringify(brief, null, 2),
+      `The exact refined idea revision you review: ${refinedIdeaFile}\n` +
+        JSON.stringify(refinedIdea.value, null, 2),
       'Submit your own verdict before considering any other result, and do not read the other',
       'reviewers\u2019 results for this cycle; they are pending until all three have answered.',
       await retainedHistoryText(root, plan, { reviewer: settings.reviewer }),
@@ -156,8 +163,8 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     });
     if (response.verdict === 'approve' && response.findings.length > 0) {
       throw new Error(
-        `The ${settings.reviewer} council reviewer approved brief revision ` +
-          `${String(brief.revision)} while naming unresolved findings.`,
+        `The ${settings.reviewer} council reviewer approved refined idea revision ` +
+          `${String(refinedIdea.value.revision)} while naming unresolved findings.`,
       );
     }
     if (response.verdict !== 'approve' && response.findings.length === 0) {
@@ -172,8 +179,8 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
       verdict: response.verdict,
       summary: response.summary,
       findings: response.findings,
-      brief: briefFile,
-      revision: brief.revision,
+      brief: refinedIdeaFile,
+      revision: refinedIdea.value.revision,
     };
     const file = await writeCycleArtifact(cycleRoot, artifact, result);
     publishIdeaOutcome({

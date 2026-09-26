@@ -1,4 +1,3 @@
-import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
@@ -23,14 +22,20 @@ import {
   councilReviewers,
   type CouncilReport,
 } from '../review-council/artifacts.js';
-import { briefArtifact, briefContentSchema, readBriefRevision, type Brief } from './artifacts.js';
+import {
+  readRefinedIdeaRevision,
+  refinedIdeaArtifact,
+  refinedIdeaContentSchema,
+  type RefinedIdea,
+} from './artifacts.js';
 
 /**
- * BriefWriter runs the writer role for the open council cycle and saves the revision the council
- * reviews. It works from the captured idea, the purpose assessment and research report in force
- * for the cycle, the preceding briefs and the preceding council objections. Each cycle writes one
- * revision: a rewritten brief is a new cycle's artifact, which leaves every earlier approval
- * behind. A repeated invocation in the same cycle reuses the revision it already wrote.
+ * BriefWriter runs the writer role for the open council cycle and saves the refined idea revision
+ * the council reviews. It works from the captured idea, the purpose assessment and research report
+ * in force for the cycle, the preceding refined ideas and the preceding council objections. Each
+ * cycle writes one revision: a rewritten refined idea is a new cycle's artifact, which leaves
+ * every earlier approval behind. A repeated invocation in the same cycle reuses the revision it
+ * already wrote.
  */
 
 export type BriefWriterSettings = {
@@ -77,21 +82,16 @@ function condensedObjections(reports: readonly CouncilReport[]): string {
   return lines.length === 0 ? '- no unaddressed objection was recorded.' : lines.join('\n');
 }
 
-/** The latest brief written before the current cycle, when one exists. */
-async function precedingBrief(
+/** The latest refined idea written before the current cycle, when one exists. */
+async function precedingRefinedIdea(
   root: string,
   submission: number,
   cycle: number,
-): Promise<{ readonly cycle: number; readonly path: string; readonly value: Brief } | null> {
+): Promise<{ readonly cycle: number; readonly path: string; readonly value: RefinedIdea } | null> {
   for (let number = cycle - 1; number >= 1; number -= 1) {
-    const cycleRoot = ideaCycleDirectory(root, submission, number);
-    const value = await readBriefRevision(cycleRoot);
-    if (value !== null) {
-      return {
-        cycle: number,
-        value,
-        path: path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot),
-      };
+    const read = await readRefinedIdeaRevision(ideaCycleDirectory(root, submission, number));
+    if (read !== null) {
+      return { cycle: number, path: read.path, value: read.value };
     }
   }
   return null;
@@ -103,11 +103,11 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
     const root = settings.workspace.root;
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const existing = await readBriefRevision(cycleRoot);
+    const existing = await readRefinedIdeaRevision(cycleRoot);
     if (
       existing !== null &&
-      existing.submission === plan.submission &&
-      existing.cycle === plan.cycle
+      existing.value.submission === plan.submission &&
+      existing.value.cycle === plan.cycle
     ) {
       // The revision this cycle writes already exists; a repeated invocation reuses it.
       publishIdeaOutcome({
@@ -116,8 +116,8 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
         taskKey: (await readIdeaInput(root, plan.submission)).taskKey,
         cycle: plan.cycle,
         outcome: 'written',
-        detail: `revision ${String(existing.revision)}`,
-        artifact: path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot),
+        detail: `revision ${String(existing.value.revision)}`,
+        artifact: existing.path,
       });
       return 'written';
     }
@@ -127,47 +127,50 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
     const research = await latestCycleArtifact(root, plan.submission, plan.cycle, researchArtifact);
     if (purpose === null || research === null) {
       throw new Error(
-        `The brief writer needs the purpose assessment and research report of submission ` +
+        `The refined idea writer needs the purpose assessment and research report of submission ` +
           `${String(plan.submission)}; one of them is missing before cycle ${String(plan.cycle)}.`,
       );
     }
-    const earlier = await precedingBrief(root, plan.submission, plan.cycle);
+    const earlier = await precedingRefinedIdea(root, plan.submission, plan.cycle);
     const objections = await precedingCouncil(root, plan.submission, plan.cycle);
     const guidance = await projectGuidanceText(root);
     const context = [
-      `Write brief revision ${String(plan.cycle)} for the current captured idea.`,
+      `Write refined idea revision ${String(plan.cycle)} for the current captured idea.`,
       capturedIdeaText(root, plan, input),
       `Purpose assessment in force (cycle ${String(purpose.cycle)}): ` +
         `${purpose.path}\n${JSON.stringify(purpose.value, null, 2)}`,
       `Research report in force (cycle ${String(research.cycle)}): ` +
         `${research.path}\n${JSON.stringify(research.value, null, 2)}`,
       earlier === null
-        ? 'No earlier brief revision exists for this submission.'
-        : `Latest earlier brief revision (cycle ${String(earlier.cycle)}): ${earlier.path}\n` +
+        ? 'No earlier refined idea revision exists for this submission.'
+        : `Latest earlier refined idea (cycle ${String(earlier.cycle)}): ${earlier.path}\n` +
           'Its cumulative change summary (carry it forward and extend it): ' +
           earlier.value.changeSummary,
       objections === null
         ? 'No earlier council objections exist for this submission.'
         : 'Address each objection of the preceding council cycle explicitly. Full reports stay ' +
           `readable at their artifact paths if you need them:\n${condensedObjections(objections)}`,
-      'Aim for a decision aid of about 300-500 words. Work on the author\u2019s idea as submitted',
-      'and state it in the brief\u2019s one `idea` field: the proposed change, why it matters and',
-      'the principle behind it, as prose rather than separate problem, value and project-fit',
-      'essays or a more generic restatement. Concrete requirements and design belong to',
-      'Requirements and Design. The remaining fields carry the strongest supporting evidence,',
-      'meaningful alternatives, smallest plausible scope and key uncertainty (state the key',
-      'uncertainty in the assumptions list). Alternatives are idea-level options for meeting the',
-      'need, including how the project does it today; scope is the idea\u2019s smallest useful',
-      'boundary. Neither chooses mechanisms or assigns ownership. Do not prescribe implementation',
-      'or settle design decisions: no mechanism selection, detailed requirements, command syntax,',
-      'file or line inventories, schemas, component placement, acceptance criteria or resolution',
-      'of design tradeoffs. Keep research detail in the research artifact and cite it selectively.',
-      'The council reviews this revision for project fit, coherent value, fidelity to the',
-      'author\u2019s intent, evidence quality, fairly represented alternatives, explicit',
-      'uncertainty and the smallest useful scope.',
+      'Keep the refined idea short by default: about 150-200 words across all four parts, with',
+      'only material detail and plain, direct language. Give each part one to three short',
+      'sentences and keep open questions to at most a few. That length is a default, not a rigid',
+      'cap: keep any context the council needs to decide. Work on the author\u2019s idea as',
+      'submitted and keep its proposed concept and direction rather than replacing it with a',
+      'different or more generic idea. State the refined idea in clear parts: `idea` states the',
+      'desirable change, why it matters and the principle behind it, without committing to',
+      'implementation; `projectFit` states why it belongs in this project; `feasibility` states',
+      'a plausible path given the known constraints and evidence, not a design or implementation',
+      'plan; and `openQuestions` lists only the material questions the next workflow must answer,',
+      'omitting them when there are none. Keep detailed research in the research artifact and',
+      'cite it selectively; the refined idea stays concise and on point. Do not prescribe',
+      'implementation or settle design decisions: no mechanism selection, detailed requirements,',
+      'command syntax, file or line inventories, schemas, component placement, acceptance',
+      'criteria or resolution of design tradeoffs. Keep council history out of the idea\u2019s',
+      'parts; changeSummary is the cumulative account of what refinement changed. The council',
+      'reviews this revision for project fit, coherent value, fidelity to the author\u2019s',
+      'intent, evidence quality, fairly represented alternatives and the smallest useful scope.',
       await retainedHistoryText(root, plan, { reviewer: null }),
       ...(guidance === null ? [] : [guidance]),
-      responseFormatText(briefContentSchema),
+      responseFormatText(refinedIdeaContentSchema),
     ].join('\n\n');
 
     const content = await invokeIdeaRole({
@@ -177,23 +180,23 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
       operation: 'BriefWriter',
       taskKey: input.taskKey,
       context,
-      schema: briefContentSchema,
+      schema: refinedIdeaContentSchema,
       runner: settings.runner,
     });
-    const brief: Brief = {
+    const refinedIdea = {
       ...content,
       revision: plan.cycle,
       submission: plan.submission,
       cycle: plan.cycle,
     };
-    const file = await writeCycleArtifact(cycleRoot, briefArtifact, brief);
+    const file = await writeCycleArtifact(cycleRoot, refinedIdeaArtifact, refinedIdea);
     publishIdeaOutcome({
       publish: settings.publish,
       source: 'brief-writer',
       taskKey: input.taskKey,
       cycle: plan.cycle,
       outcome: 'written',
-      detail: `revision ${String(brief.revision)}`,
+      detail: `revision ${String(refinedIdea.revision)}`,
       artifact: file,
     });
     return 'written';
