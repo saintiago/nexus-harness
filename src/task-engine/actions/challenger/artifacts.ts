@@ -4,8 +4,9 @@ import type { ArtifactDeclaration } from '../artifacts.js';
 /**
  * Challenger's artifact contract: the exact refined idea revision and editor response it assessed,
  * its recommend-approval-or-discuss result and its short explanation. A discuss result names only
- * the few consequential concerns, each with its consequence and what would resolve it; optional
- * suggestions accompany either result and never block approval.
+ * the few consequential concerns, each with its consequence and what would resolve it, and states
+ * the remaining obstacle plainly for the idea's author; optional suggestions accompany either
+ * result and never block approval.
  */
 
 /** The Challenger's result: only a plausible way forward, or a discussion of real concerns. */
@@ -25,7 +26,14 @@ export type ChallengerConcern = z.infer<typeof challengerConcernSchema>;
 /** The provider response: the verdict, a short explanation and the concerns or suggestions. */
 export const challengerResponseSchema = z.object({
   verdict: z.enum(challengerVerdicts),
+  /** The internal account of the decision, addressed to the editor. */
   assessment: z.string().trim().min(1),
+  /**
+   * What remains unresolved, stated in plain language for the idea's author: what stopped approval
+   * and why it matters, understandable without the concerns below and free of internal paths, code
+   * references and instructions meant for the editor. Null when the Challenger recommends approval.
+   */
+  obstacle: z.string().trim().min(1).nullable(),
   concerns: z.array(challengerConcernSchema),
   suggestions: z.array(z.string().trim().min(1)),
 });

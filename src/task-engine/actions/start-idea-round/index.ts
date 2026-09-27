@@ -29,8 +29,11 @@ import {
  * without opening a cycle, so approval at the limit still succeeds.
  *
  * Repeating a route that opened the current cycle (a restarted invocation) reuses that cycle
- * instead of opening another. A missing or invalid current plan is an error for the next route;
- * earlier submissions and cycles are retained in place as history.
+ * instead of opening another. The new route supersedes a retained plan it cannot use — one an
+ * earlier implementation saved under its own schema, or one interrupted mid-write — by opening the
+ * next numbered submission over the retained history. A missing or unusable current plan is an
+ * error for the next route, which must continue the conversation it planned; earlier submissions
+ * and cycles remain in place as history.
  */
 
 export type StartIdeaRoundSettings = {
@@ -126,11 +129,26 @@ export function createStartIdeaRound(
     return opened(plan);
   }
 
+  /**
+   * The retained plan the new route can reuse, or null. A plan an earlier implementation saved
+   * satisfies a different record shape, and a plan interrupted mid-write cannot be used at all:
+   * neither can continue a conversation, so the new route supersedes the record by opening the next
+   * numbered submission and keeps every earlier submission as history. The next route reads the
+   * plan strictly, because its conversation cannot continue without it.
+   */
+  async function reusablePlan(): Promise<IdeaRoundPlan | null> {
+    try {
+      return await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
+    } catch {
+      return null;
+    }
+  }
+
   return async (input?: unknown) => {
     const route = routeOf(input);
-    const current = await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
 
     if (route === 'new') {
+      const current = await reusablePlan();
       if (
         current !== null &&
         current.route === 'new' &&
@@ -143,6 +161,7 @@ export function createStartIdeaRound(
       return openSubmission();
     }
 
+    const current = await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
     if (current === null) {
       throw new Error(
         `No idea round plan exists at "${planFile}"; the next route needs an opened submission.`,

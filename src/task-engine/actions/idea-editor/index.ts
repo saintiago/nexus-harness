@@ -37,7 +37,8 @@ import {
  * questions that could develop it, then writes the refined idea from the researcher's and Project
  * guide's contributions. After a Challenger discussion it responds with a revision, an answer, a
  * rebuttal, a focused help request or a return to the author. Every written revision is a new
- * immutable artifact of its cycle; a repeated invocation reuses what it already wrote.
+ * immutable artifact of its cycle; a repeated invocation reuses a completed turn, and completes one
+ * an interruption left half-saved by saving the missing response around the revision it kept.
  */
 
 export type IdeaEditorSettings = {
@@ -294,18 +295,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         outcome === 'written' ? revisionFile(root, plan.submission, plan.cycle) : turnFile,
       );
     }
-    const written = await cycleRevision(root, plan.submission, plan.cycle);
-    if (written !== null) {
-      // A previous edit wrote this cycle's revision before its response was saved.
-      return reported(
-        taskKey,
-        cycle,
-        'written',
-        `revision ${String(written.value.revision)}`,
-        written.path,
-      );
-    }
-
     const input = await readIdeaInput(root, plan.submission);
     const projectGuidance = await projectGuidanceText(root);
     const context = [
@@ -379,18 +368,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         path.join(cycleRoot, editorHelpArtifact.pathFromArtifactsRoot),
       );
     }
-    const written = await cycleRevision(root, plan.submission, plan.cycle);
-    if (written !== null) {
-      // A previous response revised the idea before its turn was saved; the revision stands.
-      return reported(
-        taskKey,
-        cycle,
-        'responded',
-        `revision ${String(written.value.revision)}`,
-        written.path,
-      );
-    }
-
     // The cycle was opened by the discussion the editor answers, which may be the preceding
     // cycle's result: the current cycle's Challenger runs after this response.
     const discussion = await latestChallenger(root, plan.submission, plan.cycle);
@@ -410,6 +387,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const input = await readIdeaInput(root, plan.submission);
     const focused =
       task === 'respond-after-help' ? await focusedText(root, plan.submission, plan.cycle) : [];
+    const guidance = await projectGuidanceText(root);
     const context = [
       ...(task === 'respond-after-help'
         ? [
@@ -432,6 +410,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       `The Challenger result to answer: ` +
         `${discussion.path}\n${JSON.stringify(discussion.report, null, 2)}`,
       ...focused,
+      ...(guidance === null ? [] : [guidance]),
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 

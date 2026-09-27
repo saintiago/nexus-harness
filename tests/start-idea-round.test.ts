@@ -91,6 +91,7 @@ async function area(options: {
       JSON.stringify({
         verdict: 'discuss',
         assessment: 'A concern remains.',
+        obstacle: 'The idea still lacks evidence that it is worth pursuing.',
         concerns: [{ concern: 'Scope', consequence: 'Too broad', resolution: 'Narrow the idea' }],
         suggestions: [],
         refinedIdea: path.join(cycleRoot, 'refined-idea.json'),
@@ -159,6 +160,88 @@ describe('StartIdeaRound', () => {
 
     expect(await started.plan()).toMatchObject({ submission: 2, cycle: 1, route: 'new' });
     expect(await listIdeaSubmissions(started.root)).toEqual([1, 2]);
+  });
+
+  it('opens a fresh submission over a completed workspace a legacy plan retained', async () => {
+    const started = await area({});
+    // The retained state and artifacts of the six-role implementation: its plan and decision use
+    // shapes this implementation replaced, and its submission finished.
+    const submissionRoot = path.join(started.root, 'artifacts', 'submissions', '1');
+    const cycleRoot = path.join(submissionRoot, 'cycles', '2');
+    await mkdir(path.join(started.root, 'state'), { recursive: true });
+    await writeFile(
+      path.join(started.root, ideaRoundPlanFile),
+      JSON.stringify({
+        submission: 1,
+        cycle: 2,
+        route: 'minor',
+        profiles: {
+          'brief-writer': 'nexus-flash',
+          'purpose-council': 'nexus-flash',
+          'evidence-council': 'nexus-flash',
+          'simplicity-council': 'nexus-flash',
+        },
+      }),
+    );
+    await mkdir(cycleRoot, { recursive: true });
+    await writeFile(
+      path.join(submissionRoot, 'input.json'),
+      JSON.stringify({ ...input, issue: { ...input.issue, fields: { summary: 'An older idea' } } }),
+    );
+    const retainedBrief = path.join(cycleRoot, 'brief.json');
+    await writeFile(
+      retainedBrief,
+      JSON.stringify({
+        problem: 'An older problem statement.',
+        value: 'An older value statement.',
+        projectFit: 'An older project fit.',
+        scope: 'An older scope.',
+        changeSummary: 'The legacy brief revision 2.',
+        revision: 2,
+        submission: 1,
+        cycle: 2,
+      }),
+    );
+    const retainedDecision = path.join(submissionRoot, 'decision.json');
+    await writeFile(
+      retainedDecision,
+      JSON.stringify({
+        decision: 'approved',
+        strongestVerdict: 'approve',
+        brief: retainedBrief,
+        revision: 2,
+        feedback: [],
+        comment: 'Approved idea brief (revision 2)',
+        source: { transition: { id: '3', to: 'Draft' }, status: 'Draft', commentId: '11583' },
+      }),
+    );
+
+    await expect(started.action({ route: 'new' })).resolves.toBe('opened');
+
+    expect(await started.plan()).toEqual({ submission: 2, cycle: 1, route: 'new', profiles });
+    expect(await listIdeaSubmissions(started.root)).toEqual([1, 2]);
+    expect(await listIdeaCycles(started.root, 2)).toEqual([1]);
+    // The earlier submission's artifacts stay in place, unread as the current plan.
+    expect(JSON.parse(await readFile(retainedBrief, 'utf8'))).toMatchObject({ revision: 2 });
+    expect(JSON.parse(await readFile(retainedDecision, 'utf8'))).toMatchObject({
+      strongestVerdict: 'approve',
+    });
+    expect(
+      JSON.parse(await readFile(ideaSubmissionInputFile(started.root, 1), 'utf8')),
+    ).toMatchObject({ issue: { fields: { summary: 'An older idea' } } });
+  });
+
+  it('reports a legacy plan for the next route, which cannot continue the conversation', async () => {
+    const started = await area({});
+    await mkdir(path.join(started.root, 'state'), { recursive: true });
+    await writeFile(
+      path.join(started.root, ideaRoundPlanFile),
+      JSON.stringify({ submission: 1, cycle: 3, route: 'major', profiles: {} }),
+    );
+
+    await expect(started.action({ route: 'next' })).rejects.toThrow(
+      /does not match its declared content type/u,
+    );
   });
 
   it('opens the next cycle with every role when the Challenger discussed', async () => {

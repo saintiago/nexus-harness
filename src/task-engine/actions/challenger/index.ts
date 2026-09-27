@@ -23,8 +23,9 @@ import { challengerArtifact, challengerResponseSchema } from './artifacts.js';
  * Challenger decides whether pursuing the current refined idea makes sense for this project. It
  * reviews the exact revised revision and the editor's response to its previous concern, and saves
  * one result bound to both: approve when there is a plausible way forward, or discuss with only
- * the few concerns that change that decision. Suggestions can accompany either result. A repeated
- * invocation for the same revision and response reuses the result it saved.
+ * the few concerns that change that decision and a plain statement of the remaining obstacle for
+ * the idea's author. Suggestions can accompany either result. A repeated invocation for the same
+ * revision and response reuses the result it saved.
  */
 
 export type ChallengerSettings = {
@@ -86,6 +87,9 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       'forward, even with acknowledged uncertainty. Otherwise raise only the few concerns that',
       'change that decision, explaining the consequence and what would resolve each concern;',
       'keep optional suggestions separate from concerns, since they do not block approval.',
+      'Also state the remaining obstacle plainly for the idea\u2019s author: what stopped approval',
+      'and why it matters, readable without your concerns and free of internal paths, code',
+      'references and instructions meant for the editor. Report null when nothing remains.',
       'Consider the editor\u2019s answers and rebuttals and explicitly withdraw concerns they',
       'resolve. The current architecture is not immutable, and a preferable alternative alone is',
       'not a veto. Do not demand detailed design or substitute a different idea.',
@@ -119,6 +123,12 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       throw new Error(
         'The Challenger chose "discuss" without naming a concern, its consequence and what ' +
           'would resolve it.',
+      );
+    }
+    if (response.verdict === 'discuss' && response.obstacle === null) {
+      throw new Error(
+        'The Challenger chose "discuss" without stating the remaining obstacle plainly for the ' +
+          'idea\u2019s author.',
       );
     }
 

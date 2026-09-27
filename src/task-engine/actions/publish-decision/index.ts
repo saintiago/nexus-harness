@@ -7,11 +7,7 @@ import type {
 } from '../../../adapters/jira.js';
 import { fault, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import {
-  challengerArtifact,
-  type ChallengerConcern,
-  type ChallengerReport,
-} from '../challenger/artifacts.js';
+import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
 import {
   editorResponseArtifact,
   framingArtifact,
@@ -53,6 +49,8 @@ import {
  * an essential author decision or exhausted attempts — and move the item to its configured
  * waiting-for-feedback state. Internal conversation stays in the cycle's artifacts. Publication
  * uses the captured selection snapshot without reading the issue or its conversation again.
+ * Every human-facing comment reports the cycles used and what refinement changed, including a
+ * return that stopped before a refined idea revision existed.
  */
 
 export type PublishDecisionSettings = {
@@ -159,6 +157,20 @@ function approvedComment(idea: RefinedIdea, cycles: number): string {
   ].join('\n');
 }
 
+/**
+ * What the refinement accomplished, as one line for a human-facing comment: the latest revision's
+ * cumulative summary, or what a return that stopped before a revision achieved instead.
+ */
+function refinementSummary(idea: RefinedIdea | null, framing: FramingResponse | null): string {
+  if (idea !== null) {
+    return idea.changeSummary;
+  }
+  return framing === null
+    ? 'Refinement stopped before it produced a refined idea revision.'
+    : 'The editor framed the author\u2019s proposal shown above; refinement stopped before a ' +
+        'refined idea revision was written.';
+}
+
 /** The plain outcome line one return opens with. */
 function returnOutcome(decision: IdeaDecision, cycles: number): string {
   switch (decision) {
@@ -169,8 +181,8 @@ function returnOutcome(decision: IdeaDecision, cycles: number): string {
     case 'attempts-exhausted':
       return (
         `Attempts exhausted after ${String(cycles)} ` +
-        `${cycles === 1 ? 'cycle' : 'cycles'}: the configured cycle limit was reached and the ` +
-        'Challenger concerns remain.'
+        `${cycles === 1 ? 'cycle' : 'cycles'}: the configured cycle limit was reached before the ` +
+        'idea was approved.'
       );
     default:
       return 'Returned for feedback.';
@@ -179,9 +191,9 @@ function returnOutcome(decision: IdeaDecision, cycles: number): string {
 
 /**
  * The human-facing comment for one returned idea: the plain outcome, the latest idea, the cycles
- * used with the cumulative change summary, the reason or the remaining concerns that stopped
- * approval, and the single next step. Exhaustion states the limit explicitly; raw discussion,
- * summaries and tool transcripts stay in the artifacts.
+ * used with the refinement summary, the plain reason that stopped approval, and the single next
+ * step. Exhaustion states the limit explicitly and gives the Challenger's author-facing statement
+ * of the remaining obstacle; raw concerns, discussion and tool transcripts stay in the artifacts.
  */
 function returnedComment(settings: {
   readonly input: IdeaInput;
@@ -190,7 +202,6 @@ function returnedComment(settings: {
   readonly decision: IdeaDecision;
   readonly cycles: number;
   readonly reason: string;
-  readonly concerns: readonly ChallengerConcern[];
   readonly submittedStatus: string;
 }): string {
   return [
@@ -201,20 +212,10 @@ function returnedComment(settings: {
       : refinedIdeaSection(settings.idea, 'Latest refined idea')),
     '',
     `Conversation cycles used: ${String(settings.cycles)}`,
-    ...(settings.idea === null ? [] : [`What refinement changed: ${settings.idea.changeSummary}`]),
+    `What refinement changed: ${refinementSummary(settings.idea, settings.framing)}`,
     '',
     'Why it was returned:',
     settings.reason,
-    ...(settings.concerns.length === 0
-      ? []
-      : [
-          '',
-          'What stopped approval:',
-          ...settings.concerns.flatMap((concern) => [
-            `- ${concern.concern}`,
-            `  Resolution: ${concern.resolution}`,
-          ]),
-        ]),
     '',
     'Please reply with your feedback, your decision or a revised idea in a Jira comment, then ' +
       `move the item back to "${settings.submittedStatus}" to resubmit it.`,
@@ -371,7 +372,6 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     );
 
     let reason: string | null = null;
-    let concerns: readonly ChallengerConcern[] = [];
     if (decision === 'approved') {
       if (revision === null) {
         throw new Error('Approval needs the refined idea revision the Challenger approved.');
@@ -419,8 +419,13 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
             'the exact refined idea revision and editor response it reviewed.',
         );
       }
-      concerns = challenger.concerns;
-      reason = 'The conversation reached its configured cycle limit with concerns unresolved.';
+      if (challenger.obstacle === null) {
+        throw new Error(
+          'An exhausted return needs the Challenger\u2019s plain statement of the remaining ' +
+            'obstacle.',
+        );
+      }
+      reason = challenger.obstacle;
     }
 
     const editorFile =
@@ -452,7 +457,6 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
             decision,
             cycles: plan.cycle,
             reason: reason ?? '',
-            concerns,
             submittedStatus: settings.statuses.submitted,
           });
     const comment = await publishDocument(

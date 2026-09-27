@@ -187,8 +187,23 @@ type IdeaJourney = {
   run(respond: RoleAnswer): Promise<number>;
 };
 
+/** What one journey's captured issue and retained refinement area hold before it runs. */
+type IdeaJourneySetup = {
+  /** The captured issue's summary; the default is the lint-gate idea. */
+  readonly summary?: string;
+  /** The captured issue's description text, as one paragraph. */
+  readonly description?: string;
+  /** The captured conversation's author comments, in order. */
+  readonly conversation?: readonly string[];
+  /**
+   * Retained refinement artifacts, by path relative to the refinement area, given with the
+   * refinement area's absolute path so a retained record may reference its artifacts.
+   */
+  readonly retained?: (refinement: string) => Readonly<Record<string, unknown>>;
+};
+
 /** Assemble one journey: a local remote, temporary configuration and a controlled Jira source. */
-async function ideaJourney(): Promise<IdeaJourney> {
+async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-journey-'));
   temporaryDirectories.push(root);
 
@@ -240,8 +255,11 @@ async function ideaJourney(): Promise<IdeaJourney> {
   };
   let status = 'Idea';
   const fields: Record<string, unknown> = {};
-  const comments: JiraComment[] = [];
-  let nextCommentId = 1;
+  const comments: JiraComment[] = (options.conversation ?? []).map((text, index) => ({
+    id: `c${String(index + 1)}`,
+    body: { text },
+  }));
+  let nextCommentId = comments.length + 1;
   const transitionsByStatus: Record<string, JiraTransition[]> = {
     Idea: [{ id: '11', name: 'Start refinement', to: { id: '2', name: 'Idea Refinement' } }],
     'Idea Refinement': [
@@ -256,11 +274,28 @@ async function ideaJourney(): Promise<IdeaJourney> {
     key: issueKey,
     fields: {
       ...fields,
-      summary: 'Add a lint gate',
-      description: { type: 'doc', version: 1, content: [] },
+      summary: options.summary ?? 'Add a lint gate',
+      description:
+        options.description === undefined
+          ? { type: 'doc', version: 1, content: [] }
+          : {
+              type: 'doc',
+              version: 1,
+              content: [
+                { type: 'paragraph', content: [{ type: 'text', text: options.description }] },
+              ],
+            },
       status: { id: statusIds[status], name: status },
     },
   });
+
+  // Retained artifacts of earlier submissions, saved before the run as the shared workspace's
+  // history: a legacy plan, brief and decision, or artifacts this implementation wrote.
+  for (const [relative, value] of Object.entries(options.retained?.(refinement) ?? {})) {
+    const file = path.join(refinement, relative);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(value));
+  }
   const source = scriptedJira({
     searchIssues: () => ok(status === 'Idea' ? [{ id: issueId, key: issueKey }] : []),
     readIssue: () => ok(issueOf()),
@@ -487,6 +522,10 @@ function challengerAnswer(verdict: 'approve' | 'discuss'): unknown {
       verdict === 'approve'
         ? 'There is a plausible way forward.'
         : 'The value claim still lacks evidence.',
+    obstacle:
+      verdict === 'approve'
+        ? null
+        : 'Nothing yet shows a lint gate is worth the change to the project.',
     concerns:
       verdict === 'approve'
         ? []
@@ -807,9 +846,13 @@ describe('idea refinement journeys', () => {
     expect(published).toContain('Latest refined idea (revision 2)');
     expect(published).toContain('Conversation cycles used: 2');
     expect(published).toContain('What refinement changed: Refined idea revision 2.');
-    expect(published).toContain('What stopped approval:');
-    expect(published).toContain('No evidence links lint gates to shorter reviews.');
-    expect(published).toContain('Resolution: Cite a comparable project or study.');
+    // The author sees a plain statement of the remaining obstacle; the internal concern and its
+    // editor-directed resolution stay in the Challenger artifact.
+    expect(published).toContain(
+      'Nothing yet shows a lint gate is worth the change to the project.',
+    );
+    expect(published).not.toContain('No evidence links lint gates to shorter reviews.');
+    expect(published).not.toContain('Resolution: Cite a comparable project or study.');
     expect(published).not.toContain('The value claim still lacks evidence.');
     expect(
       await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
@@ -845,5 +888,247 @@ describe('idea refinement journeys', () => {
     expect(handoff.framing).toBe(
       path.join(journey.refinement, 'artifacts/submissions/2/cycles/1/editor-framing.json'),
     );
+  });
+
+  /**
+   * A representative idea-stage scenario, end to end: the author resubmits an architectural
+   * proposal the previous submission narrowed, with a human clarification that states the real
+   * intent. The roles below return realistic decided outputs; this journey establishes what the
+   * workflow does with such outputs — one selection path over the retained workspace, the
+   * clarification as the current proposal, the earlier publication as history, and approval
+   * publishing the proposal with an optional suggestion that did not block it. Whether a real
+   * agent produces those outputs is a role-quality question, established separately by inspecting
+   * actual exchanges (tests/fixtures/idea-refinement), not by a controlled journey.
+   */
+  it('keeps a clarified architectural proposal open and publishes it as proposed', async () => {
+    const earlierInterpretation =
+      'The model stays fixed per profile; the idea only asks for better defaults.';
+    const clarification =
+      'The earlier assessment misread the intent: the point is that the model choice can change.';
+    const journey = await ideaJourney({
+      summary: 'Let the configured model change per profile',
+      description:
+        'An operator should be able to change which model each agent profile runs without editing Nexus code.',
+      conversation: [clarification],
+      // The completed submission the six-role implementation refined before this one.
+      retained: (refinement) => ({
+        'state/current-round.json': {
+          submission: 1,
+          cycle: 2,
+          route: 'minor',
+          profiles: {
+            'brief-writer': 'nexus-flash',
+            'purpose-council': 'nexus-flash',
+            'evidence-council': 'nexus-flash',
+            'simplicity-council': 'nexus-flash',
+          },
+        },
+        'artifacts/submissions/1/input.json': {
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '10518' },
+          issue: { id: '10518', key: 'NEX-1' },
+          conversation: [],
+        },
+        'artifacts/submissions/1/cycles/1/brief.json': {
+          problem: 'Profiles fix one model.',
+          value: 'Better defaults could save configuration time.',
+          projectFit: 'Profiles already name a model.',
+          scope: 'Change the default model constants.',
+          changeSummary: earlierInterpretation,
+          revision: 1,
+          submission: 1,
+          cycle: 1,
+        },
+        'artifacts/submissions/1/decision.json': {
+          decision: 'approved',
+          strongestVerdict: 'approve',
+          brief: path.join(refinement, 'artifacts/submissions/1/cycles/1/brief.json'),
+          revision: 1,
+          feedback: [],
+          comment: `Approved idea brief (revision 1)\n\n${earlierInterpretation}`,
+          source: { transition: { id: '3', to: 'Draft' }, status: 'Draft', commentId: '11583' },
+        },
+      }),
+    });
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        researcher: () => ({
+          contribution:
+            'Other harnesses keep deployment details as data, so changing a model needs no code change.',
+          findings: ['LiteLLM routes many providers from configuration.'],
+          options: [
+            'Read the model from the profile configuration, as LiteLLM reads its routing table.',
+          ],
+          sources: [
+            {
+              title: 'LiteLLM routing',
+              link: 'https://example.com/litellm',
+              accessed: '2026-09-27',
+            },
+          ],
+        }),
+        'project-guide': () => ({
+          contribution:
+            'Profiles currently name the model; that is a current choice, not the project purpose, and the shared vocabulary already treats a profile as configuration.',
+          fit: 'The configuration design already owns profile settings.',
+          steering: ['Keep the profile identity stable while its model changes.'],
+          constraints: ['A changed model must not silently change an execution in flight.'],
+          evidence: ['docs/configuration.md'],
+          provisional: false,
+          uncertainty: [],
+        }),
+        challenger: () => ({
+          verdict: 'approve',
+          assessment:
+            'Changing a fixed choice is plausible here and the configuration boundary already exists.',
+          obstacle: null,
+          concerns: [],
+          suggestions: ['Name the configuration key in Requirements and Design.'],
+        }),
+        'idea-editor': (_turn, request) => {
+          if (editorTaskOf(request.prompt) === 'frame') {
+            return {
+              framing:
+                'The author wants the model for each profile to be changeable configuration rather than a fixed constant.',
+              questions: ['Does an in-flight execution keep its starting model?'],
+              authorDecision: null,
+            };
+          }
+          return {
+            disposition: 'revised',
+            response:
+              'I kept the proposal as the author clarified it and used the contributions for fit.',
+            reason: null,
+            help: null,
+            refinedIdea: {
+              idea: 'Let an operator change the model each agent profile runs, so trying another model needs configuration rather than a code change.',
+              projectFit: 'The configuration design already owns profile settings.',
+              feasibility:
+                'A plausible way forward is to resolve the model from the profile setting, keeping the profile identity and the in-flight execution stable.',
+              openQuestions: ['Does an in-flight execution keep its starting model?'],
+              changeSummary:
+                'Framed the change as configuration, not a new default, and kept the in-flight question open.',
+            },
+          };
+        },
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Draft');
+    // The new submission opens over the retained one; the earlier artifacts stay readable history.
+    expect(await journey.plan()).toEqual({
+      submission: 2,
+      cycle: 1,
+      route: 'new',
+      profiles: {
+        'idea-editor': 'nexus-astra',
+        researcher: 'nexus-astra',
+        'project-guide': 'nexus-astra',
+        challenger: 'nexus-review',
+      },
+    });
+    expect(await journey.exists('artifacts/submissions/1/cycles/1/brief.json')).toBe(true);
+
+    // The author's clarification is the current proposal; the previous publication is history.
+    for (const prompt of journey.prompts) {
+      expect(prompt).toContain(clarification);
+      expect(prompt).toContain('history, not the current proposal');
+      expect(prompt).toContain(
+        path.join(journey.refinement, 'artifacts/submissions/1/cycles/1/brief.json'),
+      );
+      expect(prompt).toContain(
+        path.join(journey.refinement, 'artifacts/submissions/1/decision.json'),
+      );
+    }
+    // The clarification governs: the editor's prompt carries it as the captured input, not the
+    // previous submission's reading of the idea.
+    const editorPrompt = journey.prompts.find(
+      (prompt) => roleOf(prompt) === 'idea-editor' && editorTaskOf(prompt) === 'edit',
+    );
+    expect(editorPrompt).toContain('Current captured idea: NEX-1');
+    expect(editorPrompt).toContain(clarification);
+    // Nothing narrowed the architectural proposal: the shared stage guidance and the current
+    // design choice both reach the editor, which is free to propose changing it.
+    expect(editorPrompt).toContain('may propose changing those choices');
+    expect(editorPrompt).toContain('Profiles currently name the model');
+
+    // Approval publishes the proposal as the author clarified it, with the optional suggestion
+    // left out of the decision: it did not block approval and demands nothing.
+    // The captured author comment and the one publication the approval adds.
+    expect(journey.comments()).toHaveLength(2);
+    const published = commentText(journey.comments().at(-1)?.body);
+    expect(published).toContain('Approved refined idea (revision 1)');
+    expect(published).toContain('Idea: Let an operator change the model each agent profile runs');
+    expect(published).toContain('Conversation cycles used: 1');
+    expect(published).toContain(
+      'What refinement changed: Framed the change as configuration, not a new default',
+    );
+    expect(published).not.toContain(earlierInterpretation);
+    expect(published).not.toContain('Name the configuration key');
+  });
+
+  /**
+   * A representative exploratory scenario: the author does not know yet whether the change is worth
+   * it. The roles return realistic decided outputs; the journey establishes that approval does not
+   * require resolved uncertainty or a benchmark plan, and that the published idea keeps its
+   * uncertainty for the next workflow.
+   */
+  it('approves a plausible exploratory idea that carries uncertainty', async () => {
+    const journey = await ideaJourney({
+      summary: 'Explore caching Jira transitions',
+      description:
+        'Try caching transitions during a run to see whether the repeated reads matter; we do not know yet whether the complexity pays off.',
+    });
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        'idea-editor': (_turn, request) => {
+          if (editorTaskOf(request.prompt) === 'frame') {
+            return {
+              framing:
+                'The author wants to know whether caching transitions is worthwhile, without committing to it.',
+              questions: ['How many transition reads does one run make?'],
+              authorDecision: null,
+            };
+          }
+          return {
+            disposition: 'revised',
+            response: 'I kept the exploration open and recorded the uncertainty.',
+            reason: null,
+            help: null,
+            refinedIdea: {
+              idea: 'Cache the Jira transitions one run reads, so repeated reads cost nothing, if the reads turn out to matter.',
+              projectFit: 'The Jira adapter already reads transitions per candidate selection.',
+              feasibility:
+                'A time-boxed trial inside the adapter would show whether the reads matter, without committing to the cache.',
+              openQuestions: ['How many transition reads does one run make?'],
+              changeSummary: 'Framed the change as a trial and kept the read volume open.',
+            },
+          };
+        },
+        challenger: () => ({
+          verdict: 'approve',
+          assessment:
+            'The trial is cheap and plausible, and the uncertainty is acknowledged rather than hidden.',
+          obstacle: null,
+          concerns: [],
+          suggestions: ['Count the reads during the trial.'],
+        }),
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Draft');
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Approved refined idea (revision 1)');
+    expect(published).toContain('Idea: Cache the Jira transitions one run reads');
+    expect(published).toContain('Feasibility: A time-boxed trial inside the adapter');
+    expect(published).toContain('Open questions:');
+    expect(published).toContain('- How many transition reads does one run make?');
+    // No benchmark, proof or measurement was required to approve it.
+    expect(published.toLowerCase()).not.toContain('benchmark');
+    expect(published.toLowerCase()).not.toContain('before approval');
   });
 });
