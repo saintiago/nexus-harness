@@ -590,6 +590,13 @@ describe('Researcher and Project guide', () => {
 
   it('answers the editor’s focused question and skips a request aimed elsewhere', async () => {
     const area = await refinementArea({ cycle: 2, route: 'next' });
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
     await area.write(2, editorHelpArtifact.pathFromArtifactsRoot, {
       disposition: 'help-requested',
       response: 'I need evidence.',
@@ -614,6 +621,8 @@ describe('Researcher and Project guide', () => {
 
     expect(agent.requests).toHaveLength(1);
     expect(agent.requests[0]?.context).toContain('Which documented constraint matters most?');
+    // The focused contribution still receives the refined idea revision in force directly.
+    expect(agent.requests[0]?.context).toContain('a lint gate would keep reviews on behaviour');
     expect(await area.read(2, projectGuideFollowUpArtifact.pathFromArtifactsRoot)).toEqual({
       ...guidanceFixture,
       role: 'project-guide',

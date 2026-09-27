@@ -91,8 +91,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       'not a veto. Do not demand detailed design or substitute a different idea.',
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
-      `The exact refined idea revision you review: ${revision.path}\n` +
-        JSON.stringify(revision.value, null, 2),
+      `The exact refined idea revision you review is the revision in force above: ${revision.path}`,
       turn === null || turnFile === null
         ? 'The revision stands alone: the editor has not responded to a previous concern.'
         : `The editor\u2019s response you review: ${turnFile}\n${JSON.stringify(turn, null, 2)}`,

@@ -86,13 +86,20 @@ export async function readIdeaInput(root: string, submission: number): Promise<I
 /**
  * True when a submission already reached a decision. The latest submission is checked by default:
  * a decided selection is finished work, so the next run selects again instead of continuing it.
+ * The decision's presence is what matters here, so a record written in an earlier shape still
+ * finishes its submission instead of failing to be read as history.
  */
 export async function submissionDecided(root: string, submission?: number): Promise<boolean> {
   const number = submission ?? (await listIdeaSubmissions(root)).at(-1);
   if (number === undefined) {
     return false;
   }
-  return (await readSubmissionArtifact(root, number, decisionArtifact)) !== null;
+  return (
+    (await readDocumentText(
+      ideaSubmissionArtifactFile(root, number, decisionArtifact),
+      'Artifact',
+    )) !== null
+  );
 }
 
 /** Read one submission-level artifact, or null when the submission did not produce it. */

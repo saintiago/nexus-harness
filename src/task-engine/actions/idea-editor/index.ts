@@ -427,8 +427,8 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           ]),
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
-      `The refined idea revision the Challenger assessed: ${revision.path}\n` +
-        JSON.stringify(revision.value, null, 2),
+      `The refined idea revision the Challenger assessed is the revision in force above: ` +
+        revision.path,
       `The Challenger result to answer: ` +
         `${discussion.path}\n${JSON.stringify(discussion.report, null, 2)}`,
       ...focused,

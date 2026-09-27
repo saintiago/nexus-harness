@@ -16,6 +16,7 @@ import {
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
+  latestRefinedIdea,
   listIdeaCycles,
   listIdeaSubmissions,
 } from './idea-storage.js';
@@ -193,27 +194,33 @@ export async function retainedHistoryText(
 
 /**
  * The current captured idea as invocation context. The captured input is authoritative for what
- * the author now proposes; the worktree is where the connected project is read. The editor's
- * framing of the current cycle is supplied with it once the framing exists.
+ * the author now proposes; the worktree is where the connected project is read. The current
+ * framing or refined idea revision is supplied with it directly, and the retained history keeps
+ * the rest readable by reference.
  */
 export async function capturedIdeaText(
   root: string,
   plan: IdeaRoundPlan,
   input: IdeaInput,
 ): Promise<string> {
+  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
   const framing = await readDocumentText(
-    path.join(
-      ideaCycleDirectory(root, plan.submission, plan.cycle),
-      framingArtifact.pathFromArtifactsRoot,
-    ),
+    path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
     'Artifact',
   );
+  const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',
     'submissions, refined ideas and contributions are history, not the current proposal.',
     JSON.stringify({ issue: input.issue, conversation: input.conversation }, null, 2),
     ...(framing === null ? [] : [`The editor\u2019s framing of this submission:\n${framing}`]),
+    ...(revision === null
+      ? []
+      : [
+          `The refined idea revision in force (${revision.path}, revision ` +
+            `${String(revision.value.revision)}):\n${JSON.stringify(revision.value, null, 2)}`,
+        ]),
     `Captured input artifact: ${ideaSubmissionInputFile(root, plan.submission)}`,
     `Connected project worktree: ${path.join(root, worktreeDirectory)}`,
   ].join('\n');
