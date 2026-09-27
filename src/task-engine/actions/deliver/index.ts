@@ -13,6 +13,7 @@ import { readRequiredRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import {
   applyTransition,
+  issueSummary,
   publishComment,
   readComments,
   readIssue,
@@ -96,18 +97,8 @@ async function readPullRequest(
 
 /** The pull request title: the task key with its source summary when one is readable. */
 function pullRequestTitle(selection: Selection): string {
-  const task = selection.task;
-  const fields =
-    typeof task === 'object' && task !== null
-      ? (task as { readonly fields?: unknown }).fields
-      : undefined;
-  const summary =
-    typeof fields === 'object' && fields !== null
-      ? (fields as { readonly summary?: unknown }).summary
-      : undefined;
-  return typeof summary === 'string' && summary.trim() !== ''
-    ? `${selection.taskKey}: ${summary}`
-    : selection.taskKey;
+  const summary = issueSummary(selection.task);
+  return summary === null ? selection.taskKey : `${selection.taskKey}: ${summary}`;
 }
 
 /**

@@ -24,7 +24,7 @@ import {
 import { readRequiredRecord, writeRecord } from '../records.js';
 import { reviewArtifact, type Finding, type ReviewOutput } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
-import { readComments, readIssue } from '../source.js';
+import { issueSummary, readComments, readIssue } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import {
@@ -308,6 +308,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       context,
       outputSchema: z.toJSONSchema(developmentResponseSchema),
       task: selection.taskKey,
+      summary: issueSummary(issue),
     });
     if (!result.ok) {
       throw new Error(result.fault.message);

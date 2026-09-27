@@ -8,6 +8,7 @@ import type { ArtifactRef, Observer } from '../result.js';
 import { readRecord } from '../task-engine/actions/records.js';
 import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
+import { issueSummary } from '../task-engine/actions/source.js';
 import {
   agentInvocationOf,
   type AgentActivity,
@@ -211,6 +212,8 @@ export function createApplication(settings: ApplicationSettings): Application {
         ? null
         : {
             task: selection.taskKey,
+            // The retained issue carries the Summary the recovery invocation's boundary shows.
+            summary: issueSummary('issue' in selection ? selection.issue : selection.task),
             workspace: selection.workspace,
             // Idea refinement retains the shared issue root its refinement area belongs to.
             ...('issueWorkspace' in selection ? { issueWorkspace: selection.issueWorkspace } : {}),

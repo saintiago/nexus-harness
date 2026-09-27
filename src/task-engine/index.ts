@@ -68,6 +68,8 @@ export type AgentInvocationSettings = {
   readonly task?: string | null;
   /** The idea the invocation refines, when it refines one. */
   readonly idea?: string | null;
+  /** The named task's or idea's source Summary, when the caller read one. */
+  readonly summary?: string | null;
   /** The execution's agent activity directory the invocation's own log lives under. */
   readonly directory: string;
   readonly publish: EventPublisher;
@@ -118,6 +120,9 @@ export function beginAgentInvocation(settings: AgentInvocationSettings): AgentIn
       profile: settings.profile,
       ...(settings.task === undefined || settings.task === null ? {} : { task: settings.task }),
       ...(settings.idea === undefined || settings.idea === null ? {} : { idea: settings.idea }),
+      ...(settings.summary === undefined || settings.summary === null
+        ? {}
+        : { summary: settings.summary }),
     },
   });
   let ended = false;
@@ -195,6 +200,8 @@ export type AgentRoleRequest = {
   readonly task?: string | null;
   /** The idea the invocation refines, when it refines one. */
   readonly idea?: string | null;
+  /** The named task's or idea's source Summary, when the action read one. */
+  readonly summary?: string | null;
 };
 
 /**

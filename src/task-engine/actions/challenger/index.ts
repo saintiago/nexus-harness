@@ -108,7 +108,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       plan,
       role: 'challenger',
       operation: 'Challenger',
-      taskKey: input.taskKey,
+      input,
       context,
       schema: challengerResponseSchema,
       runner: settings.runner,

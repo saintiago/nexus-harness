@@ -36,6 +36,22 @@ export async function readComments(jira: JiraAdapter, issueId: string): Promise<
 }
 
 /**
+ * One issue's Summary field as readable text, or null when the issue carries none. The issue is
+ * accepted as the provider value a caller read or a selection retained.
+ */
+export function issueSummary(issue: unknown): string | null {
+  const fields =
+    typeof issue === 'object' && issue !== null
+      ? (issue as { readonly fields?: unknown }).fields
+      : undefined;
+  const summary =
+    typeof fields === 'object' && fields !== null
+      ? (fields as { readonly summary?: unknown }).summary
+      : undefined;
+  return typeof summary === 'string' && summary.trim() !== '' ? summary : null;
+}
+
+/**
  * Narrow one captured Jira transition value. A captured selection stores provider values as they
  * were read; applying the move later needs the transition's identity and destination.
  */

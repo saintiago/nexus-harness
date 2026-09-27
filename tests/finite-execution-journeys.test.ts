@@ -709,6 +709,22 @@ describe('finite execution journeys', () => {
     expect(journey.jiraCalls).toContain('transition:10001:11');
     expect(journey.jiraCalls).toContain('transition:10001:41');
     expect(journey.presentation.join('')).toContain('NEX-1');
+    // Every agent boundary names the ticket by its key with its Summary, in the operator's line.
+    const boundaries = journey.events.filter((event) => event.type === 'agent-started');
+    expect(
+      boundaries.map((event) => {
+        const data = event.data as {
+          readonly agentName: string;
+          readonly task: string;
+          readonly summary: string;
+        };
+        return { agent: data.agentName, task: data.task, summary: data.summary };
+      }),
+    ).toEqual([
+      { agent: 'developer', task: 'NEX-1', summary: 'Ship the finite journey' },
+      { agent: 'reviewer', task: 'NEX-1', summary: 'Ship the finite journey' },
+    ]);
+    expect(journey.presentation.join('')).toContain('task NEX-1 "Ship the finite journey"');
 
     // Preparation ran the configured command once and its output is preserved.
     expect(
@@ -1022,6 +1038,11 @@ describe('finite execution journeys', () => {
     ]);
     expect(result.outcome).toBe('completed');
     expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    // The recovery invocation's boundary names the retained ticket by key and Summary.
+    expect(
+      journey.events.find((event) => event.source === 'Recovery' && event.type === 'agent-started')
+        ?.data,
+    ).toMatchObject({ task: 'NEX-1', summary: 'Ship the finite journey' });
     // The saved recovery report is published with its reference once it is written.
     expect(journey.events.find((event) => event.type === 'recovered')).toEqual({
       source: 'application',
