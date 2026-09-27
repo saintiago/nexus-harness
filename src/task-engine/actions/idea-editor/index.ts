@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
@@ -38,7 +39,8 @@ import {
  * guide's contributions. After a Challenger discussion it responds with a revision, an answer, a
  * rebuttal, a focused help request or a return to the author. Every written revision is a new
  * immutable artifact of its cycle; a repeated invocation reuses a completed turn, and completes one
- * an interruption left half-saved by saving the missing response around the revision it kept.
+ * an interruption left half-saved by requesting a response specifically for the retained revision.
+ * A retry that changes that revision fails before saving its response.
  */
 
 export type IdeaEditorSettings = {
@@ -158,6 +160,23 @@ async function cycleRevision(
   return read !== null && read.value.submission === submission && read.value.cycle === cycle
     ? read
     : null;
+}
+
+/** Constrain recovery to explaining the immutable revision whose response was not saved. */
+async function recoveryText(root: string, submission: number, cycle: number): Promise<string[]> {
+  const retained = await cycleRevision(root, submission, cycle);
+  if (retained === null) {
+    return [];
+  }
+  return [
+    'Interrupted editor turn recovery: the revision below was saved, but its response was not. ' +
+      'Complete that turn instead of drafting another revision. Return disposition "revised" ' +
+      'and repeat its content exactly in refinedIdea (omit revision, submission and cycle). ' +
+      'Write a response describing this retained revision accurately, including any concern it ' +
+      'leaves unresolved. Do not claim a correction absent from this revision, change its content, ' +
+      'request help or choose another disposition. Further changes require a later cycle.\n' +
+      `${retained.path}\n${JSON.stringify(retained.value, null, 2)}`,
+  ];
 }
 
 /** The contributions the editor's response is built on, as invocation context. */
@@ -313,6 +332,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
       ...(await contributionsText(root, plan.submission, plan.cycle, 'edit')),
       ...(projectGuidance === null ? [] : [projectGuidance]),
+      ...(await recoveryText(root, plan.submission, plan.cycle)),
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
@@ -405,12 +425,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           ]),
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
-      `The refined idea revision the Challenger assessed is the revision in force above: ` +
-        revision.path,
+      `The refined idea revision currently in force: ${revision.path}`,
+      `The refined idea revision the Challenger assessed: ${discussion.report.refinedIdea}`,
       `The Challenger result to answer: ` +
         `${discussion.path}\n${JSON.stringify(discussion.report, null, 2)}`,
       ...focused,
       ...(guidance === null ? [] : [guidance]),
+      ...(await recoveryText(root, plan.submission, plan.cycle)),
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
@@ -447,6 +468,24 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     turn: EditorTurnResponse,
   ): Promise<string> {
     const cycleRoot = ideaCycleDirectory(root, submission, cycle);
+    const existing = await cycleRevision(root, submission, cycle);
+    if (
+      existing !== null &&
+      (turn.disposition !== 'revised' ||
+        turn.refinedIdea === null ||
+        !isDeepStrictEqual(existing.value, {
+          ...turn.refinedIdea,
+          openQuestions: turn.refinedIdea.openQuestions ?? [],
+          revision: existing.value.revision,
+          submission,
+          cycle,
+        }))
+    ) {
+      throw new Error(
+        `The interrupted editor turn must complete the retained revision at "${existing.path}" ` +
+          'without changing it; the retry response was not saved.',
+      );
+    }
     const returns =
       turn.disposition === 'unsuitable' || turn.disposition === 'author-decision-needed';
     const stored: EditorTurn = {
@@ -466,7 +505,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       if (turn.refinedIdea === null) {
         throw new Error('The editor revised the idea without returning the revision.');
       }
-      const existing = await cycleRevision(root, submission, cycle);
       if (existing === null) {
         revision = await nextRevision(root, submission, cycle);
         const { openQuestions, ...parts } = turn.refinedIdea;

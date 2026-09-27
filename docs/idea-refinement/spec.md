@@ -210,6 +210,12 @@ approval cannot authorize publication of changed content. Carry forward useful r
 without relabeling them as new work. Older saved artifacts remain readable as history without being
 rewritten. Workflow restart follows the common execution-state contract.
 
+If an editor turn saved its immutable revision but not its response, recovery asks the editor to
+complete the response specifically for that retained revision. The response must describe what the
+saved revision actually says, including concerns it leaves unresolved. A retry that changes the
+revision or chooses another disposition fails without saving a response; it cannot silently pair
+new commentary with discarded changes. Further revisions belong to later conversation cycles.
+
 StartIdeaRound owns `state/current-round.json`: submission identity, cycle number and selected role
 profiles. On selection it opens the next submission at cycle 1; on discussion it opens the next cycle
 within the configured limit. It reuses the shared round storage functions for history and persistence.

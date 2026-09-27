@@ -530,73 +530,6 @@ describe('idea editor', () => {
     );
   });
 
-  it('completes the turn an interrupted edit left without its response', async () => {
-    const area = await refinementArea();
-    const written = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
-      ...researchFixture,
-      role: 'researcher',
-      question: null,
-    });
-    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
-      ...guidanceFixture,
-      role: 'project-guide',
-      question: null,
-    });
-    const agent = scriptedRuntime([revisedTurn(2)]);
-    const editor = createIdeaEditor({
-      workspace: { root: area.root },
-      runner: runnerOf(agent.runtime),
-      publish: (event) => area.events.push(event),
-    });
-
-    await expect(editor({ task: 'edit' })).resolves.toBe('written');
-
-    // The missing editor turn is completed and the revision the interruption wrote stands.
-    expect(agent.requests).toHaveLength(1);
-    expect(await area.read(1, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
-      disposition: 'revised',
-      response: 'I wrote the smallest lint gate (revision 2).',
-    });
-    expect(await area.read(1, refinedIdeaArtifact.pathFromArtifactsRoot)).toMatchObject({
-      revision: 1,
-    });
-    expect(JSON.parse(await readFile(written, 'utf8'))).toMatchObject({ revision: 1, cycle: 1 });
-
-    // The Challenger assesses the completed exchange, not a revision standing alone.
-    const challengerAgent = scriptedRuntime([
-      {
-        verdict: 'approve',
-        assessment: 'There is a plausible way forward.',
-        obstacle: null,
-        concerns: [],
-        suggestions: [],
-      },
-    ]);
-    const challenger = createChallenger({
-      workspace: { root: area.root },
-      runner: runnerOf(challengerAgent.runtime),
-      publish: (event) => area.events.push(event),
-    });
-
-    await expect(challenger()).resolves.toBe('approve');
-
-    expect(challengerAgent.requests[0]?.context).toContain(
-      'I wrote the smallest lint gate (revision 2).',
-    );
-    expect(challengerAgent.requests[0]?.context).not.toContain('The revision stands alone');
-    expect(await area.read(1, challengerArtifact.pathFromArtifactsRoot)).toMatchObject({
-      verdict: 'approve',
-      editorResponse: path.join(area.cycleRoot(), editorResponseArtifact.pathFromArtifactsRoot),
-    });
-  });
-
   it('gives the editor the connected project guidance when it answers a concern', async () => {
     const area = await refinementArea({
       cycle: 2,
@@ -641,59 +574,186 @@ describe('idea editor', () => {
     expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
   });
 
-  it('completes the response an interrupted revision left missing', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'next' });
-    const first = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
-      verdict: 'discuss',
-      assessment: 'The scope is still too broad.',
-      obstacle: 'The idea still promises more coverage than the evidence supports.',
-      concerns: [
+  it.each(['edit', 'respond', 'respond-after-help'] as const)(
+    'recovers a coherent %s turn after a response write fails',
+    async (task) => {
+      const cycle = task === 'edit' ? 1 : 2;
+      const area = await refinementArea({ cycle, route: cycle === 1 ? 'new' : 'next' });
+      await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+        ...researchFixture,
+        role: 'researcher',
+        question: null,
+      });
+      await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+        ...guidanceFixture,
+        role: 'project-guide',
+        question: null,
+      });
+      let previous: string | null = null;
+      if (cycle === 2) {
+        previous = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+          ...revisedTurn(1).refinedIdea,
+          revision: 1,
+          submission: 1,
+          cycle: 1,
+        });
+        await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+          verdict: 'discuss',
+          assessment: 'The scope may make checks too slow.',
+          obstacle: 'The gate needs a plausible way to keep checks fast.',
+          concerns: [
+            {
+              concern: 'Checking every file may be slow.',
+              consequence: 'Developers may disable it.',
+              resolution: 'Consider limiting checks to changed files.',
+            },
+          ],
+          suggestions: [],
+          refinedIdea: previous,
+          editorResponse: null,
+          revision: 1,
+        });
+      }
+      if (task === 'respond-after-help') {
+        await area.write(cycle, editorHelpArtifact.pathFromArtifactsRoot, {
+          disposition: 'help-requested',
+          response: 'Can full source checks stay fast?',
+          reason: null,
+          help: { researcher: 'Can full source checks stay fast?', projectGuide: null },
+        });
+        await area.write(cycle, researchFollowUpArtifact.pathFromArtifactsRoot, {
+          ...researchFixture,
+          role: 'researcher',
+          question: 'Can full source checks stay fast?',
+        });
+      }
+      const content = {
+        idea: 'Run the lint gate on all source files.',
+        projectFit: 'Keep reviews focused on behaviour.',
+        feasibility: 'Use incremental caching to keep full source checks fast.',
+        openQuestions: null,
+        changeSummary: 'Added caching while retaining full source coverage.',
+      };
+      const original = {
+        ...revisedTurn(cycle),
+        refinedIdea: content,
+        response: 'The gate still checks all source files; caching may address the speed concern.',
+      };
+      const changed = {
+        ...original,
+        refinedIdea: { ...content, idea: 'Run the lint gate on changed source files only.' },
+        response: 'I narrowed the gate to changed source files only.',
+      };
+      const recovered = {
+        ...original,
+        refinedIdea: { ...content, openQuestions: [] },
+        response:
+          'The saved revision retains all source files and proposes caching; speed remains uncertain.',
+      };
+      const invalidDispositions: EditorTurnResponse[] =
+        task === 'edit'
+          ? []
+          : [
+              answeredTurn(),
+              {
+                disposition: 'author-decision-needed',
+                response: 'The author must choose the scope.',
+                reason: 'Which files should be checked?',
+                help: null,
+                refinedIdea: null,
+              },
+              ...(task === 'respond'
+                ? [
+                    {
+                      disposition: 'help-requested' as const,
+                      response: 'More research is needed.',
+                      reason: null,
+                      help: { researcher: 'Which files should be checked?', projectGuide: null },
+                      refinedIdea: null,
+                    },
+                  ]
+                : []),
+            ];
+      const agent = scriptedRuntime([original, changed, ...invalidDispositions, recovered]);
+      const responseFile = path.join(
+        area.cycleRoot(),
+        editorResponseArtifact.pathFromArtifactsRoot,
+      );
+      const revisionFile = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const editor = createIdeaEditor({
+        workspace: { root: area.root },
+        runner: runnerOf({
+          async run(...args) {
+            const result = await agent.runtime.run(...args);
+            // Obstruct the response write only after the action has read its existing outputs.
+            if (agent.requests.length === 1) await mkdir(responseFile, { recursive: true });
+            return result;
+          },
+        }),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(editor({ task })).rejects.toThrow(/could not be written/u);
+      const savedRevision = await readFile(revisionFile, 'utf8');
+      await rm(responseFile, { recursive: true });
+
+      // A materially different retry cannot silently lose its change and save its commentary.
+      for (let attempt = 0; attempt <= invalidDispositions.length; attempt += 1) {
+        await expect(editor({ task })).rejects.toThrow(/must complete the retained revision/u);
+        await expect(readFile(responseFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
+        expect(area.events).toEqual([]);
+      }
+      const recoveryContext = agent.requests[1]?.context ?? '';
+      expect(recoveryContext).toContain('Interrupted editor turn recovery');
+      expect(recoveryContext).toContain('repeat its content exactly');
+      expect(recoveryContext).toContain('Run the lint gate on all source files.');
+      if (previous !== null) {
+        expect(recoveryContext).toContain(
+          `The refined idea revision the Challenger assessed: ${previous}`,
+        );
+        expect(recoveryContext).toContain(
+          `The refined idea revision currently in force: ${revisionFile}`,
+        );
+      }
+
+      const outcome = task === 'edit' ? 'written' : 'responded';
+      await expect(editor({ task })).resolves.toBe(outcome);
+      await expect(editor({ task })).resolves.toBe(outcome);
+      expect(agent.requests).toHaveLength(3 + invalidDispositions.length);
+      expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
+      expect(await area.read(cycle, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
+        disposition: 'revised',
+        response: recovered.response,
+      });
+
+      const challengerAgent = scriptedRuntime([
         {
-          concern: 'The revision promises repository-wide coverage.',
-          consequence: 'The promise exceeds the stated need.',
-          resolution: 'Limit the first revision to changed files.',
+          verdict: 'approve',
+          assessment: 'Caching is a plausible approach, with speed still uncertain.',
+          obstacle: null,
+          concerns: [],
+          suggestions: [],
         },
-      ],
-      suggestions: [],
-      refinedIdea: first,
-      editorResponse: null,
-      revision: 1,
-    });
-    // A previous response revised the idea before its turn was saved.
-    const written = await area.write(2, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(2).refinedIdea,
-      openQuestions: undefined,
-      revision: 2,
-      submission: 1,
-      cycle: 2,
-    });
-    const agent = scriptedRuntime([revisedTurn(3)]);
-    const editor = createIdeaEditor({
-      workspace: { root: area.root },
-      runner: runnerOf(agent.runtime),
-      publish: (event) => area.events.push(event),
-    });
-
-    await expect(editor({ task: 'respond' })).resolves.toBe('responded');
-
-    expect(agent.requests).toHaveLength(1);
-    expect(await area.read(2, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
-      disposition: 'revised',
-      response: 'I wrote the smallest lint gate (revision 3).',
-    });
-    // The revision the interruption wrote stays in force and is never rewritten.
-    expect(await area.read(2, refinedIdeaArtifact.pathFromArtifactsRoot)).toMatchObject({
-      revision: 2,
-    });
-    expect(JSON.parse(await readFile(written, 'utf8'))).toMatchObject({ revision: 2, cycle: 2 });
-  });
+      ]);
+      const challenger = createChallenger({
+        workspace: { root: area.root },
+        runner: runnerOf(challengerAgent.runtime),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(challenger()).resolves.toBe('approve');
+      const context = challengerAgent.requests[0]?.context ?? '';
+      expect(context).toContain(content.idea);
+      expect(context).toContain(recovered.response);
+      expect(context).not.toContain(changed.refinedIdea.idea);
+      expect(context).not.toContain(changed.response);
+      expect(context).not.toContain('The revision stands alone');
+      expect(await area.read(cycle, challengerArtifact.pathFromArtifactsRoot)).toMatchObject({
+        refinedIdea: revisionFile,
+        editorResponse: responseFile,
+        revision: cycle,
+      });
+    },
+  );
 });
 
 describe('Researcher and Project guide', () => {
