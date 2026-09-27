@@ -243,14 +243,12 @@ describe('worker action binding', () => {
 
     expect(Object.keys(actions).sort()).toEqual(
       [
-        'BriefWriter',
-        'EvidenceCouncil',
+        'Challenger',
+        'IdeaEditor',
+        'ProjectGuide',
         'PublishDecision',
-        'PurposeCouncil',
-        'PurposeVerifier',
         'Researcher',
         'SelectIdea',
-        'SimplicityCouncil',
         'StartIdeaRound',
       ].sort(),
     );
@@ -298,23 +296,23 @@ describe('worker action binding', () => {
           releaseBoth();
         }
         await bothStarted;
-        const purpose = request.prompt.includes('Be wise and philosophical');
-        onActivity({ type: 'message', text: purpose ? 'purpose words' : 'research words' });
+        const guidance = request.prompt.includes('Be wise and thoughtful');
+        onActivity({ type: 'message', text: guidance ? 'guidance words' : 'research words' });
         return ok({
           output: JSON.stringify(
-            purpose
+            guidance
               ? {
-                  summary: 'The idea serves the project purpose.',
-                  conflicts: [],
+                  contribution: 'The idea serves the project purpose.',
+                  fit: 'It serves operators.',
                   steering: ['Keep the scope small.'],
-                  sources: ['docs/purpose.md'],
+                  constraints: [],
+                  evidence: ['docs/purpose.md'],
                   provisional: false,
                   uncertainty: [],
                 }
               : {
-                  summary: 'Linters keep reviews focused.',
+                  contribution: 'Linters keep reviews focused.',
                   findings: ['Teams catch style defects early.'],
-                  suggestions: ['Start with one rule set.'],
                   options: ['Adopt the smallest lint configuration.'],
                   sources: [],
                 },
@@ -348,8 +346,11 @@ describe('worker action binding', () => {
     await actions['StartIdeaRound']?.({ route: 'new' });
 
     await expect(
-      Promise.all([actions['PurposeVerifier']?.(), actions['Researcher']?.()]),
-    ).resolves.toEqual(['reported', 'reported']);
+      Promise.all([
+        actions['Researcher']?.({ phase: 'initial' }),
+        actions['ProjectGuide']?.({ phase: 'initial' }),
+      ]),
+    ).resolves.toEqual(['contributed', 'contributed']);
 
     const started = events.filter((event) => event.type === 'agent-started');
     const boundaries = started.map(
@@ -364,7 +365,7 @@ describe('worker action binding', () => {
         },
     );
     expect(boundaries.map((boundary) => boundary.agentName).sort()).toEqual([
-      'purpose-verifier',
+      'project-guide',
       'researcher',
     ]);
     // Each invocation has its own identity and its own log under the execution's agents directory.
@@ -379,15 +380,15 @@ describe('worker action binding', () => {
       );
     }
     // Every activity packet names the invocation of the role that reported it.
-    const purposeId = boundaries.find(
-      (boundary) => boundary.agentName === 'purpose-verifier',
+    const guideId = boundaries.find(
+      (boundary) => boundary.agentName === 'project-guide',
     )?.invocationId;
     const researchId = boundaries.find(
       (boundary) => boundary.agentName === 'researcher',
     )?.invocationId;
     expect(activity).toHaveLength(2);
-    expect(activity.find((packet) => packet.activity.text === 'purpose words')?.invocationId).toBe(
-      purposeId,
+    expect(activity.find((packet) => packet.activity.text === 'guidance words')?.invocationId).toBe(
+      guideId,
     );
     expect(activity.find((packet) => packet.activity.text === 'research words')?.invocationId).toBe(
       researchId,

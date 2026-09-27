@@ -1,40 +1,22 @@
-import { assign, createMachine } from 'xstate';
-import {
-  councilVerdicts,
-  type CouncilReviewer,
-} from '../src/task-engine/actions/review-council/artifacts.js';
+import { createMachine } from 'xstate';
 
 /**
- * The idea refinement workflow. XState owns the two parallel groups — purpose/research and the
- * three independent council reviews — and joins each group before the next operation starts. The
- * routing guards apply the documented verdict precedence, and StartIdeaRound opens every cycle from
- * the route XState supplies and reports the configured council-cycle limit as exhausted.
+ * The idea refinement workflow: a four-role conversation between the Idea editor, the Researcher,
+ * the Project guide and the Challenger. XState owns the parallel group — research and project
+ * guidance — and joins it before the editor writes. It routes the bounded editor/Challenger
+ * exchanges: a revision, answer or rebuttal returns to the Challenger; a focused help request
+ * gathers only the requested contributions without opening a cycle; an approval publishes, and an
+ * unsuitable idea, an essential author decision or an exhausted cycle limit returns to the author.
+ * StartIdeaRound opens the next cycle from the route XState supplies and reports the configured
+ * cycle limit as exhausted, so approval at the limit still succeeds.
  *
  * Bind Nexus operations as promise actors with machine.provide({ actors }) before execution.
  */
-
-/** The council verdicts the machine routes on, held as control state rather than artifacts. */
-type IdeaContext = {
-  readonly verdicts: Partial<Record<CouncilReviewer, string>>;
-};
-
-/** The verdicts recorded so far, in reviewer order. */
-function verdictsOf(context: IdeaContext): string[] {
-  return [context.verdicts.purpose, context.verdicts.evidence, context.verdicts.simplicity].filter(
-    (verdict): verdict is string => typeof verdict === 'string',
-  );
-}
-
-/** True when one council reviewer returned a declared verdict. */
-function isVerdict(output: unknown): boolean {
-  return councilVerdicts.some((verdict) => verdict === output);
-}
 
 export const ideaRefinement = createMachine(
   {
     id: 'idea-refinement',
     initial: 'selectIdea',
-    context: { verdicts: {} as Partial<Record<CouncilReviewer, string>> },
     output: ({ event }) => event.output,
     states: {
       // One selection path for a first submission and a resubmission after human feedback.
@@ -49,194 +31,198 @@ export const ideaRefinement = createMachine(
           ],
         },
       },
-      // The route XState supplies opens the next cycle; a new submission starts cycle 1.
+      // The new route opens the next submission at cycle 1.
       startSubmission: {
         invoke: {
           src: 'StartIdeaRound',
           input: { route: 'new' },
           onDone: [
-            { guard: ({ event }) => event.output === 'opened', target: 'assessAndResearch' },
+            { guard: ({ event }) => event.output === 'opened', target: 'frameIdea' },
             { guard: ({ event }) => event.output === 'exhausted', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
-      // Purpose and research run independently; the writer starts only after both finish.
-      assessAndResearch: {
+      // The editor frames the author's proposal before the contributions gather.
+      frameIdea: {
+        invoke: {
+          src: 'IdeaEditor',
+          input: { task: 'frame' },
+          onDone: [
+            { guard: ({ event }) => event.output === 'framed', target: 'gatherContributions' },
+            {
+              guard: ({ event }) => event.output === 'author-decision-needed',
+              target: 'returnAuthorDecision',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // The Researcher and the Project guide contribute concurrently; the join gates the editor.
+      gatherContributions: {
         type: 'parallel',
         states: {
-          purpose: {
-            initial: 'assess',
-            states: {
-              assess: {
-                invoke: {
-                  src: 'PurposeVerifier',
-                  onDone: [
-                    {
-                      guard: ({ event }) => event.output === 'reported',
-                      target: 'assessed',
-                    },
-                    { actions: 'unexpectedOutcome' },
-                  ],
-                },
-              },
-              assessed: { type: 'final' },
-            },
-          },
           research: {
-            initial: 'research',
+            initial: 'contributing',
             states: {
-              research: {
+              contributing: {
                 invoke: {
                   src: 'Researcher',
+                  input: { phase: 'initial' },
                   onDone: [
                     {
-                      guard: ({ event }) => event.output === 'reported',
-                      target: 'researched',
+                      guard: ({ event }) => event.output === 'contributed',
+                      target: 'done',
                     },
                     { actions: 'unexpectedOutcome' },
                   ],
                 },
               },
-              researched: { type: 'final' },
+              done: { type: 'final' },
+            },
+          },
+          guidance: {
+            initial: 'contributing',
+            states: {
+              contributing: {
+                invoke: {
+                  src: 'ProjectGuide',
+                  input: { phase: 'initial' },
+                  onDone: [
+                    {
+                      guard: ({ event }) => event.output === 'contributed',
+                      target: 'done',
+                    },
+                    { actions: 'unexpectedOutcome' },
+                  ],
+                },
+              },
+              done: { type: 'final' },
             },
           },
         },
-        onDone: 'writeBrief',
+        onDone: 'editIdea',
       },
-      writeBrief: {
+      // The editor writes the refined idea revision from both contributions.
+      editIdea: {
         invoke: {
-          src: 'BriefWriter',
+          src: 'IdeaEditor',
+          input: { task: 'edit' },
           onDone: [
-            { guard: ({ event }) => event.output === 'written', target: 'reviewCouncil' },
+            { guard: ({ event }) => event.output === 'written', target: 'challenge' },
+            { guard: ({ event }) => event.output === 'unsuitable', target: 'returnUnsuitable' },
+            {
+              guard: ({ event }) => event.output === 'author-decision-needed',
+              target: 'returnAuthorDecision',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
-      // The three reviewers run independently; routing waits for all three to save their results.
-      reviewCouncil: {
+      // The Challenger recommends approval or discusses the current revision and response.
+      challenge: {
+        invoke: {
+          src: 'Challenger',
+          onDone: [
+            { guard: ({ event }) => event.output === 'approve', target: 'publishApproved' },
+            { guard: ({ event }) => event.output === 'discuss', target: 'startNextCycle' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // Another cycle opens within the configured limit; the limit returns the idea to its author.
+      startNextCycle: {
+        invoke: {
+          src: 'StartIdeaRound',
+          input: { route: 'next' },
+          onDone: [
+            { guard: ({ event }) => event.output === 'opened', target: 'editorResponse' },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'returnAttemptsExhausted',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // The editor answers the Challenger: revise, answer, rebut, ask for help or return.
+      editorResponse: {
+        invoke: {
+          src: 'IdeaEditor',
+          input: { task: 'respond' },
+          onDone: [
+            { guard: ({ event }) => event.output === 'responded', target: 'challenge' },
+            {
+              guard: ({ event }) => event.output === 'help-requested',
+              target: 'gatherFocusedContributions',
+            },
+            { guard: ({ event }) => event.output === 'unsuitable', target: 'returnUnsuitable' },
+            {
+              guard: ({ event }) => event.output === 'author-decision-needed',
+              target: 'returnAuthorDecision',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // Only the requested contributors answer the focused questions, inside the same cycle.
+      gatherFocusedContributions: {
         type: 'parallel',
         states: {
-          purpose: {
-            initial: 'review',
+          research: {
+            initial: 'contributing',
             states: {
-              review: {
+              contributing: {
                 invoke: {
-                  src: 'PurposeCouncil',
+                  src: 'Researcher',
+                  input: { phase: 'focused' },
                   onDone: [
                     {
-                      guard: ({ event }) => isVerdict(event.output),
-                      target: 'reviewed',
-                      actions: assign({
-                        verdicts: ({ context, event }) => ({
-                          ...context.verdicts,
-                          purpose: String(event.output),
-                        }),
-                      }),
+                      guard: ({ event }) =>
+                        event.output === 'contributed' || event.output === 'not-requested',
+                      target: 'done',
                     },
                     { actions: 'unexpectedOutcome' },
                   ],
                 },
               },
-              reviewed: { type: 'final' },
+              done: { type: 'final' },
             },
           },
-          evidence: {
-            initial: 'review',
+          guidance: {
+            initial: 'contributing',
             states: {
-              review: {
+              contributing: {
                 invoke: {
-                  src: 'EvidenceCouncil',
+                  src: 'ProjectGuide',
+                  input: { phase: 'focused' },
                   onDone: [
                     {
-                      guard: ({ event }) => isVerdict(event.output),
-                      target: 'reviewed',
-                      actions: assign({
-                        verdicts: ({ context, event }) => ({
-                          ...context.verdicts,
-                          evidence: String(event.output),
-                        }),
-                      }),
+                      guard: ({ event }) =>
+                        event.output === 'contributed' || event.output === 'not-requested',
+                      target: 'done',
                     },
                     { actions: 'unexpectedOutcome' },
                   ],
                 },
               },
-              reviewed: { type: 'final' },
-            },
-          },
-          simplicity: {
-            initial: 'review',
-            states: {
-              review: {
-                invoke: {
-                  src: 'SimplicityCouncil',
-                  onDone: [
-                    {
-                      guard: ({ event }) => isVerdict(event.output),
-                      target: 'reviewed',
-                      actions: assign({
-                        verdicts: ({ context, event }) => ({
-                          ...context.verdicts,
-                          simplicity: String(event.output),
-                        }),
-                      }),
-                    },
-                    { actions: 'unexpectedOutcome' },
-                  ],
-                },
-              },
-              reviewed: { type: 'final' },
+              done: { type: 'final' },
             },
           },
         },
-        onDone: 'routeVerdicts',
+        onDone: 'editorResponseAfterHelp',
       },
-      // Precedence: idea_not_working > major_rework > minor_corrections > unanimous approval.
-      routeVerdicts: {
-        always: [
-          {
-            guard: ({ context }) => verdictsOf(context).includes('idea_not_working'),
-            target: 'returnToAuthor',
-          },
-          {
-            guard: ({ context }) =>
-              verdictsOf(context).length === 3 &&
-              verdictsOf(context).every((verdict) => verdict === 'approve'),
-            target: 'publishApproved',
-          },
-          {
-            guard: ({ context }) => verdictsOf(context).includes('major_rework'),
-            target: 'startMajorCycle',
-          },
-          { target: 'startMinorCycle' },
-        ],
-      },
-      // Minor corrections repeat the writer and the council on the existing reports.
-      startMinorCycle: {
+      // With the focused help in hand the editor answers the Challenger; no second help loop.
+      editorResponseAfterHelp: {
         invoke: {
-          src: 'StartIdeaRound',
-          input: { route: 'minor' },
+          src: 'IdeaEditor',
+          input: { task: 'respond-after-help' },
           onDone: [
-            { guard: ({ event }) => event.output === 'opened', target: 'writeBrief' },
+            { guard: ({ event }) => event.output === 'responded', target: 'challenge' },
+            { guard: ({ event }) => event.output === 'unsuitable', target: 'returnUnsuitable' },
             {
-              guard: ({ event }) => event.output === 'exhausted',
-              target: 'returnUnableToConverge',
-            },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      // Major rework repeats purpose, research, the writer and the council.
-      startMajorCycle: {
-        invoke: {
-          src: 'StartIdeaRound',
-          input: { route: 'major' },
-          onDone: [
-            { guard: ({ event }) => event.output === 'opened', target: 'assessAndResearch' },
-            {
-              guard: ({ event }) => event.output === 'exhausted',
-              target: 'returnUnableToConverge',
+              guard: ({ event }) => event.output === 'author-decision-needed',
+              target: 'returnAuthorDecision',
             },
             { actions: 'unexpectedOutcome' },
           ],
@@ -252,10 +238,10 @@ export const ideaRefinement = createMachine(
           ],
         },
       },
-      returnToAuthor: {
+      returnUnsuitable: {
         invoke: {
           src: 'PublishDecision',
-          input: { decision: 'returned-to-author' },
+          input: { decision: 'unsuitable' },
           onDone: [
             {
               guard: ({ event }) => event.output === 'waiting-for-feedback',
@@ -265,10 +251,23 @@ export const ideaRefinement = createMachine(
           ],
         },
       },
-      returnUnableToConverge: {
+      returnAuthorDecision: {
         invoke: {
           src: 'PublishDecision',
-          input: { decision: 'unable-to-converge' },
+          input: { decision: 'author-decision-needed' },
+          onDone: [
+            {
+              guard: ({ event }) => event.output === 'waiting-for-feedback',
+              target: 'waitingForFeedback',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      returnAttemptsExhausted: {
+        invoke: {
+          src: 'PublishDecision',
+          input: { decision: 'attempts-exhausted' },
           onDone: [
             {
               guard: ({ event }) => event.output === 'waiting-for-feedback',

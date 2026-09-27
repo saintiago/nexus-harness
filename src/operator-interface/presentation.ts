@@ -78,14 +78,12 @@ function activityKind(value: string | null): ActivityKind | null {
 export function roleStyle(role: AgentRole | null): Style {
   switch (role) {
     case 'developer':
-    case 'purpose-verifier':
+    case 'idea-editor':
     case 'researcher':
-    case 'brief-writer':
+    case 'project-guide':
       return 'yellow';
     case 'reviewer':
-    case 'purpose-council':
-    case 'evidence-council':
-    case 'simplicity-council':
+    case 'challenger':
       return 'blue';
     case 'recovery':
       return 'default';

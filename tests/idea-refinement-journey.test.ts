@@ -44,19 +44,21 @@ import {
   type EngineEvent,
 } from '../src/task-engine/index.js';
 import type { IdeaRole } from '../src/agent-runtime/index.js';
-import type { RefinedIdeaContent } from '../src/task-engine/actions/brief-writer/artifacts.js';
+import {
+  editorResponseArtifact,
+  framingArtifact,
+  refinedIdeaArtifact,
+  type RefinedIdeaContent,
+} from '../src/task-engine/actions/idea-editor/artifacts.js';
 import {
   ideaCommunicationText,
   ideaDefinitionText,
   ideaStageGuidanceText,
 } from '../src/task-engine/actions/idea-context.js';
-import type {
-  IdeaDecisionRecord,
-  IdeaHandoff,
+import {
+  type IdeaDecisionRecord,
+  type IdeaHandoff,
 } from '../src/task-engine/actions/publish-decision/artifacts.js';
-import type { PurposeReport } from '../src/task-engine/actions/purpose-verifier/artifacts.js';
-import type { ResearchReport } from '../src/task-engine/actions/researcher/artifacts.js';
-import type { CouncilReport } from '../src/task-engine/actions/review-council/artifacts.js';
 import type { IdeaRoundPlan } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedJira } from './support/jira.js';
@@ -142,15 +144,22 @@ function commentText(document: unknown): string {
     .join('\n');
 }
 
-/** The role whose constant instructions the prompt carries. */
+/** The role whose constant instructions the prompt carries, or null for another invocation. */
 function roleOf(prompt: string): IdeaRole | null {
-  if (prompt.includes('Be wise and philosophical')) return 'purpose-verifier';
-  if (prompt.includes('Be idealistic, trusting')) return 'researcher';
-  if (prompt.includes('Write the smallest coherent refined idea')) return 'brief-writer';
-  if (prompt.includes('Be unforgiving about material gaps')) return 'purpose-council';
-  if (prompt.includes('Be unforgiving about unsupported claims')) return 'evidence-council';
-  if (prompt.includes('Be unforgiving about avoidable complexity')) return 'simplicity-council';
+  if (prompt.includes('Be clear, perceptive and lightly witty')) return 'idea-editor';
+  if (prompt.includes('Be idealistic, trusting and receptive')) return 'researcher';
+  if (prompt.includes('Be wise and thoughtful about the project')) return 'project-guide';
+  if (prompt.includes('Be pragmatic, precise and candid')) return 'challenger';
   return null;
+}
+
+/** The editor task the invocation context names. */
+function editorTaskOf(prompt: string): string {
+  if (prompt.includes('Frame the author\u2019s proposed change')) return 'frame';
+  if (prompt.includes('Write the refined idea revision')) return 'edit';
+  if (prompt.includes('Answer the Challenger with the focused help')) return 'respond-after-help';
+  if (prompt.includes('Respond to the Challenger\u2019s concern')) return 'respond';
+  return 'unknown';
 }
 
 /** One scripted role answer: its parsed response value. */
@@ -422,67 +431,78 @@ async function ideaJourney(): Promise<IdeaJourney> {
   };
 }
 
-/** The purpose assessment every journey's purpose verifier returns. */
-const purposeReport: PurposeReport = {
-  summary: 'The idea serves the project purpose of serving operators.',
-  conflicts: [],
+/** The project guidance contribution every journey's Project guide returns. */
+const guidanceAnswer = {
+  contribution: 'The idea serves the project purpose of serving operators.',
+  fit: 'The project already enforces checks in CI.',
   steering: [],
-  sources: ['docs/purpose.md'],
+  constraints: [],
+  evidence: ['docs/purpose.md'],
   provisional: false,
   uncertainty: [],
 };
 
-/** The enrichment report every journey's researcher returns. */
-const researchReport: ResearchReport = {
-  summary: 'Linters are widely used to keep reviews focused.',
+/** The research contribution every journey's Researcher returns. */
+const researchAnswer = {
+  contribution: 'Linters are widely used to keep reviews focused.',
   findings: ['Teams use linters to catch style defects early.'],
-  suggestions: [],
   options: ['Adopt the smallest lint configuration that covers the current repository.'],
   sources: [{ title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' }],
 };
 
-/** The refined idea revision a journey's writer returns for the supplied cycle. */
-function refinedIdeaParts(cycle: number): RefinedIdeaContent {
+/** The framing every journey's editor writes before the contributions. */
+const framingAnswer = {
+  framing: 'The author proposes a lint gate so reviews can stay on behaviour.',
+  questions: ['Is generated code in scope?'],
+  authorDecision: null,
+};
+
+/** The refined idea revision a journey's editor writes. */
+function refinedIdeaParts(revision: number): RefinedIdeaContent {
   return {
     idea: 'Reviewers spend time on style defects; a lint gate keeps reviews on behaviour.',
     projectFit: 'The project already enforces checks in CI.',
-    feasibility: `Enable the smallest lint gate first (revision ${String(cycle)}).`,
-    openQuestions: [`Is generated code in scope? (revision ${String(cycle)})`],
-    changeSummary: `Refined idea revision ${String(cycle)}.`,
+    feasibility: `Enable the smallest lint gate first (revision ${String(revision)}).`,
+    openQuestions: [`Is generated code in scope? (revision ${String(revision)})`],
+    changeSummary: `Refined idea revision ${String(revision)}.`,
   };
 }
 
-/** One council result with the supplied verdict and a reviewer-specific finding. */
-function councilAnswer(reviewer: CouncilReport['reviewer'], verdict: CouncilReport['verdict']) {
+/** One editor answer that writes the supplied revision. */
+function editorRevision(revision: number): unknown {
+  return {
+    disposition: 'revised',
+    response: `I wrote revision ${String(revision)}.`,
+    reason: null,
+    help: null,
+    refinedIdea: refinedIdeaParts(revision),
+  };
+}
+
+/** One Challenger answer with the supplied verdict. */
+function challengerAnswer(verdict: 'approve' | 'discuss'): unknown {
   return {
     verdict,
-    summary: `${reviewer} review of the revision.`,
-    findings:
+    assessment:
+      verdict === 'approve'
+        ? 'There is a plausible way forward.'
+        : 'The value claim still lacks evidence.',
+    concerns:
       verdict === 'approve'
         ? []
         : [
             {
-              criterion: `${reviewer} criterion`,
-              evidence: `${reviewer} evidence`,
-              correction: `${reviewer} correction`,
+              concern: 'No evidence links lint gates to shorter reviews.',
+              consequence: 'The value claim is unsubstantiated.',
+              resolution: 'Cite a comparable project or study.',
             },
           ],
+    suggestions: [],
   };
 }
 
-/** A scripted answer set: all six roles approve unless a journey overrides one. */
+/** A scripted answer set: the four roles approve unless a journey overrides one. */
 function approvingAnswers(overrides: Partial<Record<IdeaRole, RoleAnswer>> = {}): RoleAnswer {
-  const answers: Record<IdeaRole, RoleAnswer> = {
-    'purpose-verifier': () => purposeReport,
-    researcher: () => researchReport,
-    'brief-writer': (_turn, request) => {
-      const cycle = Number(/revision (\d+)/u.exec(request.prompt)?.[1] ?? '1');
-      return refinedIdeaParts(cycle);
-    },
-    'purpose-council': () => councilAnswer('purpose', 'approve'),
-    'evidence-council': () => councilAnswer('evidence', 'approve'),
-    'simplicity-council': () => councilAnswer('simplicity', 'approve'),
-  };
   return (turn, request) => {
     const role = roleOf(request.prompt);
     if (role === null) {
@@ -492,7 +512,31 @@ function approvingAnswers(overrides: Partial<Record<IdeaRole, RoleAnswer>> = {})
     if (override !== undefined) {
       return override(turn, request);
     }
-    return answers[role](turn, request);
+    switch (role) {
+      case 'researcher':
+        return researchAnswer;
+      case 'project-guide':
+        return guidanceAnswer;
+      case 'challenger':
+        return challengerAnswer('approve');
+      case 'idea-editor': {
+        const task = editorTaskOf(request.prompt);
+        if (task === 'frame') {
+          return framingAnswer;
+        }
+        if (task === 'edit') {
+          return editorRevision(1);
+        }
+        // An answer that keeps the current revision resolves a concern without rewriting it.
+        return {
+          disposition: 'answered',
+          response: 'The answer resolves the concern.',
+          reason: null,
+          help: null,
+          refinedIdea: null,
+        };
+      }
+    }
   };
 }
 
@@ -515,12 +559,10 @@ describe('idea refinement journeys', () => {
       cycle: 1,
       route: 'new',
       profiles: {
-        'purpose-verifier': 'nexus-astra',
+        'idea-editor': 'nexus-astra',
         researcher: 'nexus-astra',
-        'brief-writer': 'nexus-astra',
-        'purpose-council': 'nexus-review',
-        'evidence-council': 'nexus-review',
-        'simplicity-council': 'nexus-review',
+        'project-guide': 'nexus-astra',
+        challenger: 'nexus-review',
       },
     });
     const refinedIdea = await journey.artifact<RefinedIdeaContent & { revision: number }>(
@@ -528,25 +570,35 @@ describe('idea refinement journeys', () => {
     );
     expect(refinedIdea.revision).toBe(1);
     expect(await journey.exists('artifacts/submissions/1/input.json')).toBe(true);
-    expect(await journey.exists('artifacts/submissions/1/cycles/1/purpose.json')).toBe(true);
-    expect(await journey.exists('artifacts/submissions/1/cycles/1/research.json')).toBe(true);
+    expect(await journey.exists('artifacts/submissions/1/cycles/1/editor-framing.json')).toBe(true);
+    expect(await journey.exists('artifacts/submissions/1/cycles/1/researcher.json')).toBe(true);
+    expect(await journey.exists('artifacts/submissions/1/cycles/1/project-guide.json')).toBe(true);
 
     // The approved handoff references the retained artifacts a later workflow reads.
     const handoff = await journey.artifact<IdeaHandoff>('artifacts/handoff.json');
     expect(handoff.issueWorkspace).toBe(journey.issueWorkspace);
-    expect(handoff.brief).toBe(
+    expect(handoff.refinedIdea).toBe(
       path.join(journey.refinement, 'artifacts/submissions/1/cycles/1/refined-idea.json'),
     );
+    expect(handoff.editorResponses).toEqual([
+      path.join(
+        journey.refinement,
+        `artifacts/submissions/1/cycles/1/${editorResponseArtifact.pathFromArtifactsRoot}`,
+      ),
+    ]);
+    expect(handoff.contributions).toHaveLength(2);
+    expect(handoff.challengerResults).toEqual([
+      path.join(journey.refinement, 'artifacts/submissions/1/cycles/1/challenger.json'),
+    ]);
     expect(await journey.exists('artifacts/submissions/1/decision.json')).toBe(true);
     expect(
       await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
     ).toMatchObject({
       decision: 'approved',
-      strongestVerdict: 'approve',
       source: { transition: { to: 'Draft' }, status: 'Draft' },
     });
 
-    // The approved refined idea is published for the next workflow; internal feedback stays in
+    // The approved refined idea is published for the next workflow; internal discussion stays in
     // artifacts.
     expect(journey.comments()).toHaveLength(1);
     const published = commentText(journey.comments()[0]?.body);
@@ -558,24 +610,23 @@ describe('idea refinement journeys', () => {
     expect(published).toContain('Feasibility: Enable the smallest lint gate first (revision 1).');
     expect(published).toContain('Open questions:');
     expect(published).toContain('- Is generated code in scope? (revision 1)');
-    expect(published).not.toContain('purpose review of the revision');
+    expect(published).toContain('Conversation cycles used: 1');
+    expect(published).toContain('What refinement changed: Refined idea revision 1.');
+    expect(published).not.toContain('There is a plausible way forward.');
 
     // Every role's activity is attributable to its own invocation, including the two roles that
     // run concurrently: each announcement carries a distinct identity and its own activity log.
     const started = journey.events.filter((event) => event.type === 'agent-started');
-    expect(started).toHaveLength(6);
+    expect(started).toHaveLength(5);
     const identities = started.map(
       (event) => (event.data as { readonly invocationId: string }).invocationId,
     );
-    expect(new Set(identities).size).toBe(6);
+    expect(new Set(identities).size).toBe(5);
     expect(
       started.map((event) => (event.data as { readonly log: { readonly path: string } }).log.path),
     ).toEqual(identities.map((id) => expect.stringContaining(id)));
-    expect(journey.activity).toHaveLength(6);
-    expect(new Set(journey.activity.map((packet) => packet.invocationId)).size).toBe(6);
-    for (const packet of journey.activity) {
-      expect(identities).toContain(packet.invocationId);
-    }
+    expect(journey.activity).toHaveLength(5);
+    expect(new Set(journey.activity.map((packet) => packet.invocationId)).size).toBe(5);
     expect(
       journey.events
         .filter((event) => event.type === 'agent-finished')
@@ -583,14 +634,14 @@ describe('idea refinement journeys', () => {
     ).toEqual(identities);
 
     // Every role ran in the prepared refinement worktree with the captured idea and AGENTS.md.
-    expect(journey.prompts).toHaveLength(6);
-    expect(new Set(journey.prompts.map((prompt) => roleOf(prompt))).size).toBe(6);
+    expect(journey.prompts).toHaveLength(5);
+    expect(new Set(journey.prompts.map((prompt) => roleOf(prompt))).size).toBe(4);
     for (const prompt of journey.prompts) {
       expect(prompt).toContain('Add a lint gate');
       expect(prompt).toContain('Prefer the smallest change that fulfils the purpose.');
       expect(prompt).toContain(path.join(journey.worktree));
-      // The shared definition, the separate stage guidance and the communication rule arrive
-      // exactly once each, ahead of the role's own context and duties.
+      // The shared definition, the stage guidance and the communication rule arrive exactly once
+      // each, ahead of the role's own context and duties.
       expect(prompt.split(ideaDefinitionText)).toHaveLength(2);
       expect(prompt.split(ideaStageGuidanceText)).toHaveLength(2);
       expect(prompt.split(ideaCommunicationText)).toHaveLength(2);
@@ -600,6 +651,169 @@ describe('idea refinement journeys', () => {
     expect((await readFile(path.join(journey.worktree, 'readme.md'), 'utf8')).trim()).toBe(
       'the connected project',
     );
+  });
+
+  it('answers a concern without changing the idea and approves the revision it reviewed', async () => {
+    const journey = await ideaJourney();
+    const nexus = JSON.parse(
+      await readFile(path.join(journey.root, 'installation', 'nexus.config.json'), 'utf8'),
+    ) as { ideaRefinement: { maxCycles: number } };
+    nexus.ideaRefinement.maxCycles = 2;
+    await writeFile(
+      path.join(journey.root, 'installation', 'nexus.config.json'),
+      JSON.stringify(nexus),
+    );
+    let assessments = 0;
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        challenger: () =>
+          assessments++ === 0 ? challengerAnswer('discuss') : challengerAnswer('approve'),
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Draft');
+    const plan = await journey.plan();
+    expect(plan).toMatchObject({ submission: 1, cycle: 2, route: 'next' });
+    // The answer kept the revision: cycle 2 wrote an editor response, not a new revision.
+    expect(await journey.exists('artifacts/submissions/1/cycles/2/refined-idea.json')).toBe(false);
+    const response = await journey.artifact<{ disposition: string }>(
+      `artifacts/submissions/1/cycles/2/${editorResponseArtifact.pathFromArtifactsRoot}`,
+    );
+    expect(response.disposition).toBe('answered');
+    // The Challenger approved the revision cycle 1 wrote, and the publication reports both cycles.
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Approved refined idea (revision 1)');
+    expect(published).toContain('Conversation cycles used: 2');
+    const decision = await journey.artifact<IdeaDecisionRecord>(
+      'artifacts/submissions/1/decision.json',
+    );
+    expect(decision).toMatchObject({
+      decision: 'approved',
+      refinedIdea: path.join(
+        journey.refinement,
+        `artifacts/submissions/1/cycles/1/${refinedIdeaArtifact.pathFromArtifactsRoot}`,
+      ),
+    });
+  });
+
+  it('returns an unsuitable idea with human-facing feedback', async () => {
+    const journey = await ideaJourney();
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        'idea-editor': (_turn, request) => {
+          const task = editorTaskOf(request.prompt);
+          if (task === 'frame') {
+            return framingAnswer;
+          }
+          return {
+            disposition: 'unsuitable',
+            response: 'This does not look worth pursuing.',
+            reason: 'The project already checks style in its editor, so the gate adds little.',
+            help: null,
+            refinedIdea: null,
+          };
+        },
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Waiting for Feedback');
+    expect(journey.comments()).toHaveLength(1);
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Returned for feedback: this idea does not look suitable');
+    expect(published).toContain('Captured idea (no refined idea revision yet)');
+    expect(published).toContain('Why it was returned:');
+    expect(published).toContain('The project already checks style in its editor');
+    expect(published).toContain('Conversation cycles used: 1');
+    expect(published).toContain('to "Idea" to resubmit it');
+    // The editor's internal turn and the contribution reports stay in artifacts.
+    expect(published).not.toContain('This does not look worth pursuing.');
+    expect(published).not.toContain('Linters are widely used');
+    expect(await journey.exists('artifacts/handoff.json')).toBe(false);
+    expect(
+      await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
+    ).toMatchObject({ decision: 'unsuitable', refinedIdea: null });
+  });
+
+  it('asks the author for the essential decision before gathering contributions', async () => {
+    const journey = await ideaJourney();
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        'idea-editor': () => ({
+          framing: 'The author wants faster checks without saying how far they should reach.',
+          questions: [],
+          authorDecision: { question: 'Which repositories must the gate cover at launch?' },
+        }),
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Waiting for Feedback');
+    // The workflow stopped at the framing: no contributor or Challenger invocation ran.
+    expect(journey.prompts).toHaveLength(1);
+    expect(new Set(journey.prompts.map((prompt) => roleOf(prompt)))).toEqual(
+      new Set(['idea-editor']),
+    );
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Author decision needed');
+    expect(published).toContain('Which repositories must the gate cover at launch?');
+    expect(published).toContain('Conversation cycles used: 1');
+    expect(published).toContain('to "Idea" to resubmit it');
+    expect(
+      await journey.artifact<{ source: { status: string } }>(
+        'artifacts/submissions/1/decision.json',
+      ),
+    ).toMatchObject({ source: { status: 'Waiting for Feedback' } });
+  });
+
+  it('bounds the conversation and returns the idea when the cycles are exhausted', async () => {
+    const journey = await ideaJourney();
+    const nexus = JSON.parse(
+      await readFile(path.join(journey.root, 'installation', 'nexus.config.json'), 'utf8'),
+    ) as { ideaRefinement: { maxCycles: number } };
+    nexus.ideaRefinement.maxCycles = 2;
+    await writeFile(
+      path.join(journey.root, 'installation', 'nexus.config.json'),
+      JSON.stringify(nexus),
+    );
+
+    const exitCode = await journey.run(
+      approvingAnswers({
+        challenger: () => challengerAnswer('discuss'),
+        'idea-editor': (_turn, request) => {
+          const task = editorTaskOf(request.prompt);
+          if (task === 'frame') {
+            return framingAnswer;
+          }
+          if (task === 'edit') {
+            return editorRevision(1);
+          }
+          return editorRevision(2);
+        },
+      }),
+    );
+
+    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
+    expect(journey.status()).toBe('Waiting for Feedback');
+    const plan = await journey.plan();
+    expect(plan).toMatchObject({ submission: 1, cycle: 2, route: 'next' });
+    expect(await journey.exists('artifacts/submissions/1/cycles/2/refined-idea.json')).toBe(true);
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Attempts exhausted after 2 cycles');
+    expect(published).toContain('Latest refined idea (revision 2)');
+    expect(published).toContain('Conversation cycles used: 2');
+    expect(published).toContain('What refinement changed: Refined idea revision 2.');
+    expect(published).toContain('What stopped approval:');
+    expect(published).toContain('No evidence links lint gates to shorter reviews.');
+    expect(published).toContain('Resolution: Cite a comparable project or study.');
+    expect(published).not.toContain('The value claim still lacks evidence.');
+    expect(
+      await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
+    ).toMatchObject({ decision: 'attempts-exhausted', revision: 2 });
   });
 
   it('reuses the issue workspace and opens a new submission after the author resubmits', async () => {
@@ -617,6 +831,9 @@ describe('idea refinement journeys', () => {
     expect(plan).toMatchObject({ submission: 2, cycle: 1, route: 'new' });
     expect(await journey.exists('artifacts/submissions/1/cycles/1/refined-idea.json')).toBe(true);
     expect(await journey.exists('artifacts/submissions/2/cycles/1/refined-idea.json')).toBe(true);
+    expect(
+      await journey.exists(`artifacts/submissions/1/${framingArtifact.pathFromArtifactsRoot}`),
+    ).toBe(false);
     // The resubmission is captured once and the new comment is the current proposal.
     expect(
       journey.prompts.every((prompt) => prompt.includes('Please also cover generated files.')),
@@ -625,86 +842,8 @@ describe('idea refinement journeys', () => {
     expect(handoff.capturedInput).toBe(
       path.join(journey.refinement, 'artifacts/submissions/2/input.json'),
     );
-  });
-
-  it('returns an unworkable idea to its author with human-facing feedback', async () => {
-    const journey = await ideaJourney();
-
-    const exitCode = await journey.run(
-      approvingAnswers({
-        'simplicity-council': () => councilAnswer('simplicity', 'idea_not_working'),
-      }),
+    expect(handoff.framing).toBe(
+      path.join(journey.refinement, 'artifacts/submissions/2/cycles/1/editor-framing.json'),
     );
-
-    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
-    expect(journey.status()).toBe('Waiting for Feedback');
-    expect(journey.comments()).toHaveLength(1);
-    const published = commentText(journey.comments()[0]?.body);
-    expect(published).toContain('Returned for feedback: the council did not approve this idea');
-    expect(published).toContain('Latest refined idea (revision 1)');
-    expect(published).toContain('What stopped approval:');
-    expect(published).toContain('- simplicity correction');
-    expect(published).toContain('Council cycles used: 1');
-    expect(published).toContain('What refinement changed: Refined idea revision 1.');
-    expect(published).toContain('to "Idea" to resubmit it');
-    // The reviewer's summary, verdict name and criterion label stay internal.
-    expect(published).not.toContain('simplicity review of the revision');
-    expect(published).not.toContain('idea_not_working');
-    expect(published).not.toContain('simplicity criterion');
-    // The return reports the refusal to approve, not a judgment of the idea's worth.
-    expect(published).not.toContain('worthwhile');
-    // The internal reviewers' feedback stays in artifacts, not on the issue.
-    expect(published).not.toContain('purpose criterion');
-    expect(published).not.toContain('simplicity evidence');
-    expect(await journey.exists('artifacts/handoff.json')).toBe(false);
-    expect(
-      await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
-    ).toMatchObject({ decision: 'returned-to-author', strongestVerdict: 'idea_not_working' });
-  });
-
-  it('bounds internal revision and returns the idea when the cycles are exhausted', async () => {
-    const journey = await ideaJourney();
-    const nexus = JSON.parse(
-      await readFile(path.join(journey.root, 'installation', 'nexus.config.json'), 'utf8'),
-    ) as { ideaRefinement: { maxCouncilCycles: number } };
-    nexus.ideaRefinement.maxCouncilCycles = 2;
-    await writeFile(
-      path.join(journey.root, 'installation', 'nexus.config.json'),
-      JSON.stringify(nexus),
-    );
-
-    const exitCode = await journey.run(
-      approvingAnswers({
-        'evidence-council': () => councilAnswer('evidence', 'minor_corrections'),
-      }),
-    );
-
-    expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
-    expect(journey.status()).toBe('Waiting for Feedback');
-    const plan = await journey.plan();
-    expect(plan).toMatchObject({ submission: 1, cycle: 2, route: 'minor' });
-    // Minor corrections repeat the writer and council, reusing the purpose and research reports.
-    expect(journey.prompts.filter((prompt) => roleOf(prompt) === 'purpose-verifier')).toHaveLength(
-      1,
-    );
-    expect(journey.prompts.filter((prompt) => roleOf(prompt) === 'brief-writer')).toHaveLength(2);
-    const secondWriter = journey.prompts.filter((prompt) => roleOf(prompt) === 'brief-writer')[1];
-    expect(secondWriter).toContain('Address each objection of the preceding council cycle');
-    expect(await journey.exists('artifacts/submissions/1/cycles/1/refined-idea.json')).toBe(true);
-    expect(await journey.exists('artifacts/submissions/1/cycles/2/refined-idea.json')).toBe(true);
-    const published = commentText(journey.comments()[0]?.body);
-    expect(published).toContain(
-      'Attempts exhausted after 2 cycles: the council did not approve this idea.',
-    );
-    expect(published).toContain('Latest refined idea (revision 2)');
-    expect(published).toContain('Council cycles used: 2');
-    expect(published).toContain('What refinement changed: Refined idea revision 2.');
-    expect(published).toContain('- evidence correction');
-    expect(published).not.toContain('evidence criterion');
-    expect(published).not.toContain('minor_corrections');
-    expect(published).not.toContain('evidence evidence');
-    expect(
-      await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
-    ).toMatchObject({ decision: 'unable-to-converge', strongestVerdict: 'minor_corrections' });
   });
 });

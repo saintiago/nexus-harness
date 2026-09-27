@@ -118,15 +118,13 @@ export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime
 }
 
 export {
-  briefWriterRoleInstructions,
+  challengerRoleInstructions,
   developmentRoleInstructions,
-  evidenceCouncilRoleInstructions,
   ideaRoles,
-  purposeCouncilRoleInstructions,
-  purposeVerifierRoleInstructions,
+  ideaEditorRoleInstructions,
+  projectGuideRoleInstructions,
   recoveryRoleInstructions,
   researcherRoleInstructions,
   reviewerRoleInstructions,
-  simplicityCouncilRoleInstructions,
   type IdeaRole,
 } from './roles.js';

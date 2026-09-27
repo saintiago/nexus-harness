@@ -2,17 +2,19 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../../result.js';
 import type { ArtifactContent, ArtifactDeclaration } from './artifacts.js';
+import { challengerArtifact, type ChallengerReport } from './challenger/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText, writeDocument } from './documents.js';
 import { readRequiredRecord, writeRecord } from './records.js';
 import { ensureRoundDirectory, listNumberedHistory } from './round-storage.js';
+import { readRefinedIdeaRevision, type RefinedIdeaRead } from './idea-editor/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
 import { ideaInputDeclaration, type IdeaInput } from './select-idea/artifacts.js';
 import { ideaRoundPlanDeclaration, type IdeaRoundPlan } from './start-idea-round/artifacts.js';
 
 /**
  * The idea refinement artifact layout: one stable refinement area holds numbered submissions, each
- * with numbered council cycles. These helpers resolve that layout and read and write the declared
- * documents within it; they choose no roles, verdicts or routes.
+ * with numbered conversation cycles. These helpers resolve that layout and read and write the
+ * declared documents within it; they choose no roles, judge no discussion and decide no routes.
  */
 
 /** The submissions' directory under a refinement area's artifacts directory. */
@@ -23,7 +25,7 @@ export function ideaSubmissionDirectory(root: string, submission: number): strin
   return path.join(root, ideaSubmissionsDirectory, String(submission));
 }
 
-/** The directory holding one council cycle's declared artifacts. */
+/** The directory holding one conversation cycle's declared artifacts. */
 export function ideaCycleDirectory(root: string, submission: number, cycle: number): string {
   return path.join(ideaSubmissionDirectory(root, submission), 'cycles', String(cycle));
 }
@@ -124,7 +126,7 @@ export async function openIdeaSubmission(root: string, submission: number): Prom
   return directory;
 }
 
-/** Create one council cycle's artifact directory and return its path. */
+/** Create one conversation cycle's artifact directory and return its path. */
 export async function ensureIdeaCycle(
   root: string,
   submission: number,
@@ -182,32 +184,49 @@ export async function writeCycleArtifact<Declaration extends ArtifactDeclaration
   return file;
 }
 
-/** One earlier cycle's value of an artifact, with the cycle and file that produced it. */
-export type IdeaCycleValue<Value> = {
-  readonly cycle: number;
-  readonly value: Value;
-  readonly path: string;
-};
-
 /**
- * The latest cycle at or before the supplied one that produced the declared artifact. A minor
- * correction reuses the current submission's preceding purpose and research reports by reference,
- * so consumers resolve such an artifact through this lookup instead of relabeling it.
+ * The refined idea revision in force at or before the supplied cycle: the latest revision written
+ * for this submission, in the shape the writing implementation stored it. An editor response that
+ * answers or rebuts without changing the idea leaves this revision in force, so a Challenger
+ * assesses the revision it actually reviewed rather than a new one.
  */
-export async function latestCycleArtifact<Declaration extends ArtifactDeclaration>(
+export async function latestRefinedIdea(
   root: string,
   submission: number,
   cycle: number,
-  declaration: Declaration,
-): Promise<IdeaCycleValue<ArtifactContent<Declaration>> | null> {
+): Promise<RefinedIdeaRead | null> {
+  for (let number = cycle; number >= 1; number -= 1) {
+    const read = await readRefinedIdeaRevision(ideaCycleDirectory(root, submission, number));
+    if (read !== null) {
+      return read;
+    }
+  }
+  return null;
+}
+
+/** One Challenger result and the file it was read from. */
+export type ChallengerRead = {
+  readonly path: string;
+  readonly report: ChallengerReport;
+};
+
+/**
+ * The Challenger result that opened the supplied cycle: the latest one at or before that cycle,
+ * which the cycle's editor response answers. The current cycle's Challenger runs after that
+ * response, so a result it produced is never the one an editor turn answers.
+ */
+export async function latestChallenger(
+  root: string,
+  submission: number,
+  cycle: number,
+): Promise<ChallengerRead | null> {
   for (let number = cycle; number >= 1; number -= 1) {
     const cycleRoot = ideaCycleDirectory(root, submission, number);
-    const value = await readCycleArtifact(cycleRoot, declaration);
-    if (value !== null) {
+    const report = await readCycleArtifact(cycleRoot, challengerArtifact);
+    if (report !== null) {
       return {
-        cycle: number,
-        value,
-        path: path.join(cycleRoot, declaration.pathFromArtifactsRoot),
+        path: path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot),
+        report,
       };
     }
   }

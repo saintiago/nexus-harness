@@ -304,12 +304,13 @@ describe('SelectIdea', () => {
     await writeFile(
       path.join(submission, decisionArtifact.pathFromArtifactsRoot),
       JSON.stringify({
-        decision: 'returned-to-author',
-        strongestVerdict: 'idea_not_working',
-        brief: 'brief.json',
+        decision: 'unsuitable',
+        refinedIdea: null,
         revision: 1,
-        feedback: [],
-        comment: null,
+        editor: 'editor-response.json',
+        challenger: null,
+        reason: 'The project already covers this.',
+        comment: 'Returned for feedback.',
         source: {
           transition: { id: '22', to: 'Waiting for Feedback' },
           status: 'Waiting for Feedback',
@@ -338,12 +339,13 @@ describe('SelectIdea', () => {
     await writeFile(
       path.join(previous, decisionArtifact.pathFromArtifactsRoot),
       JSON.stringify({
-        decision: 'returned-to-author',
-        strongestVerdict: 'idea_not_working',
-        brief: 'brief.json',
-        revision: 1,
-        feedback: [],
-        comment: null,
+        decision: 'unsuitable',
+        refinedIdea: null,
+        revision: null,
+        editor: 'editor-response.json',
+        challenger: null,
+        reason: 'The project already covers this.',
+        comment: 'Returned for feedback.',
         source: {
           transition: { id: '22', to: 'Waiting for Feedback' },
           status: 'Waiting for Feedback',

@@ -1,15 +1,13 @@
 import path from 'node:path';
 import {
-  briefWriterRoleInstructions,
+  challengerRoleInstructions,
   developmentRoleInstructions,
-  evidenceCouncilRoleInstructions,
   type IdeaRole,
-  purposeCouncilRoleInstructions,
-  purposeVerifierRoleInstructions,
+  ideaEditorRoleInstructions,
+  projectGuideRoleInstructions,
   recoveryRoleInstructions,
   researcherRoleInstructions,
   reviewerRoleInstructions,
-  simplicityCouncilRoleInstructions,
   type AgentProfile,
   type AgentRuntimeSettings,
 } from '../agent-runtime/index.js';
@@ -42,28 +40,24 @@ const roleInstructions: Record<ProfileRole, readonly string[]> = {
   developer: developmentRoleInstructions,
   reviewer: reviewerRoleInstructions,
   recovery: recoveryRoleInstructions,
-  'purpose-verifier': purposeVerifierRoleInstructions,
+  'idea-editor': ideaEditorRoleInstructions,
   researcher: researcherRoleInstructions,
-  'brief-writer': briefWriterRoleInstructions,
-  'purpose-council': purposeCouncilRoleInstructions,
-  'evidence-council': evidenceCouncilRoleInstructions,
-  'simplicity-council': simplicityCouncilRoleInstructions,
+  'project-guide': projectGuideRoleInstructions,
+  challenger: challengerRoleInstructions,
 };
 
 /** The configured idea refinement profile of each role. */
 const ideaRoleSettings: Record<IdeaRole, keyof NexusConfiguration['ideaRefinement']['profiles']> = {
-  'purpose-verifier': 'purposeVerifier',
+  'idea-editor': 'editor',
   researcher: 'researcher',
-  'brief-writer': 'briefWriter',
-  'purpose-council': 'purposeCouncil',
-  'evidence-council': 'evidenceCouncil',
-  'simplicity-council': 'simplicityCouncil',
+  'project-guide': 'projectGuide',
+  challenger: 'challenger',
 };
 
 /**
  * The profiles the execution policy selects for one role: developer ladder entries identify
  * developer profiles, the reviewer profile identifies a reviewer profile, the recovery profile
- * identifies a recovery profile and the idea refinement settings identify the six idea roles. One
+ * identifies a recovery profile and the idea refinement settings identify the four idea roles. One
  * profile may be selected for more than one role.
  */
 function profilesForRole(
@@ -78,12 +72,10 @@ function profilesForRole(
       return new Set([reviewerProfile]);
     case 'recovery':
       return new Set([recoveryProfile]);
-    case 'purpose-verifier':
+    case 'idea-editor':
     case 'researcher':
-    case 'brief-writer':
-    case 'purpose-council':
-    case 'evidence-council':
-    case 'simplicity-council':
+    case 'project-guide':
+    case 'challenger':
       return new Set([configuration.ideaRefinement.profiles[ideaRoleSettings[role]]]);
   }
 }

@@ -5,18 +5,20 @@ import type { ArtifactDeclaration } from '../artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 
 /**
- * BriefWriter's artifact contract: the immutable refined idea revision one council cycle reviews.
- * A refined idea states, in clear parts, the idea itself, why it belongs in this project, a
- * plausible path given the known constraints and evidence, and the material questions the next
- * workflow must answer. Each cycle writes exactly one revision, so the revision number is the
- * council cycle that produced it; a later cycle writes a new revision at its own path, which
- * invalidates every earlier approval.
+ * IdeaEditor's artifact contract: the editor's framing, the refined idea revisions and the
+ * editor's response to the Challenger. The refined idea states, in clear parts, the idea itself,
+ * why it belongs in this project, a plausible way forward given the known constraints and
+ * evidence, and the material questions the next workflow must answer. Each written revision is an
+ * immutable artifact of its cycle, so a later revision at its own path invalidates every earlier
+ * Challenger approval. The framing states the author's proposal and the few questions that could
+ * develop it; the response answers one Challenger concern with a revision, an answer, a rebuttal,
+ * a focused help request or a return to the author.
  */
 
 /** Only material questions for the next workflow; a refined idea may state none. */
 const openQuestionsSchema = z.array(z.string().trim().min(1));
 
-/** The refined idea's substance: the parts the council decides on and publication presents. */
+/** The refined idea's substance: the parts the Challenger decides on and publication presents. */
 export const refinedIdeaContentSchema = z.object({
   /**
    * The author's idea as a concise statement of the proposed change, why it matters and the
@@ -26,15 +28,14 @@ export const refinedIdeaContentSchema = z.object({
   /** Why the idea belongs in this project. */
   projectFit: z.string().trim().min(1),
   /**
-   * A plausible path given the known constraints and evidence, not a design or implementation
-   * plan.
+   * A plausible way forward given the known constraints and evidence, not a design or
+   * implementation plan.
    */
   feasibility: z.string().trim().min(1),
   openQuestions: openQuestionsSchema.optional(),
   /**
    * The cumulative account of what refinement changed across the submission's cycles, or the
-   * initial summary for revision 1. Reporting metadata, not one of the idea's parts. The
-   * revision's cycle number is the council cycles used.
+   * initial summary for the first revision. Reporting metadata, not one of the idea's parts.
    */
   changeSummary: z.string().trim().min(1),
 });
@@ -42,9 +43,9 @@ export const refinedIdeaContentSchema = z.object({
 export type RefinedIdeaContent = z.infer<typeof refinedIdeaContentSchema>;
 
 /**
- * The writer's response shape: the refined idea's parts with the open questions the strict
- * provider schema requires. A revision that states no open questions reports null, which the
- * action turns back into the absent field the content schema and its readers declare.
+ * The editor's refined idea response: the parts with the open questions the strict provider schema
+ * requires. A revision that states no open questions reports null, which the action turns back
+ * into the absent field the content schema and its readers declare.
  */
 export const refinedIdeaResponseSchema = refinedIdeaContentSchema.extend({
   openQuestions: openQuestionsSchema.nullable(),
@@ -57,9 +58,91 @@ export const refinedIdeaSchema = refinedIdeaContentSchema.extend({
   cycle: z.number().int().positive(),
 });
 
+export type RefinedIdeaRevision = z.infer<typeof refinedIdeaSchema>;
+
+/** The refined idea artifact new revisions are written to, under their own cycle directory. */
+export const refinedIdeaArtifact = {
+  pathFromArtifactsRoot: 'refined-idea.json',
+  schema: refinedIdeaSchema,
+} satisfies ArtifactDeclaration<typeof refinedIdeaSchema>;
+
+/**
+ * The framing response: the author's proposal framed for the conversation, the few questions that
+ * could develop it, and the essential author decision that stops the workflow when one is missing.
+ */
+export const framingResponseSchema = z.object({
+  framing: z.string().trim().min(1),
+  questions: z.array(z.string().trim().min(1)),
+  authorDecision: z.object({ question: z.string().trim().min(1) }).nullable(),
+});
+
+export type FramingResponse = z.infer<typeof framingResponseSchema>;
+
+export const framingArtifact = {
+  pathFromArtifactsRoot: 'editor-framing.json',
+  schema: framingResponseSchema,
+} satisfies ArtifactDeclaration<typeof framingResponseSchema>;
+
+/** What the editor did with the Challenger's concern. */
+export const editorDispositions = [
+  'revised',
+  'answered',
+  'rebutted',
+  'help-requested',
+  'unsuitable',
+  'author-decision-needed',
+] as const;
+
+export type EditorDisposition = (typeof editorDispositions)[number];
+
+/** The focused questions the editor asks of each contributor, or null when it asks none. */
+export const editorHelpSchema = z.object({
+  researcher: z.string().trim().min(1).nullable(),
+  projectGuide: z.string().trim().min(1).nullable(),
+});
+
+export type EditorHelp = z.infer<typeof editorHelpSchema>;
+
+/**
+ * The editor's turn as it is stored: its disposition, the short plain turn for the next role, the
+ * author-facing reason a return needs and the focused help it requests. A revised refined idea is
+ * written to its own immutable revision artifact, never duplicated here.
+ */
+export const editorTurnSchema = z.object({
+  disposition: z.enum(editorDispositions),
+  response: z.string().trim().min(1),
+  reason: z.string().trim().min(1).nullable(),
+  help: editorHelpSchema.nullable(),
+});
+
+export type EditorTurn = z.infer<typeof editorTurnSchema>;
+
+/** The editor's response for the cycle: a revision, an answer, a rebuttal or a return. */
+export const editorResponseArtifact = {
+  pathFromArtifactsRoot: 'editor-response.json',
+  schema: editorTurnSchema,
+} satisfies ArtifactDeclaration<typeof editorTurnSchema>;
+
+/** The editor's focused help request for the cycle, answered by the named contributors. */
+export const editorHelpArtifact = {
+  pathFromArtifactsRoot: 'editor-help-request.json',
+  schema: editorTurnSchema,
+} satisfies ArtifactDeclaration<typeof editorTurnSchema>;
+
+/**
+ * The editor's response to the Challenger's current concern as the provider returns it: the stored
+ * turn plus the refined idea it revises, when it revises one.
+ */
+export const editorTurnResponseSchema = editorTurnSchema.extend({
+  refinedIdea: refinedIdeaResponseSchema.nullable(),
+});
+
+export type EditorTurnResponse = z.infer<typeof editorTurnResponseSchema>;
+
 /**
  * One refined idea revision as consumers read it: the parts it states and the reporting metadata.
- * A revision retained from an earlier shape may lack the parts that were not separate then.
+ * A revision retained from an earlier implementation may lack the parts that were not separate
+ * then, so a missing project fit or feasibility is read as absent.
  */
 export type RefinedIdea = {
   readonly idea: string;
@@ -78,15 +161,9 @@ export type RefinedIdeaRead = {
   readonly value: RefinedIdea;
 };
 
-/** The refined idea artifact new revisions are written to. */
-export const refinedIdeaArtifact = {
-  pathFromArtifactsRoot: 'refined-idea.json',
-  schema: refinedIdeaSchema,
-} satisfies ArtifactDeclaration<typeof refinedIdeaSchema>;
-
 /**
- * The artifact path the writer used before the refined idea replaced the brief. Reading accepts
- * it; nothing writes it any more.
+ * The artifact path earlier implementations wrote the refined idea to before it replaced their
+ * brief. Reading accepts it; nothing writes it any more.
  */
 export const retainedBriefArtifactPath = 'brief.json';
 
@@ -121,8 +198,8 @@ const legacyBriefSchema = z.object({
 
 /**
  * Read one stored revision in any shape it was written in: the refined idea, or a brief retained
- * from before it at its own path and in its own shape. Reading is the only compatibility path;
- * retained artifacts and interrupted state stay untouched.
+ * from an earlier implementation at its own path and in its own shape. Reading is the only
+ * compatibility path; retained artifacts and interrupted state stay untouched.
  */
 export async function readRefinedIdeaRevision(cycleRoot: string): Promise<RefinedIdeaRead | null> {
   const file = path.join(cycleRoot, refinedIdeaArtifact.pathFromArtifactsRoot);

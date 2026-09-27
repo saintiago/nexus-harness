@@ -20,10 +20,10 @@ const actionDirectories = [
   'complete-task',
   'select-idea',
   'start-idea-round',
-  'purpose-verifier',
+  'idea-editor',
   'researcher',
-  'brief-writer',
-  'review-council',
+  'project-guide',
+  'challenger',
   'publish-decision',
 ];
 

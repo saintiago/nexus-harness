@@ -21,16 +21,16 @@ import {
   type BoundAction,
   type EventPublisher,
 } from '../task-engine/index.js';
-import { createBriefWriter } from '../task-engine/actions/brief-writer/index.js';
+import { createChallenger } from '../task-engine/actions/challenger/index.js';
 import { createCompleteTask } from '../task-engine/actions/complete-task/index.js';
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
 import { createDevelop } from '../task-engine/actions/develop/index.js';
+import { createIdeaEditor } from '../task-engine/actions/idea-editor/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
+import { createProjectGuide } from '../task-engine/actions/project-guide/index.js';
 import { createPublishDecision } from '../task-engine/actions/publish-decision/index.js';
-import { createPurposeVerifier } from '../task-engine/actions/purpose-verifier/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { createResearcher } from '../task-engine/actions/researcher/index.js';
-import { createCouncilReviewer } from '../task-engine/actions/review-council/index.js';
 import { createReview } from '../task-engine/actions/review/index.js';
 import { createSelectIdea } from '../task-engine/actions/select-idea/index.js';
 import {
@@ -259,21 +259,12 @@ function finiteDeliveryActions(
 
 /** The configured profile of each idea refinement role. */
 function ideaProfiles(nexus: NexusConfiguration): Readonly<Record<IdeaRole, string>> {
-  const {
-    purposeVerifier,
-    researcher,
-    briefWriter,
-    purposeCouncil,
-    evidenceCouncil,
-    simplicityCouncil,
-  } = nexus.ideaRefinement.profiles;
+  const { editor, researcher, projectGuide, challenger } = nexus.ideaRefinement.profiles;
   return {
-    'purpose-verifier': purposeVerifier,
+    'idea-editor': editor,
     researcher,
-    'brief-writer': briefWriter,
-    'purpose-council': purposeCouncil,
-    'evidence-council': evidenceCouncil,
-    'simplicity-council': simplicityCouncil,
+    'project-guide': projectGuide,
+    challenger,
   };
 }
 
@@ -303,6 +294,12 @@ function ideaRefinementActions(
   const forSelection = (create: (workspace: { readonly root: string }) => BoundAction) =>
     withSelection((selection) => create(selection.workspace));
 
+  // One runner per idea role: the profile selected for the role carries its constant instructions.
+  const editorRunner = agentRunnerFor(settings, publish, publishActivity, 'idea-editor');
+  const researcherRunner = agentRunnerFor(settings, publish, publishActivity, 'researcher');
+  const projectGuideRunner = agentRunnerFor(settings, publish, publishActivity, 'project-guide');
+  const challengerRunner = agentRunnerFor(settings, publish, publishActivity, 'challenger');
+
   return {
     SelectIdea: createSelectIdea({
       selectionFile,
@@ -329,54 +326,21 @@ function ideaRefinementActions(
           conversation: selection.conversation,
         },
         profiles: ideaProfiles(nexus),
-        maxCycles: nexus.ideaRefinement.maxCouncilCycles,
+        maxCycles: nexus.ideaRefinement.maxCycles,
         publish,
       }),
     ),
-    PurposeVerifier: forSelection((workspace) =>
-      createPurposeVerifier({
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'purpose-verifier'),
-        publish,
-      }),
+    IdeaEditor: forSelection((workspace) =>
+      createIdeaEditor({ workspace, runner: editorRunner, publish }),
     ),
     Researcher: forSelection((workspace) =>
-      createResearcher({
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'researcher'),
-        publish,
-      }),
+      createResearcher({ workspace, runner: researcherRunner, publish }),
     ),
-    BriefWriter: forSelection((workspace) =>
-      createBriefWriter({
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'brief-writer'),
-        publish,
-      }),
+    ProjectGuide: forSelection((workspace) =>
+      createProjectGuide({ workspace, runner: projectGuideRunner, publish }),
     ),
-    PurposeCouncil: forSelection((workspace) =>
-      createCouncilReviewer({
-        reviewer: 'purpose',
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'purpose-council'),
-        publish,
-      }),
-    ),
-    EvidenceCouncil: forSelection((workspace) =>
-      createCouncilReviewer({
-        reviewer: 'evidence',
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'evidence-council'),
-        publish,
-      }),
-    ),
-    SimplicityCouncil: forSelection((workspace) =>
-      createCouncilReviewer({
-        reviewer: 'simplicity',
-        workspace,
-        runner: agentRunnerFor(settings, publish, publishActivity, 'simplicity-council'),
-        publish,
-      }),
+    Challenger: forSelection((workspace) =>
+      createChallenger({ workspace, runner: challengerRunner, publish }),
     ),
     PublishDecision: withSelection((selection) =>
       createPublishDecision({
