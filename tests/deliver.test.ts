@@ -1143,6 +1143,203 @@ describe('Deliver', () => {
     );
   });
 
+  it.each(['recorded', 'discovered'] as const)(
+    'does not read a %s target after the final timer overruns the deadline',
+    async (target) => {
+      const { workspaceRoot, selectionFile } = await workspace();
+      await writeVerifiedRound(workspaceRoot);
+      if (target === 'recorded') {
+        await createArtifactHelpers({ root: workspaceRoot }).writeOutputArtifact(deliveryArtifact, {
+          repository,
+          pullRequestNumber: 7,
+          pullRequestUrl,
+          headRevision,
+        });
+      }
+      const { git, calls: gitCalls } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      let reads = 0;
+      const hub = scriptedGitHub({
+        findPullRequests: () => ok([{ number: 7, url: pullRequestUrl }]),
+        readPullRequest: () => {
+          if (++reads > 1) return fault('A post-deadline read must not start.');
+          clock += 18_000;
+          return ok(pullRequestObservation(otherRevision));
+        },
+      });
+      wait = async (milliseconds) => {
+        waitCalls.push(milliseconds);
+        clock += milliseconds + 100;
+      };
+      const jira = scriptedJira({});
+      const deliver = deliverAction({ selectionFile, git, github: hub.github, jira: jira.jira });
+
+      await expect(deliver()).resolves.toBe('failed');
+      const reason = (events.at(-1)?.data as { reason: string }).reason;
+      expect(reason).toContain(otherRevision);
+      expect(reason).toContain(headRevision);
+      expect(reason).toContain('confirmation deadline of 20s expired');
+      expect(hub.calls).toEqual(
+        target === 'recorded' ? ['read:7'] : [`find:${taskBranch}->main`, 'read:7'],
+      );
+      expect(waitCalls).toEqual([2_000]);
+      expect(gitCalls.filter((call) => call.startsWith('push:'))).toHaveLength(1);
+      expect(jira.calls).toEqual([]);
+    },
+  );
+
+  it.each([
+    { operation: 'create', revision: otherRevision },
+    { operation: 'update', revision: otherRevision },
+    { operation: 'create', revision: headRevision },
+  ])(
+    'rejects a late $operation response reporting $revision without further reads',
+    async ({ operation, revision }) => {
+      const { workspaceRoot, selectionFile } = await workspace();
+      await writeVerifiedRound(workspaceRoot);
+      const { git, calls: gitCalls } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      const publication = () => {
+        clock += 21_000;
+        return ok({ number: 7, url: pullRequestUrl, headRevision: revision });
+      };
+      let reads = 0;
+      const hub = scriptedGitHub({
+        findPullRequests: () =>
+          ok(operation === 'create' ? [] : [{ number: 7, url: pullRequestUrl }]),
+        readPullRequest: () => {
+          if (operation === 'create' || ++reads > 1)
+            return fault('A post-deadline read must not start.');
+          return ok(pullRequestObservation(headRevision));
+        },
+        createPullRequest: publication,
+        updatePullRequest: publication,
+        requestAutoMerge: () => ok(undefined),
+      });
+      const jira = publishingJira();
+      const deliver = deliverAction({ selectionFile, git, github: hub.github, jira: jira.jira });
+
+      await expect(deliver()).resolves.toBe('failed');
+      const reason = (events.at(-1)?.data as { reason: string }).reason;
+      expect(reason).toContain(revision);
+      expect(reason).toContain(headRevision);
+      expect(reason).toContain('confirmation deadline of 20s expired');
+      expect(hub.calls).toEqual([
+        `find:${taskBranch}->main`,
+        ...(operation === 'create' ? [`create:${taskBranch}->main`] : ['read:7', 'update:7']),
+      ]);
+      expect(waitCalls).toEqual([]);
+      expect(gitCalls.filter((call) => call.startsWith('push:'))).toHaveLength(1);
+      expect(jira.calls).toEqual([]);
+      await expect(
+        stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json')),
+      ).rejects.toThrow(/ENOENT/);
+    },
+  );
+
+  it.each(['creation', 're-read'] as const)(
+    'accepts a %s confirmation arriving exactly at the deadline',
+    async (confirmation) => {
+      const { workspaceRoot, selectionFile } = await workspace();
+      await writeVerifiedRound(workspaceRoot);
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      let reads = 0;
+      const hub = scriptedGitHub({
+        findPullRequests: () =>
+          ok(confirmation === 'creation' ? [] : [{ number: 7, url: pullRequestUrl }]),
+        createPullRequest: () => {
+          clock += 20_000;
+          return ok({ number: 7, url: pullRequestUrl, headRevision });
+        },
+        readPullRequest: () => {
+          if (++reads === 1) {
+            clock += 18_000;
+            return ok(pullRequestObservation(otherRevision));
+          }
+          return ok(pullRequestObservation(headRevision));
+        },
+        updatePullRequest: () => ok({ number: 7, url: pullRequestUrl, headRevision }),
+        requestAutoMerge: () => ok(undefined),
+      });
+      const deliver = deliverAction({
+        selectionFile,
+        git,
+        github: hub.github,
+        jira: publishingJira().jira,
+      });
+
+      await expect(deliver()).resolves.toBe('published');
+      expect(hub.calls).toEqual([
+        `find:${taskBranch}->main`,
+        ...(confirmation === 'creation'
+          ? [`create:${taskBranch}->main`]
+          : ['read:7', 'read:7', 'update:7']),
+        `autoMerge:7@${headRevision}`,
+      ]);
+      expect(waitCalls).toEqual(confirmation === 'creation' ? [] : [2_000]);
+      expect(await readRoundArtifact(workspaceRoot, 1, 'delivery.json')).toEqual({
+        repository,
+        pullRequestNumber: 7,
+        pullRequestUrl,
+        headRevision,
+      });
+    },
+  );
+
+  it.each(['search', 'observation'] as const)(
+    'does not start further discovery reads after a slow %s exhausts the deadline',
+    async (slowOperation) => {
+      const { workspaceRoot, selectionFile } = await workspace();
+      await writeVerifiedRound(workspaceRoot);
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      const hub = scriptedGitHub({
+        findPullRequests: () => {
+          if (slowOperation === 'search') clock += 21_000;
+          return ok([
+            { number: 7, url: pullRequestUrl },
+            { number: 8, url: pullRequestUrlOf(8) },
+          ]);
+        },
+        readPullRequest: (_repository, number) => {
+          if (slowOperation === 'search' || number === 8)
+            return fault('A post-deadline read must not start.');
+          clock += 21_000;
+          return ok(pullRequestObservation(otherRevision));
+        },
+      });
+      const deliver = deliverAction({
+        selectionFile,
+        git,
+        github: hub.github,
+        jira: scriptedJira({}).jira,
+      });
+
+      await expect(deliver()).resolves.toBe('failed');
+      const reason = (events.at(-1)?.data as { reason: string }).reason;
+      expect(reason).toContain(headRevision);
+      if (slowOperation === 'observation') expect(reason).toContain(otherRevision);
+      expect(reason).toContain('confirmation deadline of 20s expired');
+      expect(hub.calls).toEqual([
+        `find:${taskBranch}->main`,
+        ...(slowOperation === 'search' ? [] : ['read:7']),
+      ]);
+      expect(waitCalls).toEqual([]);
+      await expect(
+        stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json')),
+      ).rejects.toThrow(/ENOENT/);
+    },
+  );
+
   it('keeps a provider fault during confirmation as an execution error', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
     await writeVerifiedRound(workspaceRoot);

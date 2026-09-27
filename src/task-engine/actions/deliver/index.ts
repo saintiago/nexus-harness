@@ -239,12 +239,21 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
      * The expiry failure, retaining the expected and last observed revisions. An observation that
      * arrives after the deadline is reported as such even when it carries the verified revision.
      */
-    function confirmationExpired(pullRequestNumber: number, observed: PullRequest): string {
+    function confirmationExpired(
+      pullRequestNumber: number,
+      observedRevision: string | null,
+    ): string {
       const deadline = `the post-push confirmation deadline of ${confirmationDeadlineMs / 1000}s`;
-      return observed.headRevision === headRevision
+      if (observedRevision === null) {
+        return (
+          `Pull request #${pullRequestNumber} has no observed revision to confirm the verified ` +
+          `${headRevision}; ${deadline} expired.`
+        );
+      }
+      return observedRevision === headRevision
         ? `Pull request #${pullRequestNumber} reported the verified revision ${headRevision}, but ` +
             `only after ${deadline} expired.`
-        : `Pull request #${pullRequestNumber} reports revision ${observed.headRevision}, not the ` +
+        : `Pull request #${pullRequestNumber} reports revision ${observedRevision}, not the ` +
             `verified ${headRevision}; ${deadline} expired.`;
     }
 
@@ -298,26 +307,42 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
      */
     async function confirmTarget(
       pullRequestNumber: number,
+      lastObservedRevision: string | null,
       first?: PullRequest,
     ): Promise<Confirmation> {
-      let observed =
-        first ?? (await readPullRequest(settings.github, settings.repository, pullRequestNumber));
+      let observed = first;
       for (;;) {
+        if (observed === undefined) {
+          if (Date.now() > confirmationDeadlineAt) {
+            return {
+              kind: 'failed',
+              reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+            };
+          }
+          observed = await readPullRequest(settings.github, settings.repository, pullRequestNumber);
+        }
+        lastObservedRevision = observed.headRevision;
         const judgment = judgeTarget(observed);
         if (judgment.kind === 'unrelated') {
           return { kind: 'failed', reason: judgment.reason };
         }
         if (Date.now() > confirmationDeadlineAt) {
-          return { kind: 'failed', reason: confirmationExpired(pullRequestNumber, observed) };
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+          };
         }
         if (judgment.kind === 'confirmed') {
           return judgment;
         }
         if (confirmationDeadlineAt - Date.now() < confirmationIntervalMs) {
-          return { kind: 'failed', reason: confirmationExpired(pullRequestNumber, observed) };
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+          };
         }
         await settings.wait(confirmationIntervalMs);
-        observed = await readPullRequest(settings.github, settings.repository, pullRequestNumber);
+        observed = undefined;
       }
     }
 
@@ -328,7 +353,7 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       | { readonly kind: 'failed'; readonly reason: string }
     > {
       if (recordedForHead !== null) {
-        const confirmed = await confirmTarget(recordedForHead.pullRequestNumber);
+        const confirmed = await confirmTarget(recordedForHead.pullRequestNumber, null);
         if (confirmed.kind === 'failed') {
           return { kind: 'failed', reason: confirmed.reason };
         }
@@ -344,9 +369,21 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       }
       const observations: PullRequest[] = [];
       for (const identity of matches.value) {
-        observations.push(
-          await readPullRequest(settings.github, settings.repository, identity.number),
+        if (Date.now() > confirmationDeadlineAt) {
+          return { kind: 'failed', reason: confirmationExpired(identity.number, null) };
+        }
+        const observed = await readPullRequest(
+          settings.github,
+          settings.repository,
+          identity.number,
         );
+        if (Date.now() > confirmationDeadlineAt) {
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(identity.number, observed.headRevision),
+          };
+        }
+        observations.push(observed);
       }
       // The candidate target: the one open match, or the merged pull request that already carries
       // the verified revision. A merged pull request for another revision is history, and a new
@@ -368,7 +405,7 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       if (candidate === null) {
         return { kind: 'create' };
       }
-      const confirmed = await confirmTarget(candidate.number, candidate);
+      const confirmed = await confirmTarget(candidate.number, candidate.headRevision, candidate);
       if (confirmed.kind === 'failed') {
         return { kind: 'failed', reason: confirmed.reason };
       }
@@ -401,10 +438,13 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       if (!created.ok) {
         throw new Error(created.fault.message);
       }
+      if (Date.now() > confirmationDeadlineAt) {
+        return fail(confirmationExpired(created.value.number, created.value.headRevision));
+      }
       const confirmation =
         created.value.headRevision === headRevision
           ? null
-          : await confirmTarget(created.value.number);
+          : await confirmTarget(created.value.number, created.value.headRevision);
       if (confirmation !== null && confirmation.kind === 'failed') {
         return fail(confirmation.reason);
       }
@@ -426,7 +466,7 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
           throw new Error(updated.fault.message);
         }
         if (updated.value.headRevision !== headRevision) {
-          const confirmed = await confirmTarget(pullRequest.number);
+          const confirmed = await confirmTarget(pullRequest.number, updated.value.headRevision);
           if (confirmed.kind === 'failed') {
             return fail(confirmed.reason);
           }
