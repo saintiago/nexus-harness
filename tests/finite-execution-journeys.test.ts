@@ -418,6 +418,7 @@ async function finiteJourney(): Promise<Journey> {
       url: pullRequestUrl,
       state: merged ? 'closed' : 'open',
       merged,
+      headBranch: 'task/NEX-1',
       baseBranch,
       headRevision,
       mergeRevision: merged ? mergeRevision : null,

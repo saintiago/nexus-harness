@@ -34,6 +34,14 @@ import { deliveryArtifact, type DeliveryOutput } from './artifacts.js';
  * reason. Adapter faults and inputs that contradict each other are execution errors.
  */
 
+/**
+ * Deliver's fixed post-push confirmation bounds. GitHub can briefly report the previous pull-request
+ * head after a successful push; Deliver re-reads the same pull request at this interval until the
+ * verified revision or this deadline, without making the wait an operator setting.
+ */
+const confirmationIntervalMs = 2_000;
+const confirmationDeadlineMs = 20_000;
+
 export type DeliverSettings = {
   /** The absolute selection-file path beside the queue's workflow-state file. */
   readonly selectionFile: string;
@@ -49,7 +57,20 @@ export type DeliverSettings = {
   readonly github: GitHubAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
+  /** Wait before the next pull-request confirmation read; supplied so tests control time. */
+  readonly wait: (milliseconds: number) => Promise<void>;
 };
+
+/** How one pull-request observation relates to the revision being delivered. */
+type TargetObservation =
+  | { readonly kind: 'confirmed'; readonly pullRequest: PullRequest }
+  | { readonly kind: 'stale'; readonly pullRequest: PullRequest }
+  | { readonly kind: 'unrelated'; readonly reason: string };
+
+/** The verified pull request, or the reason the post-push confirmation could not establish it. */
+type Confirmation =
+  | { readonly kind: 'confirmed'; readonly pullRequest: PullRequest }
+  | { readonly kind: 'failed'; readonly reason: string };
 
 /** Read the worktree's identity and uncommitted work; a Git failure is an execution error. */
 async function inspectRepository(git: GitAdapter, worktree: string): Promise<RepositoryState> {
@@ -208,6 +229,123 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     const recordedForHead =
       recorded !== null && recorded.headRevision === headRevision ? recorded : null;
 
+    /**
+     * The one deadline for this delivery invocation's post-push confirmation. A stale observation
+     * never resets it, and it bounds the reads as well as the observations they return.
+     */
+    const confirmationDeadlineAt = Date.now() + confirmationDeadlineMs;
+
+    /**
+     * The expiry failure, retaining the expected and last observed revisions. An observation that
+     * arrives after the deadline is reported as such even when it carries the verified revision.
+     */
+    function confirmationExpired(
+      pullRequestNumber: number,
+      observedRevision: string | null,
+    ): string {
+      const deadline = `the post-push confirmation deadline of ${confirmationDeadlineMs / 1000}s`;
+      if (observedRevision === null) {
+        return (
+          `Pull request #${pullRequestNumber} has no observed revision to confirm the verified ` +
+          `${headRevision}; ${deadline} expired.`
+        );
+      }
+      return observedRevision === headRevision
+        ? `Pull request #${pullRequestNumber} reported the verified revision ${headRevision}, but ` +
+            `only after ${deadline} expired.`
+        : `Pull request #${pullRequestNumber} reports revision ${observedRevision}, not the ` +
+            `verified ${headRevision}; ${deadline} expired.`;
+    }
+
+    /**
+     * Judge one pull-request observation against the verified revision, prepared branch and
+     * configured base.
+     */
+    function judgeTarget(found: PullRequest): TargetObservation {
+      if (found.headBranch !== taskBranch) {
+        return {
+          kind: 'unrelated',
+          reason:
+            `Pull request #${found.number} is on branch "${found.headBranch}", not the prepared ` +
+            `"${taskBranch}".`,
+        };
+      }
+      if (found.baseBranch !== settings.baseBranch) {
+        return {
+          kind: 'unrelated',
+          reason:
+            `Pull request #${found.number} targets "${found.baseBranch}", not the configured ` +
+            `"${settings.baseBranch}".`,
+        };
+      }
+      if (found.state === 'closed' && !found.merged) {
+        return {
+          kind: 'unrelated',
+          reason: `Pull request #${found.number} is closed without being merged.`,
+        };
+      }
+      if (found.merged && found.headRevision !== headRevision) {
+        return {
+          kind: 'unrelated',
+          reason:
+            `Merged pull request #${found.number} carries revision ${found.headRevision}, not the ` +
+            `verified ${headRevision}; it is not reused for this change.`,
+        };
+      }
+      if (found.headRevision !== headRevision) {
+        return { kind: 'stale', pullRequest: found };
+      }
+      return { kind: 'confirmed', pullRequest: found };
+    }
+
+    /**
+     * Confirm one pull request for the verified revision. A stale head is re-read from that same
+     * pull request at fixed intervals within this invocation's single post-push deadline; a read
+     * that would land beyond the deadline is not issued, and an observation received after it does
+     * not confirm. Publication writes are not repeated while waiting, and provider faults remain
+     * execution errors.
+     */
+    async function confirmTarget(
+      pullRequestNumber: number,
+      lastObservedRevision: string | null,
+      first?: PullRequest,
+    ): Promise<Confirmation> {
+      let observed = first;
+      for (;;) {
+        if (observed === undefined) {
+          if (Date.now() > confirmationDeadlineAt) {
+            return {
+              kind: 'failed',
+              reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+            };
+          }
+          observed = await readPullRequest(settings.github, settings.repository, pullRequestNumber);
+        }
+        lastObservedRevision = observed.headRevision;
+        const judgment = judgeTarget(observed);
+        if (judgment.kind === 'unrelated') {
+          return { kind: 'failed', reason: judgment.reason };
+        }
+        if (Date.now() > confirmationDeadlineAt) {
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+          };
+        }
+        if (judgment.kind === 'confirmed') {
+          return judgment;
+        }
+        if (confirmationDeadlineAt - Date.now() < confirmationIntervalMs) {
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(pullRequestNumber, lastObservedRevision),
+          };
+        }
+        await settings.wait(confirmationIntervalMs);
+        observed = undefined;
+      }
+    }
+
     /** The publication target: the recorded or branch-matching pull request, or a new one. */
     async function publicationTarget(): Promise<
       | { readonly kind: 'use'; readonly pullRequest: PullRequest }
@@ -215,34 +353,11 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       | { readonly kind: 'failed'; readonly reason: string }
     > {
       if (recordedForHead !== null) {
-        const found = await readPullRequest(
-          settings.github,
-          settings.repository,
-          recordedForHead.pullRequestNumber,
-        );
-        if (found.baseBranch !== settings.baseBranch) {
-          return {
-            kind: 'failed',
-            reason:
-              `Recorded pull request #${found.number} targets "${found.baseBranch}", not the ` +
-              `configured "${settings.baseBranch}".`,
-          };
+        const confirmed = await confirmTarget(recordedForHead.pullRequestNumber, null);
+        if (confirmed.kind === 'failed') {
+          return { kind: 'failed', reason: confirmed.reason };
         }
-        if (found.state === 'closed' && !found.merged) {
-          return {
-            kind: 'failed',
-            reason: `Recorded pull request #${found.number} is closed without being merged.`,
-          };
-        }
-        if (found.headRevision !== headRevision) {
-          return {
-            kind: 'failed',
-            reason:
-              `Pull request #${found.number} carries revision ${found.headRevision}, not the ` +
-              `verified ${headRevision}; it is not reused for this change.`,
-          };
-        }
-        return { kind: 'use', pullRequest: found };
+        return { kind: 'use', pullRequest: confirmed.pullRequest };
       }
 
       const matches = await settings.github.findPullRequests(settings.repository, {
@@ -252,25 +367,29 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       if (!matches.ok) {
         throw new Error(matches.fault.message);
       }
-      const open: PullRequest[] = [];
-      let merged: PullRequest | null = null;
-      let otherHead: string | null = null;
+      const observations: PullRequest[] = [];
       for (const identity of matches.value) {
-        const found = await readPullRequest(settings.github, settings.repository, identity.number);
-        if (found.merged) {
-          if (found.headRevision === headRevision && merged === null) {
-            merged = found;
-          }
-          continue;
+        if (Date.now() > confirmationDeadlineAt) {
+          return { kind: 'failed', reason: confirmationExpired(identity.number, null) };
         }
-        if (found.state === 'open') {
-          if (found.headRevision === headRevision) {
-            open.push(found);
-          } else {
-            otherHead ??= `pull request #${found.number} carries revision ${found.headRevision}`;
-          }
+        const observed = await readPullRequest(
+          settings.github,
+          settings.repository,
+          identity.number,
+        );
+        if (Date.now() > confirmationDeadlineAt) {
+          return {
+            kind: 'failed',
+            reason: confirmationExpired(identity.number, observed.headRevision),
+          };
         }
+        observations.push(observed);
       }
+      // The candidate target: the one open match, or the merged pull request that already carries
+      // the verified revision. A merged pull request for another revision is history, and a new
+      // pull request is created when no candidate remains. The candidate is validated against the
+      // same target constraints as an open match before it is reused.
+      const open = observations.filter((found) => !found.merged && found.state === 'open');
       if (open.length > 1) {
         return {
           kind: 'failed',
@@ -279,17 +398,18 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
             'silently chosen.',
         };
       }
-      const found = open[0] ?? merged;
-      if (found !== null) {
-        return { kind: 'use', pullRequest: found };
+      const candidate =
+        open[0] ??
+        observations.find((found) => found.merged && found.headRevision === headRevision) ??
+        null;
+      if (candidate === null) {
+        return { kind: 'create' };
       }
-      if (otherHead !== null) {
-        return {
-          kind: 'failed',
-          reason: `The matching open ${otherHead}, not the verified ${headRevision}; it is not reused.`,
-        };
+      const confirmed = await confirmTarget(candidate.number, candidate.headRevision, candidate);
+      if (confirmed.kind === 'failed') {
+        return { kind: 'failed', reason: confirmed.reason };
       }
-      return { kind: 'create' };
+      return { kind: 'use', pullRequest: confirmed.pullRequest };
     }
 
     const target = await publicationTarget();
@@ -298,7 +418,11 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     }
     const pullRequest = target.kind === 'use' ? target.pullRequest : null;
 
-    // Create or update the publication, then request native auto-merge where it is not enabled.
+    // Create or update the publication, then request native auto-merge unless the latest
+    // observation of that pull request reports it already enabled or the pull request already
+    // merged. A creation or update that still reports the previous head is confirmed by re-reading
+    // that same pull request within the post-push confirmation deadline, and the confirming
+    // observation is the latest state that decides the auto-merge request.
     const title = pullRequestTitle(selection);
     const body = development.summary;
     let pullRequestNumber: number;
@@ -314,16 +438,24 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       if (!created.ok) {
         throw new Error(created.fault.message);
       }
-      if (created.value.headRevision !== headRevision) {
-        return fail(
-          `The created pull request carries revision ${created.value.headRevision}, not the ` +
-            `verified ${headRevision}.`,
-        );
+      if (Date.now() > confirmationDeadlineAt) {
+        return fail(confirmationExpired(created.value.number, created.value.headRevision));
       }
+      const confirmation =
+        created.value.headRevision === headRevision
+          ? null
+          : await confirmTarget(created.value.number, created.value.headRevision);
+      if (confirmation !== null && confirmation.kind === 'failed') {
+        return fail(confirmation.reason);
+      }
+      const observed = confirmation === null ? null : confirmation.pullRequest;
       pullRequestNumber = created.value.number;
       pullRequestUrl = created.value.url;
-      needsAutoMerge = true;
+      // A fresh pull request starts without auto-merge; a confirmation observation reports the
+      // state the provider held while the creation response still named the previous head.
+      needsAutoMerge = observed === null || (!observed.merged && !observed.autoMergeEnabled);
     } else {
+      let observed = pullRequest;
       if (!pullRequest.merged) {
         const updated = await settings.github.updatePullRequest(
           settings.repository,
@@ -334,15 +466,16 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
           throw new Error(updated.fault.message);
         }
         if (updated.value.headRevision !== headRevision) {
-          return fail(
-            `Pull request #${pullRequest.number} carries revision ${updated.value.headRevision}, ` +
-              `not the verified ${headRevision}.`,
-          );
+          const confirmed = await confirmTarget(pullRequest.number, updated.value.headRevision);
+          if (confirmed.kind === 'failed') {
+            return fail(confirmed.reason);
+          }
+          observed = confirmed.pullRequest;
         }
       }
       pullRequestNumber = pullRequest.number;
       pullRequestUrl = pullRequest.url;
-      needsAutoMerge = !pullRequest.merged && !pullRequest.autoMergeEnabled;
+      needsAutoMerge = !observed.merged && !observed.autoMergeEnabled;
     }
     if (needsAutoMerge) {
       const accepted = await settings.github.requestAutoMerge(

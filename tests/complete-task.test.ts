@@ -109,6 +109,7 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     url: pullRequestUrl,
     state: 'open',
     merged: false,
+    headBranch: 'task/NEX-1',
     baseBranch: 'main',
     headRevision,
     mergeRevision: null,

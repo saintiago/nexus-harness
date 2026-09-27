@@ -81,7 +81,7 @@ export type ActionBindingSettings = {
   readonly commandEnvironment: Readonly<Record<string, string>>;
   /** The execution's agent activity directory: every invocation's own log lives under it. */
   readonly activityDirectory: string;
-  /** Wait before the next completion poll, supplied so tests control time instead of passing it. */
+  /** Wait before the next poll or confirmation read, supplied so tests control time. */
   readonly wait: (milliseconds: number) => Promise<void>;
 };
 
@@ -239,6 +239,7 @@ function finiteDeliveryActions(
       github: settings.github,
       jira: settings.jira,
       publish,
+      wait: settings.wait,
     }),
     CompleteTask: createCompleteTask({
       selectionFile,
