@@ -22,17 +22,15 @@ const profileSchema = z.strictObject({
 /** A credential reference names an entry in the Credentials settings; the host resolves its value. */
 const credentialReference = identifier;
 
-/** The six idea refinement role profiles and the council-cycle bound. */
+/** The four idea refinement role profiles and the conversation-cycle bound. */
 const ideaRefinementSchema = z.strictObject({
   profiles: z.strictObject({
-    purposeVerifier: identifier,
+    editor: identifier,
     researcher: identifier,
-    briefWriter: identifier,
-    purposeCouncil: identifier,
-    evidenceCouncil: identifier,
-    simplicityCouncil: identifier,
+    projectGuide: identifier,
+    challenger: identifier,
   }),
-  maxCouncilCycles: z.number().int().positive(),
+  maxCycles: z.number().int().positive(),
 });
 
 const nexusConfigurationSchema = z

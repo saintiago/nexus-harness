@@ -1,9 +1,9 @@
 /**
- * Focused integration tests: the idea refinement role actions and the decision publication over a
- * temporary refinement area. The agent runtime, Jira source and Git adapter are controlled; the
- * artifact storage is real. They establish the context every role receives, the produced artifacts,
- * the council's binding to one refined idea revision and the two source-updating publication
- * routes.
+ * Focused integration tests: the four idea refinement role actions and the decision publication
+ * over a temporary refinement area. The agent runtime and Jira source are controlled; the
+ * artifact storage is real. They establish the context every role receives, the produced
+ * artifacts, the Challenger's binding to one refined idea revision and editor response, and the
+ * four source-updating publication routes.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -11,29 +11,42 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ideaRoles, type AgentRuntime, type IdeaRole } from '../src/agent-runtime/index.js';
+import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { runnerOf } from './support/agent-runner.js';
-import { strictSchemaProblems } from './support/provider-schema.js';
 import {
+  challengerArtifact,
+  challengerReportSchema,
+  challengerResponseSchema,
+} from '../src/task-engine/actions/challenger/artifacts.js';
+import { createChallenger } from '../src/task-engine/actions/challenger/index.js';
+import {
+  editorHelpArtifact,
+  editorResponseArtifact,
+  editorTurnResponseSchema,
+  framingArtifact,
+  framingResponseSchema,
   refinedIdeaArtifact,
-  refinedIdeaResponseSchema,
-  retainedBriefArtifactPath,
-  type RefinedIdea,
-} from '../src/task-engine/actions/brief-writer/artifacts.js';
-import { createBriefWriter } from '../src/task-engine/actions/brief-writer/index.js';
-import {
-  ideaCycleDirectory,
-  ideaSubmissionInputFile,
-} from '../src/task-engine/actions/idea-storage.js';
+  refinedIdeaSchema,
+  type EditorTurnResponse,
+} from '../src/task-engine/actions/idea-editor/artifacts.js';
+import { createIdeaEditor } from '../src/task-engine/actions/idea-editor/index.js';
 import {
   ideaCommunicationText,
   ideaDefinitionText,
   ideaStageGuidanceText,
   projectGuidanceInstruction,
 } from '../src/task-engine/actions/idea-context.js';
+import {
+  ideaCycleDirectory,
+  ideaSubmissionInputFile,
+} from '../src/task-engine/actions/idea-storage.js';
+import {
+  projectGuideArtifact,
+  projectGuideFollowUpArtifact,
+} from '../src/task-engine/actions/project-guide/artifacts.js';
+import { createProjectGuide } from '../src/task-engine/actions/project-guide/index.js';
 import {
   decisionArtifact,
   ideaHandoffFile,
@@ -42,44 +55,25 @@ import {
 } from '../src/task-engine/actions/publish-decision/artifacts.js';
 import { createPublishDecision } from '../src/task-engine/actions/publish-decision/index.js';
 import {
-  purposeArtifact,
-  purposeReportSchema,
-  type PurposeReport,
-} from '../src/task-engine/actions/purpose-verifier/artifacts.js';
-import { createPurposeVerifier } from '../src/task-engine/actions/purpose-verifier/index.js';
-import {
   researchArtifact,
-  researchReportSchema,
-  type ResearchReport,
+  researchFollowUpArtifact,
+  researchResponseSchema,
 } from '../src/task-engine/actions/researcher/artifacts.js';
 import { createResearcher } from '../src/task-engine/actions/researcher/index.js';
-import {
-  councilArtifacts,
-  councilResponseSchema,
-  councilReviewers,
-  type CouncilReport,
-  type CouncilReviewer,
-  type CouncilVerdict,
-} from '../src/task-engine/actions/review-council/artifacts.js';
-import {
-  councilObjectionStandard,
-  createCouncilReviewer,
-} from '../src/task-engine/actions/review-council/index.js';
-import { ideaInputDeclaration } from '../src/task-engine/actions/select-idea/artifacts.js';
 import type { IdeaSelection } from '../src/task-engine/actions/select-idea/artifacts.js';
 import {
-  ideaRoundPlanDeclaration,
+  ideaRoundPlanFile,
   type IdeaRoundPlan,
 } from '../src/task-engine/actions/start-idea-round/artifacts.js';
+import { runnerOf } from './support/agent-runner.js';
 import { scriptedJira } from './support/jira.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 const profiles = {
-  'purpose-verifier': 'nexus-purpose',
+  'idea-editor': 'nexus-editor',
   researcher: 'nexus-research',
-  'brief-writer': 'nexus-brief',
-  'purpose-council': 'nexus-purpose-council',
-  'evidence-council': 'nexus-evidence-council',
-  'simplicity-council': 'nexus-simplicity-council',
+  'project-guide': 'nexus-guide',
+  challenger: 'nexus-challenger',
 } as const;
 
 const capturedInput = {
@@ -93,91 +87,57 @@ const capturedInput = {
   conversation: [{ id: 'c1', body: { text: 'the author\u2019s idea' } }],
 };
 
-const purposeReport: PurposeReport = {
-  summary: 'The idea serves the project purpose.',
-  conflicts: [],
+const framingFixture = {
+  framing: 'The author proposes a lint gate so reviews can stay on behaviour.',
+  questions: ['Is generated code in scope?'],
+  authorDecision: null,
+};
+
+const researchFixture = {
+  contribution: 'Linters keep reviews focused on behaviour.',
+  findings: ['Teams catch style defects early.'],
+  options: ['Adopt the smallest lint configuration that covers the repository.'],
+  sources: [{ title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' }],
+};
+
+const guidanceFixture = {
+  contribution: 'The project already enforces checks in CI, so a gate fits.',
+  fit: 'The project wants reviewers focused on behaviour.',
   steering: ['Keep the scope small.'],
-  sources: ['docs/purpose.md'],
+  constraints: ['Checks must stay fast.'],
+  evidence: ['docs/purpose.md'],
   provisional: true,
   uncertainty: ['The charter is incomplete.'],
 };
 
-const researchReport: ResearchReport = {
-  summary: 'Linters keep reviews focused.',
-  findings: ['Teams catch style defects early.'],
-  suggestions: ['Start with one rule set.'],
-  options: ['Adopt the smallest lint configuration.'],
-  sources: [{ title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' }],
-};
-
-/** One refined idea revision as the writer stores it. */
-function refinedIdeaOf(revision: number, submission = 1) {
-  return {
-    revision,
-    submission,
-    cycle: revision,
-    idea: 'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
-    projectFit: 'The project already enforces checks in CI.',
-    feasibility: `Enable the smallest lint gate first (revision ${String(revision)}).`,
-    openQuestions: [`Is generated code in scope? (revision ${String(revision)})`],
-    changeSummary: `Refined idea revision ${String(revision)}.`,
-  };
-}
-
-/** One retained brief written in the shape that already stated one `idea` field. */
-function previousBriefOf(revision: number, submission = 1) {
-  return {
-    revision,
-    submission,
-    cycle: revision,
-    idea: 'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
-    evidence: ['docs/purpose.md'],
-    alternatives: ['Keep reviewing style by eye.'],
-    scope: `Enable the smallest lint gate (revision ${String(revision)}).`,
-    assumptions: [],
-    changeSummary: `Brief revision ${String(revision)}.`,
-  };
-}
-
-/** One retained brief written before `idea` replaced the three separate fields. */
-function legacyBriefOf(revision: number, submission = 1) {
-  return {
-    revision,
-    submission,
-    cycle: revision,
-    problem: 'Reviewers spend time on style defects.',
-    value: 'Reviews focus on behaviour.',
-    projectFit: 'The project already enforces checks in CI.',
-    evidence: ['docs/purpose.md'],
-    alternatives: ['Keep reviewing style by eye.'],
-    scope: `Enable the smallest lint gate (revision ${String(revision)}).`,
-    assumptions: [],
-    changeSummary: `Brief revision ${String(revision)}.`,
-  };
-}
-
-function councilReport(
-  reviewer: CouncilReviewer,
-  verdict: CouncilVerdict,
-  brief: string,
+/** One editor turn that writes the supplied revision. */
+function revisedTurn(
   revision: number,
-): CouncilReport {
+  openQuestions: string[] | null = ['Is generated code in scope?'],
+): EditorTurnResponse {
   return {
-    reviewer,
-    verdict,
-    summary: `${reviewer} review.`,
-    findings:
-      verdict === 'approve'
-        ? []
-        : [
-            {
-              criterion: `${reviewer} criterion`,
-              evidence: `${reviewer} evidence`,
-              correction: `${reviewer} correction`,
-            },
-          ],
-    brief,
-    revision,
+    disposition: 'revised',
+    response: `I wrote the smallest lint gate (revision ${String(revision)}).`,
+    reason: null,
+    help: null,
+    refinedIdea: {
+      idea: 'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+      projectFit: 'The project already enforces checks in CI.',
+      feasibility: `Enable the smallest lint gate first (revision ${String(revision)}).`,
+      openQuestions,
+      changeSummary: `Refined idea revision ${String(revision)}.`,
+    },
+  };
+}
+
+/** One editor turn that answers a concern without changing the refined idea. */
+function answeredTurn(): EditorTurnResponse {
+  return {
+    disposition: 'answered',
+    response: 'The gate runs on staged files only, so the checks stay fast.',
+    reason: null,
+    help: null,
+    refinedIdea: null,
   };
 }
 
@@ -190,6 +150,26 @@ afterEach(async () => {
       .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
+
+/** The text of one published comment document. */
+function commentText(document: unknown): string {
+  const content =
+    typeof document === 'object' && document !== null
+      ? (document as { readonly content?: readonly { readonly content?: unknown }[] }).content
+      : undefined;
+  return (content ?? [])
+    .flatMap((paragraph) => {
+      const text = paragraph.content;
+      return Array.isArray(text)
+        ? text.flatMap((node) =>
+            typeof (node as { readonly text?: unknown }).text === 'string'
+              ? [(node as { readonly text: string }).text]
+              : [],
+          )
+        : [];
+    })
+    .join('\n');
+}
 
 /** One refinement area with the supplied plan, captured input and project guidance. */
 async function refinementArea(options?: {
@@ -207,7 +187,7 @@ async function refinementArea(options?: {
     profiles,
   };
   await mkdir(path.join(root, 'state'), { recursive: true });
-  await writeFile(path.join(root, 'state', 'current-round.json'), JSON.stringify(plan));
+  await writeFile(path.join(root, ideaRoundPlanFile), JSON.stringify(plan));
   const inputFile = ideaSubmissionInputFile(root, plan.submission);
   await mkdir(path.dirname(inputFile), { recursive: true });
   await writeFile(inputFile, JSON.stringify(capturedInput));
@@ -225,12 +205,9 @@ async function refinementArea(options?: {
     plan,
     worktree,
     events,
-    cycleDirectory: (cycle = plan.cycle) => ideaCycleDirectory(root, plan.submission, cycle),
-    async write(cycle: number, declaration: { pathFromArtifactsRoot: string }, value: unknown) {
-      const file = path.join(
-        ideaCycleDirectory(root, plan.submission, cycle),
-        declaration.pathFromArtifactsRoot,
-      );
+    cycleRoot: (cycle = plan.cycle) => ideaCycleDirectory(root, plan.submission, cycle),
+    async write(cycle: number, relative: string, value: unknown) {
+      const file = path.join(ideaCycleDirectory(root, plan.submission, cycle), relative);
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, JSON.stringify(value));
       return file;
@@ -254,7 +231,7 @@ async function refinementArea(options?: {
   };
 }
 
-/** A controlled agent runtime answering each invocation with the supplied report. */
+/** A controlled agent runtime answering each invocation with the supplied response. */
 function scriptedRuntime(outputs: readonly unknown[]): {
   readonly runtime: AgentRuntime;
   readonly requests: {
@@ -286,612 +263,800 @@ function scriptedRuntime(outputs: readonly unknown[]): {
   };
 }
 
-describe('idea role actions', () => {
-  it('runs the purpose verifier with the captured idea, history and project guidance', async () => {
+/** The shared idea context every role invocation must carry exactly once. */
+function expectSharedContext(context: string): void {
+  expect(context.split(ideaDefinitionText)).toHaveLength(2);
+  expect(context.split(ideaStageGuidanceText)).toHaveLength(2);
+  expect(context.split(ideaCommunicationText)).toHaveLength(2);
+}
+
+describe('idea editor', () => {
+  it('frames the captured idea with the project guidance and records the framing', async () => {
     const area = await refinementArea();
-    const agent = scriptedRuntime([purposeReport]);
-    const action = createPurposeVerifier({
+    const agent = scriptedRuntime([framingFixture]);
+    const editor = createIdeaEditor({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('reported');
+    await expect(editor({ task: 'frame' })).resolves.toBe('framed');
 
     const request = agent.requests[0];
-    expect(request?.profile).toBe('nexus-purpose');
+    expect(request?.profile).toBe('nexus-editor');
     expect(request?.workspace).toBe(area.root);
-    // Every JSON-producing role invokes the provider with its own response schema.
-    expect(request?.outputSchema).toEqual(z.toJSONSchema(purposeReportSchema));
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(framingResponseSchema));
     expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
+    expectSharedContext(request?.context ?? '');
     expect(request?.context).toContain('Add a lint gate');
     expect(request?.context).toContain('the author\u2019s idea');
     expect(request?.context).toContain('Prefer the smallest change.');
-    expect(request?.context).toContain('Retained workspace history');
+    expect(request?.context).toContain(projectGuidanceInstruction);
     expect(request?.context).toContain(path.join(area.root, 'worktree'));
-    expect(await area.read(1, purposeArtifact.pathFromArtifactsRoot)).toEqual(purposeReport);
-    // The invocation boundaries belong to the caller's agent runner, not to the action.
-    expect(area.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          source: 'purpose-verifier',
-          type: 'outcome',
-          data: expect.objectContaining({
-            cycle: 1,
-            outcome: 'reported',
-            detail: 'provisional project direction',
-          }),
-        }),
-      ]),
-    );
-  });
-
-  it('runs the researcher with the same captured context', async () => {
-    const area = await refinementArea({ guidance: null });
-    const agent = scriptedRuntime([researchReport]);
-    const action = createResearcher({
-      workspace: { root: area.root },
-      runner: runnerOf(agent.runtime),
-      publish: (event) => area.events.push(event),
+    expect(await area.read(1, framingArtifact.pathFromArtifactsRoot)).toEqual(framingFixture);
+    expect(area.events.at(-1)).toMatchObject({
+      source: 'idea-editor',
+      type: 'outcome',
+      data: { outcome: 'framed', cycle: 1, detail: '1 questions' },
     });
-
-    await expect(action()).resolves.toBe('reported');
-
-    expect(agent.requests[0]?.context).toContain('the author\u2019s idea');
-    expect(agent.requests[0]?.context).not.toContain('AGENTS.md');
-    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(researchReportSchema));
-    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
-    expect(await area.read(1, researchArtifact.pathFromArtifactsRoot)).toEqual(researchReport);
   });
 
-  it('writes the refined idea revision with the reports in force and reuses it when repeated', async () => {
+  it('asks the author when an essential decision is missing', async () => {
     const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
     const agent = scriptedRuntime([
       {
-        idea: 'idea',
-        projectFit: 'project fit',
-        feasibility: 'feasibility',
-        openQuestions: null,
-        changeSummary: 'initial',
+        framing: 'The author asks for faster checks but not how much coverage they want.',
+        questions: [],
+        authorDecision: { question: 'Which repositories must the gate cover at launch?' },
       },
     ]);
-    const action = createBriefWriter({
+    const editor = createIdeaEditor({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('written');
+    await expect(editor({ task: 'frame' })).resolves.toBe('author-decision-needed');
+  });
 
-    const context = agent.requests[0]?.context ?? '';
-    // The writer's strict response shape crosses to the provider and satisfies its requirements.
-    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(refinedIdeaResponseSchema));
-    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
-    expect(context).toContain('The idea serves the project purpose.');
-    expect(context).toContain('Linters keep reviews focused.');
-    expect(context).toContain('No earlier council objections exist');
-    expect(context).toContain('Keep detailed research in the research artifact');
-    // The writer is told the refined idea's parts and what each states.
-    const guidance = context.replace(/\s+/gu, ' ');
-    expect(guidance).toContain('`projectFit` states why it belongs in this project');
-    expect(guidance).toContain('`feasibility` states a plausible path');
-    const refinedIdea = await area.read<Record<string, unknown>>(
-      1,
-      refinedIdeaArtifact.pathFromArtifactsRoot,
-    );
-    expect(refinedIdea).toMatchObject({
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-      idea: 'idea',
-      projectFit: 'project fit',
-      feasibility: 'feasibility',
+  it('writes the refined idea revision from both contributions', async () => {
+    const area = await refinementArea();
+    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
     });
-    // The strict response shape reports no open questions as null; the saved revision that states
-    // none keeps the field absent.
-    expect(refinedIdea).not.toHaveProperty('openQuestions');
+    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: null,
+    });
+    const agent = scriptedRuntime([revisedTurn(1)]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
 
-    // A repeated invocation reuses the revision it already wrote.
-    await expect(action()).resolves.toBe('written');
+    await expect(editor({ task: 'edit' })).resolves.toBe('written');
+
+    const request = agent.requests[0];
+    expect(request?.context).toContain('Linters keep reviews focused on behaviour.');
+    expect(request?.context).toContain('a gate fits');
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(editorTurnResponseSchema));
+    const stored = await area.read(1, refinedIdeaArtifact.pathFromArtifactsRoot);
+    expect(refinedIdeaSchema.safeParse(stored).success).toBe(true);
+    expect(stored).toMatchObject({ revision: 1, submission: 1, cycle: 1 });
+  });
+
+  it('refuses to write the refined idea without both contributions', async () => {
+    const area = await refinementArea();
+    const agent = scriptedRuntime([revisedTurn(1)]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(editor({ task: 'edit' })).rejects.toThrow(/contribution/u);
+    expect(agent.requests).toEqual([]);
+  });
+
+  it('reuses the response it already wrote for the cycle', async () => {
+    const area = await refinementArea();
+    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
+    });
+    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: null,
+    });
+    const agent = scriptedRuntime([revisedTurn(1)]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(editor({ task: 'edit' })).resolves.toBe('written');
+    await expect(editor({ task: 'edit' })).resolves.toBe('written');
+
     expect(agent.requests).toHaveLength(1);
   });
 
-  it('gives the role a retained submission decision at its producer-owned path', async () => {
-    const area = await refinementArea({ submission: 2 });
-    const decisionFile = path.join(
-      area.root,
-      'artifacts/submissions/1',
-      decisionArtifact.pathFromArtifactsRoot,
-    );
-    await mkdir(path.dirname(decisionFile), { recursive: true });
-    await writeFile(
-      decisionFile,
-      JSON.stringify({
-        decision: 'returned-to-author',
-        strongestVerdict: 'idea_not_working',
-        brief: 'brief.json',
-        revision: 1,
-        feedback: [],
-        comment: null,
-        source: {
-          transition: { id: '22', to: 'Waiting for Feedback' },
-          status: 'Waiting for Feedback',
-          commentId: null,
+  it('answers a concern without changing the refined idea text', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The speed concern is unresolved.',
+      obstacle: 'The idea may slow everyday work without saying how it stays fast.',
+      concerns: [
+        {
+          concern: 'The gate may slow local work.',
+          consequence: 'Developers would disable it.',
+          resolution: 'Show that the gate runs on changed files only.',
         },
-      }),
-    );
-    const agent = scriptedRuntime([purposeReport]);
-    const action = createPurposeVerifier({
-      workspace: { root: area.root },
-      runner: runnerOf(agent.runtime),
-      publish: () => undefined,
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
     });
-
-    await expect(action()).resolves.toBe('reported');
-
-    const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(`decision record: ${decisionFile}`);
-    // The cycle-level path it is not saved at is never named.
-    expect(context).not.toContain(path.join(area.cycleDirectory(), 'decision.json'));
-  });
-
-  it('carries the preceding objections and reuses the preceding reports in a minor cycle', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'minor' });
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(
-          reviewer,
-          reviewer === 'purpose' ? 'minor_corrections' : 'approve',
-          refinedIdeaFile,
-          1,
-        ),
-      );
-    }
-    const agent = scriptedRuntime([
-      {
-        idea: 'idea',
-        projectFit: 'project fit',
-        feasibility: 'feasibility',
-        openQuestions: null,
-        changeSummary: 'addressed the objection',
-      },
-    ]);
-    const action = createBriefWriter({
+    const agent = scriptedRuntime([answeredTurn()]);
+    const editor = createIdeaEditor({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('written');
+    await expect(editor({ task: 'respond' })).resolves.toBe('responded');
 
-    const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain('Address each objection of the preceding council cycle');
-    expect(context).toContain('purpose correction');
-    expect(context).toContain('Latest earlier refined idea (cycle 1)');
-    expect(context).toContain('Its cumulative change summary');
-    expect(context).toContain('Purpose assessment in force (cycle 1)');
-    // The writer keeps the short-default guidance on every revision, not only the first.
-    const guidance = context.replace(/\s+/gu, ' ');
-    expect(guidance).toContain('about 150-200 words');
-    expect(guidance).toContain('one to three short sentences');
-    expect(guidance).toContain('not a rigid cap');
-    expect(guidance).toContain('keep any context the council needs to decide');
-    // The prior objections arrive as corrections; their raw reports stay at their paths.
-    expect(context).not.toContain('purpose evidence');
-    expect(context).not.toContain('"verdict": "minor_corrections"');
-    expect(context).toContain(
-      path.join(area.cycleDirectory(1), councilArtifacts.purpose.pathFromArtifactsRoot),
+    expect(agent.requests[0]?.context).toContain('The gate may slow local work.');
+    expect(await area.read(2, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
+      disposition: 'answered',
+      reason: null,
+    });
+    // The answer leaves the revision in force: no new revision artifact exists for cycle 2.
+    await expect(area.exists('artifacts/submissions/1/cycles/2/refined-idea.json')).resolves.toBe(
+      false,
     );
-    expect(
-      await area.read<RefinedIdea>(2, refinedIdeaArtifact.pathFromArtifactsRoot),
-    ).toMatchObject({
-      revision: 2,
+  });
+
+  it('requests focused help with the specific questions it needs answered', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The evidence is thin.',
+      obstacle: 'Nothing yet shows the gate is worth the change.',
+      concerns: [
+        {
+          concern: 'No evidence that lint gates reduce review time.',
+          consequence: 'The value claim is unsubstantiated.',
+          resolution: 'Cite a study or a comparable project.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
+    const agent = scriptedRuntime([
+      {
+        disposition: 'help-requested',
+        response: 'I need evidence on review time before I can answer.',
+        reason: null,
+        help: { researcher: 'What evidence links lint gates to review time?', projectGuide: null },
+        refinedIdea: null,
+      },
+    ]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(editor({ task: 'respond' })).resolves.toBe('help-requested');
+
+    expect(await area.read(2, editorHelpArtifact.pathFromArtifactsRoot)).toMatchObject({
+      disposition: 'help-requested',
+      help: { researcher: 'What evidence links lint gates to review time?', projectGuide: null },
+    });
+  });
+
+  it('rebuts a mistaken objection without changing the refined idea text', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The objection misreads the idea.',
+      obstacle: 'The idea looks broader than it is; its scope should be clear before pursuit.',
+      concerns: [
+        {
+          concern: 'The gate must cover every repository.',
+          consequence: 'That scope is not plausible.',
+          resolution: 'Narrow the promise.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
+    const agent = scriptedRuntime([
+      {
+        disposition: 'rebutted',
+        response: 'The idea never claims repository-wide coverage; the objection misreads it.',
+        reason: null,
+        help: null,
+        refinedIdea: null,
+      },
+    ]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(editor({ task: 'respond' })).resolves.toBe('responded');
+
+    expect(await area.read(2, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
+      disposition: 'rebutted',
+    });
+    await expect(area.exists('artifacts/submissions/1/cycles/2/refined-idea.json')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('gives the editor the connected project guidance when it answers a concern', async () => {
+    const area = await refinementArea({
       cycle: 2,
+      route: 'next',
+      guidance: '# Project instructions\n\nPrefer the smallest change that fulfils the purpose.\n',
     });
-  });
-
-  it('reads a retained brief written before the idea field for the next revision', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'minor' });
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const legacyFile = await area.write(
-      1,
-      { pathFromArtifactsRoot: retainedBriefArtifactPath },
-      legacyBriefOf(1),
-    );
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(
-          reviewer,
-          reviewer === 'purpose' ? 'minor_corrections' : 'approve',
-          legacyFile,
-          1,
-        ),
-      );
-    }
-    const agent = scriptedRuntime([
-      {
-        idea: 'idea',
-        projectFit: 'project fit',
-        feasibility: 'feasibility',
-        openQuestions: null,
-        changeSummary: 'addressed the objection',
-      },
-    ]);
-    const action = createBriefWriter({
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The speed concern is unresolved.',
+      obstacle: 'The idea may slow everyday work without saying how it stays fast.',
+      concerns: [
+        {
+          concern: 'The gate may slow local work.',
+          consequence: 'Developers would disable it.',
+          resolution: 'Show that the gate runs on changed files only.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
+    const agent = scriptedRuntime([answeredTurn()]);
+    const editor = createIdeaEditor({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('written');
+    await expect(editor({ task: 'respond' })).resolves.toBe('responded');
 
     const context = agent.requests[0]?.context ?? '';
-    // The retained revision is readable history, and its cumulative summary carries forward.
-    expect(context).toContain(`cycle 1 refined idea revision: ${legacyFile}`);
-    expect(context).toContain('Its cumulative change summary');
-    expect(context).toContain('Brief revision 1.');
-    // The retained artifact stays as it was; the new revision states the refined idea's parts.
-    expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
-    const written = await readFile(
-      path.join(area.cycleDirectory(2), refinedIdeaArtifact.pathFromArtifactsRoot),
-      'utf8',
-    );
-    expect(written).not.toContain('"problem"');
-    expect(written).not.toContain('"value"');
-    expect(written).not.toContain('"scope"');
+    expect(context).toContain('Prefer the smallest change that fulfils the purpose.');
+    expect(context).toContain(projectGuidanceInstruction);
+    expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
   });
 
-  it('reads a retained brief whose idea field stood alone as a refined idea without project fit', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'minor' });
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const retainedFile = await area.write(
-      1,
-      { pathFromArtifactsRoot: retainedBriefArtifactPath },
-      previousBriefOf(1),
-    );
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', retainedFile, 1),
-      );
-    }
-    const agent = scriptedRuntime([
-      {
-        idea: 'idea',
-        projectFit: 'project fit',
-        feasibility: 'feasibility',
+  it.each(['edit', 'respond', 'respond-after-help'] as const)(
+    'recovers a coherent %s turn after a response write fails',
+    async (task) => {
+      const cycle = task === 'edit' ? 1 : 2;
+      const area = await refinementArea({ cycle, route: cycle === 1 ? 'new' : 'next' });
+      await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+        ...researchFixture,
+        role: 'researcher',
+        question: null,
+      });
+      await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+        ...guidanceFixture,
+        role: 'project-guide',
+        question: null,
+      });
+      let previous: string | null = null;
+      if (cycle === 2) {
+        previous = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+          ...revisedTurn(1).refinedIdea,
+          revision: 1,
+          submission: 1,
+          cycle: 1,
+        });
+        await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+          verdict: 'discuss',
+          assessment: 'The scope may make checks too slow.',
+          obstacle: 'The gate needs a plausible way to keep checks fast.',
+          concerns: [
+            {
+              concern: 'Checking every file may be slow.',
+              consequence: 'Developers may disable it.',
+              resolution: 'Consider limiting checks to changed files.',
+            },
+          ],
+          suggestions: [],
+          refinedIdea: previous,
+          editorResponse: null,
+          revision: 1,
+        });
+      }
+      if (task === 'respond-after-help') {
+        await area.write(cycle, editorHelpArtifact.pathFromArtifactsRoot, {
+          disposition: 'help-requested',
+          response: 'Can full source checks stay fast?',
+          reason: null,
+          help: { researcher: 'Can full source checks stay fast?', projectGuide: null },
+        });
+        await area.write(cycle, researchFollowUpArtifact.pathFromArtifactsRoot, {
+          ...researchFixture,
+          role: 'researcher',
+          question: 'Can full source checks stay fast?',
+        });
+      }
+      const content = {
+        idea: 'Run the lint gate on all source files.',
+        projectFit: 'Keep reviews focused on behaviour.',
+        feasibility: 'Use incremental caching to keep full source checks fast.',
         openQuestions: null,
-        changeSummary: 'addressed the objection',
-      },
-    ]);
-    const action = createBriefWriter({
+        changeSummary: 'Added caching while retaining full source coverage.',
+      };
+      const original = {
+        ...revisedTurn(cycle),
+        refinedIdea: content,
+        response: 'The gate still checks all source files; caching may address the speed concern.',
+      };
+      const changed = {
+        ...original,
+        refinedIdea: { ...content, idea: 'Run the lint gate on changed source files only.' },
+        response: 'I narrowed the gate to changed source files only.',
+      };
+      const recovered = {
+        ...original,
+        refinedIdea: { ...content, openQuestions: [] },
+        response:
+          'The saved revision retains all source files and proposes caching; speed remains uncertain.',
+      };
+      const invalidDispositions: EditorTurnResponse[] =
+        task === 'edit'
+          ? []
+          : [
+              answeredTurn(),
+              {
+                disposition: 'author-decision-needed',
+                response: 'The author must choose the scope.',
+                reason: 'Which files should be checked?',
+                help: null,
+                refinedIdea: null,
+              },
+              ...(task === 'respond'
+                ? [
+                    {
+                      disposition: 'help-requested' as const,
+                      response: 'More research is needed.',
+                      reason: null,
+                      help: { researcher: 'Which files should be checked?', projectGuide: null },
+                      refinedIdea: null,
+                    },
+                  ]
+                : []),
+            ];
+      const agent = scriptedRuntime([original, changed, ...invalidDispositions, recovered]);
+      const responseFile = path.join(
+        area.cycleRoot(),
+        editorResponseArtifact.pathFromArtifactsRoot,
+      );
+      const revisionFile = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const editor = createIdeaEditor({
+        workspace: { root: area.root },
+        runner: runnerOf({
+          async run(...args) {
+            const result = await agent.runtime.run(...args);
+            // Obstruct the response write only after the action has read its existing outputs.
+            if (agent.requests.length === 1) await mkdir(responseFile, { recursive: true });
+            return result;
+          },
+        }),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(editor({ task })).rejects.toThrow(/could not be written/u);
+      const savedRevision = await readFile(revisionFile, 'utf8');
+      await rm(responseFile, { recursive: true });
+
+      // A materially different retry cannot silently lose its change and save its commentary.
+      for (let attempt = 0; attempt <= invalidDispositions.length; attempt += 1) {
+        await expect(editor({ task })).rejects.toThrow(/must complete the retained revision/u);
+        await expect(readFile(responseFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
+        expect(area.events).toEqual([]);
+      }
+      const recoveryContext = agent.requests[1]?.context ?? '';
+      expect(recoveryContext).toContain('Interrupted editor turn recovery');
+      expect(recoveryContext).toContain('repeat its content exactly');
+      expect(recoveryContext).toContain('Run the lint gate on all source files.');
+      if (previous !== null) {
+        expect(recoveryContext).toContain(
+          `The refined idea revision the Challenger assessed: ${previous}`,
+        );
+        expect(recoveryContext).toContain(
+          `The refined idea revision currently in force: ${revisionFile}`,
+        );
+      }
+
+      const outcome = task === 'edit' ? 'written' : 'responded';
+      await expect(editor({ task })).resolves.toBe(outcome);
+      await expect(editor({ task })).resolves.toBe(outcome);
+      expect(agent.requests).toHaveLength(3 + invalidDispositions.length);
+      expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
+      expect(await area.read(cycle, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
+        disposition: 'revised',
+        response: recovered.response,
+      });
+
+      const challengerAgent = scriptedRuntime([
+        {
+          verdict: 'approve',
+          assessment: 'Caching is a plausible approach, with speed still uncertain.',
+          obstacle: null,
+          concerns: [],
+          suggestions: [],
+        },
+      ]);
+      const challenger = createChallenger({
+        workspace: { root: area.root },
+        runner: runnerOf(challengerAgent.runtime),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(challenger()).resolves.toBe('approve');
+      const context = challengerAgent.requests[0]?.context ?? '';
+      expect(context).toContain(content.idea);
+      expect(context).toContain(recovered.response);
+      expect(context).not.toContain(changed.refinedIdea.idea);
+      expect(context).not.toContain(changed.response);
+      expect(context).not.toContain('The revision stands alone');
+      expect(await area.read(cycle, challengerArtifact.pathFromArtifactsRoot)).toMatchObject({
+        refinedIdea: revisionFile,
+        editorResponse: responseFile,
+        revision: cycle,
+      });
+    },
+  );
+});
+
+describe('Researcher and Project guide', () => {
+  it('researches the idea and records the contribution with its sources', async () => {
+    const area = await refinementArea();
+    const agent = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('written');
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
 
-    const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(`cycle 1 refined idea revision: ${retainedFile}`);
-    expect(context).toContain('Its cumulative change summary');
-    expect(context).toContain('Brief revision 1.');
-    expect(
-      await area.read<RefinedIdea>(2, refinedIdeaArtifact.pathFromArtifactsRoot),
-    ).toMatchObject({ revision: 2, cycle: 2, idea: 'idea' });
+    const request = agent.requests[0];
+    expect(request?.profile).toBe('nexus-research');
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(researchResponseSchema));
+    expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
+    expectSharedContext(request?.context ?? '');
+    expect(request?.context).toContain('the author\u2019s idea');
+    expect(request?.context).toContain('Prefer the smallest change.');
+    expect(await area.read(1, researchArtifact.pathFromArtifactsRoot)).toEqual({
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
+    });
+    expect(area.events.at(-1)).toMatchObject({
+      source: 'researcher',
+      type: 'outcome',
+      data: { outcome: 'contributed', detail: '1 source' },
+    });
   });
 
-  it('rejects writing a refined idea without the reports it must build on', async () => {
-    const area = await refinementArea();
-    const agent = scriptedRuntime([{}]);
-    const action = createBriefWriter({
+  it('answers the editor’s focused question and skips a request aimed elsewhere', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, editorHelpArtifact.pathFromArtifactsRoot, {
+      disposition: 'help-requested',
+      response: 'I need evidence.',
+      reason: null,
+      help: { researcher: null, projectGuide: 'Which documented constraint matters most?' },
+    });
+    const agent = scriptedRuntime([guidanceFixture]);
+    const researcher = createResearcher({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
-      publish: () => undefined,
+      publish: (event) => area.events.push(event),
+    });
+    const guide = createProjectGuide({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).rejects.toThrow('needs the purpose assessment and research report');
-    expect(agent.requests).toEqual([]);
-  });
+    // The editor asked the Project guide only; the Researcher contributes nothing.
+    await expect(researcher({ phase: 'focused' })).resolves.toBe('not-requested');
+    await expect(guide({ phase: 'focused' })).resolves.toBe('contributed');
 
-  it('supplies the authoritative idea definition verbatim, apart from the stage guidance', () => {
-    expect(ideaDefinitionText).toContain(
-      'An idea describes a desirable change in software, why it matters, and the principle ' +
-        'behind it\u2014without yet committing to implementation.',
-    );
-    expect(ideaStageGuidanceText).not.toContain('An idea describes');
-  });
-
-  it('keeps the shared communication rule plain, selective and open to rejection', () => {
-    expect(ideaCommunicationText).toContain('one point per statement');
-    expect(ideaCommunicationText).toContain(
-      'Research and cite relevant sources for substantive claims',
-    );
-    expect(ideaCommunicationText).toContain('fact-check incidental wording or nitpick details');
-    expect(ideaCommunicationText).toContain('rejecting an unsuitable idea');
-  });
-
-  it('gives all six roles the same idea definition once before their own context', async () => {
-    const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const answers: Record<IdeaRole, unknown> = {
-      'purpose-verifier': purposeReport,
-      researcher: researchReport,
-      'brief-writer': {
-        idea: 'idea',
-        projectFit: 'project fit',
-        feasibility: 'feasibility',
-        openQuestions: null,
-        changeSummary: 'initial',
-      },
-      'purpose-council': { verdict: 'approve', summary: 'approved', findings: [] },
-      'evidence-council': { verdict: 'approve', summary: 'approved', findings: [] },
-      'simplicity-council': { verdict: 'approve', summary: 'approved', findings: [] },
-    };
-    const outcomes: Record<IdeaRole, string> = {
-      'purpose-verifier': 'reported',
-      researcher: 'reported',
-      'brief-writer': 'written',
-      'purpose-council': 'approve',
-      'evidence-council': 'approve',
-      'simplicity-council': 'approve',
-    };
-    const contexts: { readonly role: IdeaRole; readonly context: string }[] = [];
-    const runtime: AgentRuntime = {
-      async run(profile, _workspace, context) {
-        const role = ideaRoles.find((candidate) => profiles[candidate] === profile);
-        if (role === undefined) {
-          return { ok: false, fault: { message: `Unknown idea role profile "${profile}".` } };
-        }
-        contexts.push({ role, context });
-        return ok({ output: JSON.stringify(answers[role]) });
-      },
-    };
-    const settings = {
-      workspace: { root: area.root },
-      runner: runnerOf(runtime),
-      publish: () => undefined,
-    };
-    const actions: Record<IdeaRole, () => Promise<string>> = {
-      'purpose-verifier': createPurposeVerifier(settings),
-      researcher: createResearcher(settings),
-      'brief-writer': createBriefWriter(settings),
-      'purpose-council': createCouncilReviewer({ ...settings, reviewer: 'purpose' }),
-      'evidence-council': createCouncilReviewer({ ...settings, reviewer: 'evidence' }),
-      'simplicity-council': createCouncilReviewer({ ...settings, reviewer: 'simplicity' }),
-    };
-
-    for (const role of ideaRoles) {
-      await expect(actions[role]()).resolves.toBe(outcomes[role]);
-    }
-
-    expect(contexts.map((entry) => entry.role)).toEqual([...ideaRoles]);
-    for (const { role, context } of contexts) {
-      // The one shared definition, the separate stage guidance and the communication rule arrive
-      // exactly once each, ahead of the role's own context.
-      expect(context.split(ideaDefinitionText)).toHaveLength(2);
-      expect(context.split(ideaStageGuidanceText)).toHaveLength(2);
-      expect(context.split(ideaCommunicationText)).toHaveLength(2);
-      expect(
-        context.startsWith(
-          `${ideaDefinitionText}\n\n${ideaStageGuidanceText}\n\n${ideaCommunicationText}\n\n`,
+    expect(agent.requests).toHaveLength(1);
+    expect(agent.requests[0]?.context).toContain('Which documented constraint matters most?');
+    // The focused contribution still receives the refined idea revision in force directly.
+    expect(agent.requests[0]?.context).toContain('a lint gate would keep reviews on behaviour');
+    expect(await area.read(2, projectGuideFollowUpArtifact.pathFromArtifactsRoot)).toEqual({
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: 'Which documented constraint matters most?',
+    });
+    await expect(
+      area.exists(
+        path.join(
+          'artifacts/submissions/1/cycles/2',
+          researchFollowUpArtifact.pathFromArtifactsRoot,
         ),
-      ).toBe(true);
-      // The role-specific context follows it: the captured idea and the project guidance.
-      expect(context.indexOf('Add a lint gate')).toBeGreaterThan(
-        context.indexOf(ideaStageGuidanceText),
-      );
-      expect(context).toContain('Prefer the smallest change.');
-      // The project guidance arrives once, with the project's own AGENTS.md text.
-      expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
-      // The one shared objection standard reaches every council invocation and no other role.
-      expect(context.split(councilObjectionStandard)).toHaveLength(
-        role.endsWith('-council') ? 2 : 1,
-      );
-    }
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('reports provisional project direction from the connected project', async () => {
+    const area = await refinementArea();
+    const agent = scriptedRuntime([guidanceFixture]);
+    const guide = createProjectGuide({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(guide({ phase: 'initial' })).resolves.toBe('contributed');
+
+    expect(agent.requests[0]?.profile).toBe('nexus-guide');
+    expect(agent.requests[0]?.context).toContain('Find the project\u2019s purpose');
+    expect(await area.read(1, projectGuideArtifact.pathFromArtifactsRoot)).toEqual({
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: null,
+    });
+    expect(area.events.at(-1)).toMatchObject({
+      source: 'project-guide',
+      type: 'outcome',
+      data: { outcome: 'contributed', detail: 'provisional project direction' },
+    });
   });
 });
 
-describe('council reviewers', () => {
-  it('binds its verdict to the exact refined idea revision and hides the pending siblings', async () => {
+describe('challenger', () => {
+  it('binds its result to the exact revision and editor response it reviewed', async () => {
     const area = await refinementArea();
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    const sibling = await area.write(
-      1,
-      councilArtifacts.evidence,
-      councilReport('evidence', 'approve', refinedIdeaFile, 1),
-    );
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
     const agent = scriptedRuntime([
       {
-        verdict: 'minor_corrections',
-        summary: 'purpose review',
-        findings: [{ criterion: 'fit', evidence: 'docs', correction: 'narrow the scope' }],
+        verdict: 'approve',
+        assessment: 'There is a plausible way forward.',
+        obstacle: null,
+        concerns: [],
+        suggestions: ['Cover generated files later.'],
       },
     ]);
-    const action = createCouncilReviewer({
-      reviewer: 'purpose',
+    const challenger = createChallenger({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('minor_corrections');
+    await expect(challenger()).resolves.toBe('approve');
 
-    const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(refinedIdeaFile);
-    expect(context).toContain('the author\u2019s idea');
-    expect(context).not.toContain(sibling);
-    expect(context).not.toContain('evidence council result');
-    expect(agent.requests[0]?.profile).toBe('nexus-purpose-council');
-    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(councilResponseSchema));
-    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
-    expect(
-      await area.read<CouncilReport>(1, councilArtifacts.purpose.pathFromArtifactsRoot),
-    ).toEqual(
-      expect.objectContaining({
-        reviewer: 'purpose',
-        verdict: 'minor_corrections',
-        brief: refinedIdeaFile,
-        revision: 1,
-      }),
-    );
+    const request = agent.requests[0];
+    expect(request?.profile).toBe('nexus-challenger');
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(challengerResponseSchema));
+    expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
+    expectSharedContext(request?.context ?? '');
+    expect(request?.context).toContain('Reviewers spend time on style defects');
+    const stored = await area.read(1, challengerArtifact.pathFromArtifactsRoot);
+    expect(challengerReportSchema.safeParse(stored).success).toBe(true);
+    expect(stored).toMatchObject({
+      verdict: 'approve',
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
     expect(area.events.at(-1)).toMatchObject({
-      source: 'PurposeCouncil',
+      source: 'challenger',
       type: 'outcome',
-      data: { outcome: 'minor_corrections', cycle: 1 },
+      data: { outcome: 'approve' },
     });
   });
 
-  it('reuses its saved result for the same refined idea revision', async () => {
+  it('reuses its saved result for the same revision and response', async () => {
     const area = await refinementArea();
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    await area.write(
-      1,
-      councilArtifacts.simplicity,
-      councilReport('simplicity', 'major_rework', refinedIdeaFile, 1),
-    );
-    const agent = scriptedRuntime([{ verdict: 'approve', summary: '', findings: [] }]);
-    const action = createCouncilReviewer({
-      reviewer: 'simplicity',
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const agent = scriptedRuntime([
+      { verdict: 'approve', assessment: 'Fine.', obstacle: null, concerns: [], suggestions: [] },
+    ]);
+    const challenger = createChallenger({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('major_rework');
-    expect(agent.requests).toEqual([]);
-    // The reused outcome names the verdict artifact the reviewer saved, not the input revision.
-    expect(area.events.at(-1)).toMatchObject({
-      source: 'SimplicityCouncil',
-      type: 'outcome',
-      data: {
-        outcome: 'major_rework',
-        artifact: {
-          path: path.join(area.cycleDirectory(), councilArtifacts.simplicity.pathFromArtifactsRoot),
-        },
+    await expect(challenger()).resolves.toBe('approve');
+    await expect(challenger()).resolves.toBe('approve');
+
+    expect(agent.requests).toHaveLength(1);
+  });
+
+  it('discusses a changed revision even when the earlier result approved', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const first = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'approve',
+      assessment: 'Approved.',
+      obstacle: null,
+      concerns: [],
+      suggestions: [],
+      refinedIdea: first,
+      editorResponse: null,
+      revision: 1,
+    });
+    const revision = await area.write(2, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(2).refinedIdea,
+      openQuestions: undefined,
+      revision: 2,
+      submission: 1,
+      cycle: 2,
+    });
+    const agent = scriptedRuntime([
+      {
+        verdict: 'discuss',
+        assessment: 'The revised scope is broader than the evidence supports.',
+        obstacle: 'The revised idea promises more coverage than the evidence supports.',
+        concerns: [
+          {
+            concern: 'The revision promises repository-wide coverage.',
+            consequence: 'The promise exceeds the stated need.',
+            resolution: 'Limit the first revision to changed files.',
+          },
+        ],
+        suggestions: [],
       },
-    });
-  });
-
-  it('reviews a retained brief written before the idea field as the refined idea it expresses', async () => {
-    const area = await refinementArea();
-    const legacyFile = await area.write(
-      1,
-      { pathFromArtifactsRoot: retainedBriefArtifactPath },
-      legacyBriefOf(1),
-    );
-    const agent = scriptedRuntime([{ verdict: 'approve', summary: 'approved', findings: [] }]);
-    const action = createCouncilReviewer({
-      reviewer: 'evidence',
+    ]);
+    const challenger = createChallenger({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
-      publish: () => undefined,
+      publish: (event) => area.events.push(event),
     });
 
-    await expect(action()).resolves.toBe('approve');
+    await expect(challenger()).resolves.toBe('discuss');
 
-    const context = agent.requests[0]?.context ?? '';
-    // Its problem and value read as the idea, and its project fit and scope keep their own parts.
-    expect(context).toContain('Reviewers spend time on style defects. Reviews focus on behaviour.');
-    expect(context).toContain('"projectFit": "The project already enforces checks in CI."');
-    expect(context).toContain('"feasibility": "Enable the smallest lint gate (revision 1)."');
-    // The retained shape does not leak into the reviewer's reading of the revision.
-    expect(context).not.toContain('"problem"');
-    expect(context).not.toContain('"value"');
-    expect(
-      await area.read<CouncilReport>(1, councilArtifacts.evidence.pathFromArtifactsRoot),
-    ).toEqual(
-      expect.objectContaining({
-        reviewer: 'evidence',
-        verdict: 'approve',
-        brief: legacyFile,
-        revision: 1,
-      }),
-    );
-  });
-
-  it('reviews a retained brief whose idea field stood alone without a project fit', async () => {
-    const area = await refinementArea();
-    const retainedFile = await area.write(
-      1,
-      { pathFromArtifactsRoot: retainedBriefArtifactPath },
-      previousBriefOf(1),
-    );
-    const agent = scriptedRuntime([{ verdict: 'approve', summary: 'approved', findings: [] }]);
-    const action = createCouncilReviewer({
-      reviewer: 'purpose',
-      workspace: { root: area.root },
-      runner: runnerOf(agent.runtime),
-      publish: () => undefined,
+    expect(agent.requests[0]?.context).toContain('revision 2');
+    expect(await area.read(2, challengerArtifact.pathFromArtifactsRoot)).toMatchObject({
+      verdict: 'discuss',
+      refinedIdea: revision,
+      revision: 2,
     });
-
-    await expect(action()).resolves.toBe('approve');
-
-    const context = agent.requests[0]?.context ?? '';
-    expect(context).toContain(
-      '"idea": "Reviewers spend time on style defects; a lint gate would keep reviews on behaviour."',
-    );
-    // A retained brief that carried no separate project fit reads as one that states none.
-    expect(context).toContain('"projectFit": null');
-    expect(context).toContain('"feasibility": "Enable the smallest lint gate (revision 1)."');
-    // The retained brief's supporting sections stay out of the refined idea the reviewer reads.
-    expect(context).not.toContain('"alternatives"');
-    expect(context).not.toContain('"assumptions"');
-    expect(
-      await area.read<CouncilReport>(1, councilArtifacts.purpose.pathFromArtifactsRoot),
-    ).toEqual(
-      expect.objectContaining({
-        reviewer: 'purpose',
-        verdict: 'approve',
-        brief: retainedFile,
-        revision: 1,
-      }),
-    );
   });
 
-  it('rejects an approval with unresolved findings and a nonapproval without any', async () => {
+  it('rejects an approval with unresolved concerns and a discussion without any', async () => {
     const area = await refinementArea();
-    await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    const withFindings = scriptedRuntime([
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const failing = scriptedRuntime([
       {
         verdict: 'approve',
-        summary: 'approved',
-        findings: [{ criterion: 'a', evidence: 'b', correction: 'c' }],
+        assessment: 'Approved with a concern.',
+        obstacle: null,
+        concerns: [{ concern: 'Scope', consequence: 'Broad', resolution: 'Narrow it' }],
+        suggestions: [],
       },
     ]);
-    await expect(
-      createCouncilReviewer({
-        reviewer: 'purpose',
-        workspace: { root: area.root },
-        runner: runnerOf(withFindings.runtime),
-        publish: () => undefined,
-      })(),
-    ).rejects.toThrow('while naming unresolved findings');
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(failing.runtime),
+      publish: (event) => area.events.push(event),
+    });
 
-    const withoutFindings = scriptedRuntime([
-      { verdict: 'major_rework', summary: 'rework', findings: [] },
+    await expect(challenger()).rejects.toThrow(/unresolved concerns/u);
+    await expect(area.exists('artifacts/submissions/1/cycles/1/challenger.json')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('requires the author-facing obstacle on a discussion', async () => {
+    const area = await refinementArea();
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const agent = scriptedRuntime([
+      {
+        verdict: 'discuss',
+        assessment: 'The value concern stands.',
+        obstacle: null,
+        concerns: [
+          {
+            concern: 'No evidence links lint gates to shorter reviews.',
+            consequence: 'The value claim is unsubstantiated.',
+            resolution: 'Cite a comparable project.',
+          },
+        ],
+        suggestions: [],
+      },
     ]);
-    await expect(
-      createCouncilReviewer({
-        reviewer: 'evidence',
-        workspace: { root: area.root },
-        runner: runnerOf(withoutFindings.runtime),
-        publish: () => undefined,
-      })(),
-    ).rejects.toThrow('without naming a criterion, evidence and correction');
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(challenger()).rejects.toThrow(/remaining obstacle/u);
+    expect(agent.requests[0]?.context).toContain('state the remaining obstacle plainly');
+    await expect(area.exists('artifacts/submissions/1/cycles/1/challenger.json')).resolves.toBe(
+      false,
+    );
   });
 });
 
@@ -933,7 +1098,7 @@ describe('decision publication', () => {
     return { jira: scripted.jira, calls: scripted.calls, comments, transitions };
   }
 
-  /** One publication over the supplied refinement area, selection and transition lookups. */
+  /** One publication over the supplied refinement area and controlled source. */
   function publication(
     area: Awaited<ReturnType<typeof refinementArea>>,
     jira: ReturnType<typeof source>,
@@ -954,40 +1119,63 @@ describe('decision publication', () => {
     });
   }
 
+  /** One approval-ready cycle: contributions, a revision, a response and an approving Challenger. */
+  async function approvedCycle(area: Awaited<ReturnType<typeof refinementArea>>) {
+    await area.write(1, framingArtifact.pathFromArtifactsRoot, framingFixture);
+    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
+    });
+    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: null,
+    });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const response = await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
+      disposition: 'revised',
+      response: 'I wrote the smallest lint gate.',
+      reason: null,
+      help: null,
+    });
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'approve',
+      assessment: 'Plausible way forward.',
+      obstacle: null,
+      concerns: [],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: response,
+      revision: 1,
+    });
+    return revision;
+  }
+
   it('publishes the approved refined idea, moves the item and leaves a handoff of references', async () => {
     const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
-      );
-    }
+    const revision = await approvedCycle(area);
     const jira = source();
 
     await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
 
-    // Publication uses the captured snapshot: no issue, comment or transition read reaches Jira.
+    // Publication uses the captured snapshot: no issue or comment read reaches Jira.
     expect(jira.calls.some((call) => call.startsWith('read:'))).toBe(false);
     expect(jira.calls.some((call) => call.startsWith('comments:'))).toBe(false);
     expect(jira.transitions).toEqual(['21']);
     expect(jira.comments).toHaveLength(1);
-    const published = JSON.stringify(jira.comments[0]?.body);
+    const published = commentText(jira.comments[0]?.body);
     expect(published).toContain('Approved refined idea (revision 1)');
-    expect(published.match(/Idea: /gu)).toHaveLength(1);
-    expect(published).toContain(
-      'Idea: Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
-    );
     expect(published).toContain('Project fit: The project already enforces checks in CI.');
-    expect(published).toContain('Feasibility: Enable the smallest lint gate first (revision 1).');
-    expect(published).toContain('Open questions:');
-    expect(published).toContain('- Is generated code in scope? (revision 1)');
-    expect(published).toContain('Council cycles used: 1');
+    expect(published).toContain('Conversation cycles used: 1');
     expect(published).toContain('What refinement changed: Refined idea revision 1.');
-    expect(published).not.toContain('purpose review');
+    expect(published).not.toContain('Plausible way forward.');
 
     const decision = JSON.parse(
       await readFile(
@@ -997,335 +1185,265 @@ describe('decision publication', () => {
     ) as IdeaDecisionRecord;
     expect(decision).toMatchObject({
       decision: 'approved',
-      strongestVerdict: 'approve',
-      brief: refinedIdeaFile,
+      refinedIdea: revision,
       revision: 1,
+      reason: null,
       source: { transition: { id: '21', to: 'Draft' }, status: 'Draft', commentId: 'c2' },
     });
-    expect(decision.feedback).toHaveLength(3);
     const handoff = JSON.parse(
       await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
     ) as IdeaHandoff;
     expect(handoff).toMatchObject({
       issue: { id: '10518', key: 'NEX-1' },
       capturedInput: ideaSubmissionInputFile(area.root, 1),
-      brief: refinedIdeaFile,
+      refinedIdea: revision,
     });
-    expect(handoff.purpose).toBe(
-      path.join(area.cycleDirectory(), purposeArtifact.pathFromArtifactsRoot),
+    expect(handoff.contributions).toHaveLength(2);
+    expect(handoff.challengerResults).toEqual([
+      path.join(area.cycleRoot(), challengerArtifact.pathFromArtifactsRoot),
+    ]);
+    expect(handoff.framing).toBe(
+      path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot),
     );
   });
 
-  it('publishes a retained brief written before the idea field as the refined idea it expresses', async () => {
+  it('returns an unsuitable idea with the plain reason and the latest idea', async () => {
     const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const legacyFile = await area.write(
-      1,
-      { pathFromArtifactsRoot: retainedBriefArtifactPath },
-      legacyBriefOf(1),
-    );
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', legacyFile, 1),
-      );
-    }
+    await area.write(1, framingArtifact.pathFromArtifactsRoot, framingFixture);
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
+      disposition: 'unsuitable',
+      response: 'This does not look worth pursuing.',
+      reason: 'The project already checks style in its editor, so the gate adds little.',
+      help: null,
+    });
     const jira = source();
 
-    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
-
-    const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published.match(/Idea: /gu)).toHaveLength(1);
-    expect(published).toContain(
-      'Idea: Reviewers spend time on style defects. Reviews focus on behaviour.',
-    );
-    expect(published).toContain('Project fit: The project already enforces checks in CI.');
-    expect(published).toContain('Feasibility: Enable the smallest lint gate (revision 1).');
-    expect(published).not.toContain('Problem:');
-    expect(published).not.toContain('Expected value:');
-    // Publication reads the retained artifact; it never rewrites it.
-    expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
-  });
-
-  it('returns only human-facing feedback and moves the item to the waiting status', async () => {
-    const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    await area.write(
-      1,
-      councilArtifacts.purpose,
-      councilReport('purpose', 'approve', refinedIdeaFile, 1),
-    );
-    await area.write(
-      1,
-      councilArtifacts.evidence,
-      councilReport('evidence', 'minor_corrections', refinedIdeaFile, 1),
-    );
-    await area.write(
-      1,
-      councilArtifacts.simplicity,
-      councilReport('simplicity', 'idea_not_working', refinedIdeaFile, 1),
-    );
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'returned-to-author' })).resolves.toBe(
+    await expect(publication(area, jira)({ decision: 'unsuitable' })).resolves.toBe(
       'waiting-for-feedback',
     );
 
     expect(jira.transitions).toEqual(['22']);
-    const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published).toContain('Returned for feedback: the council did not approve this idea');
+    const published = commentText(jira.comments[0]?.body);
+    expect(published).toContain('Returned for feedback: this idea does not look suitable');
     expect(published).toContain('Latest refined idea (revision 1)');
-    expect(published).toContain(
-      'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
-    );
-    expect(published).toContain('Project fit: The project already enforces checks in CI.');
-    expect(published).toContain('Feasibility: Enable the smallest lint gate first (revision 1).');
-    expect(published).toContain('What stopped approval:');
-    expect(published).toContain('- simplicity correction');
-    expect(published).toContain('back to \\"Idea\\" to resubmit it.');
-    expect(published).toContain('Council cycles used: 1');
-    expect(published).toContain('What refinement changed: Refined idea revision 1.');
-    // The reviewer's summary, verdict name and criterion label stay internal.
-    expect(published).not.toContain('simplicity review');
-    expect(published).not.toContain('idea_not_working');
-    expect(published).not.toContain('simplicity criterion');
-    // The return reports the refusal to approve, not a judgment of the idea's worth.
-    expect(published).not.toContain('worthwhile');
-    // Other reviewers' feedback stays in artifacts.
-    expect(published).not.toContain('evidence correction');
-    // Raw council evidence and code citations stay in artifacts.
-    expect(published).not.toContain('simplicity evidence');
-    expect(await area.exists(ideaHandoffFile)).toBe(false);
-    expect(
-      JSON.parse(
-        await readFile(
-          path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
-          'utf8',
-        ),
-      ),
-    ).toMatchObject({ decision: 'returned-to-author', strongestVerdict: 'idea_not_working' });
-  });
-
-  it('reports exhaustion with the latest idea, cycles used, change summary and corrections', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'minor' });
-    const refinedIdeaFile = await area.write(2, refinedIdeaArtifact, refinedIdeaOf(2));
-    await area.write(
-      2,
-      councilArtifacts.purpose,
-      councilReport('purpose', 'minor_corrections', refinedIdeaFile, 2),
-    );
-    await area.write(
-      2,
-      councilArtifacts.evidence,
-      councilReport('evidence', 'minor_corrections', refinedIdeaFile, 2),
-    );
-    await area.write(
-      2,
-      councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', refinedIdeaFile, 2),
-    );
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'unable-to-converge' })).resolves.toBe(
-      'waiting-for-feedback',
-    );
-
-    const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published).toContain(
-      'Attempts exhausted after 2 cycles: the council did not approve this idea.',
-    );
-    expect(published).toContain('Latest refined idea (revision 2)');
-    expect(published).toContain(
-      'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
-    );
-    expect(published).toContain('Open questions:');
-    expect(published).toContain('- Is generated code in scope? (revision 2)');
-    // The returned comment never publishes the research detail the refined idea leaves out.
-    expect(published).not.toContain('Strongest supporting evidence');
-    expect(published).not.toContain('Meaningful alternatives');
-    expect(published).toContain('What refinement changed: Refined idea revision 2.');
-    expect(published).toContain('Council cycles used: 2');
-    expect(published).toContain('What stopped approval:');
-    // Every non-approving reviewer's material objection reaches the exhausted return.
-    expect(published).toContain('- purpose correction');
-    expect(published).toContain('- evidence correction');
-    // Criterion labels, verdict names and raw evidence stay in the artifacts.
-    expect(published).not.toContain('purpose criterion');
-    expect(published).not.toContain('evidence criterion');
-    expect(published).not.toContain('minor_corrections');
-    expect(published).not.toContain('purpose evidence');
-    expect(published).not.toContain('evidence evidence');
-    expect(jira.transitions).toEqual(['22']);
-    expect(
-      JSON.parse(
-        await readFile(
-          path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
-          'utf8',
-        ),
-      ),
-    ).toMatchObject({ decision: 'unable-to-converge', strongestVerdict: 'minor_corrections' });
-  });
-
-  it('keeps every distinct material correction once on an exhausted return', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'minor' });
-    const refinedIdeaFile = await area.write(2, refinedIdeaArtifact, refinedIdeaOf(2));
-    const shared = {
-      criterion: 'internal criterion',
-      evidence: 'internal evidence',
-      correction: 'Narrow the promise to the smallest useful scope.',
-    };
-    await area.write(2, councilArtifacts.purpose, {
-      ...councilReport('purpose', 'minor_corrections', refinedIdeaFile, 2),
-      findings: [shared],
-    });
-    await area.write(2, councilArtifacts.evidence, {
-      ...councilReport('evidence', 'minor_corrections', refinedIdeaFile, 2),
-      findings: [
-        shared,
-        {
-          criterion: 'another internal criterion',
-          evidence: 'another internal evidence',
-          correction: 'Say how the idea differs from the existing check.',
-        },
-      ],
-    });
-    await area.write(
-      2,
-      councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', refinedIdeaFile, 2),
-    );
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'unable-to-converge' })).resolves.toBe(
-      'waiting-for-feedback',
-    );
-
-    const published = JSON.stringify(jira.comments[0]?.body);
-    // Two reviewers requesting the same change are one request; distinct corrections all stay.
-    expect(published.match(/Narrow the promise to the smallest useful scope\./gu)).toHaveLength(1);
-    expect(published).toContain('Say how the idea differs from the existing check.');
-    // Criterion labels and evidence never reach the author.
-    expect(published).not.toContain('internal criterion');
-    expect(published).not.toContain('internal evidence');
-  });
-
-  it('reuses a decision it already recorded instead of publishing again', async () => {
-    const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
-      );
-    }
-    const jira = source();
-    await publication(area, jira)({ decision: 'approved' });
-    const comments = jira.comments.length;
-
-    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
-
-    expect(jira.comments).toHaveLength(comments);
-    expect(jira.transitions).toEqual(['21']);
-  });
-
-  it('completes an interrupted approval handoff when the saved decision is retried', async () => {
-    const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    for (const reviewer of councilReviewers) {
-      await area.write(
-        1,
-        councilArtifacts[reviewer],
-        councilReport(reviewer, 'approve', refinedIdeaFile, 1),
-      );
-    }
-    const jira = source();
-    // An obstruction where the handoff belongs makes the approval's handoff write fail after the
-    // decision, its comment and its transition were saved.
-    await mkdir(path.join(area.root, ideaHandoffFile), { recursive: true });
-    await expect(publication(area, jira)({ decision: 'approved' })).rejects.toThrow();
-    expect(
+    expect(published).toContain('Conversation cycles used: 1');
+    expect(published).toContain('Why it was returned:');
+    expect(published).toContain('The project already checks style in its editor');
+    expect(published).toContain('to "Idea" to resubmit it');
+    expect(published).not.toContain('This does not look worth pursuing.');
+    expect(await area.exists('artifacts/handoff.json')).toBe(false);
+    const decision = JSON.parse(
       await readFile(
         path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
         'utf8',
       ),
-    ).toContain('"approved"');
-
-    // The obstruction goes away; the repeated publication establishes the handoff before it
-    // reports the same outcome, and it repeats none of the source updates.
-    await rm(path.join(area.root, ideaHandoffFile), { recursive: true, force: true });
-    const comments = jira.comments.length;
-    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
-
-    expect(jira.comments).toHaveLength(comments);
-    expect(jira.transitions).toEqual(['21']);
-    const handoff = JSON.parse(
-      await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
-    ) as IdeaHandoff;
-    expect(handoff).toMatchObject({
-      issue: { id: '10518', key: 'NEX-1' },
-      brief: refinedIdeaFile,
-      decision: path.join(
-        area.root,
-        'artifacts/submissions/1',
-        decisionArtifact.pathFromArtifactsRoot,
-      ),
+    ) as IdeaDecisionRecord;
+    expect(decision).toMatchObject({
+      decision: 'unsuitable',
+      refinedIdea: revision,
+      editor: path.join(area.cycleRoot(), editorResponseArtifact.pathFromArtifactsRoot),
     });
   });
 
-  it('refuses an approval the council did not grant and a council set for another revision', async () => {
+  it('asks the author for the essential decision when the framing found one', async () => {
     const area = await refinementArea();
-    await area.write(1, purposeArtifact, purposeReport);
-    await area.write(1, researchArtifact, researchReport);
-    const refinedIdeaFile = await area.write(1, refinedIdeaArtifact, refinedIdeaOf(1));
-    await area.write(
-      1,
-      councilArtifacts.purpose,
-      councilReport('purpose', 'approve', refinedIdeaFile, 1),
+    await area.write(1, framingArtifact.pathFromArtifactsRoot, {
+      framing: 'The author wants faster checks without saying how far they should reach.',
+      questions: [],
+      authorDecision: { question: 'Which repositories must the gate cover at launch?' },
+    });
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'author-decision-needed' })).resolves.toBe(
+      'waiting-for-feedback',
     );
-    await area.write(
-      1,
-      councilArtifacts.evidence,
-      councilReport('evidence', 'major_rework', refinedIdeaFile, 1),
+
+    const published = commentText(jira.comments[0]?.body);
+    expect(published).toContain('Author decision needed');
+    expect(published).toContain('Captured idea (no refined idea revision yet)');
+    expect(published).toContain('Add a lint gate');
+    expect(published).toContain('Which repositories must the gate cover at launch?');
+    // A return that stopped at the framing still reports what refinement reached.
+    expect(published).toContain(
+      'What refinement changed: The editor framed the author\u2019s proposal shown above; ' +
+        'refinement stopped before a refined idea revision was written.',
     );
-    await area.write(
-      1,
-      councilArtifacts.simplicity,
-      councilReport('simplicity', 'approve', refinedIdeaFile, 1),
+    expect(published).not.toContain('Conversation cycles used: 0');
+    expect(jira.transitions).toEqual(['22']);
+  });
+
+  it('reports exhausted attempts with the author-facing obstacle and no internal concerns', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const response = await area.write(2, editorResponseArtifact.pathFromArtifactsRoot, {
+      disposition: 'answered',
+      response: 'The gate runs on changed files only.',
+      reason: null,
+      help: null,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The answer does not resolve the value concern.',
+      obstacle: 'Nothing yet shows the gate is worth the change.',
+      concerns: [
+        {
+          concern: 'src/task-engine/actions/verify/index.ts shows the value claim lacks evidence.',
+          consequence: 'The idea may not be worth developing.',
+          resolution: 'Cite comparable projects in the refined idea, not in the answer.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: response,
+      revision: 1,
+    });
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'attempts-exhausted' })).resolves.toBe(
+      'waiting-for-feedback',
     );
+
+    const published = commentText(jira.comments[0]?.body);
+    expect(published).toContain('Attempts exhausted after 2 cycles');
+    expect(published).toContain('Conversation cycles used: 2');
+    expect(published).toContain('What refinement changed: Refined idea revision 1.');
+    expect(published).toContain('Nothing yet shows the gate is worth the change.');
+    // The internal concerns and their editor-directed resolutions stay in the artifact.
+    expect(published).not.toContain('verify/index.ts');
+    expect(published).not.toContain('Cite comparable projects in the refined idea');
+    expect(published).not.toContain('The answer does not resolve the value concern.');
+    const decision = JSON.parse(
+      await readFile(
+        path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
+        'utf8',
+      ),
+    ) as IdeaDecisionRecord;
+    expect(decision).toMatchObject({
+      decision: 'attempts-exhausted',
+      revision: 1,
+      reason: 'Nothing yet shows the gate is worth the change.',
+      challenger: path.join(area.cycleRoot(2), challengerArtifact.pathFromArtifactsRoot),
+    });
+  });
+
+  it('refuses an exhausted return without a plain statement of the remaining obstacle', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'A concern remains.',
+      obstacle: null,
+      concerns: [
+        {
+          concern: 'The value claim still lacks evidence.',
+          consequence: 'The idea may not be worth developing.',
+          resolution: 'Cite comparable projects.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'attempts-exhausted' })).rejects.toThrow(
+      /remaining obstacle/u,
+    );
+    expect(jira.comments).toEqual([]);
+  });
+
+  it('reuses a decision it already recorded instead of publishing again', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const jira = source();
+    const decide = publication(area, jira);
+
+    await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
+    await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
+
+    expect(jira.comments).toHaveLength(1);
+    expect(jira.transitions).toEqual(['21']);
+  });
+
+  it('refuses an approval the Challenger did not grant for this exact revision', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    // A Challenger result bound to another revision cannot authorize publication.
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'approve',
+      assessment: 'Approved elsewhere.',
+      obstacle: null,
+      concerns: [],
+      suggestions: [],
+      refinedIdea: path.join(area.cycleRoot(), 'another-revision.json'),
+      editorResponse: null,
+      revision: 1,
+    });
     const jira = source();
 
     await expect(publication(area, jira)({ decision: 'approved' })).rejects.toThrow(
-      'Approval requires every council reviewer to approve',
+      /exact refined idea revision/u,
     );
     expect(jira.comments).toEqual([]);
-
-    // A council result bound to another refined idea revision invalidates the set.
-    await area.write(
-      1,
-      councilArtifacts.evidence,
-      councilReport('evidence', 'approve', path.join(area.root, 'other.json'), 2),
-    );
-    await expect(publication(area, jira)({ decision: 'unable-to-converge' })).rejects.toThrow(
-      'not the current',
-    );
   });
-});
 
-describe('idea artifact declarations', () => {
-  it('accept the documents the actions write', async () => {
-    expect(ideaInputDeclaration.schema.safeParse(capturedInput).success).toBe(true);
-    expect(
-      ideaRoundPlanDeclaration.schema.safeParse({ submission: 1, cycle: 1, route: 'new', profiles })
-        .success,
-    ).toBe(true);
+  it('refuses an unsuitable return the editor did not explain', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'unsuitable' })).rejects.toThrow(
+      /unsuitable/u,
+    );
+    expect(jira.comments).toEqual([]);
+  });
+
+  it('reports a refined idea that the first edit found unsuitable without a revision', async () => {
+    const area = await refinementArea();
+    await area.write(1, framingArtifact.pathFromArtifactsRoot, {
+      framing: 'The author proposes a gate the project already applies in its editor.',
+      questions: [],
+      authorDecision: null,
+    });
+    await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
+      disposition: 'unsuitable',
+      response: 'The gate adds little here.',
+      reason: 'The project already runs the same checks in the editor.',
+      help: null,
+    });
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'unsuitable' })).resolves.toBe(
+      'waiting-for-feedback',
+    );
+
+    const published = commentText(jira.comments[0]?.body);
+    expect(published).toContain('Captured idea (no refined idea revision yet)');
+    expect(published).toContain('The editor\u2019s framing of it:');
+    expect(published).toContain('The project already runs the same checks in the editor.');
+    expect(published).toContain(
+      'What refinement changed: The editor framed the author\u2019s proposal shown above; ' +
+        'refinement stopped before a refined idea revision was written.',
+    );
   });
 });

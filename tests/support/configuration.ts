@@ -113,14 +113,12 @@ export function nexusConfiguration(): NexusConfiguration {
     },
     ideaRefinement: {
       profiles: {
-        purposeVerifier: 'nexus-astra',
+        editor: 'nexus-astra',
         researcher: 'nexus-astra',
-        briefWriter: 'nexus-astra',
-        purposeCouncil: 'nexus-review',
-        evidenceCouncil: 'nexus-review',
-        simplicityCouncil: 'nexus-review',
+        projectGuide: 'nexus-astra',
+        challenger: 'nexus-review',
       },
-      maxCouncilCycles: 3,
+      maxCycles: 3,
     },
     notifications: {
       provider: 'sns',

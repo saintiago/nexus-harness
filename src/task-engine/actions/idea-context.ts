@@ -3,35 +3,35 @@ import { z } from 'zod';
 import type { IdeaRole } from '../../agent-runtime/index.js';
 import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
-import type { ArtifactDeclaration } from './artifacts.js';
-import { readRefinedIdeaRevision } from './brief-writer/artifacts.js';
+import { challengerArtifact } from './challenger/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from './documents.js';
+import {
+  framingArtifact,
+  editorHelpArtifact,
+  editorResponseArtifact,
+  refinedIdeaArtifact,
+  retainedBriefArtifactPath,
+} from './idea-editor/artifacts.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
+  latestRefinedIdea,
   listIdeaCycles,
   listIdeaSubmissions,
-  readCycleArtifact,
-  readSubmissionArtifact,
 } from './idea-storage.js';
+import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
-import { purposeArtifact } from './purpose-verifier/artifacts.js';
-import { researchArtifact } from './researcher/artifacts.js';
-import {
-  councilArtifacts,
-  councilReviewers,
-  type CouncilReport,
-  type CouncilReviewer,
-} from './review-council/artifacts.js';
+import { researchArtifact, researchFollowUpArtifact } from './researcher/artifacts.js';
 import type { IdeaInput } from './select-idea/artifacts.js';
 import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
 
 /**
- * The context every idea refinement role receives: the current captured idea as the authoritative
- * proposal, the prepared project worktree, the retained workspace history as readable references
- * and the connected project's root AGENTS.md when present. A council reviewer omits the other
- * reviewers' current-cycle results, so it never reads a pending verdict before submitting its own.
+ * The context every idea refinement role receives: the current captured author input as the
+ * authoritative proposal, the prepared project worktree, the retained workspace history as
+ * readable references and the connected project's root AGENTS.md when present. The shared texts
+ * below have this one runtime home; every invocation carries each of them once, ahead of its
+ * role-specific context.
  */
 
 /**
@@ -46,130 +46,116 @@ export const ideaDefinitionText = [
 
 /**
  * The shared idea-stage guidance supplied to every idea refinement role invocation with the
- * definition. It keeps refinement on the idea as the author proposed it, states what the stage
- * decides and leaves exact selection, configuration and implementation to Requirements and
- * Design. An initial submission may lack parts of the definition; refinement develops them, while
- * a finished refined idea must still let the council decide.
+ * definition. It keeps the conversation on the idea as the author proposed it, keeps the project's
+ * current design open to change and separates helpful suggestions from concerns that prevent
+ * recommending pursuit.
  */
 export const ideaStageGuidanceText = [
-  'Idea stage (shared by every idea refinement role): an initial submission may lack the proposed',
-  'change, why it matters or the principle behind it; that is not an intake rejection, because',
-  'refinement develops those elements. A finished refined idea still needs enough clarity and',
-  'substance for the council\u2019s idea-stage decision, and the council may object when it cannot',
-  'decide. Work on the idea as the author proposed it: preserve that concept and intent rather than',
-  'replacing it with a different or more generic need. The stage decides whether the idea is worth',
-  'developing and its smallest useful scope. Exact selection, configuration and implementation',
-  'belong to Requirements and Design; architecture documents are evidence of existing capabilities',
-  'and constraints, not design decisions the idea must settle.',
+  'Idea stage (shared by every idea refinement role): captured author text and human clarifications',
+  'govern what is proposed; retain comment authorship, and treat previous agent publications,',
+  'interpretations and approvals as revisable history rather than author instructions. Distinguish',
+  'the project\u2019s enduring purpose and actual constraints from current design choices: an idea',
+  'may propose changing those choices, and a conflict with today\u2019s architecture alone is not',
+  'grounds to narrow or reject an architectural idea. Ask how a contribution improves the idea or',
+  'shows why it should not proceed; separate helpful suggestions from concerns that prevent',
+  'recommending pursuit, and explain the consequence for value, project fit or feasibility of any',
+  'blocker. A preferable alternative alone is not a veto, and uncertainty alone does not imply',
+  'infeasibility.',
 ].join('\n');
 
 /**
  * The one shared communication rule supplied to every idea refinement role invocation with the
- * definition and stage guidance. Each role writes a short, plain turn for the next role, gives
- * only the observations and citations that bear on the idea-stage decision, and leaves rhetorical
+ * definition and stage guidance. Each role makes short, plain, concrete observations, questions,
+ * answers or corrections addressed to the next role, accepts valid rebuttals and leaves rhetorical
  * and implementation prose out.
  */
 export const ideaCommunicationText = [
-  'Idea communication (shared by every idea refinement role): write short, plain, concrete',
-  'sentences addressed to the next role, one point per statement. Lead with what the idea proposes,',
-  'why it matters or a consequential question, and give only your strongest relevant observations',
-  'and source citations. Research and cite relevant sources for substantive claims, but do not',
-  'fact-check incidental wording or nitpick details that cannot change the idea-stage decision.',
-  'Genuine skepticism, useful research and rejecting an unsuitable idea are welcome; rhetorical',
-  'praise, self-assessments of honesty or rigor, repeated claims, abstract labels, long code or file',
-  'inventories and technical detail that belongs to Requirements and Design are not. Preserve the',
-  'author\u2019s idea and your role\u2019s perspective.',
+  'Idea communication (shared by every idea refinement role): make short, concrete observations,',
+  'questions, answers or corrections, and address the other role\u2019s point directly. Accept valid',
+  'rebuttals and withdraw mistaken concerns. Use relevant evidence for consequential factual',
+  'claims, but do not fact-check incidental wording or demand implementation details to approve an',
+  'idea. Avoid rhetorical language and repeated reports; give only the few points that bear on the',
+  'decision to pursue the idea.',
 ].join('\n');
 
 /** The worktree directory under a refinement area (Workspace design). */
 const worktreeDirectory = 'worktree';
 
-/** One retained cycle artifact a role can read, with the label its history line carries. */
-type CycleHistoryEntry = {
+/**
+ * The retained cycle artifacts the history lists, with the label each history line carries and the
+ * role that owns it. The paths earlier implementations wrote are listed too, so their artifacts
+ * stay readable history without being rewritten.
+ */
+const cycleHistory: readonly {
+  readonly relative: string;
   readonly label: string;
-  /** The reviewer whose pending result this is, or null for shared history. */
-  readonly pendingReviewer: CouncilReviewer | null;
-  /**
-   * Reads the artifact and names the file it was found at; a refined idea also reads the retained
-   * path and shapes written before it.
-   */
-  readonly read: (
-    cycleRoot: string,
-  ) => Promise<{ readonly file: string; readonly value: unknown } | null>;
-};
-
-/** One history entry that reads its declared artifact as it is stored. */
-function artifactEntry(
-  label: string,
-  pendingReviewer: CouncilReviewer | null,
-  declaration: ArtifactDeclaration,
-): CycleHistoryEntry {
-  return {
-    label,
-    pendingReviewer,
-    read: async (cycleRoot) => {
-      const value = await readCycleArtifact(cycleRoot, declaration);
-      return value === null
-        ? null
-        : { file: path.join(cycleRoot, declaration.pathFromArtifactsRoot), value };
-    },
-  };
-}
-
-/** The cycle artifacts the retained history lists, in cycle order. */
-const cycleHistory: readonly CycleHistoryEntry[] = [
-  artifactEntry('purpose assessment', null, purposeArtifact),
-  artifactEntry('research report', null, researchArtifact),
+  readonly role: IdeaRole;
+}[] = [
+  { relative: framingArtifact.pathFromArtifactsRoot, label: 'framing', role: 'idea-editor' },
   {
+    relative: refinedIdeaArtifact.pathFromArtifactsRoot,
     label: 'refined idea revision',
-    pendingReviewer: null,
-    read: async (cycleRoot) => {
-      const read = await readRefinedIdeaRevision(cycleRoot);
-      return read === null ? null : { file: read.path, value: read.value };
-    },
+    role: 'idea-editor',
   },
-  ...councilReviewers.map((reviewer) =>
-    artifactEntry(`${reviewer} council result`, reviewer, councilArtifacts[reviewer]),
-  ),
+  {
+    relative: editorResponseArtifact.pathFromArtifactsRoot,
+    label: 'editor response',
+    role: 'idea-editor',
+  },
+  {
+    relative: editorHelpArtifact.pathFromArtifactsRoot,
+    label: 'focused help request',
+    role: 'idea-editor',
+  },
+  { relative: researchArtifact.pathFromArtifactsRoot, label: 'research', role: 'researcher' },
+  {
+    relative: researchFollowUpArtifact.pathFromArtifactsRoot,
+    label: 'focused research',
+    role: 'researcher',
+  },
+  {
+    relative: projectGuideArtifact.pathFromArtifactsRoot,
+    label: 'project guidance',
+    role: 'project-guide',
+  },
+  {
+    relative: projectGuideFollowUpArtifact.pathFromArtifactsRoot,
+    label: 'focused project guidance',
+    role: 'project-guide',
+  },
+  {
+    relative: challengerArtifact.pathFromArtifactsRoot,
+    label: 'challenger result',
+    role: 'challenger',
+  },
+  // Artifacts retained from earlier implementations remain readable history.
+  { relative: retainedBriefArtifactPath, label: 'refined idea revision', role: 'idea-editor' },
+  { relative: 'purpose.json', label: 'purpose assessment', role: 'project-guide' },
+  { relative: 'research.json', label: 'research report', role: 'researcher' },
+  { relative: 'council/purpose.json', label: 'council result', role: 'challenger' },
+  { relative: 'council/evidence.json', label: 'council result', role: 'challenger' },
+  { relative: 'council/simplicity.json', label: 'council result', role: 'challenger' },
 ];
 
-/** True when this history line is a concurrent reviewer's pending result. */
-function isPending(
-  entry: CycleHistoryEntry,
-  plan: IdeaRoundPlan,
-  options: {
-    readonly reviewer: CouncilReviewer | null;
-    readonly submission: number;
-    readonly cycle: number;
-  },
-): boolean {
-  return (
-    entry.pendingReviewer !== null &&
-    entry.pendingReviewer !== options.reviewer &&
-    options.submission === plan.submission &&
-    options.cycle === plan.cycle
-  );
-}
-
 /**
- * The retained workspace history as readable references: every submission's captured input and
- * every cycle's artifacts, in history order. References are for selective reading; roles never
+ * The retained workspace history as readable references: every submission's captured author input
+ * and every cycle's artifacts, in history order. References are for selective reading; roles never
  * rewrite them and open only the artifacts that bear on their current decision.
  */
 export async function retainedHistoryText(
   root: string,
   plan: IdeaRoundPlan,
-  options: { readonly reviewer: CouncilReviewer | null },
+  options: { readonly omitCurrentCycleOf: IdeaRole | null },
 ): Promise<string> {
   const submissions = await listIdeaSubmissions(root);
   if (submissions.length === 0) {
     return 'Retained workspace history: none yet.';
   }
   const lines = [
-    'Retained workspace history (the author\u2019s earlier submissions, refined ideas, purpose and',
-    'research reports and council feedback). Read it selectively: open only the artifacts that',
-    'bear on your current decision, and use the latest refined idea\u2019s cumulative changeSummary',
-    'to understand what refinement has already changed:',
+    'Retained workspace history (the author\u2019s earlier submissions, the editor\u2019s framing and',
+    'responses, refined idea revisions, contributions and Challenger results). Read it selectively:',
+    'open only the artifacts that bear on your current decision, and use the latest refined idea\u2019s',
+    'cumulative changeSummary to understand what refinement has already changed:',
   ];
   for (const submission of submissions) {
     lines.push(`- Submission ${String(submission)}:`);
@@ -177,17 +163,27 @@ export async function retainedHistoryText(
     for (const cycle of await listIdeaCycles(root, submission)) {
       const cycleRoot = ideaCycleDirectory(root, submission, cycle);
       for (const entry of cycleHistory) {
-        if (isPending(entry, plan, { reviewer: options.reviewer, submission, cycle })) {
+        if (
+          options.omitCurrentCycleOf === entry.role &&
+          submission === plan.submission &&
+          cycle === plan.cycle
+        ) {
           continue;
         }
-        const found = await entry.read(cycleRoot);
-        if (found !== null) {
-          lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${found.file}`);
+        const file = path.join(cycleRoot, entry.relative);
+        if ((await readDocumentText(file, 'Artifact')) === null) {
+          continue;
         }
+        lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${file}`);
       }
     }
     // The decision is a submission-level artifact, not a cycle-level one.
-    if ((await readSubmissionArtifact(root, submission, decisionArtifact)) !== null) {
+    if (
+      (await readDocumentText(
+        ideaSubmissionArtifactFile(root, submission, decisionArtifact),
+        'Artifact',
+      )) !== null
+    ) {
       lines.push(
         `  - decision record: ${ideaSubmissionArtifactFile(root, submission, decisionArtifact)}`,
       );
@@ -198,14 +194,33 @@ export async function retainedHistoryText(
 
 /**
  * The current captured idea as invocation context. The captured input is authoritative for what
- * the author now proposes; the worktree is where the connected project is read.
+ * the author now proposes; the worktree is where the connected project is read. The current
+ * framing or refined idea revision is supplied with it directly, and the retained history keeps
+ * the rest readable by reference.
  */
-export function capturedIdeaText(root: string, plan: IdeaRoundPlan, input: IdeaInput): string {
+export async function capturedIdeaText(
+  root: string,
+  plan: IdeaRoundPlan,
+  input: IdeaInput,
+): Promise<string> {
+  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
+  const framing = await readDocumentText(
+    path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
+    'Artifact',
+  );
+  const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',
-    'submissions, refined ideas and council feedback are history, not the current proposal.',
+    'submissions, refined ideas and contributions are history, not the current proposal.',
     JSON.stringify({ issue: input.issue, conversation: input.conversation }, null, 2),
+    ...(framing === null ? [] : [`The editor\u2019s framing of this submission:\n${framing}`]),
+    ...(revision === null
+      ? []
+      : [
+          `The refined idea revision in force (${revision.path}, revision ` +
+            `${String(revision.value.revision)}):\n${JSON.stringify(revision.value, null, 2)}`,
+        ]),
     `Captured input artifact: ${ideaSubmissionInputFile(root, plan.submission)}`,
     `Connected project worktree: ${path.join(root, worktreeDirectory)}`,
   ].join('\n');
@@ -340,24 +355,4 @@ export function publishIdeaOutcome(settings: {
       artifact: { path: settings.artifact },
     }),
   );
-}
-
-/** The council results of one cycle, in reviewer order; a missing result is an error. */
-export async function cycleCouncilReports(
-  root: string,
-  plan: IdeaRoundPlan,
-): Promise<CouncilReport[]> {
-  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-  const reports: CouncilReport[] = [];
-  for (const reviewer of councilReviewers) {
-    const report = await readCycleArtifact(cycleRoot, councilArtifacts[reviewer]);
-    if (report === null) {
-      throw new Error(
-        `No ${reviewer} council result exists for submission ${String(plan.submission)} ` +
-          `cycle ${String(plan.cycle)}.`,
-      );
-    }
-    reports.push(report);
-  }
-  return reports;
 }

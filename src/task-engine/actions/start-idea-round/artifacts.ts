@@ -3,8 +3,8 @@ import { ideaRoles } from '../../../agent-runtime/index.js';
 import type { RecordDeclaration } from '../records.js';
 
 /**
- * StartIdeaRound's current-round record: the active submission, the open council cycle, the route
- * that opened it and the role profiles that cycle uses. The record selects the submission's
+ * StartIdeaRound's current-round record: the active submission, the open conversation cycle, the
+ * route that opened it and the role profiles that cycle uses. The record selects the submission's
  * artifact directory, so it sits in the refinement area's state directory beside the retained
  * submission history and can be read before any cycle artifact is resolved.
  */
@@ -13,7 +13,7 @@ import type { RecordDeclaration } from '../records.js';
 export const ideaRoundPlanFile = 'state/current-round.json';
 
 /** The routes XState supplies when it enters StartIdeaRound. */
-export const ideaRoutes = ['new', 'minor', 'major'] as const;
+export const ideaRoutes = ['new', 'next'] as const;
 
 export type IdeaRoute = (typeof ideaRoutes)[number];
 

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { IdeaRole } from '../../../agent-runtime/index.js';
 import { actionOutcomeEvent, type EventPublisher } from '../../index.js';
+import { challengerArtifact } from '../challenger/artifacts.js';
 import {
   ensureIdeaCycle,
   ideaCycleDirectory,
@@ -10,11 +11,6 @@ import {
   submissionDecided,
   writeIdeaInput,
 } from '../idea-storage.js';
-import {
-  evidenceCouncilArtifact,
-  purposeCouncilArtifact,
-  simplicityCouncilArtifact,
-} from '../review-council/artifacts.js';
 import { readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
 import type { IdeaInput } from '../select-idea/artifacts.js';
 import {
@@ -25,16 +21,19 @@ import {
 } from './artifacts.js';
 
 /**
- * StartIdeaRound plans and opens one council cycle. XState supplies the route it took after
- * collecting the council results: "new" opens the next submission at cycle 1 with all six roles,
- * "minor" repeats the writer and the council, and "major" repeats purpose, research, the
- * writer and the council. The action reads the refinement area's retained history, opens the next
- * cycle and replaces the current-round record. The configured council-cycle limit bounds internal
- * work: a route that would exceed it returns exhausted without opening a cycle.
+ * StartIdeaRound plans and opens one conversation cycle. XState supplies the route it took: "new"
+ * opens the next submission at cycle 1, and "next" opens the next cycle of the active submission
+ * after the Challenger asked to discuss. The action reads the refinement area's retained history,
+ * records the four role profiles the cycle runs and replaces the current-round record. The
+ * configured cycle limit bounds the conversation: a route that would exceed it returns exhausted
+ * without opening a cycle, so approval at the limit still succeeds.
  *
  * Repeating a route that opened the current cycle (a restarted invocation) reuses that cycle
- * instead of opening another. A missing or invalid current plan is an error for a correction
- * route; earlier submissions and cycles are retained in place as history.
+ * instead of opening another. The new route supersedes a retained plan it cannot use — one an
+ * earlier implementation saved under its own schema, or one interrupted mid-write — by opening the
+ * next numbered submission over the retained history. A missing or unusable current plan is an
+ * error for the next route, which must continue the conversation it planned; earlier submissions
+ * and cycles remain in place as history.
  */
 
 export type StartIdeaRoundSettings = {
@@ -44,7 +43,7 @@ export type StartIdeaRoundSettings = {
   readonly input: IdeaInput;
   /** The configured profile of each idea refinement role. */
   readonly profiles: Readonly<Record<IdeaRole, string>>;
-  /** The configured maximum number of council cycles per selection. */
+  /** The configured maximum number of conversation cycles per selection. */
   readonly maxCycles: number;
   readonly publish: EventPublisher;
 };
@@ -55,7 +54,7 @@ function routeOf(input: unknown): IdeaRoute {
     typeof input === 'object' && input !== null
       ? (input as { readonly route?: unknown }).route
       : undefined;
-  if (route === 'new' || route === 'minor' || route === 'major') {
+  if (route === 'new' || route === 'next') {
     return route;
   }
   throw new Error(
@@ -63,24 +62,10 @@ function routeOf(input: unknown): IdeaRoute {
   );
 }
 
-/** The roles one route's cycle runs: the writer and council, or every idea role. */
-function profilesForRoute(
-  route: IdeaRoute,
-  profiles: Readonly<Record<IdeaRole, string>>,
-): Partial<Record<IdeaRole, string>> {
-  const writerAndCouncil: Partial<Record<IdeaRole, string>> = {
-    'brief-writer': profiles['brief-writer'],
-    'purpose-council': profiles['purpose-council'],
-    'evidence-council': profiles['evidence-council'],
-    'simplicity-council': profiles['simplicity-council'],
-  };
-  return route === 'minor'
-    ? writerAndCouncil
-    : {
-        'purpose-verifier': profiles['purpose-verifier'],
-        researcher: profiles['researcher'],
-        ...writerAndCouncil,
-      };
+/** True when one cycle already carries the Challenger's result. */
+async function cycleChallenged(root: string, submission: number, cycle: number): Promise<boolean> {
+  const cycleRoot = ideaCycleDirectory(root, submission, cycle);
+  return (await readCycleArtifact(cycleRoot, challengerArtifact)) !== null;
 }
 
 /** Create StartIdeaRound over the refinement area it plans. */
@@ -98,7 +83,7 @@ export function createStartIdeaRound(
         round: null,
         cycle: plan.cycle,
         outcome: 'opened',
-        detail: `submission ${String(plan.submission)} · ${Object.keys(plan.profiles).length} roles`,
+        detail: `submission ${String(plan.submission)} · ${String(Object.keys(plan.profiles).length)} roles`,
         artifact: { path: planFile },
       }),
     );
@@ -115,7 +100,7 @@ export function createStartIdeaRound(
       submission,
       cycle: 1,
       route: 'new',
-      profiles: profilesForRoute('new', settings.profiles),
+      profiles: settings.profiles,
     };
     await ensureIdeaCycle(root, submission, plan.cycle);
     await saveCurrentPlan(planFile, plan);
@@ -123,32 +108,47 @@ export function createStartIdeaRound(
   }
 
   /** Open the next cycle of the active submission, or report the configured cycle limit. */
-  async function openCycle(route: IdeaRoute, current: IdeaRoundPlan): Promise<string> {
+  async function openCycle(current: IdeaRoundPlan): Promise<string> {
     const cycle = current.cycle + 1;
     if (cycle > settings.maxCycles) {
       const reason =
-        `The configured maximum of ${String(settings.maxCycles)} council ` +
+        `The configured maximum of ${String(settings.maxCycles)} conversation ` +
         `cycle${settings.maxCycles === 1 ? '' : 's'} for this selection is reached; another ` +
-        'revision would exceed it.';
+        'cycle would exceed it.';
       settings.publish({ source: 'start-idea-round', type: 'exhausted', data: { reason } });
       return 'exhausted';
     }
     const plan: IdeaRoundPlan = {
       submission: current.submission,
       cycle,
-      route,
-      profiles: profilesForRoute(route, settings.profiles),
+      route: 'next',
+      profiles: settings.profiles,
     };
     await ensureIdeaCycle(root, plan.submission, plan.cycle);
     await saveCurrentPlan(planFile, plan);
     return opened(plan);
   }
 
+  /**
+   * The retained plan the new route can reuse, or null. A plan an earlier implementation saved
+   * satisfies a different record shape, and a plan interrupted mid-write cannot be used at all:
+   * neither can continue a conversation, so the new route supersedes the record by opening the next
+   * numbered submission and keeps every earlier submission as history. The next route reads the
+   * plan strictly, because its conversation cannot continue without it.
+   */
+  async function reusablePlan(): Promise<IdeaRoundPlan | null> {
+    try {
+      return await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
+    } catch {
+      return null;
+    }
+  }
+
   return async (input?: unknown) => {
     const route = routeOf(input);
-    const current = await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
 
     if (route === 'new') {
+      const current = await reusablePlan();
       if (
         current !== null &&
         current.route === 'new' &&
@@ -161,29 +161,19 @@ export function createStartIdeaRound(
       return openSubmission();
     }
 
+    const current = await readCurrentPlan(planFile, ideaRoundPlanDeclaration);
     if (current === null) {
       throw new Error(
-        `No idea round plan exists at "${planFile}"; the ${route} route needs an opened submission.`,
+        `No idea round plan exists at "${planFile}"; the next route needs an opened submission.`,
       );
     }
     if (
       current.route === route &&
-      !(await cycleReviewed(root, current.submission, current.cycle))
+      !(await cycleChallenged(root, current.submission, current.cycle))
     ) {
-      // The route that opened this cycle is repeated before its council reported; reuse it.
+      // The route that opened this cycle is repeated before its Challenger reported; reuse it.
       return opened(current);
     }
-    return openCycle(route, current);
+    return openCycle(current);
   };
-}
-
-/** True when all three council results of one cycle already exist. */
-async function cycleReviewed(root: string, submission: number, cycle: number): Promise<boolean> {
-  const cycleRoot = ideaCycleDirectory(root, submission, cycle);
-  const results = await Promise.all(
-    [purposeCouncilArtifact, evidenceCouncilArtifact, simplicityCouncilArtifact].map((artifact) =>
-      readCycleArtifact(cycleRoot, artifact),
-    ),
-  );
-  return results.every((result) => result !== null);
 }

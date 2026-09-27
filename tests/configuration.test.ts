@@ -165,7 +165,7 @@ describe('Nexus configuration', () => {
     );
   });
 
-  it('requires the idea refinement settings and a positive council-cycle bound', () => {
+  it('requires the idea refinement settings and a positive cycle bound', () => {
     const missing = nexusConfiguration() as unknown as Record<string, unknown>;
     delete missing['ideaRefinement'];
     expect(() => parseNexusConfiguration(missing, configurationDirectory)).toThrow(
@@ -173,9 +173,9 @@ describe('Nexus configuration', () => {
     );
 
     const bounded = nexusConfiguration();
-    bounded.ideaRefinement.maxCouncilCycles = 0;
+    bounded.ideaRefinement.maxCycles = 0;
     expect(() => parseNexusConfiguration(bounded, configurationDirectory)).toThrow(
-      /ideaRefinement\.maxCouncilCycles/,
+      /ideaRefinement\.maxCycles/,
     );
   });
 

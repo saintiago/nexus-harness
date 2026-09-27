@@ -59,7 +59,8 @@ select another model or add repair turns.
 
 ## Concurrent invocation use
 
-Purpose, research and council roles may invoke the same provider capability concurrently. Each
+Researcher and Project guide may invoke the same provider capability concurrently. Each
 execute call has its own activity callback and result. The adapter preserves the activity within
 that invocation; the caller supplies the identity used for logs and live presentation. Research
-profiles may use configured internet search tools. Provider output never selects council routing.
+profiles may use configured internet search tools. The adapter does not interpret workflow outcomes
+or choose routes.

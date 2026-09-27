@@ -7,27 +7,30 @@ import type {
 } from '../../../adapters/jira.js';
 import { fault, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import { readRefinedIdeaRevision, type RefinedIdea } from '../brief-writer/artifacts.js';
-import { cycleCouncilReports, publishIdeaOutcome } from '../idea-context.js';
+import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
+import {
+  editorResponseArtifact,
+  framingArtifact,
+  type FramingResponse,
+  type RefinedIdea,
+} from '../idea-editor/artifacts.js';
+import { publishIdeaOutcome } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  ideaSubmissionInputFile,
   ideaSubmissionArtifactFile,
-  latestCycleArtifact,
+  ideaSubmissionInputFile,
+  latestRefinedIdea,
+  readCycleArtifact,
+  readIdeaInput,
   readIdeaPlan,
   readSubmissionArtifact,
   writeSubmissionArtifact,
 } from '../idea-storage.js';
-import { purposeArtifact } from '../purpose-verifier/artifacts.js';
-import { researchArtifact } from '../researcher/artifacts.js';
-import {
-  councilArtifacts,
-  strongestVerdict,
-  type CouncilFinding,
-} from '../review-council/artifacts.js';
-import { capturedTransition, publishDocument } from '../source.js';
+import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
+import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
 import { writeRecord } from '../records.js';
-import type { IdeaSelection } from '../select-idea/artifacts.js';
+import type { IdeaInput, IdeaSelection } from '../select-idea/artifacts.js';
+import { capturedTransition, publishDocument } from '../source.js';
 import {
   decisionArtifact,
   ideaDecisions,
@@ -39,18 +42,21 @@ import {
 
 /**
  * PublishDecision applies one terminal route to the source and records it. An approval publishes
- * the approved refined idea, moves the item to its configured approved state and leaves one handoff
- * artifact with references to the captured idea, refined idea, purpose assessment, research and
- * council decisions. A return publishes concise human-facing feedback and moves the item to its
- * configured waiting-for-feedback state; internal council feedback stays in the cycle's artifacts.
- * Publication uses the captured selection snapshot without reading the issue or its conversation
- * again.
+ * the approved refined idea with the cycles used and the cumulative change summary, moves the item
+ * to its configured approved state and leaves one handoff artifact referencing the shared issue
+ * workspace and the retained artifacts it rests on. The three returns publish concise
+ * human-facing feedback with the latest idea, the cycles used and the plain reason — unsuitable,
+ * an essential author decision or exhausted attempts — and move the item to its configured
+ * waiting-for-feedback state. Internal conversation stays in the cycle's artifacts. Publication
+ * uses the captured selection snapshot without reading the issue or its conversation again.
+ * Every human-facing comment reports the cycles used and what refinement changed, including a
+ * return that stopped before a refined idea revision existed.
  */
 
 export type PublishDecisionSettings = {
   /** The retained selection: the captured issue, transitions and shared workspace references. */
   readonly selection: IdeaSelection;
-  /** The configured statuses the two terminal routes move the item into and name back to. */
+  /** The configured statuses the terminal routes move the item into and name back to. */
   readonly statuses: {
     readonly submitted: string;
     readonly approved: string;
@@ -75,7 +81,7 @@ function decisionOf(input: unknown): IdeaDecision {
   return found;
 }
 
-/** The workflow outcome the two terminal decision routes declare. */
+/** The workflow outcome the terminal decision routes declare. */
 type IdeaTerminal = 'approved' | 'waiting-for-feedback';
 
 /** One Jira document whose paragraphs are the supplied text's lines. */
@@ -110,53 +116,109 @@ function refinedIdeaSection(idea: RefinedIdea, heading: string): string[] {
   ];
 }
 
+/** The captured idea's summary, or null when the captured issue does not carry one. */
+function capturedSummary(input: IdeaInput): string | null {
+  const issue = input.issue;
+  const fields =
+    typeof issue === 'object' && issue !== null
+      ? (issue as { readonly fields?: unknown }).fields
+      : undefined;
+  const summary =
+    typeof fields === 'object' && fields !== null
+      ? (fields as { readonly summary?: unknown }).summary
+      : undefined;
+  return typeof summary === 'string' && summary.trim() !== '' ? summary : null;
+}
+
+/**
+ * The idea a return presents when no refined idea revision exists yet: the captured idea and the
+ * editor's framing of it, as the specification directs.
+ */
+function capturedIdeaSection(input: IdeaInput, framing: FramingResponse | null): string[] {
+  const summary = capturedSummary(input);
+  return [
+    'Captured idea (no refined idea revision yet)',
+    '',
+    ...(summary === null ? [input.taskKey] : [summary]),
+    ...(framing === null ? [] : ['', 'The editor\u2019s framing of it:', framing.framing]),
+  ];
+}
+
 /**
  * The approved refined idea as the human-facing comment the Requirements and Design workflow
- * reads, with the council history kept to the cycles used and the cumulative change summary.
+ * reads, with the conversation history kept to the cycles used and the cumulative change summary.
  */
-function approvedComment(idea: RefinedIdea): string {
+function approvedComment(idea: RefinedIdea, cycles: number): string {
   return [
     ...refinedIdeaSection(idea, 'Approved refined idea'),
     '',
-    `Council cycles used: ${String(idea.cycle)}`,
+    `Conversation cycles used: ${String(cycles)}`,
     `What refinement changed: ${idea.changeSummary}`,
   ].join('\n');
 }
 
 /**
- * The human-facing comment for one returned idea: the plain outcome, the latest refined idea, the
- * cycles used with the cumulative change summary, and the actionable corrections that stopped
- * approval, followed by the single next step. Exhaustion is reported as exhaustion and a return
- * reports that the council did not approve; neither judges the idea's worth. Raw reviewer
- * summaries, verdict names, criteria, evidence, code citations and tool transcripts stay in the
- * artifacts.
+ * What the refinement accomplished, as one line for a human-facing comment: the latest revision's
+ * cumulative summary, or what a return that stopped before a revision achieved instead.
  */
-function returnedComment(
-  idea: RefinedIdea,
-  decision: IdeaDecision,
-  findings: readonly CouncilFinding[],
-  submittedStatus: string,
-): string {
-  const outcome =
-    decision === 'unable-to-converge'
-      ? `Attempts exhausted after ${String(idea.cycle)} ` +
-        `${idea.cycle === 1 ? 'cycle' : 'cycles'}: the council did not approve this idea.`
-      : 'Returned for feedback: the council did not approve this idea.';
-  // Distinct corrections only: two reviewers requesting the same change are one request.
-  const corrections = [...new Set(findings.map((finding) => finding.correction))];
+function refinementSummary(idea: RefinedIdea | null, framing: FramingResponse | null): string {
+  if (idea !== null) {
+    return idea.changeSummary;
+  }
+  return framing === null
+    ? 'Refinement stopped before it produced a refined idea revision.'
+    : 'The editor framed the author\u2019s proposal shown above; refinement stopped before a ' +
+        'refined idea revision was written.';
+}
+
+/** The plain outcome line one return opens with. */
+function returnOutcome(decision: IdeaDecision, cycles: number): string {
+  switch (decision) {
+    case 'unsuitable':
+      return 'Returned for feedback: this idea does not look suitable to pursue.';
+    case 'author-decision-needed':
+      return 'Author decision needed: the refinement conversation cannot continue without it.';
+    case 'attempts-exhausted':
+      return (
+        `Attempts exhausted after ${String(cycles)} ` +
+        `${cycles === 1 ? 'cycle' : 'cycles'}: the configured cycle limit was reached before the ` +
+        'idea was approved.'
+      );
+    default:
+      return 'Returned for feedback.';
+  }
+}
+
+/**
+ * The human-facing comment for one returned idea: the plain outcome, the latest idea, the cycles
+ * used with the refinement summary, the plain reason that stopped approval, and the single next
+ * step. Exhaustion states the limit explicitly and gives the Challenger's author-facing statement
+ * of the remaining obstacle; raw concerns, discussion and tool transcripts stay in the artifacts.
+ */
+function returnedComment(settings: {
+  readonly input: IdeaInput;
+  readonly framing: FramingResponse | null;
+  readonly idea: RefinedIdea | null;
+  readonly decision: IdeaDecision;
+  readonly cycles: number;
+  readonly reason: string;
+  readonly submittedStatus: string;
+}): string {
   return [
-    outcome,
+    returnOutcome(settings.decision, settings.cycles),
     '',
-    ...refinedIdeaSection(idea, 'Latest refined idea'),
+    ...(settings.idea === null
+      ? capturedIdeaSection(settings.input, settings.framing)
+      : refinedIdeaSection(settings.idea, 'Latest refined idea')),
     '',
-    `Council cycles used: ${String(idea.cycle)}`,
-    `What refinement changed: ${idea.changeSummary}`,
-    ...(corrections.length === 0
-      ? []
-      : ['', 'What stopped approval:', ...corrections.map((correction) => `- ${correction}`)]),
+    `Conversation cycles used: ${String(settings.cycles)}`,
+    `What refinement changed: ${refinementSummary(settings.idea, settings.framing)}`,
     '',
-    'Please reply with your feedback or a revised idea in a Jira comment, then move the item ' +
-      `back to "${submittedStatus}" to resubmit it.`,
+    'Why it was returned:',
+    settings.reason,
+    '',
+    'Please reply with your feedback, your decision or a revised idea in a Jira comment, then ' +
+      `move the item back to "${settings.submittedStatus}" to resubmit it.`,
   ].join('\n');
 }
 
@@ -182,20 +244,53 @@ function capturedComments(selection: IdeaSelection): JiraComment[] {
   );
 }
 
-/** The sources of the purpose assessment and research report a handoff references. */
-async function reportReferences(
+/** True when one Challenger result assessed exactly the supplied revision and editor response. */
+function binds(
+  report: ChallengerReport,
+  refinedIdea: string,
+  editorResponse: string | null,
+  revision: number,
+): boolean {
+  return (
+    report.refinedIdea === refinedIdea &&
+    report.editorResponse === editorResponse &&
+    report.revision === revision
+  );
+}
+
+/** The retained artifact paths one approved handoff references, in cycle order. */
+async function handoffReferences(
   root: string,
   submission: number,
   cycle: number,
-): Promise<{ readonly purpose: string; readonly research: string }> {
-  const purpose = await latestCycleArtifact(root, submission, cycle, purposeArtifact);
-  const research = await latestCycleArtifact(root, submission, cycle, researchArtifact);
-  if (purpose === null || research === null) {
-    throw new Error(
-      `Submission ${String(submission)} has no purpose assessment or research report to hand off.`,
-    );
+): Promise<{
+  readonly editorResponses: string[];
+  readonly contributions: string[];
+  readonly challengerResults: string[];
+}> {
+  const editorResponses: string[] = [];
+  const contributions: string[] = [];
+  const challengerResults: string[] = [];
+  for (let number = 1; number <= cycle; number += 1) {
+    const cycleRoot = ideaCycleDirectory(root, submission, number);
+    for (const artifact of [
+      researchArtifact,
+      researchFollowUpArtifact,
+      projectGuideArtifact,
+      projectGuideFollowUpArtifact,
+    ]) {
+      if ((await readCycleArtifact(cycleRoot, artifact)) !== null) {
+        contributions.push(path.join(cycleRoot, artifact.pathFromArtifactsRoot));
+      }
+    }
+    if ((await readCycleArtifact(cycleRoot, editorResponseArtifact)) !== null) {
+      editorResponses.push(path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot));
+    }
+    if ((await readCycleArtifact(cycleRoot, challengerArtifact)) !== null) {
+      challengerResults.push(path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot));
+    }
   }
-  return { purpose: purpose.path, research: research.path };
+  return { editorResponses, contributions, challengerResults };
 }
 
 /** Create PublishDecision over the retained selection and source it updates. */
@@ -207,14 +302,6 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const decision = decisionOf(input);
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const refinedIdea = await readRefinedIdeaRevision(cycleRoot);
-    if (refinedIdea === null) {
-      throw new Error(
-        `No refined idea revision exists for submission ${String(plan.submission)} cycle ` +
-          `${String(plan.cycle)}; the decision needs the reviewed refined idea.`,
-      );
-    }
-    const refinedIdeaFile = refinedIdea.path;
     const terminal: IdeaTerminal = decision === 'approved' ? 'approved' : 'waiting-for-feedback';
     const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
 
@@ -232,25 +319,26 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
       return terminal;
     }
 
-    /**
-     * Write the approval's handoff for the reviewed refined idea revision. The handoff is a required
-     * output of the approved route: a repeated invocation that finds the decision already saved
-     * establishes it before reporting the same outcome.
-     */
-    async function writeHandoff(): Promise<void> {
-      const references = await reportReferences(root, plan.submission, plan.cycle);
+    /** Write the approval's handoff for the reviewed revision. */
+    async function writeHandoff(revision: { readonly path: string }): Promise<void> {
+      const references = await handoffReferences(root, plan.submission, plan.cycle);
+      const framing = await readCycleArtifact(
+        ideaCycleDirectory(root, plan.submission, 1),
+        framingArtifact,
+      );
       const handoff: IdeaHandoff = {
         issue: { id: selection.source.issueId, key: selection.taskKey },
         issueWorkspace: selection.issueWorkspace.root,
         capturedInput: ideaSubmissionInputFile(root, plan.submission),
-        brief: refinedIdeaFile,
-        purpose: references.purpose,
-        research: references.research,
-        council: {
-          purpose: path.join(cycleRoot, councilArtifacts.purpose.pathFromArtifactsRoot),
-          evidence: path.join(cycleRoot, councilArtifacts.evidence.pathFromArtifactsRoot),
-          simplicity: path.join(cycleRoot, councilArtifacts.simplicity.pathFromArtifactsRoot),
-        },
+        framing:
+          framing === null
+            ? null
+            : path.join(
+                ideaCycleDirectory(root, plan.submission, 1),
+                framingArtifact.pathFromArtifactsRoot,
+              ),
+        refinedIdea: revision.path,
+        ...references,
         decision: decisionFile,
       };
       await writeRecord(path.join(root, ideaHandoffFile), handoff);
@@ -260,67 +348,117 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     if (existing !== null) {
       if (existing.decision !== decision) {
         throw new Error(
-          `Submission ${String(plan.submission)} cycle ${String(plan.cycle)} already recorded the ` +
-            `"${existing.decision}" decision; it cannot also record "${decision}".`,
+          `Submission ${String(plan.submission)} already recorded the "${existing.decision}" ` +
+            `decision; it cannot also record "${decision}".`,
         );
       }
       // The route's source updates are already saved; a repeated invocation completes any
       // outstanding required output and reuses the record.
-      if (decision === 'approved') {
-        await writeHandoff();
+      if (decision === 'approved' && existing.refinedIdea !== null) {
+        await writeHandoff({ path: existing.refinedIdea });
       }
       return reported(existing, decisionFile);
     }
 
-    const reports = await cycleCouncilReports(root, plan);
-    for (const report of reports) {
-      if (report.brief !== refinedIdeaFile || report.revision !== refinedIdea.value.revision) {
+    const inputRecord = await readIdeaInput(root, plan.submission);
+    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+    const turn = await readCycleArtifact(cycleRoot, editorResponseArtifact);
+    const turnFile =
+      turn === null ? null : path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
+    const challenger = await readCycleArtifact(cycleRoot, challengerArtifact);
+    const framing = await readCycleArtifact(
+      ideaCycleDirectory(root, plan.submission, 1),
+      framingArtifact,
+    );
+
+    let reason: string | null = null;
+    if (decision === 'approved') {
+      if (revision === null) {
+        throw new Error('Approval needs the refined idea revision the Challenger approved.');
+      }
+      if (
+        challenger === null ||
+        challenger.verdict !== 'approve' ||
+        !binds(challenger, revision.path, turnFile, revision.value.revision)
+      ) {
         throw new Error(
-          `The ${report.reviewer} council result names refined idea "${report.brief}" revision ` +
-            `${String(report.revision)}, not the current "${refinedIdeaFile}" revision ` +
-            `${String(refinedIdea.value.revision)}.`,
+          'Approval requires the current cycle\u2019s Challenger result to approve the exact ' +
+            'refined idea revision and editor response it reviewed.',
         );
       }
     }
-    const verdicts = reports.map((report) => report.verdict);
-    const approved = verdicts.every((verdict) => verdict === 'approve');
-    const unworkable = verdicts.includes('idea_not_working');
-    if (decision === 'approved' && !approved) {
-      throw new Error('Approval requires every council reviewer to approve the current revision.');
+    if (decision === 'unsuitable') {
+      if (turn === null || turn.disposition !== 'unsuitable' || turn.reason === null) {
+        throw new Error(
+          'Returning an unsuitable idea requires the editor to have explained why in its ' +
+            'response for this cycle.',
+        );
+      }
+      reason = turn.reason;
     }
-    if (decision === 'returned-to-author' && !unworkable) {
+    if (decision === 'author-decision-needed') {
+      const fromTurn = turn?.disposition === 'author-decision-needed' ? turn.reason : null;
+      const fromFraming = framing?.authorDecision?.question ?? null;
+      const question = fromTurn ?? fromFraming;
+      if (question === null) {
+        throw new Error(
+          'An author-decision return requires the editor to have asked the essential question.',
+        );
+      }
+      reason = question;
+    }
+    if (decision === 'attempts-exhausted') {
+      if (
+        revision === null ||
+        challenger === null ||
+        challenger.verdict !== 'discuss' ||
+        !binds(challenger, revision.path, turnFile, revision.value.revision)
+      ) {
+        throw new Error(
+          'An exhausted return requires the current cycle\u2019s Challenger result to discuss ' +
+            'the exact refined idea revision and editor response it reviewed.',
+        );
+      }
+      if (challenger.obstacle === null) {
+        throw new Error(
+          'An exhausted return needs the Challenger\u2019s plain statement of the remaining ' +
+            'obstacle.',
+        );
+      }
+      reason = challenger.obstacle;
+    }
+
+    const editorFile =
+      turnFile ??
+      (framing === null
+        ? null
+        : path.join(
+            ideaCycleDirectory(root, plan.submission, 1),
+            framingArtifact.pathFromArtifactsRoot,
+          ));
+    if (editorFile === null) {
       throw new Error(
-        'Returning the idea to its author requires an "idea_not_working" council verdict.',
+        `Submission ${String(plan.submission)} has no editor framing or response to decide on.`,
       );
     }
-    if (decision === 'unable-to-converge' && approved) {
-      throw new Error('A unanimously approved revision cannot be reported as unable to converge.');
-    }
-    const strongest = strongestVerdict(verdicts);
-    const strongestReport = reports.find((report) => report.verdict === strongest) ?? reports[0];
-    if (strongestReport === undefined) {
-      throw new Error('The council produced no result to report.');
+    if (decision !== 'approved' && reason === null) {
+      throw new Error(`The "${decision}" return needs the plain reason it states.`);
     }
 
     const targetStatus =
       decision === 'approved' ? settings.statuses.approved : settings.statuses.waitingForFeedback;
-    // An exhausted return publishes every non-approving reviewer's material correction; an
-    // unworkable verdict publishes the corrections of the strongest reviewer.
-    const blockingFindings =
-      decision === 'unable-to-converge'
-        ? reports
-            .filter((report) => report.verdict !== 'approve')
-            .flatMap((report) => report.findings)
-        : strongestReport.findings;
     const text =
       decision === 'approved'
-        ? approvedComment(refinedIdea.value)
-        : returnedComment(
-            refinedIdea.value,
+        ? approvedComment(revision!.value, plan.cycle)
+        : returnedComment({
+            input: inputRecord,
+            framing,
+            idea: revision?.value ?? null,
             decision,
-            blockingFindings,
-            settings.statuses.submitted,
-          );
+            cycles: plan.cycle,
+            reason: reason ?? '',
+            submittedStatus: settings.statuses.submitted,
+          });
     const comment = await publishDocument(
       jira,
       selection.source.issueId,
@@ -339,10 +477,12 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
 
     const record: IdeaDecisionRecord = {
       decision,
-      strongestVerdict: strongest,
-      brief: refinedIdeaFile,
-      revision: refinedIdea.value.revision,
-      feedback: reports,
+      refinedIdea: revision?.path ?? null,
+      revision: revision?.value.revision ?? null,
+      editor: editorFile,
+      challenger:
+        challenger === null ? null : path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot),
+      reason,
       comment: text,
       source: {
         transition: { id: transition.value.id, to: targetStatus },
@@ -351,8 +491,8 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
       },
     };
     const file = await writeSubmissionArtifact(root, plan.submission, decisionArtifact, record);
-    if (decision === 'approved') {
-      await writeHandoff();
+    if (decision === 'approved' && revision !== null) {
+      await writeHandoff(revision);
     }
     return reported(record, file);
   };

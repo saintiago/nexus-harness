@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
@@ -9,17 +10,20 @@ import {
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
+  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import { researchArtifact, researchReportSchema } from './artifacts.js';
+import { editorHelpArtifact } from '../idea-editor/artifacts.js';
+import { researchArtifact, researchFollowUpArtifact, researchResponseSchema } from './artifacts.js';
 
 /**
- * Researcher runs the research role for the open council cycle and saves its enrichment report.
- * The agent works from the captured idea, the retained history and the prepared project worktree,
- * and may use its configured web tools; the action binds the report to the cycle's declared
- * artifact.
+ * Researcher runs the research role. The cycle's initial enrichment works from the captured idea,
+ * the retained history, the prepared project worktree and its configured web tools; a focused
+ * follow-up answers the specific question the editor asked, without repeating the investigation.
+ * The contribution is short, its findings and sources stay in the artifact, and a follow-up to
+ * the other contributor's question is not requested of this role.
  */
 
 export type ResearcherSettings = {
@@ -30,52 +34,110 @@ export type ResearcherSettings = {
   readonly publish: EventPublisher;
 };
 
-/** Create Researcher over the refinement area it reports into. */
+/** The contribution phase the workflow supplied with the invocation. */
+type ResearchPhase = 'initial' | 'focused';
+
+/** The phase the workflow supplied with the invocation. */
+function phaseOf(input: unknown): ResearchPhase {
+  const phase =
+    typeof input === 'object' && input !== null
+      ? (input as { readonly phase?: unknown }).phase
+      : undefined;
+  if (phase === 'initial' || phase === 'focused') {
+    return phase;
+  }
+  throw new Error(
+    `The idea workflow supplied Researcher the unknown phase ${JSON.stringify(phase)}.`,
+  );
+}
+
+/** Create Researcher over the refinement area it contributes to. */
 export function createResearcher(settings: ResearcherSettings): BoundAction {
-  return async () => {
+  /** Publish a saved contribution and return its workflow outcome. */
+  function contributed(
+    taskKey: string,
+    cycle: number,
+    sources: number,
+    artifact: string,
+  ): 'contributed' {
+    publishIdeaOutcome({
+      publish: settings.publish,
+      source: 'researcher',
+      taskKey,
+      cycle,
+      outcome: 'contributed',
+      detail: `${String(sources)} source${sources === 1 ? '' : 's'}`,
+      artifact,
+    });
+    return 'contributed';
+  }
+
+  return async (input?: unknown) => {
+    const phase = phaseOf(input);
     const root = settings.workspace.root;
     const plan = await readIdeaPlan(root);
-    const input = await readIdeaInput(root, plan.submission);
+    const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
+    const artifact = phase === 'initial' ? researchArtifact : researchFollowUpArtifact;
+    const inputRecord = await readIdeaInput(root, plan.submission);
+    const file = path.join(cycleRoot, artifact.pathFromArtifactsRoot);
+
+    let question: string | null = null;
+    if (phase === 'focused') {
+      const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
+      if (help === null || help.disposition !== 'help-requested') {
+        throw new Error(
+          `A focused research contribution answers an editor help request; submission ` +
+            `${String(plan.submission)} cycle ${String(plan.cycle)} has none.`,
+        );
+      }
+      question = help.help?.researcher ?? null;
+      if (question === null) {
+        // The editor asked the Project guide only; this role contributes nothing.
+        return 'not-requested';
+      }
+    }
+
+    const existing = await readCycleArtifact(cycleRoot, artifact);
+    if (existing !== null) {
+      return contributed(inputRecord.taskKey, plan.cycle, existing.sources.length, file);
+    }
+
     const guidance = await projectGuidanceText(root);
     const context = [
-      'Enrich the stated idea\u2019s proposed change, why it matters and the principle behind it',
-      'with sourced knowledge, examples and conceptual possibilities that give it substance.',
-      capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { reviewer: null }),
+      question === null
+        ? 'Enrich the stated idea\u2019s proposed change, why it matters and the principle behind ' +
+          'it with sourced knowledge, examples and conceptual possibilities that give it substance.'
+        : `Answer this focused question from the editor, without repeating the investigation:\n` +
+          question,
+      await capturedIdeaText(root, plan, inputRecord),
+      // The Project guide contributes concurrently; its pending contribution is not this role's.
+      await retainedHistoryText(root, plan, { omitCurrentCycleOf: 'project-guide' }),
       'Use the prepared worktree, project knowledge, existing work and your configured web tools.',
       'Keep suggestions and options at idea level: strengthen the author\u2019s proposal without',
-      'replacing it with another idea, and produce no implementation plan or draft configuration,',
-      'role catalogues, trigger mechanisms, vote policies, artifact layouts or requirements. Give',
-      'links and access dates for external sources and keep source facts distinct from your own',
-      'suggestions. Do not scrutinize or reject the idea and do not select an architecture.',
+      'replacing it with another idea, and produce no implementation plan or draft configuration.',
+      'Give links and access dates for external sources and keep source facts distinct from your',
+      'own suggestions. Do not scrutinize or reject the idea and do not select an architecture.',
+      'Give the editor a short contribution with the most useful discoveries; keep the detail in',
+      'this report.',
       ...(guidance === null ? [] : [guidance]),
-      responseFormatText(researchReportSchema),
+      responseFormatText(researchResponseSchema),
     ].join('\n\n');
 
-    const report = await invokeIdeaRole({
+    const response = await invokeIdeaRole({
       root,
       plan,
       role: 'researcher',
       operation: 'Researcher',
-      taskKey: input.taskKey,
+      taskKey: inputRecord.taskKey,
       context,
-      schema: researchReportSchema,
+      schema: researchResponseSchema,
       runner: settings.runner,
     });
-    const file = await writeCycleArtifact(
-      ideaCycleDirectory(root, plan.submission, plan.cycle),
-      researchArtifact,
-      report,
-    );
-    publishIdeaOutcome({
-      publish: settings.publish,
-      source: 'researcher',
-      taskKey: input.taskKey,
-      cycle: plan.cycle,
-      outcome: 'reported',
-      detail: `${String(report.sources.length)} source${report.sources.length === 1 ? '' : 's'}`,
-      artifact: file,
+    await writeCycleArtifact(cycleRoot, artifact, {
+      ...response,
+      role: 'researcher',
+      question,
     });
-    return 'reported';
+    return contributed(inputRecord.taskKey, plan.cycle, response.sources.length, file);
   };
 }

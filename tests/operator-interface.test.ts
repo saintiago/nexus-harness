@@ -257,7 +257,7 @@ function developerTurn(task = 'NEX-7', invocationId = 'dev-1'): EngineEvent {
 
 /** The boundary event an idea refinement action publishes for one invocation. */
 function ideaTurn(
-  role: 'purpose-verifier' | 'purpose-council',
+  role: 'idea-editor' | 'researcher' | 'project-guide' | 'challenger',
   operation: string,
   idea = 'NEX-1',
   invocationId = `${role}-1`,
@@ -307,18 +307,18 @@ describe('OperatorInterface progress presentation', () => {
     const harness = createHarness();
     harness.operatorInterface.start();
     at(5);
-    harness.emit(ideaTurn('purpose-verifier', 'PurposeVerifier'));
+    harness.emit(ideaTurn('project-guide', 'ProjectGuide'));
     at(6);
-    harness.emit(ideaTurn('purpose-council', 'PurposeCouncil'));
+    harness.emit(ideaTurn('challenger', 'Challenger'));
     at(7);
-    harness.emit(finished('purpose-council-1', 'purpose-council'));
+    harness.emit(finished('challenger-1', 'challenger'));
 
     expect(harness.rows()).toEqual([
-      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-astra',
-      '03:04:06 purpose-council PurposeCouncil · idea NEX-1 · profile nexus-astra',
+      '03:04:05 project-guide ProjectGuide · idea NEX-1 · profile nexus-astra',
+      '03:04:06 challenger Challenger · idea NEX-1 · profile nexus-astra',
     ]);
     const raw = harness.writes.join('');
-    // Purpose, research, the brief writer and the developer share yellow; council roles are blue.
+    // The editor, research, project guidance and the developer share yellow; the Challenger is blue.
     expect(raw).toContain('\u001b[33m03:04:05');
     expect(raw).toContain('\u001b[34m03:04:06');
   });
@@ -722,8 +722,8 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(
       boundary({
-        agentName: 'purpose-verifier',
-        operation: 'PurposeVerifier',
+        agentName: 'project-guide',
+        operation: 'ProjectGuide',
         invocationId: 'pv-1',
         idea: 'NEX-1',
       }),
@@ -738,7 +738,7 @@ describe('OperatorInterface activity pane', () => {
       }),
     );
     at(7);
-    harness.emitActivity(message('Purpose: the idea serves the charter.', 'pv-1'));
+    harness.emitActivity(message('Guidance: the idea serves the charter.', 'pv-1'));
     at(8);
     harness.emitActivity(message('Research: related prior art.', 'r-1'));
     at(9);
@@ -746,22 +746,22 @@ describe('OperatorInterface activity pane', () => {
     at(10);
     harness.emit(finished('r-1', 'researcher'));
     at(11);
-    harness.emitActivity(message('Purpose: no conflict found.', 'pv-1'));
+    harness.emitActivity(message('Guidance: no conflict found.', 'pv-1'));
 
-    // The researcher ended; the purpose verifier's remaining rows and its reopened pane are
+    // The researcher ended; the Project guide's remaining rows and its reopened pane are
     // separate, and neither invocation's activity appears in the other's rows.
     expect(harness.rows()).toEqual([
-      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-flash',
-      '03:04:07 message Purpose: the idea serves the charter.',
+      '03:04:05 project-guide ProjectGuide · idea NEX-1 · profile nexus-flash',
+      '03:04:07 message Guidance: the idea serves the charter.',
       '03:04:09 command rg --files docs',
       '03:04:06 researcher Researcher · idea NEX-1 · profile nexus-flash',
       '03:04:08 message Research: related prior art.',
-      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-flash',
-      '03:04:11 message Purpose: no conflict found.',
+      '03:04:05 project-guide ProjectGuide · idea NEX-1 · profile nexus-flash',
+      '03:04:11 message Guidance: no conflict found.',
     ]);
     const raw = harness.writes.join('');
     // Each message keeps its own role's color while both invocations are live.
-    expect(raw).toContain('\u001b[33m03:04:07 message Purpose: the idea serves the charter.');
+    expect(raw).toContain('\u001b[33m03:04:07 message Guidance: the idea serves the charter.');
     expect(raw).toContain('\u001b[33m03:04:08 message Research: related prior art.');
   });
 
@@ -771,8 +771,8 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(
       boundary({
-        agentName: 'purpose-verifier',
-        operation: 'PurposeVerifier',
+        agentName: 'project-guide',
+        operation: 'ProjectGuide',
         invocationId: 'pv-1',
         idea: 'NEX-1',
       }),
@@ -788,8 +788,8 @@ describe('OperatorInterface activity pane', () => {
     );
     at(7);
     harness.emitActivity(message('research note', 'r-1'));
-    harness.emitActivity(message('purpose note', 'pv-1'));
-    // The purpose pane keeps its latest three work entries, so its row count stays stable.
+    harness.emitActivity(message('guidance note', 'pv-1'));
+    // The guidance pane keeps its latest three work entries, so its row count stays stable.
     for (let index = 1; index <= 5; index += 1) {
       at(7 + index);
       harness.emitActivity(work('command', `work row ${String(index)}`, 'pv-1'));
@@ -800,7 +800,7 @@ describe('OperatorInterface activity pane', () => {
     harness.emitActivity(work('change', 'src/parser.ts', 'pv-1'));
     const written = harness.writes.slice(before).join('');
 
-    // Only the purpose pane was rewritten: the researcher's rows were left as they are.
+    // Only the guidance pane was rewritten: the researcher's rows were left as they are.
     expect(written).toContain('src/parser.ts');
     expect(written).not.toContain('research note');
     expect(harness.rows()).toContain('03:04:07 message research note');
