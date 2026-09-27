@@ -8,6 +8,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
@@ -19,6 +20,7 @@ import { devArtifact, type FindingResponse } from '../src/task-engine/actions/de
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import {
   reviewArtifact,
+  reviewResponseSchema,
   type Finding,
   type ReviewOutput,
 } from '../src/task-engine/actions/review/artifacts.js';
@@ -54,6 +56,7 @@ type RuntimeRequest = {
   readonly profile: string;
   readonly workspaceRoot: string;
   readonly context: string;
+  readonly outputSchema: Readonly<Record<string, unknown>> | undefined;
 };
 
 /** A controlled AgentRuntime that answers every invocation from the handler. */
@@ -65,11 +68,12 @@ function scriptedRuntime(handler: (request: RuntimeRequest) => string | Promise<
   return {
     requests,
     runtime: {
-      async run(profile, workspaceRef, additionalContext) {
+      async run(profile, workspaceRef, additionalContext, _onActivity, outputSchema) {
         const request = {
           profile,
           workspaceRoot: workspaceRef.root,
           context: additionalContext,
+          outputSchema,
         };
         requests.push(request);
         return ok({ output: await handler(request) });
@@ -366,6 +370,9 @@ describe('Review', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.profile).toBe('nexus-review');
     expect(requests[0]?.workspaceRoot).toBe(workspaceRoot);
+    // The action asks the provider for its own ReviewResponse shape, derived from the schema that
+    // will validate the returned report.
+    expect(requests[0]?.outputSchema).toEqual(z.toJSONSchema(reviewResponseSchema));
     const context = requests[0]?.context ?? '';
     expect(context).toContain('Implement the retry guard');
     expect(context).toContain('Human pull-request discussion.');
@@ -628,7 +635,7 @@ describe('Review', () => {
         );
       }
       await writeDeliveredRound(workspaceRoot);
-      const { runtime } = scriptedRuntime(() => testCase.output);
+      const { runtime, requests } = scriptedRuntime(() => testCase.output);
       const { git } = scriptedGit([repositoryState({ headRevision })], {
         readDiff: () => ok(''),
       });
@@ -642,6 +649,10 @@ describe('Review', () => {
       const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
 
       await expect(review(), testCase.label).rejects.toThrow(testCase.expected);
+      // The requested structured-output schema never replaces the action's own validation.
+      expect(requests[0]?.outputSchema, testCase.label).toEqual(
+        z.toJSONSchema(reviewResponseSchema),
+      );
       await expect(
         stat(path.join(workspaceRoot, 'artifacts', String(round), 'review.json')),
         testCase.label,

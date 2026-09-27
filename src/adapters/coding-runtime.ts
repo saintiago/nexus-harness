@@ -1,4 +1,5 @@
-import { stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fault, messageOf, ok, type Result } from '../result.js';
 import { run } from './processes.js';
@@ -11,10 +12,10 @@ import type { ProcessOutput } from './processes.js';
  * The provider is the Codex CLI's non-interactive form: `codex exec` with JSON Lines events on
  * standard output. Construction supplies the installed executable and the environment the provider
  * runs in — host settings and the provider's credentials. One invocation supplies the prompt,
- * model, effort, native tool settings, working directory and time limit. The provider's own
- * configuration selects the tools and their permissions; this adapter adds no tool registry, MCP
- * client or filesystem policy, and it never silently falls back to the operator's personal
- * settings when the selected configuration is not installed.
+ * model, effort, native tool settings, working directory, time limit and an optional output schema.
+ * The provider's own configuration selects the tools and their permissions; this adapter adds no
+ * tool registry, MCP client or filesystem policy, and it never silently falls back to the
+ * operator's personal settings when the selected configuration is not installed.
  */
 
 /** One activity entry the provider reported while the invocation ran. */
@@ -48,6 +49,12 @@ export type CodingRuntimeRequest = {
   readonly directory: string;
   /** The invocation's time limit in milliseconds. */
   readonly timeLimitMs: number;
+  /**
+   * The JSON Schema the provider must use for the final response, or undefined when the caller
+   * requires plain text. The provider's native structured-output capability enforces it; the
+   * adapter transports the supplied schema unchanged and never substitutes prompt-only formatting.
+   */
+  readonly outputSchema?: Readonly<Record<string, unknown>>;
 };
 
 /** The provider's final output. */
@@ -131,11 +138,47 @@ async function profileInstallationProblem(configurationPath: string): Promise<st
 }
 
 /**
+ * One invocation's output-schema transport file: the invocation-local directory holding it and the
+ * file the provider reads the schema from.
+ */
+type OutputSchemaFile = {
+  readonly directory: string;
+  readonly file: string;
+};
+
+/**
+ * Write the supplied JSON Schema to its own invocation-local temporary file, outside the
+ * invocation's working directory so the agent's repository never holds it. Each invocation gets a
+ * fresh directory, so concurrent invocations never share a schema file.
+ */
+async function writeOutputSchema(
+  schema: Readonly<Record<string, unknown>>,
+): Promise<OutputSchemaFile> {
+  // Serialize before creating the directory, so a schema the adapter cannot represent leaves no
+  // temporary file behind.
+  const text = `${JSON.stringify(schema, null, 2)}\n`;
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-codex-output-schema-'));
+  try {
+    const file = path.join(directory, 'schema.json');
+    await writeFile(file, text, 'utf8');
+    return { directory, file };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * The complete argument vector one Codex invocation runs with. The prompt argument is `-`, which
  * the provider reads as "take the instructions from standard input"; the adapter then delivers the
- * complete prompt on that stream, clear of the operating system's per-argument size limit.
+ * complete prompt on that stream, clear of the operating system's per-argument size limit. A
+ * supplied output schema is passed as the provider's own structured-output setting.
  */
-function invocationArguments(profile: string, request: CodingRuntimeRequest): readonly string[] {
+function invocationArguments(
+  profile: string,
+  request: CodingRuntimeRequest,
+  outputSchemaFile: OutputSchemaFile | null,
+): readonly string[] {
   return [
     'exec',
     '--json',
@@ -144,6 +187,7 @@ function invocationArguments(profile: string, request: CodingRuntimeRequest): re
     '--model',
     request.model,
     ...(request.effort === null ? [] : ['-c', `model_reasoning_effort="${request.effort}"`]),
+    ...(outputSchemaFile === null ? [] : ['--output-schema', outputSchemaFile.file]),
     '-',
   ];
 }
@@ -345,130 +389,153 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
         );
       }
 
-      const emit = (activity: CodingRuntimeActivity): void => {
+      let outputSchemaFile: OutputSchemaFile | null = null;
+      if (request.outputSchema !== undefined) {
         try {
-          onActivity(activity);
-        } catch {
-          // Observer failures do not affect the invocation or its result.
+          outputSchemaFile = await writeOutputSchema(request.outputSchema);
+        } catch (error) {
+          return fault(
+            `The supplied output schema could not be prepared for the invocation: ` +
+              messageOf(error),
+          );
         }
-      };
-
-      let pending = '';
-      let output: string | null = null;
-      let turnCompleted = false;
-      let turnFailure: string | null = null;
-      let streamError: string | null = null;
-      let protocolProblem: string | null = null;
-      const stderr: Uint8Array[] = [];
-
-      const readEvent = (event: ProviderEvent): void => {
-        const type = event['type'];
-        if (type === 'item.started' || type === 'item.completed') {
-          for (const activity of itemActivities(type, event['item'])) {
-            emit(activity);
-          }
-          if (type === 'item.completed') {
-            output = agentMessageText(event['item']) ?? output;
-          }
-          return;
-        }
-        if (type === 'turn.completed') {
-          turnCompleted = true;
-          return;
-        }
-        if (type === 'turn.failed') {
-          turnFailure = failureText(event) ?? 'no failure message';
-          return;
-        }
-        if (type === 'error') {
-          // The provider retries some stream errors and completes the turn afterwards, so an error
-          // event is a diagnostic until the stream reports the turn's terminal state.
-          streamError = failureText(event) ?? streamError;
-        }
-      };
-
-      const readLine = (line: string): void => {
-        if (protocolProblem !== null) {
-          return;
-        }
-        const text = line.trim();
-        if (text === '') {
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
-          return;
-        }
-        const event = recordOf(parsed);
-        if (event === null || typeof event['type'] !== 'string') {
-          protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
-          return;
-        }
-        readEvent(event);
-      };
-
-      // The provider's events arrive in arbitrary chunk boundaries, so decoding is incremental and
-      // only newline-terminated lines are read; the trailing line is read once the process ends.
-      const decoder = new TextDecoder();
-      const feed = (text: string): void => {
-        pending += text;
-        let end = pending.indexOf('\n');
-        while (end !== -1) {
-          const line = pending.slice(0, end);
-          pending = pending.slice(end + 1);
-          readLine(line);
-          end = pending.indexOf('\n');
-        }
-      };
-
-      const result = await run(
-        {
-          executable: settings.executable,
-          args: invocationArguments(profile.value, request),
-          directory: request.directory,
-          environment: settings.environment,
-          timeLimitMs: request.timeLimitMs,
-          input: request.prompt,
-        },
-        (chunk: ProcessOutput) => {
-          if (chunk.stream === 'stdout') {
-            feed(decoder.decode(chunk.chunk, { stream: true }));
-          } else {
-            stderr.push(chunk.chunk);
-          }
-        },
-      );
-      if (!result.ok) {
-        return result;
       }
-      feed(decoder.decode());
-      if (pending !== '') {
-        readLine(pending);
-      }
-      if (protocolProblem !== null) {
-        return fault(protocolProblem);
-      }
-      if (result.value.exitCode !== 0) {
-        const diagnostics = Buffer.concat(stderr).toString('utf8').trim();
-        const diagnosis =
-          turnFailure ?? streamError ?? (diagnostics === '' ? 'no diagnostics' : diagnostics);
-        return fault(
-          `The Codex provider exited with code ${String(result.value.exitCode)}: ${diagnosis}`,
+
+      try {
+        const emit = (activity: CodingRuntimeActivity): void => {
+          try {
+            onActivity(activity);
+          } catch {
+            // Observer failures do not affect the invocation or its result.
+          }
+        };
+
+        let pending = '';
+        let output: string | null = null;
+        let turnCompleted = false;
+        let turnFailure: string | null = null;
+        let streamError: string | null = null;
+        let protocolProblem: string | null = null;
+        const stderr: Uint8Array[] = [];
+
+        const readEvent = (event: ProviderEvent): void => {
+          const type = event['type'];
+          if (type === 'item.started' || type === 'item.completed') {
+            for (const activity of itemActivities(type, event['item'])) {
+              emit(activity);
+            }
+            if (type === 'item.completed') {
+              output = agentMessageText(event['item']) ?? output;
+            }
+            return;
+          }
+          if (type === 'turn.completed') {
+            turnCompleted = true;
+            return;
+          }
+          if (type === 'turn.failed') {
+            turnFailure = failureText(event) ?? 'no failure message';
+            return;
+          }
+          if (type === 'error') {
+            // The provider retries some stream errors and completes the turn afterwards, so an
+            // error event is a diagnostic until the stream reports the turn's terminal state.
+            streamError = failureText(event) ?? streamError;
+          }
+        };
+
+        const readLine = (line: string): void => {
+          if (protocolProblem !== null) {
+            return;
+          }
+          const text = line.trim();
+          if (text === '') {
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
+            return;
+          }
+          const event = recordOf(parsed);
+          if (event === null || typeof event['type'] !== 'string') {
+            protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
+            return;
+          }
+          readEvent(event);
+        };
+
+        // The provider's events arrive in arbitrary chunk boundaries, so decoding is incremental
+        // and only newline-terminated lines are read; the trailing line is read once the process
+        // ends.
+        const decoder = new TextDecoder();
+        const feed = (text: string): void => {
+          pending += text;
+          let end = pending.indexOf('\n');
+          while (end !== -1) {
+            const line = pending.slice(0, end);
+            pending = pending.slice(end + 1);
+            readLine(line);
+            end = pending.indexOf('\n');
+          }
+        };
+
+        const result = await run(
+          {
+            executable: settings.executable,
+            args: invocationArguments(profile.value, request, outputSchemaFile),
+            directory: request.directory,
+            environment: settings.environment,
+            timeLimitMs: request.timeLimitMs,
+            input: request.prompt,
+          },
+          (chunk: ProcessOutput) => {
+            if (chunk.stream === 'stdout') {
+              feed(decoder.decode(chunk.chunk, { stream: true }));
+            } else {
+              stderr.push(chunk.chunk);
+            }
+          },
         );
+        if (!result.ok) {
+          return result;
+        }
+        feed(decoder.decode());
+        if (pending !== '') {
+          readLine(pending);
+        }
+        if (protocolProblem !== null) {
+          return fault(protocolProblem);
+        }
+        if (result.value.exitCode !== 0) {
+          const diagnostics = Buffer.concat(stderr).toString('utf8').trim();
+          const diagnosis =
+            turnFailure ?? streamError ?? (diagnostics === '' ? 'no diagnostics' : diagnostics);
+          return fault(
+            `The Codex provider exited with code ${String(result.value.exitCode)}: ${diagnosis}`,
+          );
+        }
+        if (turnFailure !== null) {
+          return fault(`The Codex provider reported a failed turn: ${turnFailure}`);
+        }
+        if (!turnCompleted) {
+          return fault('The Codex provider finished without completing a turn.');
+        }
+        if (output === null) {
+          return fault('The Codex provider finished without returning a final agent message.');
+        }
+        return ok({ output });
+      } finally {
+        if (outputSchemaFile !== null) {
+          // The schema file lives only for its own invocation. Cleanup is best-effort so a
+          // temporary file the host refuses to remove cannot replace the invocation's result.
+          await rm(outputSchemaFile.directory, { recursive: true, force: true }).catch(
+            () => undefined,
+          );
+        }
       }
-      if (turnFailure !== null) {
-        return fault(`The Codex provider reported a failed turn: ${turnFailure}`);
-      }
-      if (!turnCompleted) {
-        return fault('The Codex provider finished without completing a turn.');
-      }
-      if (output === null) {
-        return fault('The Codex provider finished without returning a final agent message.');
-      }
-      return ok({ output });
     },
   };
 }

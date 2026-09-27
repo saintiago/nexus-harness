@@ -9,6 +9,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ideaRoles, type AgentRuntime, type IdeaRole } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
@@ -17,6 +18,7 @@ import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
 import {
   refinedIdeaArtifact,
+  refinedIdeaContentSchema,
   retainedBriefArtifactPath,
   type RefinedIdea,
 } from '../src/task-engine/actions/brief-writer/artifacts.js';
@@ -40,16 +42,19 @@ import {
 import { createPublishDecision } from '../src/task-engine/actions/publish-decision/index.js';
 import {
   purposeArtifact,
+  purposeReportSchema,
   type PurposeReport,
 } from '../src/task-engine/actions/purpose-verifier/artifacts.js';
 import { createPurposeVerifier } from '../src/task-engine/actions/purpose-verifier/index.js';
 import {
   researchArtifact,
+  researchReportSchema,
   type ResearchReport,
 } from '../src/task-engine/actions/researcher/artifacts.js';
 import { createResearcher } from '../src/task-engine/actions/researcher/index.js';
 import {
   councilArtifacts,
+  councilResponseSchema,
   councilReviewers,
   type CouncilReport,
   type CouncilReviewer,
@@ -255,19 +260,21 @@ function scriptedRuntime(outputs: readonly unknown[]): {
     readonly profile: string;
     readonly workspace: string;
     readonly context: string;
+    readonly outputSchema: Readonly<Record<string, unknown>> | undefined;
   }[];
 } {
   const requests: {
     readonly profile: string;
     readonly workspace: string;
     readonly context: string;
+    readonly outputSchema: Readonly<Record<string, unknown>> | undefined;
   }[] = [];
   let index = 0;
   return {
     requests,
     runtime: {
-      async run(profile, workspace, context) {
-        requests.push({ profile, workspace: workspace.root, context });
+      async run(profile, workspace, context, _onActivity, outputSchema) {
+        requests.push({ profile, workspace: workspace.root, context, outputSchema });
         const output = outputs[index];
         index += 1;
         return output === undefined
@@ -293,6 +300,8 @@ describe('idea role actions', () => {
     const request = agent.requests[0];
     expect(request?.profile).toBe('nexus-purpose');
     expect(request?.workspace).toBe(area.root);
+    // Every JSON-producing role invokes the provider with its own response schema.
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(purposeReportSchema));
     expect(request?.context).toContain('Add a lint gate');
     expect(request?.context).toContain('the author\u2019s idea');
     expect(request?.context).toContain('Prefer the smallest change.');
@@ -328,6 +337,7 @@ describe('idea role actions', () => {
 
     expect(agent.requests[0]?.context).toContain('the author\u2019s idea');
     expect(agent.requests[0]?.context).not.toContain('AGENTS.md');
+    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(researchReportSchema));
     expect(await area.read(1, researchArtifact.pathFromArtifactsRoot)).toEqual(researchReport);
   });
 
@@ -352,6 +362,7 @@ describe('idea role actions', () => {
     await expect(action()).resolves.toBe('written');
 
     const context = agent.requests[0]?.context ?? '';
+    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(refinedIdeaContentSchema));
     expect(context).toContain('The idea serves the project purpose.');
     expect(context).toContain('Linters keep reviews focused.');
     expect(context).toContain('No earlier council objections exist');
@@ -714,6 +725,7 @@ describe('council reviewers', () => {
     expect(context).not.toContain(sibling);
     expect(context).not.toContain('evidence council result');
     expect(agent.requests[0]?.profile).toBe('nexus-purpose-council');
+    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(councilResponseSchema));
     expect(
       await area.read<CouncilReport>(1, councilArtifacts.purpose.pathFromArtifactsRoot),
     ).toEqual(

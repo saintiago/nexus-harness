@@ -311,6 +311,7 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
       ideaCommunicationText,
       settings.context,
     ].join('\n\n'),
+    outputSchema: z.toJSONSchema(settings.schema),
     idea: settings.taskKey,
   });
   if (!result.ok) {

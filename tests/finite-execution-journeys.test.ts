@@ -16,6 +16,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   CodingRuntime,
@@ -58,10 +59,12 @@ import {
 } from '../src/task-engine/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
+import { developmentResponseSchema } from '../src/task-engine/actions/develop/artifacts.js';
 import type {
   DevelopmentOutput,
   DevelopmentResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
+import { reviewResponseSchema } from '../src/task-engine/actions/review/artifacts.js';
 import type {
   Finding,
   ReviewOutput,
@@ -181,6 +184,8 @@ function developerTurn(
 ): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus development agent.');
+    // Develop's own response schema crosses the real wiring to the provider capability.
+    expect(request.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
     return ok({ output: JSON.stringify(await work(request)) });
   };
 }
@@ -189,6 +194,8 @@ function developerTurn(
 function reviewerTurn(work: (request: CodingRuntimeRequest) => Promise<ReviewResponse>): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus reviewer.');
+    // Review's own response schema crosses the real wiring to the provider capability.
+    expect(request.outputSchema).toEqual(z.toJSONSchema(reviewResponseSchema));
     return ok({ output: JSON.stringify(await work(request)) });
   };
 }

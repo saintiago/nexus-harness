@@ -395,6 +395,8 @@ async function ideaJourney(): Promise<IdeaJourney> {
           if (role === null) {
             return fault('No idea refinement role matches the invoked prompt.');
           }
+          // Every idea role produces JSON, so each invocation carries its own response schema.
+          expect(request.outputSchema).toBeDefined();
           const turn = (turns.get(role) ?? 0) + 1;
           turns.set(role, turn);
           return ok({ output: JSON.stringify(respond(turn, request)) });

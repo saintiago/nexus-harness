@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { createAgentRuntime } from '../agent-runtime/index.js';
 import { createCodingRuntime } from '../adapters/coding-runtime.js';
 import { createNotificationsAdapter } from '../adapters/notifications.js';
@@ -6,7 +7,11 @@ import {
   createNotificationSettings,
   recoveryEnvironment,
 } from './composition.js';
-import type { RecoveryRuntime, RecoveryRuntimeConstruction } from './recovery.js';
+import {
+  recoveryReportSchema,
+  type RecoveryRuntime,
+  type RecoveryRuntimeConstruction,
+} from './recovery.js';
 
 /**
  * The parent-side recovery wiring: the configured recovery AgentRuntime over the coding provider,
@@ -33,6 +38,9 @@ export function createRecoveryRuntime(settings: RecoveryRuntimeConstruction): Re
         request.workspace,
         request.context,
         request.onActivity,
+        // Recovery answers with its RecoveryReport schema; the provider enforces the shape and
+        // Application still parses and validates the returned report.
+        z.toJSONSchema(recoveryReportSchema),
       );
     },
     async notify(subject, body) {

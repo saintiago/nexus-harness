@@ -8,6 +8,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { RepositoryState } from '../src/adapters/git.js';
@@ -15,6 +16,7 @@ import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import {
   devArtifact,
+  developmentResponseSchema,
   type DevelopmentOutput,
   type FindingResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
@@ -48,6 +50,7 @@ type RuntimeRequest = {
   readonly profile: string;
   readonly workspaceRoot: string;
   readonly context: string;
+  readonly outputSchema: Readonly<Record<string, unknown>> | undefined;
 };
 
 /** A controlled AgentRuntime that answers every invocation from the handler. */
@@ -59,11 +62,12 @@ function scriptedRuntime(handler: (request: RuntimeRequest) => string | Promise<
   return {
     requests,
     runtime: {
-      async run(profile, workspaceRef, additionalContext) {
+      async run(profile, workspaceRef, additionalContext, _onActivity, outputSchema) {
         const request = {
           profile,
           workspaceRoot: workspaceRef.root,
           context: additionalContext,
+          outputSchema,
         };
         requests.push(request);
         return ok({ output: await handler(request) });
@@ -255,6 +259,9 @@ describe('Develop', () => {
     const request = requests[0];
     expect(request?.profile).toBe('dev-a');
     expect(request?.workspaceRoot).toBe(workspaceRoot);
+    // The action asks the provider for its own DevelopmentResponse shape, derived from the
+    // schema that will validate the returned report.
+    expect(request?.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
     const context = request?.context ?? '';
     // The refreshed task and conversation replace the stale selection copies.
     expect(context).toContain('Implement the retry guard');
@@ -736,7 +743,7 @@ describe('Develop', () => {
     const { workspaceRoot, selectionFile } = await workspace();
     const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState(), repositoryState()]);
-    const { runtime } = scriptedRuntime(() => 'not a JSON report');
+    const { runtime, requests } = scriptedRuntime(() => 'not a JSON report');
     const develop = createDevelop({
       selectionFile,
       runner: runnerOf(runtime),
@@ -746,6 +753,8 @@ describe('Develop', () => {
     });
 
     await expect(develop()).rejects.toThrow(/unusable output/);
+    // The requested structured-output schema never replaces the action's own validation.
+    expect(requests[0]?.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'development.json')),
     ).rejects.toThrow(/ENOENT/);

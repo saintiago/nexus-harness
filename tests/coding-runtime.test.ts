@@ -5,7 +5,7 @@
  * failures. No live Codex, credentials or paid turn is involved.
  */
 
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -38,6 +38,10 @@ type RecordedInvocation = {
   readonly directory: string;
   readonly stdin: string;
   readonly marker: string | null;
+  /** The path the invocation passed through `--output-schema`, or null when it passed none. */
+  readonly schemaPath: string | null;
+  /** The complete text of that schema file, read before the adapter removes it. */
+  readonly schema: string | null;
 };
 
 /** The native profile name the test fixtures install and select. */
@@ -46,6 +50,8 @@ const profile = 'nexus-fixture';
 /** The recording prelude every controlled provider runs before it reports anything. */
 const recordInvocation = `
 import { readFileSync, writeFileSync } from 'node:fs';
+const schemaFlag = process.argv.indexOf('--output-schema');
+const schemaPath = schemaFlag === -1 ? null : (process.argv[schemaFlag + 1] ?? null);
 writeFileSync(
   process.env.NEXUS_FIXTURE_RECORD,
   JSON.stringify({
@@ -53,6 +59,8 @@ writeFileSync(
     directory: process.cwd(),
     stdin: readFileSync(0, 'utf8'),
     marker: process.env.NEXUS_FIXTURE_MARKER ?? null,
+    schemaPath,
+    schema: schemaPath === null ? null : readFileSync(schemaPath, 'utf8'),
   }),
 );
 `;
@@ -205,6 +213,134 @@ describe('Coding runtime adapter', () => {
     expect(invocation?.stdin).toBe(prompt);
     expect(invocation?.directory).toBe(directory);
     expect(invocation?.marker).toBe('marker-value');
+  });
+
+  it("passes a supplied output schema through the provider's native setting and removes its file", async () => {
+    const fixture = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([
+        {
+          type: 'item.completed',
+          item: { id: 'item_1', type: 'agent_message', text: '{"status":"completed"}' },
+        },
+        { type: 'turn.completed' },
+      ])}\n`,
+    )});
+`);
+    const outputSchema = {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['completed', 'failed'] } },
+      required: ['status'],
+      additionalProperties: false,
+    };
+
+    const { result, activities } = await execute(fixture, { outputSchema });
+
+    expect(result).toEqual({ ok: true, value: { output: '{"status":"completed"}' } });
+    expect(activities).toEqual([{ type: 'message', text: '{"status":"completed"}' }]);
+    const invocation = await fixture.invocation();
+    const schemaPath = invocation?.schemaPath ?? '';
+    expect(path.isAbsolute(schemaPath)).toBe(true);
+    expect(invocation?.args).toEqual([
+      'exec',
+      '--json',
+      '--profile',
+      profile,
+      '--model',
+      'deepseek-flash',
+      '-c',
+      'model_reasoning_effort="max"',
+      '--output-schema',
+      schemaPath,
+      '-',
+    ]);
+    // The provider read exactly the caller-supplied JSON Schema, unchanged.
+    expect(invocation?.schema).toBe(`${JSON.stringify(outputSchema, null, 2)}\n`);
+    // The invocation-local file and its directory are gone once the invocation settles.
+    await expect(stat(schemaPath)).rejects.toThrow(/ENOENT/);
+    await expect(stat(path.dirname(schemaPath))).rejects.toThrow(/ENOENT/);
+  });
+
+  it('gives each concurrent invocation its own schema file and removes both', async () => {
+    const first = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([
+        { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'done' } },
+        { type: 'turn.completed' },
+      ])}\n`,
+    )});
+`);
+    const second = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([
+        { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'done' } },
+        { type: 'turn.completed' },
+      ])}\n`,
+    )});
+`);
+    const firstSchema = {
+      type: 'object',
+      properties: { summary: { type: 'string' } },
+      required: ['summary'],
+    };
+    const secondSchema = {
+      type: 'object',
+      properties: { decision: { type: 'string' } },
+      required: ['decision'],
+    };
+
+    const [firstRun, secondRun] = await Promise.all([
+      execute(first, { outputSchema: firstSchema }),
+      execute(second, { outputSchema: secondSchema }),
+    ]);
+
+    expect(firstRun.result.ok).toBe(true);
+    expect(secondRun.result.ok).toBe(true);
+    const firstInvocation = await first.invocation();
+    const secondInvocation = await second.invocation();
+    expect(firstInvocation?.schemaPath).not.toBeNull();
+    expect(secondInvocation?.schemaPath).not.toBeNull();
+    expect(firstInvocation?.schemaPath).not.toBe(secondInvocation?.schemaPath);
+    expect(firstInvocation?.schema).toBe(`${JSON.stringify(firstSchema, null, 2)}\n`);
+    expect(secondInvocation?.schema).toBe(`${JSON.stringify(secondSchema, null, 2)}\n`);
+    for (const schemaPath of [firstInvocation?.schemaPath, secondInvocation?.schemaPath]) {
+      await expect(stat(schemaPath ?? '')).rejects.toThrow(/ENOENT/);
+    }
+  });
+
+  it('removes the schema file when the invocation fails', async () => {
+    const fixture = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([{ type: 'thread.started', thread_id: 'thread-1' }])}\n`,
+    )});
+process.exitCode = 1;
+`);
+    const outputSchema = { type: 'object', properties: { summary: { type: 'string' } } };
+
+    const { result } = await execute(fixture, { outputSchema });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('exited with code 1') },
+    });
+    const invocation = await fixture.invocation();
+    await expect(stat(invocation?.schemaPath ?? '')).rejects.toThrow(/ENOENT/);
+    await expect(stat(path.dirname(invocation?.schemaPath ?? ''))).rejects.toThrow(/ENOENT/);
+  });
+
+  it('reports a fault for a schema it cannot prepare without starting the provider', async () => {
+    const fixture = await providerFixture(`${recordInvocation}\n`);
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+
+    const { result, activities } = await execute(fixture, { outputSchema: circular });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('output schema could not be prepared') },
+    });
+    expect(activities).toEqual([]);
+    expect(await fixture.invocation()).toBeNull();
   });
 
   it('represents MCP tool calls and web searches as command and result activity', async () => {
@@ -621,13 +757,19 @@ process.stdout.write(${literal(`${protocol([{ type: 'thread.started', thread_id:
 setInterval(() => {}, 1000);
 `);
 
-    const { result } = await execute(fixture, { timeLimitMs: 300 });
+    const { result } = await execute(fixture, {
+      timeLimitMs: 300,
+      outputSchema: { type: 'object', properties: { summary: { type: 'string' } } },
+    });
 
     expect(result).toMatchObject({
       ok: false,
       fault: { message: expect.stringMatching(/time limit/) },
     });
-    expect(await fixture.invocation()).not.toBeNull();
+    const invocation = await fixture.invocation();
+    expect(invocation).not.toBeNull();
+    // A timed-out invocation still releases its schema file.
+    await expect(stat(invocation?.schemaPath ?? '')).rejects.toThrow(/ENOENT/);
   });
 
   it('returns the provider result when the activity observer fails', async () => {

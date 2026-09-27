@@ -12,6 +12,12 @@ import type { AgentRoleRunner } from '../../src/task-engine/index.js';
 export function runnerOf(runtime: AgentRuntime): AgentRoleRunner {
   return {
     run: (request) =>
-      runtime.run(request.profile, request.workspace, request.context, () => undefined),
+      runtime.run(
+        request.profile,
+        request.workspace,
+        request.context,
+        () => undefined,
+        request.outputSchema,
+      ),
   };
 }

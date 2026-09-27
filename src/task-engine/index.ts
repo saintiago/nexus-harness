@@ -185,6 +185,12 @@ export type AgentRoleRequest = {
   readonly profile: string;
   readonly workspace: { readonly root: string };
   readonly context: string;
+  /**
+   * The JSON Schema the invocation's final response must match, when the action requires JSON.
+   * The action derives it from its own authoritative response schema; the runner transports it
+   * unchanged to the provider's structured-output capability.
+   */
+  readonly outputSchema?: Readonly<Record<string, unknown>>;
   /** The task the invocation works on, when it works on one. */
   readonly task?: string | null;
   /** The idea the invocation refines, when it refines one. */

@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import {
@@ -482,6 +483,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       profile: settings.reviewerProfile,
       workspace: { root },
       context,
+      outputSchema: z.toJSONSchema(reviewResponseSchema),
       task: selection.taskKey,
     });
     if (!result.ok) {
