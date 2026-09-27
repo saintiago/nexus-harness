@@ -17,7 +17,7 @@ uses the `refinement/` area. A later workflow adds its own area when its layout 
 ├── state/                       finite delivery working state
 └── refinement/
     ├── worktree/                Git worktree for idea agents
-    ├── artifacts/               submissions and council cycles
+    ├── artifacts/               submissions and conversation cycles
     └── state/                   idea round plan
 ```
 
@@ -56,7 +56,9 @@ Workflow state and mutable worktrees do not become handoff artifacts.
 The [idea refinement specification](idea-refinement/spec.md#artifacts-and-revision-binding)
 defines the stable `refinement/` area within the issue workspace. Each entry from `Idea`
 reuses that area when present and adds a new numbered submission history. Artifacts are keyed by
-submission, council cycle and refined idea revision. Idea refinement's StartIdeaRound owns its own
+submission, conversation cycle and refined idea revision. Contributions and Challenger results retain
+the context they address; detailed research stays separate from short exchanges.
+Idea refinement's StartIdeaRound owns its own
 `state/current-round.json` plan with idea roles and cycle identity; it does not use finite
 delivery's developer ladder or writable delivery worktree. The same WorkspaceRef value identifies
 the refinement area. Nexus owns artifact writes; agents use the prepared project worktree
