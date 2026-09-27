@@ -58,6 +58,12 @@ open findings and newly discovered ones. priorFindings contains one disposition 
 finding. An open disposition has a matching current finding. Resolved or withdrawn findings remain in
 history rather than the current array. Neither role silently drops or renumbers an existing finding.
 
+The supplied prior-finding set is exactly the preceding review's findings array, not its priorFindings
+dispositions or findings appearing only in older reports. Return exactly one disposition for each ID
+in that set and none for IDs outside it; an empty set requires an empty priorFindings array. Historical
+reports remain evidence for identity and recurrence, not additional disposition requests. A defect
+shown to recur may return in findings under its stable ID without adding an out-of-set disposition.
+
 ## Verdict rules
 
 - approved: sufficient evidence and no current blocking findings. Non-blocking observations do not

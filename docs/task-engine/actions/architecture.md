@@ -22,7 +22,10 @@ An action design specifies:
 
 Actions invoke capabilities through their public interfaces. Agent-backed actions use
 [AgentRuntime.run](../../agent-runtime/architecture.md#provided-interface), supplying context assembled from their inputs
-and interpreting the returned output themselves.
+and interpreting the returned output themselves. Actions requiring JSON supply a machine-readable
+output schema derived from their owned response schema through that interface, as well as the
+response instructions in context. They still validate the returned content and business rules before
+persisting an artifact; structured output does not establish correctness or approval.
 
 ### Artifact declarations
 

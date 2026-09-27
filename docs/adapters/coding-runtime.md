@@ -8,7 +8,8 @@ Invoke the configured coding provider and translate its protocol into output and
 
 Follow the [adapter contract](architecture.md#interface).
 Construction supplies the provider connection or executable and its credentials.
-Inputs are the prompt, model, effort, tool settings, working directory and invocation time limit.
+Inputs are the prompt, model, effort, tool settings, working directory, invocation time limit and an
+optional outputSchema containing a JSON Schema object.
 
 Return the provider's final output and stream its available activity.
 [AgentRuntime](../agent-runtime/architecture.md#required-interface) resolves the supplied profile, assembles prompts, interprets
@@ -17,8 +18,10 @@ invocation completion and returns output to its caller.
 ### Required capability
 
 execute(request, onActivity) performs one invocation with the supplied settings, emits provider
-activity and returns final output. Its output remains data, including structured text when requested
-in the prompt. The consumer interprets the report schema.
+activity and returns final output. When outputSchema is supplied, use the provider's native structured
+output capability for the final response. Unsupported schemas or structured-output capability are
+errors; do not silently fall back to prompt-only formatting. The consumer validates and interprets
+the returned report. Activity remains separate from the final response.
 
 Support the configured developer, reviewer and recovery profiles through the same capability.
 Apply their supplied tool permissions; do not derive permissions from the role name or prompt text.
@@ -34,6 +37,11 @@ the research MCP servers, enabled tools and connector exclusions. Pass model and
 provider's supported invocation settings. Deliver the complete prompt on the provider's standard
 input by asking it to read instructions there (`codex exec` does so for a `-` prompt argument), so
 prompt size does not depend on the operating system's per-argument limit.
+
+For a supplied outputSchema, write it to an invocation-local temporary file and pass that file through
+`codex exec --output-schema`. Keep the file available for the invocation and clean it up on success or
+failure. Concurrent invocations must not share this file. Return the complete final response without
+extracting fenced snippets, adding missing delimiters or inventing values.
 
 The provider connects to MCP servers, exposes their tools to the model and executes tool calls.
 The adapter launches and observes the invocation; it adds no tool registry, MCP client or tool-call

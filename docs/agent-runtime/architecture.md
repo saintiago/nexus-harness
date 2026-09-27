@@ -28,6 +28,7 @@ interface AgentRuntime {
     workspaceRef: WorkspaceRef,
     additionalContext: string,
     onActivity: (activity: AgentEvent) => void,
+    outputSchema?: Readonly<Record<string, unknown>>,
   ): Promise<AgentResult>;
 }
 
@@ -60,9 +61,14 @@ additionalContext is caller-prepared text containing the invocation instructions
 file paths the agent needs. Include it in the prompt as supplied; do not read workspace files to
 discover or construct the request.
 
-Success means the invocation finished and returned output. The caller defines the required output
-format, parses it and evaluates its claims. The runtime has no developer, reviewer or recovery output
-schemas. It does not declare a task complete.
+Callers requiring a JSON response supply outputSchema as a JSON Schema object derived from their
+authoritative response schema. The schema describes the agent response, not metadata added by the
+caller afterward. Pass it unchanged to the provider's structured-output capability; prompt text alone
+does not enforce the response format. Calls requiring plain text omit it.
+
+Success means the invocation finished and returned output. The caller still parses, validates and
+evaluates its claims, including rules a JSON Schema cannot express. The runtime transports the supplied
+schema without owning developer, reviewer or recovery schemas. It does not declare a task complete.
 
 Activity is emitted through the observer the caller supplies for that invocation, so concurrent
 calls keep independent observers. Observer failures do not affect the invocation. Invocation
@@ -71,7 +77,7 @@ failures and timeouts return a fault.
 ### Required interface
 
 Use the [coding runtime adapter](../adapters/coding-runtime.md#interface) for provider communication. Supply the resolved
-model, effort, tool settings, assembled prompt, configured time limit and working directory. The working
+model, effort, tool settings, assembled prompt, optional output schema, configured time limit and working directory. The working
 directory is worktree/ within the supplied workspace root.
 
 Prompt and settings are values. Receive the provider's output and activity as data/streams.

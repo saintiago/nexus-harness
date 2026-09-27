@@ -43,6 +43,19 @@ Require successful verification for the current committed head. Publish the bran
 non-forced push and confirm the remote branch head. Find the task's existing pull request or its matching branch; decide whether to create
 or update it. A closed or unrelated pull request is not silently reused.
 
+After a successful push and confirmation of the verified remote branch head, allow bounded time for
+the matching open pull request's reported head to catch up. If a PR read, creation or update reports
+a different head, re-read that same PR at fixed intervals within a short, finite deadline before
+returning failed. Use one deadline for this delivery invocation's post-push confirmation; do not
+reset it after each stale observation. This is Deliver-owned behavior with fixed internal bounds,
+not a new operator setting or a generic adapter retry policy.
+
+Continue only after the PR reports the exact verified revision. Recheck its identity, branch and base
+on each observation; a closed, unrelated or ambiguous target still fails, and provider faults remain
+execution errors. Do not repeat pushes, create another PR or repeat publication writes while waiting.
+If confirmation expires, retain the expected and last observed revisions in the failure reason. All
+review and completion gates remain required after successful confirmation.
+
 Request native auto-merge immediately after first creating the pull request. Required review and
 checks remain repository merge gates; requesting auto-merge does not wait for Review or CompleteTask.
 
