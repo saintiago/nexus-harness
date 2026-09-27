@@ -244,6 +244,7 @@ describe('delivery cycle', () => {
           url: pullRequestUrl,
           state: 'closed',
           merged: true,
+          headBranch: 'task/NEX-1',
           baseBranch: 'main',
           headRevision: await headOf(worktree),
           mergeRevision,

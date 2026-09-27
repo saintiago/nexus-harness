@@ -21,7 +21,7 @@ that operation; it does not combine the decision into ensurePullRequest.
 | Operation | Inputs and result | Consumers |
 | --- | --- | --- |
 | Find pull requests | Branch/base filters → matching PR identities | [Deliver](../task-engine/actions/deliver.md#interface) |
-| Read pull request | PR identity → head, base, state, merge revision and auto-merge state | Deliver, Review, CompleteTask |
+| Read pull request | PR identity → head revision and branch, base, state, merge revision and auto-merge state | Deliver, Review, CompleteTask |
 | Create or update pull request | Explicit branch/base or PR identity and requested fields → PR identity, URL and head | Deliver |
 | Read conversation and reviews | PR identity → complete comments, review threads, review authors and reviewed revisions | [Review](../task-engine/actions/review.md#interface) |
 | Publish review as Nexus Lens | PR, reviewed head, verdict and content → review identity | Review |

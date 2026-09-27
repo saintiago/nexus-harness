@@ -93,6 +93,7 @@ function pullRequestObservation(head: string, overrides: Partial<PullRequest> = 
     url: pullRequestUrl,
     state: 'open',
     merged: false,
+    headBranch: taskBranch,
     baseBranch: 'main',
     headRevision: head,
     mergeRevision: null,
@@ -461,6 +462,191 @@ describe('Deliver', () => {
     }
   });
 
+  it('validates a discovered merged pull request before reusing it', async () => {
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly name: string;
+      readonly expected: RegExp;
+      readonly observation: PullRequest;
+    }> = [
+      {
+        label: 'a merged pull request for another base',
+        name: 'merged-other-base',
+        expected: /targets "develop", not the configured "main"/,
+        observation: pullRequestObservation(headRevision, {
+          state: 'closed',
+          merged: true,
+          baseBranch: 'develop',
+          mergeRevision: '4'.repeat(40),
+        }),
+      },
+      {
+        label: 'a merged pull request for another branch',
+        name: 'merged-other-branch',
+        expected: /is on branch "unrelated-branch", not the prepared/,
+        observation: pullRequestObservation(headRevision, {
+          state: 'closed',
+          merged: true,
+          headBranch: 'unrelated-branch',
+          mergeRevision: '4'.repeat(40),
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      events = [];
+      waitCalls = [];
+      const { workspaceRoot, selectionFile } = await workspace(testCase.name);
+      await writeVerifiedRound(workspaceRoot);
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      // The branch search matches, but the full observation reports a different target; the
+      // mismatched merge is judged once and no publication write follows.
+      const hub = scriptedGitHub({
+        findPullRequests: () => ok([{ number: 7, url: pullRequestUrl }]),
+        readPullRequest: () => ok(testCase.observation),
+      });
+      const deliver = deliverAction({
+        selectionFile,
+        git,
+        github: hub.github,
+        jira: scriptedJira({}).jira,
+      });
+
+      await expect(deliver(), testCase.label).resolves.toBe('failed');
+      expect(events.at(-1), testCase.label).toEqual({
+        source: 'deliver',
+        type: 'failed',
+        data: { reason: expect.stringMatching(testCase.expected) },
+      });
+      expect(hub.calls, testCase.label).toEqual([`find:${taskBranch}->main`, 'read:7']);
+      expect(waitCalls, testCase.label).toEqual([]);
+      await expect(
+        stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json')),
+        testCase.label,
+      ).rejects.toThrow(/ENOENT/);
+    }
+  });
+
+  it('fails immediately on a pull request whose head branch is not the prepared branch', async () => {
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly name: string;
+      readonly recorded: boolean;
+    }> = [
+      { label: 'a recorded pull request', name: 'recorded-branch', recorded: true },
+      { label: 'a discovered open pull request', name: 'discovered-branch', recorded: false },
+    ];
+
+    for (const testCase of cases) {
+      events = [];
+      waitCalls = [];
+      const { workspaceRoot, selectionFile } = await workspace(testCase.name);
+      await writeVerifiedRound(workspaceRoot);
+      if (testCase.recorded) {
+        const helpers = createArtifactHelpers({ root: workspaceRoot });
+        await helpers.writeOutputArtifact(deliveryArtifact, {
+          repository,
+          pullRequestNumber: 7,
+          pullRequestUrl,
+          headRevision,
+        });
+      }
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      // The verified revision and configured base match, but the pull request belongs to another
+      // branch; it is not updated or reused.
+      const hub = scriptedGitHub({
+        findPullRequests: () => ok([{ number: 7, url: pullRequestUrl }]),
+        readPullRequest: () =>
+          ok(pullRequestObservation(headRevision, { headBranch: 'unrelated-branch' })),
+      });
+      const deliver = deliverAction({
+        selectionFile,
+        git,
+        github: hub.github,
+        jira: scriptedJira({}).jira,
+      });
+
+      await expect(deliver(), testCase.label).resolves.toBe('failed');
+      expect(events.at(-1), testCase.label).toEqual({
+        source: 'deliver',
+        type: 'failed',
+        data: {
+          reason: expect.stringMatching(/is on branch "unrelated-branch", not the prepared/),
+        },
+      });
+      expect(hub.calls, testCase.label).toEqual(
+        testCase.recorded ? ['read:7'] : [`find:${taskBranch}->main`, 'read:7'],
+      );
+      expect(waitCalls, testCase.label).toEqual([]);
+      const artifact = stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json'));
+      if (testCase.recorded) {
+        // The recorded publication is retained untouched.
+        await expect(artifact, testCase.label).resolves.toBeDefined();
+      } else {
+        await expect(artifact, testCase.label).rejects.toThrow(/ENOENT/);
+      }
+    }
+  });
+
+  it('does not accept a branch change while confirming the verified revision', async () => {
+    const { workspaceRoot, selectionFile } = await workspace();
+    await writeVerifiedRound(workspaceRoot);
+    const helpers = createArtifactHelpers({ root: workspaceRoot });
+    await helpers.writeOutputArtifact(deliveryArtifact, {
+      repository,
+      pullRequestNumber: 7,
+      pullRequestUrl,
+      headRevision,
+    });
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      pushBranch: () => ok({ branch: taskBranch, headRevision }),
+      readRemoteBranchHead: () => ok(headRevision),
+    });
+    let reads = 0;
+    const hub = scriptedGitHub({
+      readPullRequest: () => {
+        reads += 1;
+        // The first observation is stale on the prepared branch; the catch-up reports the verified
+        // revision on another branch.
+        return ok(
+          reads === 1
+            ? pullRequestObservation(otherRevision)
+            : pullRequestObservation(headRevision, { headBranch: 'unrelated-branch' }),
+        );
+      },
+    });
+    const deliver = deliverAction({
+      selectionFile,
+      git,
+      github: hub.github,
+      jira: scriptedJira({}).jira,
+    });
+
+    await expect(deliver()).resolves.toBe('failed');
+    expect(events.at(-1)).toEqual({
+      source: 'deliver',
+      type: 'failed',
+      data: {
+        reason: expect.stringMatching(/is on branch "unrelated-branch", not the prepared/),
+      },
+    });
+    expect(hub.calls).toEqual(['read:7', 'read:7']);
+    expect(waitCalls).toHaveLength(1);
+    // The recorded publication is retained untouched.
+    expect(await readRoundArtifact(workspaceRoot, 1, 'delivery.json')).toEqual({
+      repository,
+      pullRequestNumber: 7,
+      pullRequestUrl,
+      headRevision,
+    });
+  });
+
   it('does not silently choose among ambiguous matching pull requests', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
     await writeVerifiedRound(workspaceRoot);
@@ -528,6 +714,7 @@ describe('Deliver', () => {
           url: pullRequestUrl,
           state: 'open',
           merged: false,
+          headBranch: taskBranch,
           baseBranch: 'main',
           headRevision,
           mergeRevision: null,
@@ -697,6 +884,138 @@ describe('Deliver', () => {
     expect(waitCalls).toHaveLength(1);
   });
 
+  it('uses the state observed while confirming a created pull request', async () => {
+    const { workspaceRoot, selectionFile } = await workspace();
+    await writeVerifiedRound(workspaceRoot);
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      pushBranch: () => ok({ branch: taskBranch, headRevision }),
+      readRemoteBranchHead: () => ok(headRevision),
+    });
+    let reads = 0;
+    const hub = scriptedGitHub({
+      findPullRequests: () => ok([]),
+      createPullRequest: () => ok({ number: 7, url: pullRequestUrl, headRevision: otherRevision }),
+      // The provider catches up with the verified revision, and by then auto-merge is already
+      // enabled: the stale creation response needs no auto-merge request.
+      readPullRequest: () => {
+        reads += 1;
+        return ok(
+          pullRequestObservation(reads === 1 ? otherRevision : headRevision, {
+            autoMergeEnabled: true,
+          }),
+        );
+      },
+    });
+    const deliver = deliverAction({
+      selectionFile,
+      git,
+      github: hub.github,
+      jira: publishingJira().jira,
+    });
+
+    await expect(deliver()).resolves.toBe('published');
+
+    expect(hub.calls).toEqual([
+      `find:${taskBranch}->main`,
+      `create:${taskBranch}->main`,
+      'read:7',
+      'read:7',
+    ]);
+    expect(waitCalls).toHaveLength(1);
+    expect(await readRoundArtifact(workspaceRoot, 1, 'delivery.json')).toEqual({
+      repository,
+      pullRequestNumber: 7,
+      pullRequestUrl,
+      headRevision,
+    });
+  });
+
+  it('uses the state observed while confirming an updated pull request', async () => {
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly name: string;
+      readonly initialAutoMergeEnabled: boolean;
+      readonly confirming: PullRequest;
+      readonly expectedCalls: readonly string[];
+    }> = [
+      {
+        label: 'auto-merge disabled while the update response was stale',
+        name: 'auto-merge-disabled',
+        initialAutoMergeEnabled: true,
+        confirming: pullRequestObservation(headRevision, { autoMergeEnabled: false }),
+        expectedCalls: ['read:7', 'update:7', 'read:7', 'read:7', `autoMerge:7@${headRevision}`],
+      },
+      {
+        label: 'merged while the update response was stale',
+        name: 'merged-while-confirming',
+        initialAutoMergeEnabled: false,
+        confirming: pullRequestObservation(headRevision, {
+          state: 'closed',
+          merged: true,
+          mergeRevision: '4'.repeat(40),
+        }),
+        expectedCalls: ['read:7', 'update:7', 'read:7', 'read:7'],
+      },
+    ];
+
+    for (const testCase of cases) {
+      events = [];
+      waitCalls = [];
+      const { workspaceRoot, selectionFile } = await workspace(testCase.name);
+      await writeVerifiedRound(workspaceRoot);
+      const helpers = createArtifactHelpers({ root: workspaceRoot });
+      await helpers.writeOutputArtifact(deliveryArtifact, {
+        repository,
+        pullRequestNumber: 7,
+        pullRequestUrl,
+        headRevision,
+      });
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        pushBranch: () => ok({ branch: taskBranch, headRevision }),
+        readRemoteBranchHead: () => ok(headRevision),
+      });
+      let reads = 0;
+      const hub = scriptedGitHub({
+        readPullRequest: () => {
+          reads += 1;
+          if (reads === 1) {
+            // The recorded target observation before the update.
+            return ok(
+              pullRequestObservation(headRevision, {
+                autoMergeEnabled: testCase.initialAutoMergeEnabled,
+              }),
+            );
+          }
+          if (reads === 2) {
+            // The observation following the update response still names the previous head.
+            return ok(pullRequestObservation(otherRevision));
+          }
+          return ok(testCase.confirming);
+        },
+        updatePullRequest: () =>
+          ok({ number: 7, url: pullRequestUrl, headRevision: otherRevision }),
+        requestAutoMerge: () => ok(undefined),
+      });
+      const deliver = deliverAction({
+        selectionFile,
+        git,
+        github: hub.github,
+        jira: publishingJira().jira,
+      });
+
+      await expect(deliver(), testCase.label).resolves.toBe('published');
+      // The confirming observation decides the auto-merge request, not the stale one.
+      expect(hub.calls, testCase.label).toEqual(testCase.expectedCalls);
+      expect(waitCalls, testCase.label).toHaveLength(1);
+      expect(await readRoundArtifact(workspaceRoot, 1, 'delivery.json'), testCase.label).toEqual({
+        repository,
+        pullRequestNumber: 7,
+        pullRequestUrl,
+        headRevision,
+      });
+    }
+  });
+
   it('fails when the pull request never reports the verified revision within the deadline', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
     await writeVerifiedRound(workspaceRoot);
@@ -735,6 +1054,90 @@ describe('Deliver', () => {
       `push:${taskBranch}@${headRevision}`,
       `remote:/origin/repository.git:${taskBranch}`,
     ]);
+    await expect(stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json'))).rejects.toThrow(
+      /ENOENT/,
+    );
+  });
+
+  it('ends the confirmation when the next read would land beyond the deadline', async () => {
+    const { workspaceRoot, selectionFile } = await workspace();
+    await writeVerifiedRound(workspaceRoot);
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      pushBranch: () => ok({ branch: taskBranch, headRevision }),
+      readRemoteBranchHead: () => ok(headRevision),
+    });
+    let reads = 0;
+    const hub = scriptedGitHub({
+      findPullRequests: () => ok([{ number: 7, url: pullRequestUrl }]),
+      // The provider takes 19 of the 20 seconds to report the previous head, so the fixed re-read
+      // interval would land beyond the deadline.
+      readPullRequest: () => {
+        reads += 1;
+        clock += 19_000;
+        return ok(pullRequestObservation(otherRevision));
+      },
+    });
+    const deliver = deliverAction({
+      selectionFile,
+      git,
+      github: hub.github,
+      jira: scriptedJira({}).jira,
+    });
+
+    await expect(deliver()).resolves.toBe('failed');
+
+    // The failure retains the expected and last observed revisions.
+    const reason = (events.at(-1)?.data as { readonly reason?: string }).reason ?? '';
+    expect(reason).toContain(`reports revision ${otherRevision}`);
+    expect(reason).toContain(`the verified ${headRevision}`);
+    expect(reason).toMatch(/post-push confirmation deadline of \d+s expired/);
+    // No read and no wait follow the observation that used up the deadline.
+    expect(reads).toBe(1);
+    expect(hub.calls).toEqual([`find:${taskBranch}->main`, 'read:7']);
+    expect(waitCalls).toEqual([]);
+    await expect(stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json'))).rejects.toThrow(
+      /ENOENT/,
+    );
+  });
+
+  it('does not accept a confirmation observed after the deadline', async () => {
+    const { workspaceRoot, selectionFile } = await workspace();
+    await writeVerifiedRound(workspaceRoot);
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      pushBranch: () => ok({ branch: taskBranch, headRevision }),
+      readRemoteBranchHead: () => ok(headRevision),
+    });
+    let reads = 0;
+    const hub = scriptedGitHub({
+      findPullRequests: () => ok([{ number: 7, url: pullRequestUrl }]),
+      readPullRequest: () => {
+        reads += 1;
+        if (reads === 1) {
+          return ok(pullRequestObservation(otherRevision));
+        }
+        // The re-read is issued inside the deadline, but the provider only answers with the
+        // verified revision after the deadline expired.
+        clock += 25_000;
+        return ok(pullRequestObservation(headRevision));
+      },
+    });
+    const deliver = deliverAction({
+      selectionFile,
+      git,
+      github: hub.github,
+      jira: scriptedJira({}).jira,
+    });
+
+    await expect(deliver()).resolves.toBe('failed');
+
+    // The late confirmation retains the expected and last observed revisions and publishes no
+    // update or auto-merge request.
+    const reason = (events.at(-1)?.data as { readonly reason?: string }).reason ?? '';
+    expect(reason).toContain(headRevision);
+    expect(reason).toMatch(/reported the verified revision .*, but only after /);
+    expect(reason).toMatch(/post-push confirmation deadline of \d+s expired/);
+    expect(hub.calls).toEqual([`find:${taskBranch}->main`, 'read:7', 'read:7']);
+    expect(waitCalls).toHaveLength(1);
     await expect(stat(path.join(workspaceRoot, 'artifacts', '1', 'delivery.json'))).rejects.toThrow(
       /ENOENT/,
     );

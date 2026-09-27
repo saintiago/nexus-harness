@@ -71,6 +71,8 @@ export type PullRequestBranchFilter = {
 export type PullRequest = PullRequestIdentity & {
   readonly state: 'open' | 'closed';
   readonly merged: boolean;
+  /** The branch the observed head belongs to. */
+  readonly headBranch: string;
   readonly baseBranch: string;
   readonly headRevision: string;
   /** The merge commit, reported only after the provider reports the pull request merged. */
@@ -259,7 +261,7 @@ const pullRequestSchema = z.looseObject({
   state: z.enum(['open', 'closed']),
   merged: z.boolean(),
   merge_commit_sha: z.string().nullable(),
-  head: z.looseObject({ sha: z.string() }),
+  head: z.looseObject({ sha: z.string(), ref: z.string() }),
   base: z.looseObject({ ref: z.string() }),
   auto_merge: z.record(z.string(), z.unknown()).nullable(),
 });
@@ -780,6 +782,7 @@ export function createGitHubAdapter(
         url: value.html_url,
         state: value.state,
         merged: value.merged,
+        headBranch: value.head.ref,
         baseBranch: value.base.ref,
         headRevision: value.head.sha,
         // Before merging, merge_commit_sha names the provider's test merge commit.

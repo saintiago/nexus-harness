@@ -235,7 +235,7 @@ describe('GitHub adapter', () => {
     expect(app).toHaveLength(0);
   });
 
-  it('reports head, base and auto-merge state without inventing a merge revision', async () => {
+  it('reports the head revision and branch, base and auto-merge state', async () => {
     const { adapter, app } = harness([
       ghJson({
         number: 7,
@@ -244,7 +244,7 @@ describe('GitHub adapter', () => {
         merged: false,
         // Before merging, the provider reports its test merge commit here.
         merge_commit_sha: 'test-merge-commit',
-        head: { sha: 'head-revision' },
+        head: { sha: 'head-revision', ref: 'feature/task-7' },
         base: { ref: 'main' },
         auto_merge: null,
       }),
@@ -257,6 +257,7 @@ describe('GitHub adapter', () => {
       url: 'https://github.com/acme/nexus/pull/7',
       state: 'open',
       merged: false,
+      headBranch: 'feature/task-7',
       baseBranch: 'main',
       headRevision: 'head-revision',
       mergeRevision: null,
@@ -273,7 +274,7 @@ describe('GitHub adapter', () => {
         state: 'closed',
         merged: true,
         merge_commit_sha: 'merge-revision',
-        head: { sha: 'head-revision' },
+        head: { sha: 'head-revision', ref: 'feature/task-7' },
         base: { ref: 'main' },
         auto_merge: { merge_method: 'squash' },
       }),
@@ -284,6 +285,7 @@ describe('GitHub adapter', () => {
     expect(pull).toMatchObject({
       state: 'closed',
       merged: true,
+      headBranch: 'feature/task-7',
       mergeRevision: 'merge-revision',
       autoMergeEnabled: true,
     });
@@ -297,7 +299,7 @@ describe('GitHub adapter', () => {
         state: 'closed',
         merged: true,
         merge_commit_sha: null,
-        head: { sha: 'head-revision' },
+        head: { sha: 'head-revision', ref: 'feature/task-7' },
         base: { ref: 'main' },
         auto_merge: null,
       }),
