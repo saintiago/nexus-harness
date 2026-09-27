@@ -55,6 +55,13 @@ the same revision. Read the locally saved task conversation and round history; s
 and PR conversations locally. Give the reviewer complete prior findings
 and developer responses, not shortened Jira summaries.
 
+Supply a clearly identified current-round disposition input containing only the preceding review's
+findings array, as complete Finding values, and the matching developer responses. Use this same set
+for response validation under the findings contract. Present complete earlier reports and conversations
+separately as historical evidence; do not label a whole prior review as the findings to evaluate.
+State the exact eligible IDs, including an explicit empty set on the first round. Keep rejection of
+missing, duplicate or out-of-set dispositions; do not silently remove them from returned reports.
+
 Read the comparison diff for the recorded base/head and include that revision range in the review
 context. Agent claims do not change the revision this action is evaluating.
 
