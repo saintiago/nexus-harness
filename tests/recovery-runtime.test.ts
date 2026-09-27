@@ -7,15 +7,18 @@
  * notification service is involved.
  */
 
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../src/agent-runtime/index.js';
 import { recoveryRoleInstructions } from '../src/agent-runtime/index.js';
+import { recoveryReportSchema } from '../src/application/recovery.js';
 import { createRecoveryRuntime } from '../src/application/recovery-runtime.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { nexusConfiguration } from './support/configuration.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 const installationDirectory = '/srv/nexus/installation';
 
@@ -44,6 +47,10 @@ type RecordedInvocation = {
   readonly directory: string;
   readonly prompt: string;
   readonly environment: Record<string, string | undefined>;
+  /** The path the invocation passed through `--output-schema`, or null when it passed none. */
+  readonly schemaPath: string | null;
+  /** The complete text of that schema file, read before the adapter removes it. */
+  readonly schema: string | null;
 };
 
 /** Install the controlled provider and the native profile file the adapter requires. */
@@ -62,6 +69,8 @@ async function providerFixture(agentOutput: string): Promise<{
     `#!${process.execPath}
 import { readFileSync, writeFileSync } from 'node:fs';
 const prompt = readFileSync(0, 'utf8');
+const schemaFlag = process.argv.indexOf('--output-schema');
+const schemaPath = schemaFlag === -1 ? null : (process.argv[schemaFlag + 1] ?? null);
 writeFileSync(
   process.env.NEXUS_FIXTURE_RECORD,
   JSON.stringify({
@@ -69,6 +78,8 @@ writeFileSync(
     directory: process.cwd(),
     prompt,
     environment: process.env,
+    schemaPath,
+    schema: schemaPath === null ? null : readFileSync(schemaPath, 'utf8'),
   }),
 );
 const output = readFileSync(process.env.NEXUS_FIXTURE_OUTPUT, 'utf8');
@@ -125,6 +136,8 @@ describe('recovery runtime', () => {
     expect(result).toEqual({ ok: true, value: { output: agentOutput } });
     expect(activities).toEqual([{ type: 'message', text: agentOutput }]);
     const invocation = await fixture.invocation();
+    const schemaPath = invocation.schemaPath ?? '';
+    expect(path.isAbsolute(schemaPath)).toBe(true);
     expect(invocation.args).toEqual([
       'exec',
       '--json',
@@ -134,8 +147,18 @@ describe('recovery runtime', () => {
       'gpt-6-astra',
       '-c',
       'model_reasoning_effort="high"',
+      '--output-schema',
+      schemaPath,
       '-',
     ]);
+    // The recovery report's own schema reaches the provider's structured-output capability.
+    expect(invocation.schema).toBe(
+      `${JSON.stringify(z.toJSONSchema(recoveryReportSchema), null, 2)}\n`,
+    );
+    expect(strictSchemaProblems(JSON.parse(invocation.schema ?? '{}'))).toEqual([]);
+    // The invocation-local schema file is removed once the invocation settles.
+    await expect(stat(schemaPath)).rejects.toThrow(/ENOENT/);
+    await expect(stat(path.dirname(schemaPath))).rejects.toThrow(/ENOENT/);
     expect(invocation.directory).toBe(path.join(workspace.root, 'worktree'));
     // The prompt carries the RecoveryRole constant once and the complete supplied context.
     expect(invocation.prompt).toContain(recoveryRoleInstructions[0]);

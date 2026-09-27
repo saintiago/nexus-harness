@@ -136,6 +136,7 @@ function agentRunnerFor(
           request.workspace,
           request.context,
           (activity) => invocation.activity(activity),
+          request.outputSchema,
         );
       } catch (error) {
         invocation.finish({ outcome: 'failed', reason: messageOf(error) });

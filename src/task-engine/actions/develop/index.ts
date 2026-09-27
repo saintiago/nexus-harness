@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
@@ -305,6 +306,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       profile,
       workspace: { root },
       context,
+      outputSchema: z.toJSONSchema(developmentResponseSchema),
       task: selection.taskKey,
     });
     if (!result.ok) {

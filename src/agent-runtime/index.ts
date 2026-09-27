@@ -5,7 +5,10 @@ import type { Result } from '../result.js';
 /**
  * AgentRuntime resolves the caller-selected profile, assembles one prompt from the supplied
  * instructions, context and workspace, and runs one coding-provider invocation through the
- * coding runtime adapter. It keeps no storage and adds no turns of its own.
+ * coding runtime adapter. A caller requiring a JSON response supplies the output schema derived
+ * from its own response schema; the runtime transports that schema unchanged to the provider's
+ * structured-output capability and leaves validation to the caller. It keeps no storage and adds
+ * no turns of its own.
  */
 
 /** The profile identity the caller selects. */
@@ -44,6 +47,7 @@ export type AgentRuntime = {
     workspaceRef: WorkspaceRef,
     additionalContext: string,
     onActivity: (activity: AgentEvent) => void,
+    outputSchema?: Readonly<Record<string, unknown>>,
   ): Promise<AgentResult>;
 };
 
@@ -80,7 +84,7 @@ function assemblePrompt(
 /** Create the agent runtime over the supplied configuration. */
 export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime {
   return {
-    async run(profileId, workspaceRef, additionalContext, onActivity) {
+    async run(profileId, workspaceRef, additionalContext, onActivity, outputSchema) {
       const profile = settings.profiles.find((candidate) => candidate.id === profileId);
       if (profile === undefined) {
         return { ok: false, fault: { message: `Unknown agent profile "${profileId}".` } };
@@ -99,6 +103,7 @@ export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime
           toolSettings: profile.toolSettings,
           directory: worktree,
           timeLimitMs: settings.invocationLimitMinutes * 60_000,
+          ...(outputSchema === undefined ? {} : { outputSchema }),
         },
         (activity) => {
           try {

@@ -202,6 +202,32 @@ describe('AgentRuntime', () => {
     expect(fixture.requests).toHaveLength(0);
   });
 
+  it("transports the caller's output schema unchanged and omits it for plain-text calls", async () => {
+    const fixture = harness();
+    const outputSchema = {
+      type: 'object',
+      properties: { status: { type: 'string' } },
+      required: ['status'],
+    };
+
+    await fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      (activity) => fixture.events.push(activity),
+      outputSchema,
+    );
+    await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.', (activity) =>
+      fixture.events.push(activity),
+    );
+
+    expect(fixture.requests).toHaveLength(2);
+    // The schema reaches the provider capability as the caller supplied it, not rewritten here.
+    expect(fixture.requests[0]?.outputSchema).toBe(outputSchema);
+    // A call that requires plain text supplies no schema and no empty placeholder.
+    expect(fixture.requests[1]).not.toHaveProperty('outputSchema');
+  });
+
   it('returns the provider fault when the invocation fails', async () => {
     const fixture = harness({
       result: { ok: false, fault: { message: 'The Codex provider reported a failed turn.' } },

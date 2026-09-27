@@ -16,6 +16,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   CodingRuntime,
@@ -58,10 +59,12 @@ import {
 } from '../src/task-engine/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
+import { developmentResponseSchema } from '../src/task-engine/actions/develop/artifacts.js';
 import type {
   DevelopmentOutput,
   DevelopmentResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
+import { reviewResponseSchema } from '../src/task-engine/actions/review/artifacts.js';
 import type {
   Finding,
   ReviewOutput,
@@ -71,6 +74,7 @@ import type { VerificationOutput } from '../src/task-engine/actions/verify/artif
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 /** The configured workflow is the real finite workflow module, loaded through Application. */
 const workflowPath = fileURLToPath(new URL('../workflows/finite-delivery.ts', import.meta.url));
@@ -181,6 +185,10 @@ function developerTurn(
 ): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus development agent.');
+    // Develop's own response schema crosses the real wiring to the provider capability and meets
+    // the provider's strict structured-output requirements.
+    expect(request.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
+    expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
     return ok({ output: JSON.stringify(await work(request)) });
   };
 }
@@ -189,6 +197,10 @@ function developerTurn(
 function reviewerTurn(work: (request: CodingRuntimeRequest) => Promise<ReviewResponse>): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus reviewer.');
+    // Review's own response schema crosses the real wiring to the provider capability and meets
+    // the provider's strict structured-output requirements.
+    expect(request.outputSchema).toEqual(z.toJSONSchema(reviewResponseSchema));
+    expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
     return ok({ output: JSON.stringify(await work(request)) });
   };
 }
@@ -822,6 +834,14 @@ describe('finite execution journeys', () => {
       repairGuidance: 'Add the guard to feature.txt and document the case it rejects.',
       locations: [{ path: 'feature.txt', line: 1 }],
     };
+    // The reviewer's strict response shape carries every location's line, null when it has none.
+    const reportedFinding: ReviewResponse['findings'][number] = {
+      ...finding,
+      locations: finding.locations.map((location) => ({
+        path: location.path,
+        line: location.line ?? null,
+      })),
+    };
     const repairResponse = 'Added the guard and documented the rejected case.';
 
     const exitCode = await journey.run([
@@ -837,7 +857,7 @@ describe('finite execution journeys', () => {
       reviewerTurn(async () => ({
         verdict: 'changesRequested',
         summary: 'The feature is missing its required guard.',
-        findings: [finding],
+        findings: [reportedFinding],
         priorFindings: [],
       })),
       developerTurn(async (request) => {
