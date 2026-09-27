@@ -299,6 +299,7 @@ describe('delivery cycle', () => {
       github: githubSource.github,
       jira: jiraSource.jira,
       publish: (event) => events.push(event),
+      wait: async () => undefined,
     });
     const review = createReview({
       selectionFile,
