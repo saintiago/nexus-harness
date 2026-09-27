@@ -54,6 +54,7 @@ Apply these to component responsibilities and public contracts as well as code.
 
 ## Purpose and design
 
+- [Long-term vision](docs/LONG_TERM_VISION.md): enduring purpose, principles and long-term direction.
 - [Tech stack](docs/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
 - [High-level architecture](docs/high-level-architecture.md): system composition, component contracts and workflows.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
