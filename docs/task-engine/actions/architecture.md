@@ -83,7 +83,7 @@ for current and historical reads. History readers do not copy, archive or rewrit
 StartDevRound and StartIdeaRound reuse small filesystem functions: `readCurrentPlan` validates
 the caller's record shape, `listNumberedHistory` enumerates retained rounds, `ensureRoundDirectory`
 creates the next artifact directory, and `saveCurrentPlan` persists the plan. The caller supplies
-fixed paths and record validation. These functions do not choose roles, count repairs, judge council
+fixed paths and record validation. These functions do not choose roles, count repairs, interpret agent
 feedback or decide workflow routes. StartDevRound owns the finite-delivery
 policy; [StartIdeaRound](../../idea-refinement/spec.md#artifacts-and-revision-binding) owns the
 idea-cycle role plan. No policy registry or second coordinator is introduced.
@@ -166,7 +166,8 @@ transitions, not artifact paths or mappings.
 The [idea refinement specification](../../idea-refinement/spec.md) owns its action sequence and
 workflow-specific artifacts. These actions follow the same producer-owned output and named-outcome
 principles, but use cycle/revision paths rather than finite delivery's current-round helper.
-Purpose and research, and each council reviewer, write distinct paths so parallel invocations do
-not share writable output. The brief writer consumes both assessments; verdict routing consumes
-all three results for the same exact refined idea revision. Source updates belong to explicit
-actions.
+Researcher and Project guide write distinct paths so concurrent invocations do not share writable
+output. The Idea editor consumes their contributions and responds to the Challenger through revision,
+answers, rebuttals or focused requests. Challenger results bind to the exact refined idea revision
+and editor response assessed. Actions persist those outputs and return typed outcomes; XState routes
+them and enforces the cycle limit. Source updates belong to explicit publication actions.

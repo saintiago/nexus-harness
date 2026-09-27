@@ -98,35 +98,44 @@ or assertions that merely reproduce the implementation.
 
 ## Idea refinement coverage
 
-At the workflow level, use the real XState definition to prove both parallel joins, unanimous
-approval on one refined idea revision, mixed-verdict precedence, minor and major routes, bounded
-nonconvergence, and immediate return for an unworkable idea. Verify that each `Idea` entry
-uses the same selection path, reuses a retained workspace, and invokes StartIdeaRound to plan the
-initial, minor and major cycles from history without applying StartDevRound's repair policy.
-Verify that every invocation receives the current captured idea and available saved history,
-including earlier refined ideas and feedback on resubmission. Verify that each of the six role
-invocations receives the shared definition of *idea*, the separate idea-stage guidance and the
-shared communication rule exactly once each, ahead of its role-specific context. When present, the
-connected project's root `AGENTS.md` is included too. Council reviewers cannot read one another's
-pending verdicts, and each council invocation receives the shared objection standard: an objection
-must improve the idea by sharpening, narrowing or correcting it, by naming a genuine ambiguity in
-it, or by showing that it should not proceed, and it never silently replaces the author's proposal.
-An unresolved design choice is a blocker only when it changes the idea-stage decision.
-Verify that a new revision states the author's idea in the refined idea's `idea`, `projectFit`,
-`feasibility` and optional `openQuestions` parts and that a retained brief written at its earlier
-path, in either earlier shape, is still read — as history for the next revision and as the refined
-idea the publication presents — without rewriting the retained artifact or interrupting retained
-state.
-Verify that purpose documents are discovered without configured references and that absent
-documents produce cited, provisional inference from code and commits rather than an execution
-fault. At the action boundary, verify producer-owned artifacts,
-council binding to the current refined idea artifact, one Jira issue/comment capture per run, and
-the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
-waiting-for-feedback-to-submitted transitions, including capture of the complete relevant
-conversation on every entry. Verify that publication uses the captured input without a later
-Jira read, only human-facing feedback is posted to Jira, and internal feedback stays in
-artifacts. Verify that the source pointer names the shared issue root, the handoff lets a later workflow
-read retained artifacts without copying them, and a fresh finite delivery attempt preserves the
-refinement area.
-Reuse existing component and system test scopes; do not duplicate XState's own parallel-state
-tests.
+Use the real XState workflow with controlled role outputs to verify the initial parallel
+Researcher/Project guide join, editor/Challenger exchanges, selective focused contributions,
+approval and the three distinct returns: unsuitable, author decision needed and attempts exhausted.
+Cover revision, answers and rebuttals, including a resolved objection without changing the idea text.
+Suggestions may accompany approval. A changed revision or editor response requires a fresh
+Challenger assessment; stale approval cannot publish it. Check exact cycle-limit behavior, including
+approval at the limit, and that focused help cannot bypass the limit through an internal loop.
+
+Verify the idea-stage behavior through representative scenarios, not only prompt-string assertions:
+
+- An architectural idea can change an existing design choice. Dynamic model selection is not
+  narrowed merely because profiles currently fix the model.
+- A human clarification overrides a previous agent interpretation or published summary.
+- Research enriches an idea with concrete examples and possibilities without demanding proof first.
+- A valid rebuttal resolves a mistaken objection; an optional suggestion does not prevent approval.
+- A plausible exploratory idea can advance with uncertainty, without a mandatory benchmark plan.
+- A real feasibility or value concern receives a response and either resolves or produces an
+  understandable return reason.
+
+Verify all four roles receive the shared idea definition and guidance once, captured author input,
+relevant conversation, readable history references and root `AGENTS.md` when present. Preserve
+comment authorship and distinguish human input from previous agent output. Purpose documents are
+discovered without configured references; absent documents permit cited provisional inference
+from code and commits. Output follows the concise deliverable defined in the specification; word
+count is not a rejection gate. Role quality needs inspection of actual exchanges as well as routing
+tests; controlled outputs alone cannot prove model judgment.
+
+At action boundaries, verify producer-owned artifacts, distinct paths for concurrent contributions,
+assessment binding to the current revision and response, and a single Jira issue/comment capture
+per selection. Every entry from `Idea` reuses the same selection path and retained workspace;
+StartIdeaRound starts a new submission at cycle 1 without applying delivery repair policy. Prior
+artifacts remain readable history without being rewritten.
+
+Verify configured source transitions and publication using the captured input without a later Jira
+read. Approved output and human-facing returns include the refined idea, refinement summary and
+cycle count. A return gives a plain reason and next step; exhaustion is not presented as rejection.
+Internal exchanges remain in artifacts and per-agent logs. Operational failures do not produce an
+idea verdict. The source pointer names the shared issue root, handoff references let later workflows
+read retained artifacts, and a fresh finite delivery attempt preserves the refinement area.
+
+Reuse existing component and system test scopes; do not duplicate XState's own parallel-state tests.

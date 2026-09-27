@@ -76,8 +76,8 @@ Closing presentation finalizes panes without declaring invocations successful or
 | Content | Color |
 | --- | --- |
 | Tool calls, tool results and file-change summaries | Grey |
-| Council and delivery reviewer messages and headings | Blue |
-| Purpose, research, brief writer and developer messages and headings | Yellow |
+| Challenger and delivery reviewer messages and headings | Blue |
+| Idea editor, Researcher, Project guide and developer messages and headings | Yellow |
 | TaskEngine progress, including action and workflow events | White |
 | Application, recovery and other diagnostics | Terminal default |
 

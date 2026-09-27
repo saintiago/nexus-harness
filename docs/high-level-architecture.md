@@ -26,9 +26,9 @@ Nexus
 │       ├── Deliver
 │       ├── CompleteTask
 │       ├── StartIdeaRound
-│       ├── Purpose and research
-│       ├── Refined idea writing
-│       ├── Council review
+│       ├── Idea editing
+│       ├── Research and project guidance
+│       ├── Idea challenge and response
 │       └── Decision publication
 ├── AgentRuntime
 │   ├── Profile catalogue and instructions
@@ -81,9 +81,10 @@ Persisted workflow state is the checkpoint. Save and load it directly. The desig
 neither a separate checkpoint subsystem nor a filesystem transaction protocol.
 
 Finite delivery executes actions sequentially. The [idea refinement workflow](idea-refinement/spec.md)
-uses XState parallel regions for independent purpose/research and council actions, then joins before
-writing or routing. Each parallel action owns separate artifacts. Application-level recovery starts
-after the worker invocation ends. Cancellation and shared-writer coordination are outside these workflows.
+uses XState parallel regions for research and project guidance, then joins before idea editing.
+XState also routes editor/challenger exchanges. Each action owns separate artifacts.
+Application-level recovery starts after the worker invocation ends. Cancellation and shared-writer
+coordination are outside these workflows.
 
 ## Component responsibilities
 
@@ -191,16 +192,18 @@ The defined workflow includes development, verification, delivery, review and co
 
 [Idea refinement](idea-refinement/spec.md) is a separate workflow available to any connected
 project. Project configuration supplies an idea selection query and state mappings on its
-Jira task source; Nexus configuration supplies the workflow and role profiles. The Purpose
-Verifier discovers purpose documents in the connected project and infers direction from code
-and commits where documents are absent or incomplete. Every entry from `Idea` uses the same
-selection path and stable issue workspace. StartIdeaRound opens a council cycle and records its role
-plan from the refinement area's history. The approved handoff keeps references to the shared
-workspace and its artifacts for subsequent workflows. Purpose and research run in parallel,
-followed by the writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
-approval, minor correction, major rework or return to author. Selection moves the idea to its
-active state before agents run. Approval publishes a ready-for-design handoff and moves it to the
-approved state. A nonapproval posts human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent
+Jira task source; Nexus configuration supplies the workflow, four role profiles and cycle limit.
+The Idea editor frames the author's intent. Researcher and Project guide contribute concurrently;
+the guide discovers purpose documents or infers direction from code and commits. The editor writes
+the refined idea, then exchanges short responses with a Challenger. Responses can revise, answer,
+rebut or request focused contributions. XState owns the parallel join and conversation routing.
+Every entry from `Idea` uses the same selection path and stable issue workspace. StartIdeaRound
+opens each conversation cycle and records its role plan. The approved handoff references the shared
+workspace and artifacts for subsequent workflows. Selection moves the idea to its active state
+before agents run. Approval means worth pursuing in Requirements and Design; it publishes the
+refined idea and moves it to the approved state. An unsuitable idea, an essential author decision
+or an exhausted cycle limit returns human-facing feedback with that reason and moves the idea to
+the waiting-for-feedback state; internal agent
 feedback remains in artifacts and logs. The author replies in a Jira comment and moves the idea
 back to the submitted state to resubmit it. For HARN Jira, the path is
 `Idea -> Idea Refinement -> Draft` or `Idea -> Idea Refinement -> Waiting for Feedback -> Idea`.

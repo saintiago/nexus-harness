@@ -37,7 +37,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Storage | Root for queue execution state, recovery and shared issue workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
-| Idea refinement | The six role profile references and the maximum council cycles per selection |
+| Idea refinement | Four role profile references and the maximum conversation cycles per selection |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -90,12 +90,13 @@ each invocation receives the instructions of its selected role.
 
 For the [idea refinement workflow](idea-refinement/spec.md), the connected project supplies
 an eligible idea query and source mappings for submitted, active, approved and
-waiting-for-feedback items. The Purpose Verifier discovers project purpose documents through
+waiting-for-feedback items. The Project guide discovers project purpose documents through
 the connected repository and infers direction from code and commits when needed; no configured
 purpose references are required. HARN's Jira mappings are `Idea`, `Idea Refinement`, `Draft` and
 `Waiting for Feedback`, respectively.
 These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
-definition, six profile references and maximum council cycles. Idea refinement's StartIdeaRound
-records the role profiles selected for each council cycle. Use the existing profile catalogue
+definition, profile references for Idea editor, Researcher, Project guide and Challenger, and a
+maximum cycle count. The specification defines [how cycles are counted](idea-refinement/spec.md#conversation-and-cycles).
+StartIdeaRound records the role profiles for each cycle. Use the existing profile catalogue
 and storage root. Artifact paths belong to the workflow, not project configuration.
 The operator command selects the workflow explicitly.

@@ -257,9 +257,9 @@ The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly f
 project. Application loads its XState definition and binds project-scoped actions; it does not
 provide a separate idea router. Source selection and updates use the project's Jira task-source
 adapter. Selection reuses the issue workspace's refinement area when present, and StartIdeaRound creates
-a plan for each council cycle. An idea moved to the waiting-for-feedback state is a successful
+a plan for each conversation cycle. An idea moved to the waiting-for-feedback state is a successful
 terminal workflow outcome, not an execution fault requiring recovery. A provider or agent failure
 remains an execution fault.
 
 Recovery receives the selected workflow, source item, snapshot and relevant log paths. It
-diagnoses execution failures without conflating them with council rejection.
+diagnoses execution failures without conflating them with idea decisions or cycle exhaustion.

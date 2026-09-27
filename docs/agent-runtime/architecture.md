@@ -124,8 +124,8 @@ automatic profile escalation or reuse of an earlier result.
 
 ## Idea refinement roles
 
-The six [idea refinement role prompts](../idea-refinement/spec.md#agents-and-constant-prompts) are
+The four [idea refinement role prompts](../idea-refinement/spec.md#agents-and-constant-prompts) are
 constant instructions selected by the caller, with project and revision context supplied per
-invocation. AgentRuntime remains unaware of their business output schemas and council routing.
+invocation. AgentRuntime remains unaware of their business output schemas and conversation routing.
 Concurrent calls must have independent activity observers and invocation identity at the caller
 boundary; shared mutable observer state must not assign one role's activity to another.
