@@ -38,6 +38,7 @@ import { verificationArtifact } from '../verify/artifacts.js';
 import {
   reviewArtifact,
   reviewResponseSchema,
+  toFinding,
   type Finding,
   type ReviewOutput,
   type ReviewResponse,
@@ -270,8 +271,8 @@ function reviewComment(review: ReviewOutput): string {
 
 /** The report shape, finding definitions and identity, disposition and verdict rules. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
-{"verdict":"approved"|"changesRequested"|"inconclusive","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"id":"<task-stable finding ID>","title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line>}]}],"priorFindings":[{"findingId":"<supplied prior finding ID>","disposition":"resolved"|"open"|"withdrawn","reason":"<the current implementation and developer response that support the disposition>"}]}
-Finding IDs are unique within the task and stable across rounds: reuse an ID for an existing defect, including additional occurrences of the same cause, and give a genuinely different defect a new ID. findings contains every finding still present in the reviewed revision, including retained open findings and newly discovered ones, and no resolved or withdrawn finding. Include exactly one priorFindings entry for every supplied prior finding ID and no others; use an empty array when none were supplied. An open disposition requires the finding in findings. locations may be empty when there is no useful code location, and lines refer to the reviewed revision.
+{"verdict":"approved"|"changesRequested"|"inconclusive","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"id":"<task-stable finding ID>","title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}],"priorFindings":[{"findingId":"<supplied prior finding ID>","disposition":"resolved"|"open"|"withdrawn","reason":"<the current implementation and developer response that support the disposition>"}]}
+Finding IDs are unique within the task and stable across rounds: reuse an ID for an existing defect, including additional occurrences of the same cause, and give a genuinely different defect a new ID. findings contains every finding still present in the reviewed revision, including retained open findings and newly discovered ones, and no resolved or withdrawn finding. Include exactly one priorFindings entry for every supplied prior finding ID and no others; use an empty array when none were supplied. An open disposition requires the finding in findings. locations may be empty when there is no useful code location; a location's line refers to the reviewed revision, and states null when the location has no line.
 Apply the verdict rules: approved requires sufficient evidence and no current blocking findings; changesRequested requires at least one current blocking finding with a concrete basis, evidence and impact; inconclusive means material evidence is unavailable, and the summary explains what is missing.`;
 
 /** Create Review over the selected workspace, reviewer runtime, publication and adapters. */
@@ -513,6 +514,9 @@ export function createReview(settings: ReviewSettings): BoundAction {
       profile: settings.reviewerProfile,
       headRevision: reviewedHead,
       ...response,
+      // The response carries every location's line, reporting null when it has none; the saved
+      // Finding omits the line instead.
+      findings: response.findings.map(toFinding),
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
     await publishReport(review, conversation.value, comments);

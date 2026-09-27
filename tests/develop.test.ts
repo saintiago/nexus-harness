@@ -26,6 +26,7 @@ import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedJira } from './support/jira.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 const baseRevision = '1'.repeat(40);
 const headRevision = '2'.repeat(40);
@@ -260,8 +261,10 @@ describe('Develop', () => {
     expect(request?.profile).toBe('dev-a');
     expect(request?.workspaceRoot).toBe(workspaceRoot);
     // The action asks the provider for its own DevelopmentResponse shape, derived from the
-    // schema that will validate the returned report.
+    // schema that will validate the returned report, in the provider's strict structured-output
+    // subset.
     expect(request?.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
+    expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
     const context = request?.context ?? '';
     // The refreshed task and conversation replace the stale selection copies.
     expect(context).toContain('Implement the retry guard');

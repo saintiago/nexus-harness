@@ -16,9 +16,10 @@ import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 import {
   refinedIdeaArtifact,
-  refinedIdeaContentSchema,
+  refinedIdeaResponseSchema,
   retainedBriefArtifactPath,
   type RefinedIdea,
 } from '../src/task-engine/actions/brief-writer/artifacts.js';
@@ -302,6 +303,7 @@ describe('idea role actions', () => {
     expect(request?.workspace).toBe(area.root);
     // Every JSON-producing role invokes the provider with its own response schema.
     expect(request?.outputSchema).toEqual(z.toJSONSchema(purposeReportSchema));
+    expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
     expect(request?.context).toContain('Add a lint gate');
     expect(request?.context).toContain('the author\u2019s idea');
     expect(request?.context).toContain('Prefer the smallest change.');
@@ -338,6 +340,7 @@ describe('idea role actions', () => {
     expect(agent.requests[0]?.context).toContain('the author\u2019s idea');
     expect(agent.requests[0]?.context).not.toContain('AGENTS.md');
     expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(researchReportSchema));
+    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
     expect(await area.read(1, researchArtifact.pathFromArtifactsRoot)).toEqual(researchReport);
   });
 
@@ -350,6 +353,7 @@ describe('idea role actions', () => {
         idea: 'idea',
         projectFit: 'project fit',
         feasibility: 'feasibility',
+        openQuestions: null,
         changeSummary: 'initial',
       },
     ]);
@@ -362,7 +366,9 @@ describe('idea role actions', () => {
     await expect(action()).resolves.toBe('written');
 
     const context = agent.requests[0]?.context ?? '';
-    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(refinedIdeaContentSchema));
+    // The writer's strict response shape crosses to the provider and satisfies its requirements.
+    expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(refinedIdeaResponseSchema));
+    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
     expect(context).toContain('The idea serves the project purpose.');
     expect(context).toContain('Linters keep reviews focused.');
     expect(context).toContain('No earlier council objections exist');
@@ -383,7 +389,8 @@ describe('idea role actions', () => {
       projectFit: 'project fit',
       feasibility: 'feasibility',
     });
-    // Open questions are optional; a refined idea that states none keeps the field absent.
+    // The strict response shape reports no open questions as null; the saved revision that states
+    // none keeps the field absent.
     expect(refinedIdea).not.toHaveProperty('openQuestions');
 
     // A repeated invocation reuses the revision it already wrote.
@@ -452,6 +459,7 @@ describe('idea role actions', () => {
         idea: 'idea',
         projectFit: 'project fit',
         feasibility: 'feasibility',
+        openQuestions: null,
         changeSummary: 'addressed the objection',
       },
     ]);
@@ -515,6 +523,7 @@ describe('idea role actions', () => {
         idea: 'idea',
         projectFit: 'project fit',
         feasibility: 'feasibility',
+        openQuestions: null,
         changeSummary: 'addressed the objection',
       },
     ]);
@@ -563,6 +572,7 @@ describe('idea role actions', () => {
         idea: 'idea',
         projectFit: 'project fit',
         feasibility: 'feasibility',
+        openQuestions: null,
         changeSummary: 'addressed the objection',
       },
     ]);
@@ -624,6 +634,7 @@ describe('idea role actions', () => {
         idea: 'idea',
         projectFit: 'project fit',
         feasibility: 'feasibility',
+        openQuestions: null,
         changeSummary: 'initial',
       },
       'purpose-council': { verdict: 'approve', summary: 'approved', findings: [] },
@@ -726,6 +737,7 @@ describe('council reviewers', () => {
     expect(context).not.toContain('evidence council result');
     expect(agent.requests[0]?.profile).toBe('nexus-purpose-council');
     expect(agent.requests[0]?.outputSchema).toEqual(z.toJSONSchema(councilResponseSchema));
+    expect(strictSchemaProblems(agent.requests[0]?.outputSchema)).toEqual([]);
     expect(
       await area.read<CouncilReport>(1, councilArtifacts.purpose.pathFromArtifactsRoot),
     ).toEqual(

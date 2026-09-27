@@ -60,6 +60,7 @@ import type { CouncilReport } from '../src/task-engine/actions/review-council/ar
 import type { IdeaRoundPlan } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedJira } from './support/jira.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 /** The configured workflow is the real idea refinement module, loaded through Application. */
 const workflowPath = fileURLToPath(new URL('../workflows/idea-refinement.ts', import.meta.url));
@@ -397,6 +398,8 @@ async function ideaJourney(): Promise<IdeaJourney> {
           }
           // Every idea role produces JSON, so each invocation carries its own response schema.
           expect(request.outputSchema).toBeDefined();
+          // The schema reaches the provider in its strict structured-output subset.
+          expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
           const turn = (turns.get(role) ?? 0) + 1;
           turns.set(role, turn);
           return ok({ output: JSON.stringify(respond(turn, request)) });

@@ -25,7 +25,7 @@ import {
 import {
   readRefinedIdeaRevision,
   refinedIdeaArtifact,
-  refinedIdeaContentSchema,
+  refinedIdeaResponseSchema,
   type RefinedIdea,
 } from './artifacts.js';
 
@@ -170,7 +170,7 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
       'intent, evidence quality, fairly represented alternatives and the smallest useful scope.',
       await retainedHistoryText(root, plan, { reviewer: null }),
       ...(guidance === null ? [] : [guidance]),
-      responseFormatText(refinedIdeaContentSchema),
+      responseFormatText(refinedIdeaResponseSchema),
     ].join('\n\n');
 
     const content = await invokeIdeaRole({
@@ -180,11 +180,14 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
       operation: 'BriefWriter',
       taskKey: input.taskKey,
       context,
-      schema: refinedIdeaContentSchema,
+      schema: refinedIdeaResponseSchema,
       runner: settings.runner,
     });
     const refinedIdea = {
       ...content,
+      // The strict response schema reports a revision with no open questions as null; the saved
+      // revision leaves the field out instead.
+      openQuestions: content.openQuestions ?? undefined,
       revision: plan.cycle,
       submission: plan.submission,
       cycle: plan.cycle,

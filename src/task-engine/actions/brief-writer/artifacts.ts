@@ -13,6 +13,9 @@ import { describeIssues, parseDocument, readDocumentText } from '../documents.js
  * invalidates every earlier approval.
  */
 
+/** Only material questions for the next workflow; a refined idea may state none. */
+const openQuestionsSchema = z.array(z.string().trim().min(1));
+
 /** The refined idea's substance: the parts the council decides on and publication presents. */
 export const refinedIdeaContentSchema = z.object({
   /**
@@ -27,8 +30,7 @@ export const refinedIdeaContentSchema = z.object({
    * plan.
    */
   feasibility: z.string().trim().min(1),
-  /** Only material questions for the next workflow; a refined idea may state none. */
-  openQuestions: z.array(z.string().trim().min(1)).optional(),
+  openQuestions: openQuestionsSchema.optional(),
   /**
    * The cumulative account of what refinement changed across the submission's cycles, or the
    * initial summary for revision 1. Reporting metadata, not one of the idea's parts. The
@@ -38,6 +40,15 @@ export const refinedIdeaContentSchema = z.object({
 });
 
 export type RefinedIdeaContent = z.infer<typeof refinedIdeaContentSchema>;
+
+/**
+ * The writer's response shape: the refined idea's parts with the open questions the strict
+ * provider schema requires. A revision that states no open questions reports null, which the
+ * action turns back into the absent field the content schema and its readers declare.
+ */
+export const refinedIdeaResponseSchema = refinedIdeaContentSchema.extend({
+  openQuestions: openQuestionsSchema.nullable(),
+});
 
 /** The stored refined idea revision: its substance bound to the submission and cycle it came from. */
 export const refinedIdeaSchema = refinedIdeaContentSchema.extend({

@@ -62,9 +62,12 @@ file paths the agent needs. Include it in the prompt as supplied; do not read wo
 discover or construct the request.
 
 Callers requiring a JSON response supply outputSchema as a JSON Schema object derived from their
-authoritative response schema. The schema describes the agent response, not metadata added by the
-caller afterward. Pass it unchanged to the provider's structured-output capability; prompt text alone
-does not enforce the response format. Calls requiring plain text omit it.
+authoritative response schema; the derived schema must meet the provider's structured-output
+requirements, with every object property required and additional properties forbidden. A value the
+response may leave out is therefore derived as nullable and reported as null, which the caller
+interprets as the value's absence. The schema describes the agent response, not metadata added by
+the caller afterward. Pass it unchanged to the provider's structured-output capability; prompt text
+alone does not enforce the response format. Calls requiring plain text omit it.
 
 Success means the invocation finished and returned output. The caller still parses, validates and
 evaluates its claims, including rules a JSON Schema cannot express. The runtime transports the supplied

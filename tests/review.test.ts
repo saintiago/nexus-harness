@@ -30,6 +30,7 @@ import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 const baseRevision = '1'.repeat(40);
 const headRevision = '2'.repeat(40);
@@ -371,8 +372,10 @@ describe('Review', () => {
     expect(requests[0]?.profile).toBe('nexus-review');
     expect(requests[0]?.workspaceRoot).toBe(workspaceRoot);
     // The action asks the provider for its own ReviewResponse shape, derived from the schema that
-    // will validate the returned report.
+    // will validate the returned report, and the provider's strict structured-output requirements
+    // hold for what it is given.
     expect(requests[0]?.outputSchema).toEqual(z.toJSONSchema(reviewResponseSchema));
+    expect(strictSchemaProblems(requests[0]?.outputSchema)).toEqual([]);
     const context = requests[0]?.context ?? '';
     expect(context).toContain('Implement the retry guard');
     expect(context).toContain('Human pull-request discussion.');
@@ -442,6 +445,45 @@ describe('Review', () => {
           artifact: { path: path.join(workspaceRoot, 'artifacts', String(round), 'review.json') },
         },
       },
+    ]);
+  });
+
+  it('saves a reported location whose strict-shape null line means the location has no line', async () => {
+    const { workspaceRoot, selectionFile, round } = await workspace({ name: 'no-line' });
+    await writeDeliveredRound(workspaceRoot);
+    const { runtime } = scriptedRuntime(() =>
+      JSON.stringify({
+        verdict: 'changesRequested',
+        summary: 'The unguarded behavior reaches production.',
+        findings: [
+          {
+            ...blockingFinding,
+            locations: [{ path: 'feature.txt', line: null }],
+          },
+        ],
+        priorFindings: [],
+      }),
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 13, url: `https://github.com/${repository}/reviews/13` }),
+      publishReviewCheck: () => ok({ id: 14 }),
+    });
+    const { jira } = scriptedJira({
+      readIssue: () => ok(taskIssue),
+      readComments: () => ok([]),
+      addComment: (_issueId, body) => ok({ id: 'c9', body }),
+    });
+    const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
+
+    await expect(review()).resolves.toBe('changesRequested');
+
+    // The provider schema requires the line; the Finding contract stores the location without it.
+    const recorded = (await readRoundArtifact(workspaceRoot, round, 'review.json')) as ReviewOutput;
+    expect(recorded.findings).toEqual([
+      { ...blockingFinding, locations: [{ path: 'feature.txt' }] },
     ]);
   });
 
@@ -615,6 +657,16 @@ describe('Review', () => {
           ],
         }),
         prior: true,
+      },
+      {
+        label: 'a location that leaves out the line the strict response shape requires',
+        expected: /does not match the response format/,
+        output: JSON.stringify({
+          verdict: 'changesRequested',
+          summary: 'The guard is still missing.',
+          findings: [{ ...blockingFinding, locations: [{ path: 'src/queue.ts' }] }],
+          priorFindings: [],
+        }),
       },
     ];
 

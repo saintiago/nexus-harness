@@ -18,6 +18,7 @@ import { recoveryReportSchema } from '../src/application/recovery.js';
 import { createRecoveryRuntime } from '../src/application/recovery-runtime.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { nexusConfiguration } from './support/configuration.js';
+import { strictSchemaProblems } from './support/provider-schema.js';
 
 const installationDirectory = '/srv/nexus/installation';
 
@@ -154,6 +155,7 @@ describe('recovery runtime', () => {
     expect(invocation.schema).toBe(
       `${JSON.stringify(z.toJSONSchema(recoveryReportSchema), null, 2)}\n`,
     );
+    expect(strictSchemaProblems(JSON.parse(invocation.schema ?? '{}'))).toEqual([]);
     // The invocation-local schema file is removed once the invocation settles.
     await expect(stat(schemaPath)).rejects.toThrow(/ENOENT/);
     await expect(stat(path.dirname(schemaPath))).rejects.toThrow(/ENOENT/);
