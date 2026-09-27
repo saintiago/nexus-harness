@@ -273,7 +273,7 @@ describe('worker action binding', () => {
       JSON.stringify({
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '10518' },
-        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        issue: { id: '10518', key: 'NEX-1', fields: { summary: 'Add a lint gate' } },
         conversation: [],
         transitions: { toActive: null, fromActive: [] },
         claimed: true,
@@ -362,11 +362,19 @@ describe('worker action binding', () => {
           readonly log: { readonly path: string };
           readonly operation: string;
           readonly idea: string;
+          readonly summary: string;
         },
     );
     expect(boundaries.map((boundary) => boundary.agentName).sort()).toEqual([
       'project-guide',
       'researcher',
+    ]);
+    // Each idea role's boundary names the captured ticket by its key and Summary.
+    expect(
+      boundaries.map((boundary) => ({ idea: boundary.idea, summary: boundary.summary })),
+    ).toEqual([
+      { idea: 'NEX-1', summary: 'Add a lint gate' },
+      { idea: 'NEX-1', summary: 'Add a lint gate' },
     ]);
     // Each invocation has its own identity and its own log under the execution's agents directory.
     const ids = boundaries.map((boundary) => boundary.invocationId);

@@ -760,7 +760,7 @@ describe('Application execution', () => {
       JSON.stringify({
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '10518' },
-        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        issue: { id: '10518', key: 'NEX-1', fields: { summary: 'Add a lint gate' } },
         conversation: [],
         transitions: { toActive: null, fromActive: [] },
         claimed: true,
@@ -786,6 +786,11 @@ describe('Application execution', () => {
     expect(context).toContain(`shared issue workspace root is ${path.dirname(refinement)}`);
     expect(context).toContain(`workflow area at ${refinement}`);
     expect(context).toContain(refinement);
+    // The retained selection's Summary reaches the recovery invocation's boundary.
+    expect(
+      executed.events.find((event) => event.source === 'Recovery' && event.type === 'agent-started')
+        ?.data,
+    ).toMatchObject({ task: 'NEX-1', summary: 'Add a lint gate' });
     expect(executed.invocations[0]?.workspace.root).toBe(
       path.join(executed.executionDirectory, 'idea-refinement', 'recovery', 'workspace'),
     );

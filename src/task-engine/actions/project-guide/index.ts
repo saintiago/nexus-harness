@@ -131,7 +131,7 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       plan,
       role: 'project-guide',
       operation: 'ProjectGuide',
-      taskKey: inputRecord.taskKey,
+      input: inputRecord,
       context,
       schema: projectGuideResponseSchema,
       runner: settings.runner,

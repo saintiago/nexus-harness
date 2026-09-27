@@ -125,6 +125,7 @@ function agentRunnerFor(
         profile: request.profile,
         task: request.task ?? null,
         idea: request.idea ?? null,
+        summary: request.summary ?? null,
         directory: settings.activityDirectory,
         publish,
         publishActivity,

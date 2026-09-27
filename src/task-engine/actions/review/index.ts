@@ -32,7 +32,7 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
-import { publishComment, readComments, readIssue } from '../source.js';
+import { issueSummary, publishComment, readComments, readIssue } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
@@ -505,6 +505,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       context,
       outputSchema: z.toJSONSchema(reviewResponseSchema),
       task: selection.taskKey,
+      summary: issueSummary(issue),
     });
     if (!result.ok) {
       throw new Error(result.fault.message);
