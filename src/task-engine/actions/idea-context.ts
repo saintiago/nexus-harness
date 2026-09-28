@@ -23,6 +23,7 @@ import {
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
 import { researchArtifact, researchFollowUpArtifact } from './researcher/artifacts.js';
+import { issueSummary } from './source.js';
 import type { IdeaInput } from './select-idea/artifacts.js';
 import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
 
@@ -292,8 +293,8 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   readonly role: IdeaRole;
   /** The operation name the invocation boundary carries. */
   readonly operation: string;
-  /** The idea the invocation works on. */
-  readonly taskKey: string;
+  /** The captured idea input the invocation works on; its issue carries the boundary's Summary. */
+  readonly input: IdeaInput;
   /** The caller-prepared context: role instructions, captured idea, history and sources. */
   readonly context: string;
   readonly schema: Schema;
@@ -327,7 +328,8 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
       settings.context,
     ].join('\n\n'),
     outputSchema: z.toJSONSchema(settings.schema),
-    idea: settings.taskKey,
+    idea: settings.input.taskKey,
+    summary: issueSummary(settings.input.issue),
   });
   if (!result.ok) {
     throw new Error(result.fault.message);

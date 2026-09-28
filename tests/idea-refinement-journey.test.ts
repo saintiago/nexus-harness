@@ -657,6 +657,10 @@ describe('idea refinement journeys', () => {
     // run concurrently: each announcement carries a distinct identity and its own activity log.
     const started = journey.events.filter((event) => event.type === 'agent-started');
     expect(started).toHaveLength(5);
+    // Every role's boundary names the captured ticket by its key with its Summary.
+    for (const event of started) {
+      expect(event.data).toMatchObject({ idea: 'NEX-1', summary: 'Add a lint gate' });
+    }
     const identities = started.map(
       (event) => (event.data as { readonly invocationId: string }).invocationId,
     );

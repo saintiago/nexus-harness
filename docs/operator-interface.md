@@ -51,10 +51,10 @@ Labels identify the source or activity kind even when color is unavailable.
 
 ## Agent activity panes
 
-Each invocation starts with a boundary line naming its agent, task or idea when supplied, and
-operation. Show one named rolling 10-line pane per active invocation, stacked in start order.
-One active invocation uses the same layout and activity contract as several. Update panes
-independently by invocation ID.
+Each invocation starts with a boundary line naming its agent and operation. When it works on a task
+or idea, the line shows that ticket's Jira key with its Summary. Show one named rolling 10-line pane
+per active invocation, stacked in start order. One active invocation uses the same layout and
+activity contract as several. Update panes independently by invocation ID.
 
 - Each agent message starts a group. Keep its text and the latest three work entries following it.
   Work before the first message forms its own group.

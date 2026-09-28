@@ -96,12 +96,13 @@ from the start event's reference. The main execution stream contains:
 
 | Type | Data |
 | --- | --- |
-| agent-started | `{ agentName, invocationId, startedAtUnixMs, operation, profile, task? or idea?, log: ArtifactRef }` |
+| agent-started | `{ agentName, invocationId, startedAtUnixMs, operation, profile, task? or idea?, summary?, log: ArtifactRef }` |
 | agent-finished | `{ agentName, invocationId, startedAtUnixMs, log: ArtifactRef, result }` |
 
 The log path includes the agent name, Unix start time and invocation ID; `task` names a delivery
-task and `idea` the refined idea. `result` reports how the invocation ended without declaring task
-success. Agent messages and tool
+task and `idea` the refined idea. `summary` carries that ticket's source Summary when the caller
+read one, so the operator's boundary line shows the key with its Summary. `result` reports how the
+invocation ended without declaring task success. Agent messages and tool
 activity are absent from the main durable event file; they use the per-invocation activity channel
 for logging and live presentation. A finished event means the invocation ended, including failure,
 and never declares task success. [Application](../application.md#execution-log) owns storage; the

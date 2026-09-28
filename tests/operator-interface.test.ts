@@ -210,6 +210,7 @@ function boundary(options: {
   readonly profile?: string;
   readonly task?: string;
   readonly idea?: string;
+  readonly summary?: string;
   readonly source?: string;
 }): EngineEvent {
   return {
@@ -224,6 +225,7 @@ function boundary(options: {
       profile: options.profile ?? 'nexus-flash',
       ...(options.task === undefined ? {} : { task: options.task }),
       ...(options.idea === undefined ? {} : { idea: options.idea }),
+      ...(options.summary === undefined ? {} : { summary: options.summary }),
     },
   };
 }
@@ -455,6 +457,30 @@ describe('OperatorInterface activity pane', () => {
     expect(raw).toContain('\u001b[33m03:04:05 developer Develop');
     expect(raw).toContain('\u001b[33m03:04:06 message Implementing the parser change\u001b[0m');
     expect(raw).toContain('\u001b[90m03:04:10 command npm test\u001b[0m');
+  });
+
+  it('shows the ticket Summary beside its key in the invocation boundary line', () => {
+    const harness = createHarness({ columns: 100 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(
+      boundary({
+        agentName: 'developer',
+        operation: 'Develop',
+        invocationId: 'dev-1',
+        profile: 'nexus-flash',
+        task: 'NEX-7',
+        summary: 'Implement the retry guard',
+        source: 'develop',
+      }),
+    );
+    at(6);
+    harness.emitActivity(message('Implementing the retry guard'));
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 developer Develop · task NEX-7 "Implement the retry guard" · profile nexus-flash',
+      '03:04:06 message Implementing the retry guard',
+    ]);
   });
 
   it('fits a work entry to one physical row, ending it with an ellipsis when cut', () => {
@@ -1032,6 +1058,28 @@ describe('OperatorInterface terminal handling', () => {
       '03:04:06 developer message Implementing the parser change',
       '03:04:07 developer command npm test -- --run',
       '03:04:08 verify task NEX-7 · round 1 · passed · 1 check',
+    ]);
+  });
+
+  it('prints the idea key with its Summary when only plain lines are usable', () => {
+    const harness = createHarness({ interactive: false, color: false, columns: 100, rows: 30 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(
+      boundary({
+        agentName: 'challenger',
+        operation: 'Challenger',
+        invocationId: 'challenger-1',
+        profile: 'nexus-astra',
+        idea: 'NEX-1',
+        summary: 'Add a lint gate',
+        source: 'challenger',
+      }),
+    );
+
+    expect(harness.writes.join('')).not.toContain('\u001b');
+    expect(harness.rows()).toEqual([
+      '03:04:05 challenger Challenger · idea NEX-1 "Add a lint gate" · profile nexus-astra',
     ]);
   });
 });

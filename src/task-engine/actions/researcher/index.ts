@@ -128,7 +128,7 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       plan,
       role: 'researcher',
       operation: 'Researcher',
-      taskKey: inputRecord.taskKey,
+      input: inputRecord,
       context,
       schema: researchResponseSchema,
       runner: settings.runner,

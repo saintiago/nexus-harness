@@ -109,6 +109,8 @@ const worktreeDirectory = 'worktree';
 /** The task selection Application hands recovery when the record is readable. */
 export type RecoverySelection = {
   readonly task: string;
+  /** The selected ticket's Summary field, when the record carried one. */
+  readonly summary: string | null;
   readonly workspace: TaskWorkspaceRef;
   /** The shared issue workspace root, when the selected workflow retains one. */
   readonly issueWorkspace?: TaskWorkspaceRef;
@@ -561,6 +563,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         operation: 'Recovery',
         profile,
         task: stop.selection === null ? null : stop.selection.task,
+        summary: stop.selection === null ? null : stop.selection.summary,
         directory: settings.activityDirectory,
         publish: settings.publish,
         publishActivity: settings.publishActivity,

@@ -31,6 +31,8 @@ export type Interpretation =
       readonly profile: string | null;
       readonly task: string | null;
       readonly idea: string | null;
+      /** The task's or idea's source Summary shown beside its key, when the caller supplied one. */
+      readonly summary: string | null;
     }
   | { readonly kind: 'end'; readonly invocationId: string }
   | {
@@ -92,14 +94,22 @@ export function roleStyle(role: AgentRole | null): Style {
   }
 }
 
-/** The heading text naming the invocation's operation, task and profile. */
+/**
+ * One named source ticket: its key with the Summary the operator sees alongside it, when the
+ * invocation's caller supplied one.
+ */
+function ticketText(kind: 'task' | 'idea', key: string, summary: string | null): string {
+  return summary === null ? `${kind} ${key}` : `${kind} ${key} "${summary}"`;
+}
+
+/** The heading text naming the invocation's operation, task or idea and profile. */
 export function boundaryText(boundary: Extract<Interpretation, { kind: 'boundary' }>): string {
   const parts = [boundary.operation];
   if (boundary.task !== null) {
-    parts.push(`task ${boundary.task}`);
+    parts.push(ticketText('task', boundary.task, boundary.summary));
   }
   if (boundary.idea !== null) {
-    parts.push(`idea ${boundary.idea}`);
+    parts.push(ticketText('idea', boundary.idea, boundary.summary));
   }
   if (boundary.profile !== null) {
     parts.push(`profile ${boundary.profile}`);
@@ -240,6 +250,7 @@ export function interpret(event: EngineEvent): Interpretation {
         profile: textField(event.data, 'profile'),
         task: textField(event.data, 'task'),
         idea: textField(event.data, 'idea'),
+        summary: textField(event.data, 'summary'),
       };
     }
   } else if (type === 'agent-finished') {
