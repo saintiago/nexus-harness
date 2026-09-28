@@ -153,4 +153,43 @@ describe('memory writer coordination', () => {
       ),
     ).rejects.toThrow(/bound to Qdrant collection/);
   });
+
+  it('lets only one of two concurrent conflicting initializers bind a fresh store identity', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-memory-binding-race-'));
+    temporaryDirectories.push(root);
+    const embedderCalls = { count: 0 };
+    const providers = controlledMemoryProviders({
+      store: inMemoryNoteStore(),
+      embedderCalls,
+    });
+    // Both initializers start against the same fresh storeId; only the binding they race to create
+    // decides which collection the identity names, and the other must reject before provider use.
+    const outcomes = await Promise.allSettled([
+      createMemory(
+        memorySettings({
+          storageRoot: root,
+          providers,
+          qdrant: { url: 'http://127.0.0.1:6333', collection: 'first-collection' },
+        }),
+      ),
+      createMemory(
+        memorySettings({
+          storageRoot: root,
+          providers,
+          qdrant: { url: 'http://127.0.0.1:6333', collection: 'second-collection' },
+        }),
+      ),
+    ]);
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+    const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const loser = rejected[0];
+    if (loser?.status === 'rejected') {
+      expect(String(loser.reason)).toMatch(/bound to Qdrant collection/);
+    }
+    // Only the initializer that created the binding reached provider construction.
+    expect(embedderCalls.count).toBe(1);
+  });
 });

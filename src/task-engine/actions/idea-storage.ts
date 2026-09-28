@@ -218,16 +218,17 @@ export type ChallengerRead = {
 };
 
 /**
- * The Challenger result that opened the supplied cycle: the latest one at or before that cycle,
- * which the cycle's editor response answers. The current cycle's Challenger runs after that
- * response, so a result it produced is never the one an editor turn answers.
+ * The Challenger result that opened the supplied cycle: the latest one strictly before that cycle,
+ * which the cycle's editor turn answers. The current cycle's Challenger runs after that turn, so
+ * its result is never the one a turn of the same cycle answers; resolving the answered result by
+ * cycle keeps the attribution of a saved turn stable when it is observed again later.
  */
-export async function latestChallenger(
+export async function latestChallengerBefore(
   root: string,
   submission: number,
   cycle: number,
 ): Promise<ChallengerRead | null> {
-  for (let number = cycle; number >= 1; number -= 1) {
+  for (let number = cycle - 1; number >= 1; number -= 1) {
     const cycleRoot = ideaCycleDirectory(root, submission, number);
     const report = await readCycleArtifact(cycleRoot, challengerArtifact);
     if (report !== null) {

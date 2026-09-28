@@ -4,11 +4,20 @@ import { z } from 'zod';
  * The Memory model transport: an OpenAI-compatible chat-completions client satisfying the
  * standalone package's LanguageModel contract. The host supplies the full request URL, the
  * provider model ID, the optional credential, the output bound and the timeout; no agent profile,
- * its reasoning effort or its settings take part. Generation requests no reasoning or thinking
- * mode: the request body carries no reasoning/thinking parameter, and the timeout and output bound
- * make one bounded attempt with no implicit retry. Failures reject with a diagnostic the provider
- * credential is redacted from, instead of being transformed into an empty success.
+ * its reasoning effort or its settings take part. Every request explicitly disables thinking with
+ * the protocol's own setting, `reasoning_effort: "none"`, exactly as the Chat Completions API
+ * documents it for reasoning models; generation never inherits a provider default that would
+ * think. The timeout and output bound make one bounded attempt with no implicit retry. Failures
+ * reject with a diagnostic the provider credential is redacted from, instead of being transformed
+ * into an empty success.
  */
+
+/**
+ * The explicit thinking-disabled setting of the supported protocol: the Chat Completions
+ * `reasoning_effort` value `none` constrains a reasoning model to no reasoning, and a provider
+ * whose configured model does not support it answers with an error instead of silently thinking.
+ */
+const thinkingDisabled = { reasoning_effort: 'none' } as const;
 
 /** Whether the credential can be sent unchanged as an `authorization` header. */
 function isBearerHeaderValue(apiKey: string): boolean {
@@ -156,6 +165,7 @@ export function createMemoryModelTransport(settings: MemoryModelTransportSetting
             model,
             messages: [{ role: 'user', content: request.prompt }],
             max_tokens: maxOutputTokens,
+            ...thinkingDisabled,
           }),
           signal: abort,
         });
