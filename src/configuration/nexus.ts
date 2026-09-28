@@ -5,6 +5,28 @@ import { deepFreeze, readDocument, resolveExecutable, validate } from './documen
 /** Required paths and identifiers are nonempty. */
 const identifier = z.string().trim().min(1);
 
+/** A positive safe integer setting, and the nonnegative variant the lock wait also accepts. */
+const positiveInteger = z.number().int().positive();
+const nonNegativeInteger = z.number().int().nonnegative();
+
+/** An http(s) URL without embedded credentials, a query or a fragment. */
+const httpUrl = (description: string): z.ZodString =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (url) => url.startsWith('http://') || url.startsWith('https://'),
+      `${description} must start with http:// or https://`,
+    )
+    .refine((url) => {
+      if (!URL.canParse(url)) {
+        return false;
+      }
+      const endpoint = new URL(url);
+      return endpoint.username === '' && endpoint.password === '' && !/[?#]/.test(url);
+    }, `${description} must be valid and contain no credentials, query or fragment`);
+
 /** The workflows the operator command selects; each name identifies its configured definition. */
 export const workflowNames = ['finite-delivery', 'idea-refinement'] as const;
 
@@ -32,6 +54,69 @@ const ideaRefinementSchema = z.strictObject({
   }),
   maxCycles: z.number().int().positive(),
 });
+
+/** The Qdrant settings of the optional memory integration. */
+const memoryQdrantSchema = z.strictObject({
+  url: httpUrl('A Qdrant URL'),
+  collection: identifier,
+  credential: credentialReference.optional(),
+});
+
+/** The pinned reference encoder's cache and download permission. */
+const memoryEmbeddingSchema = z.strictObject({
+  cacheDir: identifier,
+  allowDownloads: z.boolean(),
+});
+
+/** The explicit model endpoint, provider model ID, optional credential and output bound. */
+const memoryModelSchema = z.strictObject({
+  endpoint: httpUrl('A model endpoint'),
+  model: identifier,
+  credential: credentialReference.optional(),
+  maxOutputTokens: positiveInteger.default(6000),
+});
+
+/**
+ * Memory's retrieval, context and lock bounds. The defaults are the documented ones; linkedLimit
+ * and lockWaitMs may be zero and every other bound is positive.
+ */
+const memoryBounds = {
+  neighbors: positiveInteger.default(5),
+  searchLimit: positiveInteger.default(5),
+  linkedLimit: nonNegativeInteger.default(5),
+  contextMaxChars: positiveInteger.default(12000),
+  lockWaitMs: nonNegativeInteger.default(5000),
+  providerTimeoutMs: positiveInteger.default(120000),
+};
+
+/** A disabled memory integration: it names no store and performs no provider call. */
+const memoryDisabledSchema = z.strictObject({
+  enabled: z.literal(false),
+  storeId: identifier.optional(),
+  qdrant: memoryQdrantSchema.optional(),
+  embedding: memoryEmbeddingSchema.optional(),
+  model: memoryModelSchema.optional(),
+  ...memoryBounds,
+});
+
+/** An enabled memory integration: the store identity, providers and bounds are all present. */
+const memoryEnabledSchema = z.strictObject({
+  enabled: z.literal(true),
+  storeId: identifier,
+  qdrant: memoryQdrantSchema,
+  embedding: memoryEmbeddingSchema,
+  model: memoryModelSchema,
+  ...memoryBounds,
+});
+
+/**
+ * The optional memory settings. Omitting the section or setting `enabled: false` disables the
+ * integration; enabling it requires the store identity, Qdrant connection, embedding cache and
+ * model endpoint, and the provider credentials resolve through the Credentials settings.
+ */
+const memorySchema = z
+  .discriminatedUnion('enabled', [memoryDisabledSchema, memoryEnabledSchema])
+  .optional();
 
 const nexusConfigurationSchema = z
   .strictObject({
@@ -64,6 +149,7 @@ const nexusConfigurationSchema = z
       maxRecoveryAttempts: z.number().int().positive(),
     }),
     ideaRefinement: ideaRefinementSchema,
+    memory: memorySchema,
     notifications: z.strictObject({
       provider: z.literal('sns'),
       // The AWS Region that owns the destination topic.
@@ -140,6 +226,22 @@ const nexusConfigurationSchema = z
       }
     }
 
+    // A store identity names one Qdrant endpoint/collection; the runtime binding check refuses a
+    // later reuse for another one.
+    const memoryCredentials: [string | undefined, (string | number)[]][] = [
+      [configuration.memory?.qdrant?.credential, ['memory', 'qdrant', 'credential']],
+      [configuration.memory?.model?.credential, ['memory', 'model', 'credential']],
+    ];
+    for (const [reference, location] of memoryCredentials) {
+      if (reference !== undefined && !Object.hasOwn(configuration.credentials, reference)) {
+        context.addIssue({
+          code: 'custom',
+          path: [...location],
+          message: `Unknown credential reference "${reference}"`,
+        });
+      }
+    }
+
     const credentialReferences: [string, (string | number)[]][] = [
       [
         configuration.notifications.credentials.accessKeyId,
@@ -194,8 +296,23 @@ function resolveNexusConfiguration(
   configuration: NexusConfiguration,
   directory: string,
 ): NexusConfiguration {
+  const memory =
+    configuration.memory === undefined
+      ? undefined
+      : {
+          ...configuration.memory,
+          ...(configuration.memory.embedding === undefined
+            ? {}
+            : {
+                embedding: {
+                  ...configuration.memory.embedding,
+                  cacheDir: path.resolve(directory, configuration.memory.embedding.cacheDir),
+                },
+              }),
+        };
   return deepFreeze({
     ...configuration,
+    ...(memory === undefined ? {} : { memory }),
     agentRuntime: {
       ...configuration.agentRuntime,
       provider: {
