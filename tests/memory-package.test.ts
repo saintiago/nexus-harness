@@ -54,38 +54,49 @@ describe('pinned memory package', () => {
     expect(integrity).toBe(locked?.integrity);
   });
 
-  it('installs into a fresh consumer without a sibling repository and imports its public API', async () => {
-    const consumer = await mkdtemp(path.join(os.tmpdir(), 'nexus-memory-consumer-'));
-    temporaryDirectories.push(consumer);
-    await writeFile(
-      path.join(consumer, 'package.json'),
-      `${JSON.stringify({ name: 'consumer', private: true, version: '1.0.0', type: 'module' })}\n`,
-      'utf8',
-    );
-    // The cached tarballs and dependencies come from this checkout's own installation.
-    await run(
-      'npm',
-      ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
-      {
-        cwd: consumer,
-        timeout: 120_000,
-      },
-    );
-    const check = await run(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        "import('agentic-memory').then((memory) => {" +
-          'const exports = ["AgenticMemory","MemoryError","defaultPrompts","openReferenceEmbedder",' +
-          '"openQdrantNoteStore","embeddingText","jsonValueSchema","noteSchema","embeddedNoteSchema"];' +
-          'const missing = exports.filter((name) => memory[name] === undefined);' +
-          'if (missing.length > 0) { throw new Error(`missing exports: ${missing.join(",")}`); }' +
-          "process.stdout.write('ok');" +
-          '});',
-      ],
-      { cwd: consumer, timeout: 60_000 },
-    );
-    expect(check.stdout.trim()).toBe('ok');
-  });
+  it(
+    'installs into a fresh consumer without a sibling repository and imports its public API',
+    { timeout: 300_000 },
+    async () => {
+      const consumer = await mkdtemp(path.join(os.tmpdir(), 'nexus-memory-consumer-'));
+      temporaryDirectories.push(consumer);
+      // A fresh checkout has no npm cache, so the consumer resolves the pinned tarball and the
+      // dependencies it declares from the registry. The isolated, initially empty cache directory
+      // proves the check does not depend on this host's accidental cache state; `--ignore-scripts`
+      // keeps the native post-install downloads out of this assertion, which covers installation
+      // and the package's public exports.
+      const cache = await mkdtemp(path.join(os.tmpdir(), 'nexus-memory-cache-'));
+      temporaryDirectories.push(cache);
+      await writeFile(
+        path.join(consumer, 'package.json'),
+        `${JSON.stringify({ name: 'consumer', private: true, version: '1.0.0', type: 'module' })}\n`,
+        'utf8',
+      );
+      await run(
+        'npm',
+        ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', cache, tarball],
+        {
+          cwd: consumer,
+          env: { ...process.env, npm_config_cache: cache },
+          timeout: 240_000,
+        },
+      );
+      const check = await run(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          "import('agentic-memory').then((memory) => {" +
+            'const exports = ["AgenticMemory","MemoryError","defaultPrompts","openReferenceEmbedder",' +
+            '"openQdrantNoteStore","embeddingText","jsonValueSchema","noteSchema","embeddedNoteSchema"];' +
+            'const missing = exports.filter((name) => memory[name] === undefined);' +
+            'if (missing.length > 0) { throw new Error(`missing exports: ${missing.join(",")}`); }' +
+            "process.stdout.write('ok');" +
+            '});',
+        ],
+        { cwd: consumer, timeout: 60_000 },
+      );
+      expect(check.stdout.trim()).toBe('ok');
+    },
+  );
 });
