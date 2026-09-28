@@ -31,10 +31,15 @@ import {
   refinedIdeaSchema,
   type EditorTurnResponse,
 } from '../src/task-engine/actions/idea-editor/artifacts.js';
-import { createIdeaEditor } from '../src/task-engine/actions/idea-editor/index.js';
 import {
+  createIdeaEditor,
+  refinedIdeaDeliverableInstruction,
+} from '../src/task-engine/actions/idea-editor/index.js';
+import {
+  ideaAttributionText,
   ideaCommunicationText,
   ideaDefinitionText,
+  ideaSourceScopeText,
   ideaStageGuidanceText,
   projectGuidanceInstruction,
 } from '../src/task-engine/actions/idea-context.js';
@@ -265,9 +270,15 @@ function scriptedRuntime(outputs: readonly unknown[]): {
 
 /** The shared idea context every role invocation must carry exactly once. */
 function expectSharedContext(context: string): void {
-  expect(context.split(ideaDefinitionText)).toHaveLength(2);
-  expect(context.split(ideaStageGuidanceText)).toHaveLength(2);
-  expect(context.split(ideaCommunicationText)).toHaveLength(2);
+  for (const shared of [
+    ideaDefinitionText,
+    ideaStageGuidanceText,
+    ideaAttributionText,
+    ideaSourceScopeText,
+    ideaCommunicationText,
+  ]) {
+    expect(context.split(shared)).toHaveLength(2);
+  }
 }
 
 describe('idea editor', () => {
@@ -343,6 +354,7 @@ describe('idea editor', () => {
     const request = agent.requests[0];
     expect(request?.context).toContain('Linters keep reviews focused on behaviour.');
     expect(request?.context).toContain('a gate fits');
+    expect(request?.context.split(refinedIdeaDeliverableInstruction)).toHaveLength(2);
     expect(request?.outputSchema).toEqual(z.toJSONSchema(editorTurnResponseSchema));
     const stored = await area.read(1, refinedIdeaArtifact.pathFromArtifactsRoot);
     expect(refinedIdeaSchema.safeParse(stored).success).toBe(true);
@@ -422,6 +434,7 @@ describe('idea editor', () => {
     await expect(editor({ task: 'respond' })).resolves.toBe('responded');
 
     expect(agent.requests[0]?.context).toContain('The gate may slow local work.');
+    expect(agent.requests[0]?.context.split(refinedIdeaDeliverableInstruction)).toHaveLength(2);
     expect(await area.read(2, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
       disposition: 'answered',
       reason: null,
@@ -820,6 +833,7 @@ describe('Researcher and Project guide', () => {
 
     expect(agent.requests).toHaveLength(1);
     expect(agent.requests[0]?.context).toContain('Which documented constraint matters most?');
+    expectSharedContext(agent.requests[0]?.context ?? '');
     // The focused contribution still receives the refined idea revision in force directly.
     expect(agent.requests[0]?.context).toContain('a lint gate would keep reviews on behaviour');
     expect(await area.read(2, projectGuideFollowUpArtifact.pathFromArtifactsRoot)).toEqual({
@@ -835,6 +849,43 @@ describe('Researcher and Project guide', () => {
         ),
       ),
     ).resolves.toBe(false);
+  });
+
+  it('carries the shared source-scope guidance into a focused researcher turn', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(2, editorHelpArtifact.pathFromArtifactsRoot, {
+      disposition: 'help-requested',
+      response: 'I need evidence.',
+      reason: null,
+      help: { researcher: 'What evidence links lint gates to review time?', projectGuide: null },
+    });
+    const agent = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(researcher({ phase: 'focused' })).resolves.toBe('contributed');
+
+    const context = agent.requests[0]?.context ?? '';
+    expectSharedContext(context);
+    expect(context).toContain('What evidence links lint gates to review time?');
+    expect(context.indexOf(ideaSourceScopeText)).toBeLessThan(
+      context.indexOf('Current captured idea'),
+    );
+    expect(await area.read(2, researchFollowUpArtifact.pathFromArtifactsRoot)).toEqual({
+      ...researchFixture,
+      role: 'researcher',
+      question: 'What evidence links lint gates to review time?',
+    });
   });
 
   it('reports provisional project direction from the connected project', async () => {

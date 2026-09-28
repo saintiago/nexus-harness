@@ -48,20 +48,23 @@ export const ideaDefinitionText = [
 /**
  * The shared idea-stage guidance supplied to every idea refinement role invocation with the
  * definition. It keeps the conversation on the idea as the author proposed it, keeps the project's
- * current design open to change and separates helpful suggestions from concerns that prevent
+ * current design open to change, and separates helpful suggestions from concerns that prevent
  * recommending pursuit.
  */
 export const ideaStageGuidanceText = [
   'Idea stage (shared by every idea refinement role): captured author text and human clarifications',
-  'govern what is proposed; retain comment authorship, and treat previous agent publications,',
-  'interpretations and approvals as revisable history rather than author instructions. Distinguish',
-  'the project\u2019s enduring purpose and actual constraints from current design choices: an idea',
-  'may propose changing those choices, and a conflict with today\u2019s architecture alone is not',
-  'grounds to narrow or reject an architectural idea. Ask how a contribution improves the idea or',
-  'shows why it should not proceed; separate helpful suggestions from concerns that prevent',
-  'recommending pursuit, and explain the consequence for value, project fit or feasibility of any',
-  'blocker. A preferable alternative alone is not a veto, and uncertainty alone does not imply',
-  'infeasibility.',
+  'govern what is proposed, and comment authorship is retained. Previous agent publications,',
+  'interpretations and approvals are revisable history, not author instructions; the editor\u2019s',
+  'framing is also an interpretation, not a replacement for the author\u2019s input. Ask the author',
+  'only when a material ambiguity cannot reasonably be resolved. Distinguish the project\u2019s',
+  'enduring purpose and actual constraints from current design choices.',
+  'An idea may propose changing those choices, and a conflict with today\u2019s architecture alone',
+  'is not grounds to narrow or reject an architectural idea. Apply project guidance at the idea',
+  'stage; avoiding premature optimization does not prohibit exploring a performance idea before',
+  'measurement. Ask how a contribution improves the idea or shows why it should not proceed,',
+  'separate helpful suggestions from concerns that prevent recommending pursuit, and explain the',
+  'consequence for value, project fit or feasibility of any blocker. A preferable alternative',
+  'alone is not a veto, and uncertainty alone does not imply infeasibility.',
 ].join('\n');
 
 /**
@@ -77,6 +80,39 @@ export const ideaCommunicationText = [
   'claims, but do not fact-check incidental wording or demand implementation details to approve an',
   'idea. Avoid rhetorical language and repeated reports; give only the few points that bear on the',
   'decision to pursue the idea.',
+].join('\n');
+
+/**
+ * The one shared evidence and attribution rule supplied to every idea refinement role invocation
+ * with the definition and stage guidance. It keeps captured author input, external sources,
+ * project facts and agent inference distinct through contributions, synthesis and assessment, and
+ * preserves a claim's consequential qualifications instead of strengthening it beyond its source.
+ */
+export const ideaAttributionText = [
+  'Idea evidence and attribution (shared by every idea refinement role): distinguish captured',
+  'author input, external sources, project facts and agent inference throughout contributions,',
+  'synthesis and assessment. A source does not become the author\u2019s own work merely because it',
+  'is relevant or was found in earlier material. Preserve consequential qualifications:',
+  'vendor-reported results are not local measurements, and a search that found no example does not',
+  'establish that none exists. Check the supporting source before strengthening a claim; otherwise',
+  'retain the qualification or omit the unsupported claim.',
+].join('\n');
+
+/**
+ * The one shared source-scope rule supplied to every idea refinement role invocation with the
+ * definition and stage guidance. Project context comes from the supplied connected worktree, its
+ * Git history, the supplied issue artifacts and the sources the author explicitly provided;
+ * missing project evidence permits a stated uncertainty, not a wider filesystem search.
+ */
+export const ideaSourceScopeText = [
+  'Idea source scope (shared by every idea refinement role): use the supplied connected worktree',
+  'and its Git history, the supplied issue-artifact references, and the sources the author',
+  'explicitly provided. Do not search home directories, other checkouts, provider session history,',
+  'host configuration or operational investigation logs for additional project context; an',
+  'encountered path or an agent\u2019s historical reference does not expand this scope. Public web',
+  'research remains available for relevant external evidence. Ordinary provider and tool setup',
+  'instructions are not evidence about the project or author. Missing project evidence permits a',
+  'stated uncertainty, not a wider filesystem search.',
 ].join('\n');
 
 /** The worktree directory under a refinement area (Workspace design). */
@@ -324,6 +360,8 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     context: [
       ideaDefinitionText,
       ideaStageGuidanceText,
+      ideaAttributionText,
+      ideaSourceScopeText,
       ideaCommunicationText,
       settings.context,
     ].join('\n\n'),

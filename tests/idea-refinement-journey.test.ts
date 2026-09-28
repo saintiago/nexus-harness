@@ -43,16 +43,23 @@ import {
   type AgentActivity,
   type EngineEvent,
 } from '../src/task-engine/index.js';
-import type { IdeaRole } from '../src/agent-runtime/index.js';
+import {
+  type IdeaRole,
+  projectGuideRoleInstructions,
+  researcherRoleInstructions,
+} from '../src/agent-runtime/index.js';
 import {
   editorResponseArtifact,
   framingArtifact,
   refinedIdeaArtifact,
   type RefinedIdeaContent,
 } from '../src/task-engine/actions/idea-editor/artifacts.js';
+import { refinedIdeaDeliverableInstruction } from '../src/task-engine/actions/idea-editor/index.js';
 import {
+  ideaAttributionText,
   ideaCommunicationText,
   ideaDefinitionText,
+  ideaSourceScopeText,
   ideaStageGuidanceText,
 } from '../src/task-engine/actions/idea-context.js';
 import {
@@ -683,13 +690,29 @@ describe('idea refinement journeys', () => {
       expect(prompt).toContain('Add a lint gate');
       expect(prompt).toContain('Prefer the smallest change that fulfils the purpose.');
       expect(prompt).toContain(path.join(journey.worktree));
-      // The shared definition, the stage guidance and the communication rule arrive exactly once
-      // each, ahead of the role's own context and duties.
+      // The shared definition, stage guidance, attribution rule, source scope and communication
+      // rule arrive exactly once each, ahead of the role's own context and duties.
       expect(prompt.split(ideaDefinitionText)).toHaveLength(2);
       expect(prompt.split(ideaStageGuidanceText)).toHaveLength(2);
+      expect(prompt.split(ideaAttributionText)).toHaveLength(2);
+      expect(prompt.split(ideaSourceScopeText)).toHaveLength(2);
       expect(prompt.split(ideaCommunicationText)).toHaveLength(2);
       expect(prompt.indexOf(ideaStageGuidanceText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
+      expect(prompt.indexOf(ideaAttributionText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
+      expect(prompt.indexOf(ideaSourceScopeText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
       expect(prompt.indexOf(ideaCommunicationText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
+      // The role's constant prompt carries its particular duties, including the updated
+      // Researcher and Project guide guidance, and the editor's deliverable instruction reaches
+      // the turn that writes the refined idea.
+      if (roleOf(prompt) === 'researcher') {
+        expect(prompt.split(researcherRoleInstructions[0]!)).toHaveLength(2);
+      }
+      if (roleOf(prompt) === 'project-guide') {
+        expect(prompt.split(projectGuideRoleInstructions[0]!)).toHaveLength(2);
+      }
+      if (editorTaskOf(prompt) === 'edit') {
+        expect(prompt.split(refinedIdeaDeliverableInstruction)).toHaveLength(2);
+      }
     }
     expect((await readFile(path.join(journey.worktree, 'readme.md'), 'utf8')).trim()).toBe(
       'the connected project',
