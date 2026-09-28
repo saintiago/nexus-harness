@@ -2,7 +2,8 @@
 
 ## Responsibility
 
-Confirm the approved change is merged and its required post-merge checks passed, then complete the task.
+Confirm the approved change merged without a failed required pre-merge check and with its required
+post-merge checks passed, then complete the task.
 
 ## Interface
 
@@ -43,6 +44,12 @@ Require approval of the delivered head. Read current PR state and checks from th
 producers. The review check must come from the Nexus Lens producer, be completed and be successful
 for the approved head; a same-name check from another producer is not the Lens gate. If the head
 changed, do not transfer the old approval.
+
+Observe the delivered revision's required pre-merge checks while the merge is pending. A required
+check that concluded unsuccessfully — any conclusion other than success, skipped or neutral — is a
+terminal failure: report the failing check, its conclusion and the provider evidence link instead of
+waiting for the completion deadline. Required checks that have not reported or are still running
+remain pending within the configured completion wait, and an approved review does not bypass them.
 
 Observe the actual merge and require every configured post-merge check to succeed for that merge
 revision. All matching runs must succeed; a newer successful run does not supersede a failed matching run.

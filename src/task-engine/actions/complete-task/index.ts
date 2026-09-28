@@ -15,7 +15,8 @@ import { completionArtifact, type CompletionOutput } from './artifacts.js';
  * CompleteTask confirms that the approved delivered head is merged and that every configured
  * post-merge check succeeded for the merge revision, records that evidence and moves the ticket to
  * its completed status. Pending merge or check work stays pending within the configured completion
- * wait; failed checks, a changed head and expiry cannot produce completed.
+ * wait; a failed required pre-merge check is reported without waiting for that deadline, and failed
+ * checks, a changed head and expiry cannot produce completed.
  *
  * The recorded completion evidence is reused on repetition, so only the outstanding completion
  * step runs again. A merged pull request or an already-completed ticket does not by itself establish
@@ -58,6 +59,9 @@ type PostMergeObservation =
   | { readonly kind: 'passed'; readonly checks: CompletionOutput['checks'] }
   | { readonly kind: 'failed'; readonly reason: string }
   | { readonly kind: 'pending'; readonly reason: string };
+
+/** The conclusions of a completed check that satisfy a required pre-merge check. */
+const satisfiedConclusions: ReadonlySet<string> = new Set(['success', 'skipped', 'neutral']);
 
 /** Create CompleteTask over the selected workspace, configured checks and adapters. */
 export function createCompleteTask(settings: CompleteTaskSettings): BoundAction {
@@ -153,6 +157,36 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       return { kind: 'pending' };
     }
 
+    /**
+     * The failure reason for delivered-revision required pre-merge checks that concluded
+     * unsuccessfully, or null while they are all pending, satisfied or not reported. Approved
+     * review does not bypass them; provider access failures are execution errors.
+     */
+    async function requiredCheckFailure(): Promise<string | null> {
+      const required = await settings.github.readRequiredChecks(
+        settings.repository,
+        delivery.pullRequestNumber,
+      );
+      if (!required.ok) {
+        throw new Error(required.fault.message);
+      }
+      const failures: string[] = [];
+      for (const check of required.value) {
+        if (check.status !== 'completed' || check.conclusion === null) {
+          continue;
+        }
+        if (satisfiedConclusions.has(check.conclusion)) {
+          continue;
+        }
+        failures.push(
+          `required pre-merge check "${check.name}" concluded "${check.conclusion}" for ` +
+            `revision ${delivery.headRevision}` +
+            (check.evidenceUrl === null ? '' : ` (evidence: ${check.evidenceUrl})`),
+        );
+      }
+      return failures.length === 0 ? null : `${failures.join('; ')}.`;
+    }
+
     /** Observe the merge within the configured completion wait. */
     async function waitForMerge(): Promise<
       | { readonly kind: 'merged'; readonly revision: string }
@@ -162,6 +196,12 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
         const observed = await observeMerge();
         if (observed.kind !== 'pending') {
           return observed;
+        }
+        // The required pre-merge checks gate the merge: a terminal failure is reported now instead
+        // of waiting for the completion deadline, while checks still pending keep the wait.
+        const failedCheck = await requiredCheckFailure();
+        if (failedCheck !== null) {
+          return { kind: 'failed', reason: failedCheck };
         }
         if (Date.now() - startedAt >= waitLimitMs) {
           return {

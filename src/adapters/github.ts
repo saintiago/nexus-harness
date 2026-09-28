@@ -166,6 +166,16 @@ export type CheckObservation = {
   readonly conclusion: string | null;
 };
 
+/** One required pre-merge check the provider reports for a pull request's merge rules. */
+export type RequiredCheckObservation = {
+  readonly name: string;
+  /** The provider's check vocabulary: completed, in_progress, queued, pending, and so on. */
+  readonly status: string;
+  readonly conclusion: string | null;
+  /** The provider page showing the check's result, when the provider reports one. */
+  readonly evidenceUrl: string | null;
+};
+
 /** One review-check result to publish or update as the Nexus Lens App. */
 export type ReviewCheckPublicationRequest = {
   readonly revision: string;
@@ -230,6 +240,10 @@ export type GitHubAdapter = {
     repository: GitHubRepository,
     revision: string,
   ): Promise<Result<readonly CheckObservation[]>>;
+  readRequiredChecks(
+    repository: GitHubRepository,
+    pullRequestNumber: number,
+  ): Promise<Result<readonly RequiredCheckObservation[]>>;
   publishReviewCheck(
     repository: GitHubRepository,
     publication: ReviewCheckPublicationRequest,
@@ -318,6 +332,38 @@ const checkPageSchema = z.looseObject({
   check_runs: z.array(checkSchema),
 });
 
+const requiredCheckNodeSchema = z.union([
+  z.looseObject({
+    __typename: z.literal('CheckRun'),
+    name: z.string(),
+    status: z.string(),
+    conclusion: z.string().nullable(),
+    detailsUrl: z.string().nullable().optional(),
+    isRequired: z.boolean(),
+  }),
+  z.looseObject({
+    __typename: z.literal('StatusContext'),
+    context: z.string(),
+    state: z.string(),
+    targetUrl: z.string().nullable().optional(),
+    isRequired: z.boolean(),
+  }),
+]);
+
+const requiredChecksResponseSchema = z.looseObject({
+  data: z.looseObject({
+    repository: z.looseObject({
+      pullRequest: z.looseObject({
+        statusCheckRollup: z
+          .looseObject({
+            contexts: z.looseObject({ nodes: z.array(requiredCheckNodeSchema) }),
+          })
+          .nullable(),
+      }),
+    }),
+  }),
+});
+
 const checkIdentitySchema = z.looseObject({
   id: z.number().int(),
 });
@@ -383,6 +429,70 @@ const enableAutoMergeMutation = `mutation EnableAutoMerge($pullRequestId: ID!, $
     pullRequest { number }
   }
 }`;
+
+/**
+ * The provider evaluates a required check against a pull request's base-branch merge rules, so the
+ * pull request number is part of the document rather than a variable.
+ */
+function requiredChecksQuery(owner: string, name: string, pullRequestNumber: number): string {
+  const number = String(pullRequestNumber);
+  return `query RequiredChecks {
+  repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+    pullRequest(number: ${number}) {
+      statusCheckRollup {
+        contexts(first: ${String(pageSize)}) {
+          nodes {
+            __typename
+            ... on CheckRun {
+              name
+              status
+              conclusion
+              detailsUrl
+              isRequired(pullRequestNumber: ${number})
+            }
+            ... on StatusContext {
+              context
+              state
+              targetUrl
+              isRequired(pullRequestNumber: ${number})
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+}
+
+/** One required context of a pull request's status-check rollup, as the provider reported it. */
+type RequiredCheckNode = z.infer<typeof requiredCheckNodeSchema>;
+
+/**
+ * Report one rollup context in the check vocabulary, or null when the repository's merge rules do
+ * not require it. A legacy commit status states its own vocabulary: a terminal state becomes a
+ * completed check with that state as its conclusion, and every other state stays pending.
+ */
+function requiredCheckOf(node: RequiredCheckNode): RequiredCheckObservation | null {
+  if (!node.isRequired) {
+    return null;
+  }
+  if (node.__typename === 'CheckRun') {
+    return {
+      name: node.name,
+      status: node.status.toLowerCase(),
+      conclusion: node.conclusion?.toLowerCase() ?? null,
+      evidenceUrl: node.detailsUrl ?? null,
+    };
+  }
+  const state = node.state.toLowerCase();
+  const pending = state === 'expected' || state === 'pending';
+  return {
+    name: node.context,
+    status: pending ? 'pending' : 'completed',
+    conclusion: pending ? null : state,
+    evidenceUrl: node.targetUrl ?? null,
+  };
+}
 
 /** The GitHub API the Nexus Lens App installation talks to. */
 const githubApiBase = 'https://api.github.com';
@@ -566,10 +676,10 @@ export function createGitHubAdapter(
     }
   }
 
-  /** The repository's API path and owner, or a fault for an identity outside owner/name form. */
+  /** The repository's API path, owner and name, or a fault for an identity outside owner/name form. */
   function repositoryApiPath(
     repository: GitHubRepository,
-  ): Result<{ readonly owner: string; readonly path: string }> {
+  ): Result<{ readonly owner: string; readonly name: string; readonly path: string }> {
     const segments = repository.split('/');
     const [owner, name] = segments;
     if (
@@ -581,7 +691,11 @@ export function createGitHubAdapter(
     ) {
       return fault(`"${repository}" is not a GitHub repository in owner/name form`);
     }
-    return ok({ owner, path: `${encodeURIComponent(owner)}/${encodeURIComponent(name)}` });
+    return ok({
+      owner,
+      name,
+      path: `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    });
   }
 
   /** Sign one short-lived Nexus Lens App JWT. */
@@ -934,6 +1048,27 @@ export function createGitHubAdapter(
           conclusion: check.conclusion,
         })),
       );
+    },
+
+    /**
+     * Read the pre-merge checks the repository's merge rules require for the pull request's base
+     * branch, with the evidence link of each reported check. Requirement decisions stay with the
+     * provider; the caller decides whether the observed state satisfies its gate.
+     */
+    async readRequiredChecks(repository, pullRequestNumber) {
+      const target = repositoryApiPath(repository);
+      if (!target.ok) {
+        return target;
+      }
+      const required = await cliValue('POST', 'graphql', requiredChecksResponseSchema, {
+        query: requiredChecksQuery(target.value.owner, target.value.name, pullRequestNumber),
+      });
+      if (!required.ok) {
+        return required;
+      }
+      const rollup = required.value.data.repository.pullRequest.statusCheckRollup;
+      const nodes = rollup === null ? [] : rollup.contexts.nodes;
+      return ok(nodes.flatMap((node) => requiredCheckOf(node) ?? []));
     },
 
     async publishReviewCheck(repository, publication) {

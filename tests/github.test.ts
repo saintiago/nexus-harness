@@ -463,6 +463,90 @@ describe('GitHub adapter', () => {
     expect(app).toHaveLength(0);
   });
 
+  it('reads the required pre-merge checks with their state and evidence', async () => {
+    const { adapter, gh, app } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: 'CheckRun',
+                      name: 'validate',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: 'https://github.com/acme/nexus/actions/runs/5/job/6',
+                      isRequired: true,
+                    },
+                    {
+                      __typename: 'CheckRun',
+                      name: 'advisory',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: 'https://github.com/acme/nexus/actions/runs/7',
+                      isRequired: false,
+                    },
+                    {
+                      __typename: 'StatusContext',
+                      context: 'legacy-ci',
+                      state: 'SUCCESS',
+                      targetUrl: 'https://ci.example.test/builds/8',
+                      isRequired: true,
+                    },
+                    {
+                      __typename: 'StatusContext',
+                      context: 'expected-ci',
+                      state: 'EXPECTED',
+                      targetUrl: null,
+                      isRequired: true,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const required = valueOf(await adapter.readRequiredChecks(repository, 9));
+
+    // Only the checks the repository's merge rules require are reported, in the check vocabulary.
+    expect(required).toEqual([
+      {
+        name: 'validate',
+        status: 'completed',
+        conclusion: 'failure',
+        evidenceUrl: 'https://github.com/acme/nexus/actions/runs/5/job/6',
+      },
+      {
+        name: 'legacy-ci',
+        status: 'completed',
+        conclusion: 'success',
+        evidenceUrl: 'https://ci.example.test/builds/8',
+      },
+      { name: 'expected-ci', status: 'pending', conclusion: null, evidenceUrl: null },
+    ]);
+    expect(app).toHaveLength(0);
+    expect(gh[0]?.slice(0, 4)).toEqual(['api', '--method', 'POST', 'graphql']);
+    const graphql = ghFields(gh[0] ?? []);
+    expect(graphql['query']).toContain('repository(owner: "acme", name: "nexus")');
+    expect(graphql['query']).toContain('pullRequest(number: 9)');
+    expect(graphql['query']).toContain('isRequired(pullRequestNumber: 9)');
+  });
+
+  it('reports no required checks when the pull request has no check rollup', async () => {
+    const { adapter } = harness([
+      ghJson({ data: { repository: { pullRequest: { statusCheckRollup: null } } } }),
+    ]);
+
+    const required = valueOf(await adapter.readRequiredChecks(repository, 9));
+
+    expect(required).toEqual([]);
+  });
+
   it.each([
     ['approved', 'APPROVE'],
     ['changesRequested', 'REQUEST_CHANGES'],
