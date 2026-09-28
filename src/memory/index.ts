@@ -11,7 +11,7 @@ import type { JsonValue } from './json.js';
 import { acquireWriterLock } from './lock.js';
 import { defaultMemoryProviders } from './providers.js';
 import { composeRetrievalBlock, type RetrievalCandidate } from './recall.js';
-import { createReceiptStore, type Receipt } from './receipts.js';
+import { createReceiptStore, type Receipt, type ReceiptStore } from './receipts.js';
 
 /**
  * Memory makes experience from completed hand-offs available to later agent invocations. It owns
@@ -211,12 +211,36 @@ export function disabledMemory(): Memory {
 
 /**
  * A memory whose providers are not usable. Every call reports the reason; business actions
- * continue without supplemental context and without ingestion.
+ * continue without supplemental context. An observation it receives is still captured as a
+ * pending receipt when a receipt store is supplied, so a hand-off produced while the providers are
+ * unavailable survives with its snapshot and its failed disposition instead of being lost.
  */
-export function unavailableMemory(reason: string): Memory {
+export function unavailableMemory(reason: string, capture?: ReceiptStore): Memory {
   return {
     recall: () => Promise.resolve({ kind: 'unavailable', reason }),
-    remember: () => Promise.resolve({ kind: 'failed', receipt: null, reason }),
+    async remember(observation) {
+      if (capture === undefined) {
+        return { kind: 'failed', receipt: null, reason };
+      }
+      const timestamp = new Date().toISOString();
+      try {
+        const receipt = await capture.createIfAbsent({
+          sourceKey: observation.sourceKey,
+          content: observation.content,
+          timestamp: observation.timestamp ?? timestamp,
+          provenance: observation.provenance,
+          state: 'pending',
+          updatedAt: timestamp,
+        });
+        return { kind: 'failed', receipt: capture.fileOf(receipt.sourceKey), reason };
+      } catch (error) {
+        return {
+          kind: 'failed',
+          receipt: null,
+          reason: `${reason}; the observation could not be captured: ${messageOf(error)}`,
+        };
+      }
+    },
     close: () => Promise.resolve(),
   };
 }
@@ -443,12 +467,9 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
             'uncertain and it is not repeated automatically',
           updatedAt: now().toISOString(),
         };
+        // The uncertain receipt is itself the collection's unresolved insertion, so persisting it
+        // is what makes every other source's later write defer until reconciliation.
         await store.write(uncertain);
-        await store.recordUncertainty({
-          sourceKey: uncertain.sourceKey,
-          receipt: receiptFile,
-          reason: uncertain.reason ?? 'an interrupted insertion is uncertain',
-        });
         return {
           kind: 'uncertain',
           receipt: receiptFile,
@@ -457,16 +478,17 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
           affectedNoteIds: uncertain.affectedNoteIds ?? [],
         };
       }
-      // Any other collection write stays deferred while an unresolved uncertain insertion is
-      // recorded; this pending observation is preserved for after the operator reconciles it.
-      const uncertainty = await store.readUncertainty();
-      if (uncertainty !== null && uncertainty.sourceKey !== current.sourceKey) {
+      // Any other collection write stays deferred while an unresolved insertion — this
+      // collection's in-flight or uncertain receipt — remains; this pending observation is
+      // preserved for after the operator reconciles that receipt.
+      const unresolved = await store.readUnresolved();
+      if (unresolved !== null && unresolved.sourceKey !== current.sourceKey) {
         return {
           kind: 'deferred',
           receipt: receiptFile,
           reason:
-            `the collection defers further writes until the uncertain insertion at ` +
-            `"${uncertainty.receipt}" is reconciled: ${uncertainty.reason}`,
+            `the collection defers further writes until the unresolved insertion at ` +
+            `"${unresolved.receipt}" is reconciled: ${unresolved.reason}`,
         };
       }
 
@@ -501,11 +523,6 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
             : { affectedNoteIds: [...result.affectedNoteIds] }),
           updatedAt: now().toISOString(),
         });
-        await store.recordUncertainty({
-          sourceKey: current.sourceKey,
-          receipt: receiptFile,
-          reason: result.reason,
-        });
         return {
           kind: 'uncertain',
           receipt: receiptFile,
@@ -535,4 +552,11 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
 export { canonicalJson, type JsonValue, jsonValueSchema } from './json.js';
 export { defaultMemoryProviders } from './providers.js';
 export { retrievalFraming } from './recall.js';
-export { receiptStates, type Receipt, type ReceiptState } from './receipts.js';
+export {
+  createReceiptStore,
+  receiptStates,
+  type Receipt,
+  type ReceiptState,
+  type ReceiptStore,
+  type UnresolvedWrite,
+} from './receipts.js';

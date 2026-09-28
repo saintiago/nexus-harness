@@ -61,7 +61,9 @@ export function composeRetrievalBlock(
   let length = retrievalFraming.length;
   for (const result of results) {
     const block = noteBlock(result);
-    const addition = (blocks.length === 0 ? 0 : 2) + block.length;
+    // Every note block follows the framing or another block through the two newlines the final
+    // assembly inserts, so the running length counts that separator for the first note too.
+    const addition = 2 + block.length;
     if (length + addition > maxChars) {
       candidates.push({
         noteId: result.note.id,

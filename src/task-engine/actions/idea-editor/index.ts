@@ -12,7 +12,7 @@ import {
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  latestChallenger,
+  latestChallengerBefore,
   latestRefinedIdea,
   readCycleArtifact,
   readIdeaInput,
@@ -440,7 +440,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     turn: EditorTurn,
   ): Promise<void> {
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const discussion = await latestChallenger(root, plan.submission, plan.cycle);
+    const discussion = await latestChallengerBefore(root, plan.submission, plan.cycle);
     const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
     const file = path.join(
       cycleRoot,
@@ -656,9 +656,9 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         path.join(cycleRoot, editorHelpArtifact.pathFromArtifactsRoot),
       );
     }
-    // The cycle was opened by the discussion the editor answers, which may be the preceding
-    // cycle's result: the current cycle's Challenger runs after this response.
-    const discussion = await latestChallenger(root, plan.submission, plan.cycle);
+    // The cycle was opened by the discussion the editor answers, which is the preceding cycle's
+    // result: the current cycle's Challenger runs after this response.
+    const discussion = await latestChallengerBefore(root, plan.submission, plan.cycle);
     if (discussion === null) {
       throw new Error(
         `The editor responds to a Challenger result; submission ${String(plan.submission)} has ` +

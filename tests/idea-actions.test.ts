@@ -400,6 +400,71 @@ describe('idea editor', () => {
     expect(agent.requests).toHaveLength(1);
   });
 
+  it('keeps a reused editor turn attributed to the Challenger it answered', async () => {
+    const area = await refinementArea();
+    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
+    });
+    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
+      ...guidanceFixture,
+      role: 'project-guide',
+      question: null,
+    });
+    const memory = recordingMemory();
+    const editing = scriptedRuntime([revisedTurn(1)]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(editing.runtime),
+      publish: (event) => area.events.push(event),
+      memory: {
+        memory,
+        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
+        project: 'NEX',
+        workflow: 'idea-refinement',
+      },
+    });
+    await expect(editor({ task: 'edit' })).resolves.toBe('written');
+    const first = memory.observations[0];
+    expect(first?.content).not.toContain('Addressed Challenger result');
+
+    // The cycle's own Challenger runs after the editor wrote; its assessment is not an answer to
+    // this turn and cannot become one when the saved turn is observed again.
+    const challenging = scriptedRuntime([
+      {
+        verdict: 'discuss',
+        assessment: 'The speed concern is unresolved.',
+        obstacle: 'The idea may slow everyday work without saying how it stays fast.',
+        concerns: [
+          {
+            concern: 'The gate may slow local work.',
+            consequence: 'Developers would disable it.',
+            resolution: 'Show that the gate runs on changed files only.',
+          },
+        ],
+        suggestions: [],
+      },
+    ]);
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(challenging.runtime),
+      publish: (event) => area.events.push(event),
+      memory: {
+        memory,
+        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
+        project: 'NEX',
+        workflow: 'idea-refinement',
+      },
+    });
+    await expect(challenger()).resolves.toBe('discuss');
+
+    await expect(editor({ task: 'edit' })).resolves.toBe('written');
+    expect(memory.observations).toHaveLength(3);
+    expect(memory.observations[2]?.sourceKey).toBe(first?.sourceKey);
+    expect(memory.observations[2]?.content).toBe(first?.content);
+  });
+
   it('answers a concern without changing the refined idea text', async () => {
     const area = await refinementArea({ cycle: 2, route: 'next' });
     const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
@@ -409,7 +474,9 @@ describe('idea editor', () => {
       submission: 1,
       cycle: 1,
     });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+    // The Challenger that discussed revision 1 wrote its result into cycle 1; StartIdeaRound then
+    // opened cycle 2, whose editor turn answers it.
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
       verdict: 'discuss',
       assessment: 'The speed concern is unresolved.',
       obstacle: 'The idea may slow everyday work without saying how it stays fast.',
@@ -455,7 +522,9 @@ describe('idea editor', () => {
       submission: 1,
       cycle: 1,
     });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+    // The Challenger that discussed revision 1 wrote its result into cycle 1; the cycle-2 editor
+    // turn it opened answers it.
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
       verdict: 'discuss',
       assessment: 'The evidence is thin.',
       obstacle: 'Nothing yet shows the gate is worth the change.',
@@ -503,7 +572,9 @@ describe('idea editor', () => {
       submission: 1,
       cycle: 1,
     });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+    // The Challenger that discussed revision 1 wrote its result into cycle 1; the cycle-2 editor
+    // turn it opened rebuts it.
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
       verdict: 'discuss',
       assessment: 'The objection misreads the idea.',
       obstacle: 'The idea looks broader than it is; its scope should be clear before pursuit.',
@@ -557,7 +628,9 @@ describe('idea editor', () => {
       submission: 1,
       cycle: 1,
     });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
+    // The Challenger that discussed revision 1 wrote its result into cycle 1; the cycle-2 editor
+    // turn it opened answers it.
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
       verdict: 'discuss',
       assessment: 'The speed concern is unresolved.',
       obstacle: 'The idea may slow everyday work without saying how it stays fast.',

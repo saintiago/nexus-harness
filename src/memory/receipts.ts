@@ -1,16 +1,19 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { messageOf } from '../result.js';
-import { readJsonFile, writeJsonFile } from './files.js';
+import { createJsonFileExclusive, readJsonFile, writeJsonFile } from './files.js';
 import { jsonObjectSchema } from './json.js';
 
 /**
  * Ingestion receipts and writer coordination of one collection. A receipt is the immutable source
  * observation plus the state of its insertion: pending, in-flight, stored or uncertain. Receipts
  * live outside issue workspaces, so recovery cleanup cannot erase them, and a repeated observation
- * of the same source key reads the existing receipt instead of replacing its snapshot.
+ * of the same source key reads the existing receipt instead of replacing its snapshot. A receipt
+ * left in flight or uncertain is itself the collection's unresolved insertion: it defers every
+ * other source's write until the operator reconciles it, so no separate deferral record must be
+ * written, kept in step or recovered after a crash.
  */
 
 export const receiptStates = ['pending', 'in-flight', 'stored', 'uncertain'] as const;
@@ -44,14 +47,14 @@ const bindingSchema = z.object({
   collection: z.string().min(1),
 });
 
-/** The unresolved uncertain insertion that defers further writes of one collection. */
-const uncertaintySchema = z.object({
-  sourceKey: z.string().min(1),
-  receipt: z.string().min(1),
-  reason: z.string().min(1),
-});
-
-export type CollectionUncertainty = z.infer<typeof uncertaintySchema>;
+/** One insertion of a collection that still has to be reconciled before another write. */
+export type UnresolvedWrite = {
+  readonly sourceKey: string;
+  /** The receipt carrying the unresolved state; the operator reconciles it. */
+  readonly receipt: string;
+  readonly state: 'in-flight' | 'uncertain';
+  readonly reason: string;
+};
 
 /** The receipt store and lock files of one configured collection. */
 export type ReceiptStore = {
@@ -70,12 +73,11 @@ export type ReceiptStore = {
   /** Replace a receipt's state with a complete document. */
   write(receipt: Receipt): Promise<void>;
   /**
-   * The collection's unresolved uncertain insertion, or null. Further writes stay deferred until
-   * the operator reconciles it; reads remain available.
+   * The collection's unresolved insertion — a receipt left in flight or uncertain — or null.
+   * Further writes stay deferred until the operator reconciles that receipt; reads remain
+   * available.
    */
-  readUncertainty(): Promise<CollectionUncertainty | null>;
-  /** Record one uncertain insertion as the collection's unresolved write. */
-  recordUncertainty(entry: CollectionUncertainty): Promise<void>;
+  readUnresolved(): Promise<UnresolvedWrite | null>;
 };
 
 /** The receipt file of one source key; the key itself may hold characters a filename cannot. */
@@ -84,9 +86,11 @@ function receiptFile(directory: string, sourceKey: string): string {
   return path.join(directory, 'receipts', `${digest}.json`);
 }
 
-/** True when the error reports an already existing file. */
-function isAlreadyPresent(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === 'EEXIST';
+/** Why an unresolved receipt defers another source's insertion, when it recorded no reason. */
+function unresolvedReason(state: 'in-flight' | 'uncertain'): string {
+  return state === 'in-flight'
+    ? 'an insertion was interrupted while in flight and its outcome is uncertain'
+    : 'a previous attempt left an uncertain outcome';
 }
 
 /** Create the receipt store over one configured store identity and storage root. */
@@ -96,7 +100,7 @@ export function createReceiptStore(settings: {
 }): ReceiptStore {
   const directory = path.join(settings.root, 'memory', settings.storeId);
   const bindingFile = path.join(directory, 'binding.json');
-  const uncertaintyFile = path.join(directory, 'uncertain.json');
+  const receiptsDirectory = path.join(directory, 'receipts');
 
   async function read(sourceKey: string): Promise<Receipt | null> {
     const file = receiptFile(directory, sourceKey);
@@ -118,14 +122,20 @@ export function createReceiptStore(settings: {
     lockFile: path.join(directory, 'writer.lock'),
 
     async ensureBinding(binding) {
+      // Creating the binding atomically keeps two initializers from each observing no binding and
+      // then overwriting one another: exactly one creates it, and every other call validates
+      // that same document before any provider write.
+      await createJsonFileExclusive(bindingFile, {
+        storeId: settings.storeId,
+        url: binding.url,
+        collection: binding.collection,
+      });
       const existing = await readJsonFile(bindingFile);
       if (existing === null) {
-        await writeJsonFile(bindingFile, {
-          storeId: settings.storeId,
-          url: binding.url,
-          collection: binding.collection,
-        });
-        return;
+        throw new Error(
+          `The memory store identity "${settings.storeId}" has no readable binding at ` +
+            `"${bindingFile}".`,
+        );
       }
       const parsed = bindingSchema.safeParse(existing);
       if (!parsed.success) {
@@ -152,56 +162,64 @@ export function createReceiptStore(settings: {
 
     async createIfAbsent(receipt) {
       const file = receiptFile(directory, receipt.sourceKey);
-      await mkdir(path.dirname(file), { recursive: true });
-      let handle;
-      try {
-        handle = await open(file, 'wx');
-      } catch (error) {
-        if (isAlreadyPresent(error)) {
-          const existing = await read(receipt.sourceKey);
-          if (existing === null) {
-            throw new Error(
-              `Memory could not read the receipt at "${file}" it found present: ` +
-                `${messageOf(error)}`,
-              { cause: error },
-            );
-          }
-          return existing;
-        }
-        throw new Error(`Memory could not create the receipt at "${file}": ${messageOf(error)}`, {
-          cause: error,
-        });
+      if (await createJsonFileExclusive(file, receipt)) {
+        return receipt;
       }
-      try {
-        await handle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
-        await handle.sync();
-      } finally {
-        await handle.close();
+      const existing = await read(receipt.sourceKey);
+      if (existing === null) {
+        throw new Error(`Memory could not read the receipt at "${file}" it found present.`);
       }
-      return receipt;
+      return existing;
     },
 
     async write(receipt) {
       await writeJsonFile(receiptFile(directory, receipt.sourceKey), receipt);
     },
 
-    async readUncertainty() {
-      const value = await readJsonFile(uncertaintyFile);
-      if (value === null) {
-        return null;
-      }
-      const parsed = uncertaintySchema.safeParse(value);
-      if (!parsed.success) {
+    /**
+     * The collection's unresolved insertion, read from the receipts themselves. A live writer
+     * cannot be observed here: the writer lock is held from receipt inspection through receipt
+     * persistence, so an in-flight or uncertain receipt found while holding it belongs to an
+     * interrupted operation.
+     */
+    async readUnresolved() {
+      let entries: string[];
+      try {
+        entries = await readdir(receiptsDirectory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return null;
+        }
         throw new Error(
-          `Memory found an unreadable writer-deferral record at "${uncertaintyFile}".`,
-          { cause: parsed.error },
+          `Memory could not read the receipts of "${directory}": ${messageOf(error)}`,
+          { cause: error },
         );
       }
-      return parsed.data;
-    },
-
-    async recordUncertainty(entry) {
-      await writeJsonFile(uncertaintyFile, entry);
+      for (const entry of entries.sort()) {
+        if (!entry.endsWith('.json')) {
+          continue;
+        }
+        const file = path.join(receiptsDirectory, entry);
+        const value = await readJsonFile(file);
+        if (value === null) {
+          continue;
+        }
+        const parsed = receiptSchema.safeParse(value);
+        if (!parsed.success) {
+          throw new Error(`Memory found an unreadable receipt at "${file}".`, {
+            cause: parsed.error,
+          });
+        }
+        if (parsed.data.state === 'in-flight' || parsed.data.state === 'uncertain') {
+          return {
+            sourceKey: parsed.data.sourceKey,
+            receipt: file,
+            state: parsed.data.state,
+            reason: parsed.data.reason ?? unresolvedReason(parsed.data.state),
+          };
+        }
+      }
+      return null;
     },
   };
 }
