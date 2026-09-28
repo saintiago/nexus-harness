@@ -72,6 +72,7 @@ import {
 } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import { runnerOf } from './support/agent-runner.js';
 import { scriptedJira } from './support/jira.js';
+import { recordingMemory } from './support/memory.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 const profiles = {
@@ -816,20 +817,55 @@ describe('Researcher and Project guide', () => {
       help: { researcher: null, projectGuide: 'Which documented constraint matters most?' },
     });
     const agent = scriptedRuntime([guidanceFixture]);
+    const researcherMemory = recordingMemory();
+    const guideMemory = recordingMemory();
     const researcher = createResearcher({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
+      memory: {
+        memory: researcherMemory,
+        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
+        project: 'NEX',
+        workflow: 'idea-refinement',
+      },
     });
     const guide = createProjectGuide({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
+      memory: {
+        memory: guideMemory,
+        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
+        project: 'NEX',
+        workflow: 'idea-refinement',
+      },
     });
 
     // The editor asked the Project guide only; the Researcher contributes nothing.
     await expect(researcher({ phase: 'focused' })).resolves.toBe('not-requested');
     await expect(guide({ phase: 'focused' })).resolves.toBe('contributed');
+    // The skipped role recalled nothing; the answering role recalled with the focused question and
+    // observed its contribution bound to that question.
+    expect(researcherMemory.recalls).toEqual([]);
+    expect(researcherMemory.observations).toEqual([]);
+    expect(guideMemory.recalls).toHaveLength(1);
+    expect(guideMemory.recalls[0]?.query).toContain('role: project-guide');
+    expect(guideMemory.recalls[0]?.query).toContain(
+      'assigned focused question: Which documented constraint matters most?',
+    );
+    expect(guideMemory.observations).toHaveLength(1);
+    expect(guideMemory.observations[0]?.content).toContain(
+      'Focused question answered: Which documented constraint matters most?',
+    );
+    expect(guideMemory.observations[0]?.provenance).toMatchObject({
+      project: 'NEX',
+      workflow: 'idea-refinement',
+      role: 'project-guide',
+      element: 'contribution',
+      submission: 1,
+      cycle: 2,
+    });
 
     expect(agent.requests).toHaveLength(1);
     expect(agent.requests[0]?.context).toContain('Which documented constraint matters most?');

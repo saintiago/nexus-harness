@@ -4,7 +4,12 @@ import {
   parseProjectConfiguration,
   resolveCredential,
 } from '../src/configuration/index.js';
+import type { NexusConfiguration } from '../src/configuration/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+
+/** One memory section as a configuration file would spell it, before validation fills defaults. */
+const memorySection = (value: Readonly<Record<string, unknown>>): NexusConfiguration['memory'] =>
+  value as unknown as NexusConfiguration['memory'];
 
 const configurationDirectory = '/etc/nexus';
 
@@ -204,6 +209,106 @@ describe('Nexus configuration', () => {
 
     expect(() => parseNexusConfiguration(configuration, configurationDirectory)).toThrow(
       /Unrecognized key: "delivery"/,
+    );
+  });
+
+  it('keeps configurations valid with memory omitted or explicitly disabled', () => {
+    const omitted = parseNexusConfiguration(nexusConfiguration(), configurationDirectory);
+    expect(omitted.memory).toBeUndefined();
+
+    const disabled = nexusConfiguration();
+    disabled.memory = memorySection({ enabled: false });
+    expect(parseNexusConfiguration(disabled, configurationDirectory).memory).toEqual({
+      enabled: false,
+      neighbors: 5,
+      searchLimit: 5,
+      linkedLimit: 5,
+      contextMaxChars: 12000,
+      lockWaitMs: 5000,
+      providerTimeoutMs: 120000,
+    });
+  });
+
+  it('requires the store, providers and declared bounds when memory is enabled', () => {
+    const configuration = nexusConfiguration() as unknown as { memory?: unknown };
+    configuration.memory = memorySection({ enabled: true });
+    expect(() => parseNexusConfiguration(configuration, configurationDirectory)).toThrow(
+      /memory\.(storeId|qdrant|embedding|model)/,
+    );
+
+    const invalid = nexusConfiguration();
+    invalid.memory = memorySection({
+      enabled: true,
+      storeId: 'shared-collection',
+      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes' },
+      embedding: { cacheDir: './embeddings', allowDownloads: false },
+      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
+      neighbors: 0,
+      searchLimit: 5,
+      linkedLimit: 0,
+      contextMaxChars: 12000,
+      lockWaitMs: 0,
+      providerTimeoutMs: 120000,
+    });
+    expect(() => parseNexusConfiguration(invalid, configurationDirectory)).toThrow(
+      /memory\.neighbors/,
+    );
+  });
+
+  it('resolves the embedding cache against the configuration directory and applies defaults', () => {
+    const configuration = nexusConfiguration();
+    configuration.memory = memorySection({
+      enabled: true,
+      storeId: 'shared-collection',
+      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes' },
+      embedding: { cacheDir: './embeddings', allowDownloads: true },
+      model: {
+        endpoint: 'http://127.0.0.1:9/chat/completions',
+        model: 'model',
+        maxOutputTokens: 6000,
+      },
+    });
+    const resolved = parseNexusConfiguration(configuration, '/etc/nexus/installation');
+
+    expect(resolved.memory).toMatchObject({
+      enabled: true,
+      storeId: 'shared-collection',
+      embedding: {
+        cacheDir: '/etc/nexus/installation/embeddings',
+        allowDownloads: true,
+      },
+      neighbors: 5,
+      searchLimit: 5,
+      linkedLimit: 5,
+      contextMaxChars: 12000,
+      lockWaitMs: 5000,
+      providerTimeoutMs: 120000,
+    });
+  });
+
+  it('requires configured memory credentials and rejects credential-bearing endpoints', () => {
+    const unknown = nexusConfiguration();
+    unknown.memory = memorySection({
+      enabled: true,
+      storeId: 'shared-collection',
+      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes', credential: 'missing' },
+      embedding: { cacheDir: './embeddings', allowDownloads: false },
+      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
+    });
+    expect(() => parseNexusConfiguration(unknown, configurationDirectory)).toThrow(
+      /memory\.qdrant\.credential: Unknown credential reference "missing"/,
+    );
+
+    const embedded = nexusConfiguration();
+    embedded.memory = memorySection({
+      enabled: true,
+      storeId: 'shared-collection',
+      qdrant: { url: 'http://user:secret@127.0.0.1:6333', collection: 'notes' },
+      embedding: { cacheDir: './embeddings', allowDownloads: false },
+      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
+    });
+    expect(() => parseNexusConfiguration(embedded, configurationDirectory)).toThrow(
+      /memory\.qdrant\.url/,
     );
   });
 

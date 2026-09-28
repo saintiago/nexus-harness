@@ -5,6 +5,7 @@ import {
   type WorkflowName,
 } from '../configuration/index.js';
 import type { ArtifactRef, Observer } from '../result.js';
+import type { MemoryProviders } from '../memory/index.js';
 import { readRecord } from '../task-engine/actions/records.js';
 import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
@@ -16,7 +17,12 @@ import {
   type Unsubscribe,
   type WorkflowResult,
 } from '../task-engine/index.js';
-import { executionPaths, toolEnvironment, workerProcessEnvironment } from './composition.js';
+import {
+  createConfiguredMemory,
+  executionPaths,
+  toolEnvironment,
+  workerProcessEnvironment,
+} from './composition.js';
 import { createActivityLog } from './activity-log.js';
 import {
   createExecutionLog,
@@ -104,6 +110,11 @@ export type ApplicationSettings = {
   readonly launchWorker: WorkerLaunch;
   /** Reports execution-log failures; the operator command supplies its standard error. */
   readonly diagnostics?: DiagnosticSink;
+  /**
+   * The Memory provider construction; tests substitute controlled providers so no Qdrant, model
+   * endpoint or encoder is contacted.
+   */
+  readonly memoryProviders?: Partial<MemoryProviders>;
   /**
    * Builds the execution's recovery runtime; the default wires the configured recovery profile over
    * the coding provider and the configured Notifications adapter. Tests substitute a controlled
@@ -247,6 +258,12 @@ export function createApplication(settings: ApplicationSettings): Application {
         directory: path.join(logDirectory, 'agents'),
         diagnostics,
       });
+      const memory = await createConfiguredMemory(
+        nexus,
+        settings.environment,
+        diagnostics,
+        settings.memoryProviders,
+      );
       /** Record and forward one activity packet, so live panes and the durable log both see it. */
       const recordActivity = (activity: AgentActivity): void => {
         activityLog.record(activity);
@@ -283,6 +300,12 @@ export function createApplication(settings: ApplicationSettings): Application {
           publish: receive,
           publishActivity: recordActivity,
           activityDirectory: path.join(logDirectory, 'agents'),
+          memory: {
+            memory,
+            evidenceDirectory: path.join(logDirectory, 'memory'),
+            project: project.taskSource.project,
+            workflow: request.workflow,
+          },
         });
         // One execute call manages one execution: its request and allowance are recorded before the
         // first worker starts, so worker restarts cannot reset what recovery has already consumed.
@@ -351,6 +374,8 @@ export function createApplication(settings: ApplicationSettings): Application {
         listeners.delete(log.record);
         await log.close();
         await activityLog.close();
+        // The parent's recovery memory settles its active operations before the execution ends.
+        await memory.close();
       }
     },
 

@@ -20,6 +20,15 @@ import {
   type ProjectConfiguration,
   type WorkflowName,
 } from '../configuration/index.js';
+import {
+  createMemory,
+  disabledMemory,
+  unavailableMemory,
+  type Memory,
+  type MemoryProviders,
+  type MemorySettings,
+} from '../memory/index.js';
+import { messageOf } from '../result.js';
 import { installationConfigSetting } from './installation.js';
 
 /**
@@ -196,6 +205,81 @@ export function executionPaths(
 /** The root under which task workspaces live for every configured project. */
 export function workspaceRoot(nexus: NexusConfiguration): string {
   return path.join(nexus.storage.root, 'workspaces');
+}
+
+/**
+ * The resolved Memory construction settings of one configuration, or null when the integration is
+ * disabled. Secrets resolve through the Credentials settings and stay out of artifacts and
+ * prompts.
+ */
+export function createMemorySettings(
+  nexus: NexusConfiguration,
+  environment: HostEnvironment = process.env,
+): MemorySettings | null {
+  const memory = nexus.memory;
+  if (memory === undefined || !memory.enabled) {
+    return null;
+  }
+  return {
+    storeId: memory.storeId,
+    storageRoot: nexus.storage.root,
+    qdrant: {
+      url: memory.qdrant.url,
+      collection: memory.qdrant.collection,
+      ...(memory.qdrant.credential === undefined
+        ? {}
+        : { apiKey: resolveCredential(nexus, memory.qdrant.credential, environment) }),
+    },
+    embedding: {
+      cacheDir: memory.embedding.cacheDir,
+      allowDownloads: memory.embedding.allowDownloads,
+    },
+    model: {
+      endpoint: memory.model.endpoint,
+      model: memory.model.model,
+      ...(memory.model.credential === undefined
+        ? {}
+        : { apiKey: resolveCredential(nexus, memory.model.credential, environment) }),
+    },
+    neighbors: memory.neighbors,
+    searchLimit: memory.searchLimit,
+    linkedLimit: memory.linkedLimit,
+    contextMaxChars: memory.contextMaxChars,
+    lockWaitMs: memory.lockWaitMs,
+    providerTimeoutMs: memory.providerTimeoutMs,
+    modelMaxOutputTokens: memory.model.maxOutputTokens,
+  };
+}
+
+/** Where one process reports diagnostics that do not affect execution. */
+type MemoryDiagnostics = { write(text: string): unknown };
+
+/**
+ * The Memory capability one process uses. A disabled integration constructs nothing; a provider
+ * that cannot be initialized is reported and degrades to an unavailable memory, so normal
+ * workflow execution continues without supplemental context or ingestion.
+ */
+export async function createConfiguredMemory(
+  nexus: NexusConfiguration,
+  environment: HostEnvironment,
+  diagnostics: MemoryDiagnostics,
+  providers?: Partial<MemoryProviders>,
+): Promise<Memory> {
+  const settings = createMemorySettings(nexus, environment);
+  if (settings === null) {
+    return disabledMemory();
+  }
+  try {
+    return await createMemory(providers === undefined ? settings : { ...settings, providers });
+  } catch (error) {
+    const reason = messageOf(error);
+    try {
+      diagnostics.write(`Nexus memory is unavailable: ${reason}\n`);
+    } catch {
+      // A failed diagnostic report leaves the degradation itself unchanged.
+    }
+    return unavailableMemory(reason);
+  }
 }
 
 /** The host environment without the named settings, ready to spawn a child with. */

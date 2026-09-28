@@ -12,7 +12,7 @@
  * artifacts, Git and command execution — is the real implementation.
  */
 
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,11 @@ import type { JiraAdapter, JiraComment, JiraIssue, JiraTransition } from '../src
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import { runOperatorCommand } from '../src/application/command.js';
-import { executionPaths, toolEnvironment } from '../src/application/composition.js';
+import {
+  createConfiguredMemory,
+  executionPaths,
+  toolEnvironment,
+} from '../src/application/composition.js';
 import {
   createApplication,
   type ApplicationSettings,
@@ -51,6 +55,7 @@ import type {
 } from '../src/application/recovery.js';
 import { loadWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
+import type { MemoryProviders } from '../src/memory/index.js';
 import { fault, ok } from '../src/result.js';
 import {
   createTaskEngine,
@@ -75,6 +80,7 @@ import { nexusConfiguration, projectConfiguration } from './support/configuratio
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
+import { controlledMemoryProviders, inMemoryNoteStore, seedNote } from './support/memory.js';
 
 /** The configured workflow is the real finite workflow module, loaded through Application. */
 const workflowPath = fileURLToPath(new URL('../workflows/finite-delivery.ts', import.meta.url));
@@ -223,6 +229,7 @@ function inProcessWorkerLaunch(input: {
   readonly jira: JiraAdapter;
   readonly github: GitHubAdapter;
   readonly codingRuntime: CodingRuntime;
+  readonly memoryProviders?: Partial<MemoryProviders>;
 }): WorkerLaunch {
   return async (request, onEvent, onActivity) => {
     const nexus = await loadNexusConfiguration(input.installationConfigPath);
@@ -230,6 +237,12 @@ function inProcessWorkerLaunch(input: {
     const workflow = await loadWorkflow(nexus.workflow[request.workflow]);
     const paths = executionPaths(nexus, project, request.workflow);
     await mkdir(paths.directory, { recursive: true });
+    const memory = await createConfiguredMemory(
+      nexus,
+      input.environment,
+      { write: () => undefined },
+      input.memoryProviders,
+    );
     const engine = createTaskEngine({
       workflow: workflow.machine,
       stateFile: paths.workflowStateFile,
@@ -245,6 +258,8 @@ function inProcessWorkerLaunch(input: {
         runCommand: run,
         commandEnvironment: toolEnvironment(project, nexus, input.environment),
         activityDirectory: path.join(request.logDirectory, 'agents'),
+        memory,
+        memoryEvidenceDirectory: path.join(request.logDirectory, 'memory'),
         wait: () => Promise.resolve(),
       }),
     });
@@ -295,7 +310,9 @@ type Journey = {
  * configuration, a controlled Jira source and GitHub service and the real operator command over
  * the real Application.
  */
-async function finiteJourney(): Promise<Journey> {
+async function finiteJourney(
+  options: { readonly memory?: Partial<MemoryProviders> } = {},
+): Promise<Journey> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-journey-'));
   temporaryDirectories.push(root);
 
@@ -316,6 +333,25 @@ async function finiteJourney(): Promise<Journey> {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
+  if (options.memory !== undefined) {
+    nexus.memory = {
+      enabled: true,
+      storeId: 'journey-collection',
+      qdrant: { url: 'http://127.0.0.1:6333', collection: 'journey-notes' },
+      embedding: { cacheDir: './embeddings', allowDownloads: false },
+      model: {
+        endpoint: 'http://127.0.0.1:9/chat/completions',
+        model: 'journey-model',
+        maxOutputTokens: 600,
+      },
+      neighbors: 5,
+      searchLimit: 5,
+      linkedLimit: 5,
+      contextMaxChars: 12000,
+      lockWaitMs: 500,
+      providerTimeoutMs: 1000,
+    };
+  }
   nexus.workflow['finite-delivery'] = workflowPath;
   nexus.storage.root = './state';
   nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
@@ -543,6 +579,7 @@ async function finiteJourney(): Promise<Journey> {
         jira: source.jira,
         github: delivery.github,
         codingRuntime: scriptedCodingRuntime(turns, prompts),
+        ...(options.memory === undefined ? {} : { memoryProviders: options.memory }),
       });
       const recovery: RecoveryRuntimeFactory = () => ({
         async invoke(request) {
@@ -569,7 +606,12 @@ async function finiteJourney(): Promise<Journey> {
           },
         },
         application: (settings: ApplicationSettings) => {
-          const application = createApplication({ ...settings, launchWorker, recovery });
+          const application = createApplication({
+            ...settings,
+            launchWorker,
+            recovery,
+            ...(options.memory === undefined ? {} : { memoryProviders: options.memory }),
+          });
           application.subscribe((event) => events.push(event));
           application.subscribeActivity((packet) => activity.push(packet));
           return application;
@@ -711,6 +753,11 @@ describe('finite execution journeys', () => {
     );
     expect(journey.jiraCalls).toContain('transition:10001:11');
     expect(journey.jiraCalls).toContain('transition:10001:41');
+    // Memory stays disabled for this configuration: no provider effect, receipt or evidence.
+    expect(journey.events.filter((event) => event.type === 'memory')).toEqual([]);
+    await expect(
+      stat(path.join(path.dirname(journey.installationConfigPath), 'state', 'memory')),
+    ).rejects.toThrow();
     expect(journey.presentation.join('')).toContain('NEX-1');
     // Every agent boundary names the ticket by its key with its Summary, in the operator's line.
     const boundaries = journey.events.filter((event) => event.type === 'agent-started');
@@ -983,7 +1030,17 @@ describe('finite execution journeys', () => {
   });
 
   it('recovers an interrupted worker and continues the retained execution', async () => {
-    const journey = await finiteJourney();
+    const memoryStore = inMemoryNoteStore();
+    seedNote(memoryStore, {
+      id: '88888888-8888-4888-8888-888888888888',
+      content: 'An earlier interruption was repaired by restarting the retained execution.',
+      context: 'An earlier recovery hand-off.',
+      keywords: ['recovery', 'interruption'],
+      tags: ['recovery'],
+    });
+    const journey = await finiteJourney({
+      memory: controlledMemoryProviders({ store: memoryStore }),
+    });
     let interruptedSnapshot: Record<string, unknown> | null = null;
     const report: RecoveryReport = {
       summary: 'The provider ended the first attempt; the retained execution can continue.',
@@ -1020,6 +1077,11 @@ describe('finite execution journeys', () => {
         expect(request.context).toContain('The coding provider process ended unexpectedly.');
         expect(request.context).toContain('Task NEX-1 retained the workspace at');
         expect(request.context).toContain(workflowPath);
+        // Recall ran before the recovery invocation and admitted the historical evidence block.
+        expect(request.context).toContain(
+          'Historical evidence from earlier Nexus hand-offs (agent memory).',
+        );
+        expect(request.context).toContain('An earlier interruption was repaired by restarting');
         interruptedSnapshot = JSON.parse(
           await readFile(path.join(journey.executionDirectory, 'workflow.json'), 'utf8'),
         ) as Record<string, unknown>;
@@ -1056,6 +1118,57 @@ describe('finite execution journeys', () => {
     expect(journey.notifications).toHaveLength(1);
     expect(journey.notifications[0]?.subject).toContain('resume');
     expect(journey.notifications[0]?.body).toContain(report.summary);
+    // The recovery report was recorded before it was published, and its retrieval evidence exists.
+    const recoveryReceipts = (
+      await readdir(
+        path.join(
+          path.dirname(journey.installationConfigPath),
+          'state',
+          'memory',
+          'journey-collection',
+          'receipts',
+        ),
+      )
+    ).map(async (file) => {
+      return JSON.parse(
+        await readFile(
+          path.join(
+            path.dirname(journey.installationConfigPath),
+            'state',
+            'memory',
+            'journey-collection',
+            'receipts',
+            file,
+          ),
+          'utf8',
+        ),
+      ) as {
+        readonly state: string;
+        readonly content: string;
+        readonly provenance: { readonly role?: string };
+      };
+    });
+    const receipts = await Promise.all(recoveryReceipts);
+    const recoveryReceipt = receipts.find((receipt) => receipt.provenance.role === 'recovery');
+    expect(recoveryReceipt?.state).toBe('stored');
+    expect(recoveryReceipt?.content).toContain(report.summary);
+    const logDirectories = await readdir(path.join(journey.executionDirectory, 'logs'));
+    const evidenceFiles = await readdir(
+      path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory'),
+    );
+    const evidence = await Promise.all(
+      evidenceFiles.map(async (file) => {
+        return JSON.parse(
+          await readFile(
+            path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory', file),
+            'utf8',
+          ),
+        ) as { readonly scope: { readonly role: string }; readonly block: string | null };
+      }),
+    );
+    expect(evidence.some((entry) => entry.scope.role === 'recovery' && entry.block !== null)).toBe(
+      true,
+    );
     expect(journey.status()).toBe('Done');
 
     // The interrupted run persisted the active invocation of Develop; the restarted worker
@@ -1108,5 +1221,157 @@ describe('finite execution journeys', () => {
         .filter((event) => event.type === 'agent-finished')
         .map((event) => (event.data as { readonly invocationId: string }).invocationId),
     ).toEqual(startedIds);
+  });
+
+  it('recalls bounded experience and ingests the accepted hand-off when memory is enabled', async () => {
+    const store = inMemoryNoteStore();
+    seedNote(store, {
+      id: '99999999-9999-4999-8999-999999999999',
+      content: 'Earlier repair: the transport redacted credentials before shortening diagnostics.',
+      context: 'An earlier development hand-off about credential redaction.',
+      keywords: ['redaction', 'transport'],
+      tags: ['development'],
+      metadata: { provenance: { project: 'NEX', role: 'developer' } },
+    });
+    const journey = await finiteJourney({ memory: controlledMemoryProviders({ store }) });
+
+    const exitCode = await journey.run([
+      developerTurn(async (request) => {
+        await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
+        await commitAll(request.directory, 'add the feature');
+        return {
+          status: 'completed',
+          summary: 'Added feature.txt and redacted the transport diagnostics.',
+          findingResponses: [],
+        };
+      }),
+      reviewerTurn(async () => ({
+        verdict: 'approved',
+        summary: 'The change fulfils the task and the configured check covers it.',
+        findings: [],
+        priorFindings: [],
+      })),
+    ]);
+
+    const result = journey.finished();
+    expect(exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.outcome).toBe('completed');
+
+    // Recall ran before the actual Developer and Reviewer invocations and supplied the note.
+    const developerPrompt =
+      journey.prompts.find((prompt) => prompt.includes('You are the Nexus development agent.')) ??
+      '';
+    expect(developerPrompt).toContain(
+      'Historical evidence from earlier Nexus hand-offs (agent memory).',
+    );
+    expect(developerPrompt).toContain('Earlier repair: the transport redacted credentials');
+    const reviewerPrompt =
+      journey.prompts.find((prompt) => prompt.includes('You are the Nexus reviewer.')) ?? '';
+    expect(reviewerPrompt).toContain(
+      'Historical evidence from earlier Nexus hand-offs (agent memory).',
+    );
+
+    // Each invocation saved its own retrieval evidence under the execution's log directory.
+    const logsDirectory = path.join(journey.executionDirectory, 'logs');
+    const logDirectories = await readdir(logsDirectory);
+    expect(logDirectories).toHaveLength(1);
+    const evidenceDirectory = path.join(logsDirectory, logDirectories[0]!, 'memory');
+    const evidenceFiles = (await readdir(evidenceDirectory)).sort();
+    expect(evidenceFiles.length).toBeGreaterThanOrEqual(2);
+    const blocks = await Promise.all(
+      evidenceFiles.map(async (file) => {
+        return JSON.parse(await readFile(path.join(evidenceDirectory, file), 'utf8')) as {
+          readonly invocationId: string;
+          readonly scope: { readonly role: string };
+          readonly query: string;
+          readonly included: readonly string[];
+          readonly block: string | null;
+        };
+      }),
+    );
+    const developerEvidence = blocks.find((entry) => entry.scope.role === 'developer');
+    expect(developerEvidence?.invocationId).toBe(
+      path.basename(evidenceFiles[blocks.indexOf(developerEvidence!)]!, '.json'),
+    );
+    expect(developerEvidence?.query).toContain('role: developer');
+    expect(developerEvidence?.query).toContain('task summary: Ship the finite journey');
+    expect(developerEvidence?.included).toEqual(['99999999-9999-4999-8999-999999999999']);
+    expect(developerEvidence?.block).toContain('Earlier repair');
+    // The block the developer actually saw is exactly the block its evidence recorded.
+    expect(developerPrompt).toContain(developerEvidence?.block ?? '');
+    expect(blocks.some((entry) => entry.scope.role === 'reviewer')).toBe(true);
+
+    // The accepted development hand-off and the review verdict became notes with durable receipts.
+    const receiptsDirectory = path.join(
+      path.dirname(journey.installationConfigPath),
+      'state',
+      'memory',
+      'journey-collection',
+      'receipts',
+    );
+    const receiptFiles = await readdir(receiptsDirectory);
+    expect(receiptFiles.length).toBeGreaterThanOrEqual(2);
+    const receipts = await Promise.all(
+      receiptFiles.map(async (file) => {
+        return JSON.parse(await readFile(path.join(receiptsDirectory, file), 'utf8')) as {
+          readonly state: string;
+          readonly content: string;
+          readonly noteId?: string;
+          readonly provenance: { readonly role?: string };
+        };
+      }),
+    );
+    expect(receipts.every((receipt) => receipt.state === 'stored')).toBe(true);
+    const developmentReceipt = receipts.find((receipt) => receipt.provenance.role === 'developer');
+    expect(developmentReceipt?.content).toContain(
+      'Development summary: Added feature.txt and redacted the transport diagnostics.',
+    );
+    expect(developmentReceipt?.noteId).toBeDefined();
+    const reviewReceipt = receipts.find((receipt) => receipt.provenance.role === 'reviewer');
+    expect(reviewReceipt?.content).toContain('Review verdict: approved.');
+    expect(store.records.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('keeps the business outcome when memory retrieval and ingestion fail', async () => {
+    const failing: Partial<MemoryProviders> = {
+      ...controlledMemoryProviders({ store: inMemoryNoteStore() }),
+      async createEngine(settings) {
+        await controlledMemoryProviders({}).createEngine(settings);
+        return {
+          add: () => Promise.reject(new Error('the collection is unavailable')),
+          search: () => Promise.reject(new Error('the collection is unavailable')),
+        };
+      },
+    };
+    const journey = await finiteJourney({ memory: failing });
+
+    const exitCode = await journey.run([
+      developerTurn(async (request) => {
+        await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
+        await commitAll(request.directory, 'add the feature');
+        return {
+          status: 'completed',
+          summary: 'Added feature.txt without memory.',
+          findingResponses: [],
+        };
+      }),
+      reviewerTurn(async () => ({
+        verdict: 'approved',
+        summary: 'The change fulfils the task and the configured check covers it.',
+        findings: [],
+        priorFindings: [],
+      })),
+    ]);
+
+    const result = journey.finished();
+    expect(exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.outcome).toBe('completed');
+    expect(journey.status()).toBe('Done');
+    // No block was supplied and the failure was reported as an ordinary memory event.
+    expect(journey.prompts.every((prompt) => !prompt.includes('agent memory'))).toBe(true);
+    expect(
+      journey.events.filter((event) => event.source === 'develop' && event.type === 'memory'),
+    ).not.toEqual([]);
+    expect(journey.diagnostics.join('')).not.toContain('Nexus memory is unavailable');
   });
 });
