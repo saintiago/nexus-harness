@@ -629,6 +629,61 @@ describe('GitHub adapter', () => {
     expect(ghFields(gh[1] ?? [])['query']).toContain('contexts(first: 100, after: "cursor-1")');
   });
 
+  it.each([
+    { revisions: ['delivered-head', 'other-head'], finalRollupAbsent: false },
+    { revisions: ['other-head', 'delivered-head'], finalRollupAbsent: false },
+    { revisions: ['delivered-head', 'delivered-head', 'other-head'], finalRollupAbsent: false },
+    { revisions: ['other-head', 'delivered-head'], finalRollupAbsent: true },
+  ])('rejects required-check pages with inconsistent revisions: %j', async (scenario) => {
+    const { adapter } = harness(
+      scenario.revisions.map((revision, index) => {
+        const last = index === scenario.revisions.length - 1;
+        return ghJson({
+          data: {
+            repository: {
+              pullRequest: {
+                headRefOid: revision,
+                statusCheckRollup:
+                  last && scenario.finalRollupAbsent
+                    ? null
+                    : {
+                        contexts: {
+                          nodes: [
+                            {
+                              __typename: 'CheckRun',
+                              name: 'validate',
+                              status: 'COMPLETED',
+                              conclusion: 'FAILURE',
+                              detailsUrl: `https://ci.example.test/${revision}`,
+                              isRequired: true,
+                            },
+                          ],
+                          pageInfo: {
+                            hasNextPage: !last,
+                            endCursor: last ? null : `cursor-${String(index)}`,
+                          },
+                        },
+                      },
+              },
+            },
+          },
+        });
+      }),
+    );
+
+    const result = await adapter.readRequiredChecks(repository, 9);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: {
+        message:
+          `GitHub pull request 9 changed revision from ${scenario.revisions[0]} to ` +
+          `${scenario.revisions.at(-1)} while reading required checks`,
+      },
+    });
+    expect(result).not.toHaveProperty('value');
+  });
+
   it('reports a failed later page of required checks instead of a partial read', async () => {
     const { adapter } = harness([
       ghJson({

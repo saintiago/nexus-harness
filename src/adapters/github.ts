@@ -1102,18 +1102,26 @@ export function createGitHubAdapter(
         });
       const checks: RequiredCheckObservation[] = [];
       let after: string | null = null;
+      let revision: string | null = null;
       for (;;) {
         const page = await readPage(after);
         if (!page.ok) {
           return page;
         }
         const pull = page.value.data.repository.pullRequest;
+        if (revision !== null && pull.headRefOid !== revision) {
+          return fault(
+            `GitHub pull request ${pullRequestNumber} changed revision from ${revision} to ` +
+              `${pull.headRefOid} while reading required checks`,
+          );
+        }
+        revision = pull.headRefOid;
         const contexts = pull.statusCheckRollup?.contexts ?? null;
         if (contexts !== null) {
           checks.push(...contexts.nodes.flatMap((node) => requiredCheckOf(node) ?? []));
         }
         if (contexts === null || !contexts.pageInfo.hasNextPage) {
-          return ok({ revision: pull.headRefOid, checks });
+          return ok({ revision, checks });
         }
         const cursor = contexts.pageInfo.endCursor;
         if (cursor === null) {

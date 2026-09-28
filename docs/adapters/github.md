@@ -38,6 +38,7 @@ Required-check reads report the revision they observed together with the pre-mer
 repository's merge rules require for the pull request's base branch, each with its name, state,
 conclusion and evidence link; a legacy commit status is reported in the check vocabulary. The
 observed checks belong to that revision, and the read returns every page of the rollup or an error.
+If the observed revision changes between pages, return an error without any accumulated checks.
 Queries return observations; the caller decides whether the expected gate or publication is satisfied.
 
 ## Behavior
