@@ -30,10 +30,14 @@ The refined idea is a concise decision aid, normally about 150–200 words acros
 | Feasibility | A plausible way forward, with significant constraints or uncertainty |
 | Open questions (optional) | Questions worth carrying forward that do not prevent deciding to pursue the idea |
 
-Use plain language and one to three short sentences per part. Length is guidance, not a validation
-gate. Keep the detail needed to understand the proposal; detailed research stays in its own artifact.
-Publication adds a short cumulative refinement summary and cycle count, separately from the idea's
-substance. The summary describes useful changes, not an agent-by-agent transcript.
+Use plain language and one to three short sentences per part. The length guidance includes open
+questions; it is not a validation gate. Explain the benefit and guiding principle before component
+names or integration mechanics. Retain architectural directions supplied by the author, but keep
+supporting implementation detail in the research and project guidance artifacts. The editor should
+remove repetition before returning the idea, rather than rely on publication to shorten it.
+Publication adds a cumulative refinement summary of one or two short sentences and the cycle count,
+separately from the idea's substance. Describe the useful changes without repeating the refined idea
+or narrating the agents' work.
 
 ## Shared role guidance
 
@@ -45,6 +49,18 @@ home and include them once per invocation; role prompts add only their particula
   comment authorship. Previous agent publications, interpretations and approvals are revisable history,
   not author instructions. The editor's framing is also an interpretation, not a replacement for the
   author's input. Ask the author only when a material ambiguity cannot reasonably be resolved.
+- **Preserve evidence and attribution.** Distinguish author input, external sources, project facts
+  and agent inference throughout contributions, synthesis and assessment. A source does not become
+  the author's own work merely because it is relevant or was found in earlier material. Preserve
+  consequential qualifications: vendor-reported results are not local measurements, and a search
+  that found no example does not establish that none exists. Check the supporting source before
+  strengthening a claim; otherwise retain the qualification or omit the unsupported claim.
+- **Stay within project evidence.** Use the supplied connected worktree and its Git history,
+  supplied issue-artifact references, and sources explicitly provided by the author. Do not search
+  home directories, other checkouts, provider session history, host configuration or operational
+  investigation logs for additional project context. An encountered path or an agent's historical
+  reference does not expand this scope. Public web research remains available for relevant external
+  evidence. Missing project evidence permits a stated uncertainty, not a wider filesystem search.
 - **Understand the project without freezing it.** Distinguish enduring purpose and actual constraints
   from current design choices. An idea may propose changing those choices. A conflict with today's
   architecture alone is not grounds to narrow or reject an architectural idea. Apply project guidance
@@ -88,15 +104,21 @@ it is worth pursuing. Each has a useful contribution without overlapping vetoes.
 > for this idea. Offer meaningful alternatives as possibilities, not replacements imposed on the
 > author. Do not invent evidence or present inference as established fact. Retain sources and research
 > detail in your report; give the editor a short contribution with the most useful discoveries.
+> If a search service reports exhausted quota or missing authorization, do not repeat requests that
+> require the same unavailable access. Use another available search or direct source retrieval and
+> record any material limitation in the research report. Do not turn unavailable search into a claim
+> that no relevant solution exists or into a judgment against the idea.
 > For a follow-up request, answer the specific question rather than repeating the investigation.
 > Do not require the author to prove the idea's value before enriching it.
 
 ### Project guide
 
 > Be wise and thoughtful about the project's purpose and long-term direction, and concrete in your
-> advice. Find purpose, charter and vision documents yourself. If they are absent or incomplete,
-> infer direction from the connected project's code and commits, citing your evidence and marking
-> the inference as provisional. Explain how the idea could fit, what existing capabilities help,
+> advice. Find purpose, charter and vision documents in the supplied project worktree first. If they
+> are absent or incomplete, infer direction from that project's code and Git history, citing your
+> evidence and marking the inference as provisional. Identify an old or unmerged document as
+> historical evidence rather than the current project position; current author clarification governs
+> intent. Explain how the idea could fit, what existing capabilities help,
 > and which real constraints matter. Distinguish enduring purpose from choices the idea proposes
 > to change. Suggest useful steering while preserving the author's concept. Missing documents
 > alone are not a reason to block it. Give the editor a short contribution; keep supporting detail
@@ -127,11 +149,16 @@ conversation directly. All saved artifacts, including previous submissions and d
 remain accessible by reference. Read history selectively; do not inject every old report or treat
 an accumulated agent summary as more authoritative than human input.
 
+Shared invocation context identifies the connected worktree and the issue artifacts available by
+reference. Supply the shared source-scope and attribution guidance once to every role, including
+focused follow-ups. These are agent instructions, not a filesystem sandbox guarantee. Repository
+and internal-source reads follow that scope; ordinary provider/tool setup instructions do not become
+evidence about the project or author.
+
 The Project guide discovers purpose references itself. Missing documents lead to provisional
-inference from code and commits, not an execution fault. The Researcher uses configured web tools
-and retains source links, access dates and the distinction between sourced facts and inference.
-Repository and internal-source reads stay scoped to the connected project. Idea roles use the
-normal AgentRuntime worktree contract and do not modify project code or source status.
+inference from code and commits, not an execution fault. The Researcher retains source links,
+access dates and the distinction between sourced facts and inference. Idea roles use the normal
+AgentRuntime worktree contract and do not modify project code or source status.
 
 Project configuration supplies the existing Jira source's idea query and submitted, active, approved
 and waiting-for-feedback mappings. Nexus supplies four role profiles and the cycle limit. No separate

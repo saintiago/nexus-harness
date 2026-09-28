@@ -116,14 +116,24 @@ Verify the idea-stage behavior through representative scenarios, not only prompt
 - A plausible exploratory idea can advance with uncertainty, without a mandatory benchmark plan.
 - A real feasibility or value concern receives a response and either resolves or produces an
   understandable return reason.
+- Missing purpose documents lead to scoped, provisional inference; unrelated home-directory,
+  provider-session and investigation material is not used to reconstruct the author's intent.
+- Synthesis preserves source ownership and uncertainty: a community source is not attributed to
+  the author without evidence, vendor claims remain attributed, and an unsuccessful search is not
+  converted into proof of absence.
+- A search-service quota or authorization failure leads to another available research method and
+  an honest limitation, rather than repeated requests to the unavailable service.
 
 Verify all four roles receive the shared idea definition and guidance once, captured author input,
 relevant conversation, readable history references and root `AGENTS.md` when present. Preserve
 comment authorship and distinguish human input from previous agent output. Purpose documents are
 discovered without configured references; absent documents permit cited provisional inference
 from code and commits. Output follows the concise deliverable defined in the specification; word
-count is not a rejection gate. Role quality needs inspection of actual exchanges as well as routing
-tests; controlled outputs alone cannot prove model judgment.
+count is not a rejection gate. Check that the shared source-scope and attribution instructions reach
+initial and focused role invocations once alongside the concrete worktree and artifact references.
+Role quality needs inspection of actual exchanges and tool activity as well as routing tests:
+assess source scope, attribution and the concise idea and summary in live evidence. Controlled outputs
+and prompt assembly checks cannot prove model compliance or filesystem isolation.
 
 At action boundaries, verify producer-owned artifacts, distinct paths for concurrent contributions,
 assessment binding to the current revision and response, and a single Jira issue/comment capture
