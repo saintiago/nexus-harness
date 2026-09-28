@@ -6,6 +6,7 @@
  */
 
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,6 +33,8 @@ import type { MemoryProviders } from '../src/memory/index.js';
 import { ok } from '../src/result.js';
 import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { deterministicEmbedder } from './support/memory.js';
+import { recallForInvocation, rememberObserved } from '../src/task-engine/actions/memory.js';
 
 const installationDirectory = '/srv/nexus/installation';
 const projectDirectory = '/srv/target-project';
@@ -220,6 +223,89 @@ describe('credential isolation', () => {
 });
 
 describe('memory construction', () => {
+  it('redacts echoed credentials from real Qdrant initialization and subsequent diagnostics', async () => {
+    const directory = await temporaryDirectory();
+    const configured = memoryNexus(directory);
+    const diagnostics: string[] = [];
+    const events: EngineEvent[] = [];
+    const credentials: unknown[] = [];
+    const server = createServer((request, response) => {
+      credentials.push(request.headers['api-key']);
+      response.writeHead(
+        401,
+        `Rejected ${String(request.headers['api-key'])} ${memoryEnvironment.MEMORY_MODEL_KEY}`,
+      );
+      response.end();
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string' || configured.memory?.enabled !== true) {
+        throw new Error('Missing test server or memory configuration');
+      }
+      const memory = await createConfiguredMemory(
+        {
+          ...configured,
+          memory: {
+            ...configured.memory,
+            qdrant: {
+              ...configured.memory.qdrant,
+              url: `http://127.0.0.1:${String(address.port)}`,
+            },
+          },
+        },
+        memoryEnvironment,
+        { write: (text) => diagnostics.push(text) },
+        {
+          openEmbedder: () => Promise.resolve(deterministicEmbedder()),
+        },
+      );
+      try {
+        const recall = await recallForInvocation({
+          memory,
+          evidenceDirectory: directory,
+          publish: (event) => events.push(event),
+          source: 'develop',
+          scope: { project: 'NEX', workflow: 'finite-delivery', role: 'developer' },
+          query: 'retry guard',
+        });
+        expect(recall.block).toBeNull();
+        await rememberObserved(
+          { memory, publish: (event) => events.push(event), source: 'develop' },
+          {
+            sourceKey: 'accepted-report',
+            content: 'The retry guard is committed.',
+            provenance: { project: 'NEX' },
+          },
+        );
+        expect(credentials).toContain(memoryEnvironment.MEMORY_STORE_KEY);
+        expect(diagnostics.join('')).toContain('Rejected [redacted] [redacted]');
+        expect(events).toMatchObject([
+          { data: { outcome: 'recall-unavailable' } },
+          { data: { outcome: 'failed' } },
+        ]);
+        for (const text of [
+          diagnostics.join(''),
+          ...events.map((event) => JSON.stringify(event)),
+        ]) {
+          expect(text).toContain('[redacted]');
+          expect(text).not.toContain(memoryEnvironment.MEMORY_STORE_KEY);
+          expect(text).not.toContain(memoryEnvironment.MEMORY_MODEL_KEY);
+        }
+      } finally {
+        await memory.close();
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
   it('degrades without aborting when a configured memory credential is missing, keeping snapshots', async () => {
     const directory = await temporaryDirectory();
     const configured = memoryNexus(directory);

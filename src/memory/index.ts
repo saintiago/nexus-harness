@@ -262,6 +262,32 @@ function resolveProviders(overrides: Partial<MemoryProviders> | undefined): Memo
  * workflow without memory. The declared store identity binding is verified before any write.
  */
 export async function createMemory(settings: MemorySettings): Promise<Memory> {
+  try {
+    return await createAvailableMemory(settings);
+  } catch (error) {
+    // Initialization errors cross into Application diagnostics and the unavailable fallback.
+    // Never propagate the raw provider error (including its cause) across that boundary.
+    // eslint-disable-next-line preserve-caught-error -- The cause may contain provider credentials.
+    throw new Error(safeMemoryReason(error, settings));
+  }
+}
+
+/** Remove both provider credentials before normalizing or bounding a failure diagnostic. */
+function safeMemoryReason(error: unknown, settings: MemorySettings): string {
+  let text = messageOf(error);
+  for (const secret of [settings.qdrant.apiKey, settings.model.apiKey]) {
+    if (secret !== undefined && secret !== '') {
+      text = text
+        .replaceAll(JSON.stringify(secret).slice(1, -1), '[redacted]')
+        .replaceAll(secret, '[redacted]');
+    }
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+}
+
+/** Initialize the providers and expose operations with safe failure diagnostics. */
+async function createAvailableMemory(settings: MemorySettings): Promise<Memory> {
   const providers = resolveProviders(settings.providers);
   const store = createReceiptStore({ root: settings.storageRoot, storeId: settings.storeId });
   await store.ensureBinding({
@@ -291,19 +317,8 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
   });
 
   const now = settings.now ?? (() => new Date());
-  const secrets = [settings.qdrant.apiKey, settings.model.apiKey].filter(
-    (secret): secret is string => secret !== undefined,
-  );
   const active = new Set<Promise<unknown>>();
-
-  /** One failure's safe diagnostic: no configured credential and no unbounded text. */
-  const safeReason = (error: unknown): string => {
-    let text = messageOf(error).replace(/\s+/g, ' ').trim();
-    for (const secret of secrets) {
-      text = text.replaceAll(secret, '[redacted]');
-    }
-    return text.length > 500 ? `${text.slice(0, 500)}…` : text;
-  };
+  const safeReason = (error: unknown): string => safeMemoryReason(error, settings);
 
   /** Run one operation while `close` waits for it. */
   async function track<Value>(operation: () => Promise<Value>): Promise<Value> {
@@ -516,7 +531,7 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
           ...current,
           state: 'uncertain',
           stage: result.stage,
-          reason: result.reason,
+          reason: safeReason(result.reason),
           ...(result.noteId === null ? {} : { noteId: result.noteId }),
           ...(result.affectedNoteIds.length === 0
             ? {}
@@ -526,7 +541,7 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
         return {
           kind: 'uncertain',
           receipt: receiptFile,
-          reason: result.reason,
+          reason: safeReason(result.reason),
           noteId: result.noteId,
           affectedNoteIds: result.affectedNoteIds,
         };
@@ -537,10 +552,10 @@ export async function createMemory(settings: MemorySettings): Promise<Memory> {
         ...current,
         state: 'pending',
         stage: result.stage,
-        reason: result.reason,
+        reason: safeReason(result.reason),
         updatedAt: now().toISOString(),
       });
-      return { kind: 'failed', receipt: receiptFile, reason: result.reason };
+      return { kind: 'failed', receipt: receiptFile, reason: safeReason(result.reason) };
     } catch (error) {
       return { kind: 'failed', receipt: receiptFile, reason: safeReason(error) };
     } finally {
