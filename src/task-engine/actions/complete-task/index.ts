@@ -122,6 +122,15 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
     const waitLimitMs = settings.completion.waitLimitSeconds * 1000;
     const pollIntervalMs = settings.completion.pollIntervalSeconds * 1000;
 
+    /** The failure reason for a pull request observed at a revision other than the delivered head. */
+    function changedHeadReason(observedRevision: string): string {
+      return (
+        `Pull request #${String(delivery.pullRequestNumber)} is at revision ` +
+        `${observedRevision}, not the delivered ${delivery.headRevision}; the ` +
+        'approval is not transferred.'
+      );
+    }
+
     /** Read the publication and report its merge state for the delivered head. */
     async function observeMerge(): Promise<MergeObservation> {
       const pull = await settings.github.readPullRequest(
@@ -132,13 +141,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
         throw new Error(pull.fault.message);
       }
       if (pull.value.headRevision !== delivery.headRevision) {
-        return {
-          kind: 'failed',
-          reason:
-            `Pull request #${delivery.pullRequestNumber} is at revision ` +
-            `${pull.value.headRevision}, not the delivered ${delivery.headRevision}; the ` +
-            'approval is not transferred.',
-        };
+        return { kind: 'failed', reason: changedHeadReason(pull.value.headRevision) };
       }
       if (pull.value.merged) {
         if (pull.value.mergeRevision === null) {
@@ -159,8 +162,10 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
 
     /**
      * The failure reason for delivered-revision required pre-merge checks that concluded
-     * unsuccessfully, or null while they are all pending, satisfied or not reported. Approved
-     * review does not bypass them; provider access failures are execution errors.
+     * unsuccessfully, or null while they are all pending, satisfied or not reported. The observed
+     * checks belong to the revision the provider reported with them: a changed head is the
+     * changed-head failure, not evidence against the delivered revision. Approved review does not
+     * bypass the checks; provider access failures are execution errors.
      */
     async function requiredCheckFailure(): Promise<string | null> {
       const required = await settings.github.readRequiredChecks(
@@ -170,8 +175,11 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       if (!required.ok) {
         throw new Error(required.fault.message);
       }
+      if (required.value.revision !== delivery.headRevision) {
+        return changedHeadReason(required.value.revision);
+      }
       const failures: string[] = [];
-      for (const check of required.value) {
+      for (const check of required.value.checks) {
         if (check.status !== 'completed' || check.conclusion === null) {
           continue;
         }

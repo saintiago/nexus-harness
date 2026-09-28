@@ -515,7 +515,7 @@ describe('CompleteTask', () => {
     let runs = 0;
     const { github } = scriptedGitHub({
       readChecks: () => ok([reviewCheckObservation]),
-      readRequiredChecks: () => ok([]),
+      readRequiredChecks: () => ok({ revision: headRevision, checks: [] }),
       readPullRequest: () => {
         reads += 1;
         return reads === 1
@@ -549,7 +549,7 @@ describe('CompleteTask', () => {
     const { wait: expiredWait, calls: expiredWaitCalls } = scriptedWait();
     const expiredHub = scriptedGitHub({
       readChecks: () => ok([reviewCheckObservation]),
-      readRequiredChecks: () => ok([]),
+      readRequiredChecks: () => ok({ revision: headRevision, checks: [] }),
       readPullRequest: () => ok(pullRequest()),
     });
     await expect(
@@ -575,15 +575,18 @@ describe('CompleteTask', () => {
       readChecks: () => ok([reviewCheckObservation]),
       readPullRequest: () => ok(pullRequest()),
       readRequiredChecks: () =>
-        ok([
-          {
-            name: 'validate',
-            status: 'completed',
-            conclusion: 'failure',
-            evidenceUrl: `${pullRequestUrl}/checks/1`,
-          },
-          { name: 'build', status: 'in_progress', conclusion: null, evidenceUrl: null },
-        ]),
+        ok({
+          revision: headRevision,
+          checks: [
+            {
+              name: 'validate',
+              status: 'completed',
+              conclusion: 'failure',
+              evidenceUrl: `${pullRequestUrl}/checks/1`,
+            },
+            { name: 'build', status: 'in_progress', conclusion: null, evidenceUrl: null },
+          ],
+        }),
     });
     const { jira, calls: jiraCalls } = scriptedJira({});
     const { wait, calls: waitCalls } = scriptedWait();
@@ -625,11 +628,14 @@ describe('CompleteTask', () => {
       },
       readRequiredChecks: () => {
         requiredReads += 1;
-        return ok([
-          requiredReads === 1
-            ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
-            : { name: 'validate', status: 'completed', conclusion: 'skipped', evidenceUrl: null },
-        ]);
+        return ok({
+          revision: headRevision,
+          checks: [
+            requiredReads === 1
+              ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
+              : { name: 'validate', status: 'completed', conclusion: 'skipped', evidenceUrl: null },
+          ],
+        });
       },
       readWorkflowRuns: () => ok([workflowRun()]),
     });
@@ -662,16 +668,19 @@ describe('CompleteTask', () => {
       readPullRequest: () => ok(pullRequest()),
       readRequiredChecks: () => {
         laterReads += 1;
-        return ok([
-          laterReads === 1
-            ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
-            : {
-                name: 'validate',
-                status: 'completed',
-                conclusion: 'failure',
-                evidenceUrl: `${pullRequestUrl}/checks/2`,
-              },
-        ]);
+        return ok({
+          revision: headRevision,
+          checks: [
+            laterReads === 1
+              ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
+              : {
+                  name: 'validate',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  evidenceUrl: `${pullRequestUrl}/checks/2`,
+                },
+          ],
+        });
       },
     });
     const { wait: laterWait, calls: laterWaitCalls } = scriptedWait();
@@ -695,6 +704,51 @@ describe('CompleteTask', () => {
         ),
       },
     });
+  });
+
+  it('reports a head change observed by the required-check read as a changed head', async () => {
+    const changed = await workspace({ name: 'required-check-changed-head' });
+    const { github } = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      // The merge observation still sees the delivered head; the required-check read then reports
+      // the pull request at another revision carrying a failed required check.
+      readPullRequest: () => ok(pullRequest()),
+      readRequiredChecks: () =>
+        ok({
+          revision: otherRevision,
+          checks: [
+            {
+              name: 'validate',
+              status: 'completed',
+              conclusion: 'failure',
+              evidenceUrl: `${pullRequestUrl}/checks/3`,
+            },
+          ],
+        }),
+    });
+    const { wait, calls: waitCalls } = scriptedWait();
+
+    await expect(
+      completeTaskAction({
+        selectionFile: changed.selectionFile,
+        github,
+        jira: scriptedJira({}).jira,
+        wait,
+      })(),
+    ).resolves.toBe('failed');
+
+    // The failure names the observed revision as a changed head, not the delivered revision as a
+    // failed check, and stops waiting immediately.
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: {
+        reason:
+          `Pull request #7 is at revision ${otherRevision}, not the delivered ${headRevision}; ` +
+          'the approval is not transferred.',
+      },
+    });
+    expect(waitCalls).toEqual([]);
   });
 
   it('does not let a newer successful run supersede a failed matching run', async () => {

@@ -466,7 +466,8 @@ async function finiteJourney(): Promise<Journey> {
     readChecks: (_repository, revision) =>
       ok(checks.filter((check) => check.revision === revision)),
     // This controlled provider enforces no pre-merge requirement beyond the Nexus Lens review.
-    readRequiredChecks: () => ok([]),
+    readRequiredChecks: async () =>
+      ok({ revision: (await gitCommand(['rev-parse', 'HEAD'], worktree)).trim(), checks: [] }),
     publishReviewCheck: (_repository, publication) => {
       const id = 12 + checks.length;
       checks.push({

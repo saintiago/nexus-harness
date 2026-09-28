@@ -176,6 +176,13 @@ export type RequiredCheckObservation = {
   readonly evidenceUrl: string | null;
 };
 
+/** The required pre-merge checks the provider reports for one observed pull-request revision. */
+export type RequiredChecksObservation = {
+  /** The pull-request head the provider reported together with the observed checks. */
+  readonly revision: string;
+  readonly checks: readonly RequiredCheckObservation[];
+};
+
 /** One review-check result to publish or update as the Nexus Lens App. */
 export type ReviewCheckPublicationRequest = {
   readonly revision: string;
@@ -243,7 +250,7 @@ export type GitHubAdapter = {
   readRequiredChecks(
     repository: GitHubRepository,
     pullRequestNumber: number,
-  ): Promise<Result<readonly RequiredCheckObservation[]>>;
+  ): Promise<Result<RequiredChecksObservation>>;
   publishReviewCheck(
     repository: GitHubRepository,
     publication: ReviewCheckPublicationRequest,
@@ -354,9 +361,16 @@ const requiredChecksResponseSchema = z.looseObject({
   data: z.looseObject({
     repository: z.looseObject({
       pullRequest: z.looseObject({
+        headRefOid: z.string(),
         statusCheckRollup: z
           .looseObject({
-            contexts: z.looseObject({ nodes: z.array(requiredCheckNodeSchema) }),
+            contexts: z.looseObject({
+              nodes: z.array(requiredCheckNodeSchema),
+              pageInfo: z.looseObject({
+                hasNextPage: z.boolean(),
+                endCursor: z.string().nullable(),
+              }),
+            }),
           })
           .nullable(),
       }),
@@ -432,15 +446,23 @@ const enableAutoMergeMutation = `mutation EnableAutoMerge($pullRequestId: ID!, $
 
 /**
  * The provider evaluates a required check against a pull request's base-branch merge rules, so the
- * pull request number is part of the document rather than a variable.
+ * pull request number is part of the document rather than a variable. The rollup's contexts are a
+ * connection, so every page after the first continues from the previous page's cursor.
  */
-function requiredChecksQuery(owner: string, name: string, pullRequestNumber: number): string {
+function requiredChecksQuery(
+  owner: string,
+  name: string,
+  pullRequestNumber: number,
+  after: string | null,
+): string {
   const number = String(pullRequestNumber);
+  const cursor = after === null ? '' : `, after: ${JSON.stringify(after)}`;
   return `query RequiredChecks {
   repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
     pullRequest(number: ${number}) {
+      headRefOid
       statusCheckRollup {
-        contexts(first: ${String(pageSize)}) {
+        contexts(first: ${String(pageSize)}${cursor}) {
           nodes {
             __typename
             ... on CheckRun {
@@ -457,6 +479,10 @@ function requiredChecksQuery(owner: string, name: string, pullRequestNumber: num
               isRequired(pullRequestNumber: ${number})
             }
           }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
         }
       }
     }
@@ -466,6 +492,9 @@ function requiredChecksQuery(owner: string, name: string, pullRequestNumber: num
 
 /** One required context of a pull request's status-check rollup, as the provider reported it. */
 type RequiredCheckNode = z.infer<typeof requiredCheckNodeSchema>;
+
+/** One page of a pull request's required-check rollup, as the provider reported it. */
+type RequiredChecksPage = z.infer<typeof requiredChecksResponseSchema>;
 
 /**
  * Report one rollup context in the check vocabulary, or null when the repository's merge rules do
@@ -1051,24 +1080,50 @@ export function createGitHubAdapter(
     },
 
     /**
-     * Read the pre-merge checks the repository's merge rules require for the pull request's base
-     * branch, with the evidence link of each reported check. Requirement decisions stay with the
-     * provider; the caller decides whether the observed state satisfies its gate.
+     * Read every page of the pre-merge checks the repository's merge rules require for the pull
+     * request's base branch, together with the revision they were observed at and the evidence link
+     * of each reported check. Requirement decisions stay with the provider; the caller decides
+     * whether the observed revision and state satisfy its gate.
      */
     async readRequiredChecks(repository, pullRequestNumber) {
       const target = repositoryApiPath(repository);
       if (!target.ok) {
         return target;
       }
-      const required = await cliValue('POST', 'graphql', requiredChecksResponseSchema, {
-        query: requiredChecksQuery(target.value.owner, target.value.name, pullRequestNumber),
-      });
-      if (!required.ok) {
-        return required;
+      /** One page of the rollup as the provider returns it, continuing from the supplied cursor. */
+      const readPage = (cursor: string | null): Promise<Result<RequiredChecksPage>> =>
+        cliValue('POST', 'graphql', requiredChecksResponseSchema, {
+          query: requiredChecksQuery(
+            target.value.owner,
+            target.value.name,
+            pullRequestNumber,
+            cursor,
+          ),
+        });
+      const checks: RequiredCheckObservation[] = [];
+      let after: string | null = null;
+      for (;;) {
+        const page = await readPage(after);
+        if (!page.ok) {
+          return page;
+        }
+        const pull = page.value.data.repository.pullRequest;
+        const contexts = pull.statusCheckRollup?.contexts ?? null;
+        if (contexts !== null) {
+          checks.push(...contexts.nodes.flatMap((node) => requiredCheckOf(node) ?? []));
+        }
+        if (contexts === null || !contexts.pageInfo.hasNextPage) {
+          return ok({ revision: pull.headRefOid, checks });
+        }
+        const cursor = contexts.pageInfo.endCursor;
+        if (cursor === null) {
+          return fault(
+            `GitHub reported another page of required checks for pull request ` +
+              `${pullRequestNumber} without a cursor`,
+          );
+        }
+        after = cursor;
       }
-      const rollup = required.value.data.repository.pullRequest.statusCheckRollup;
-      const nodes = rollup === null ? [] : rollup.contexts.nodes;
-      return ok(nodes.flatMap((node) => requiredCheckOf(node) ?? []));
     },
 
     async publishReviewCheck(repository, publication) {

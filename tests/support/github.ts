@@ -7,7 +7,7 @@ import type {
   PullRequestIdentity,
   PullRequestPublication,
   PullRequestUpdates,
-  RequiredCheckObservation,
+  RequiredChecksObservation,
   ReviewCheckIdentity,
   ReviewCheckPublicationRequest,
   ReviewIdentity,
@@ -56,9 +56,7 @@ export type GitHubOperations = {
   readRequiredChecks?(
     repository: string,
     pullRequestNumber: number,
-  ):
-    | Result<readonly RequiredCheckObservation[]>
-    | Promise<Result<readonly RequiredCheckObservation[]>>;
+  ): Result<RequiredChecksObservation> | Promise<Result<RequiredChecksObservation>>;
   publishReviewCheck?(
     repository: string,
     publication: ReviewCheckPublicationRequest,

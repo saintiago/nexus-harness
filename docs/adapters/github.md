@@ -26,7 +26,7 @@ that operation; it does not combine the decision into ensurePullRequest.
 | Read conversation and reviews | PR identity → complete comments, review threads, review authors and reviewed revisions | [Review](../task-engine/actions/review.md#interface) |
 | Publish review as Nexus Lens | PR, reviewed head, verdict and content → review identity | Review |
 | Read checks | Revision → check names, producer identities, statuses and conclusions | Review, CompleteTask |
-| Read required checks | PR identity → required pre-merge check names, states, conclusions and evidence links | CompleteTask |
+| Read required checks | PR identity → observed revision and required pre-merge check names, states, conclusions and evidence links | CompleteTask |
 | Publish or update Nexus Lens review check | Reviewed revision, configured check and result → App-owned check identity | Review |
 | Request auto-merge | PR and expected head → provider acceptance | Deliver |
 | Read workflow runs and jobs | Merge revision and configured workflow identities → statuses, conclusions and revisions | CompleteTask |
@@ -34,9 +34,10 @@ that operation; it does not combine the decision into ensurePullRequest.
 Use the operator's CLI identity for PR creation, updates, auto-merge requests and required-check
 reads. Use the Nexus Lens installation identity for review and review-check publication. Return the
 producing App identity when reading checks. Report unsupported or unauthorized operations as errors.
-Required-check reads report the pre-merge checks the repository's merge rules require for the pull
-request's base branch, each with its name, state, conclusion and evidence link; a legacy commit
-status is reported in the check vocabulary.
+Required-check reads report the revision they observed together with the pre-merge checks the
+repository's merge rules require for the pull request's base branch, each with its name, state,
+conclusion and evidence link; a legacy commit status is reported in the check vocabulary. The
+observed checks belong to that revision, and the read returns every page of the rollup or an error.
 Queries return observations; the caller decides whether the expected gate or publication is satisfied.
 
 ## Behavior

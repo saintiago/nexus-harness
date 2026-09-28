@@ -45,11 +45,14 @@ producers. The review check must come from the Nexus Lens producer, be completed
 for the approved head; a same-name check from another producer is not the Lens gate. If the head
 changed, do not transfer the old approval.
 
-Observe the delivered revision's required pre-merge checks while the merge is pending. A required
-check that concluded unsuccessfully — any conclusion other than success, skipped or neutral — is a
-terminal failure: report the failing check, its conclusion and the provider evidence link instead of
-waiting for the completion deadline. Required checks that have not reported or are still running
-remain pending within the configured completion wait, and an approved review does not bypass them.
+Observe the delivered revision's required pre-merge checks while the merge is pending, binding each
+observation to the revision the provider reports with it. An observation at a revision other than
+the delivered head is the changed-head failure, never evidence against the delivered revision. A
+required check that concluded unsuccessfully — any conclusion other than success, skipped or
+neutral — is a terminal failure: report the failing check, its conclusion and the provider evidence
+link instead of waiting for the completion deadline. Required checks that have not reported or are
+still running remain pending within the configured completion wait, and an approved review does not
+bypass them.
 
 Observe the actual merge and require every configured post-merge check to succeed for that merge
 revision. All matching runs must succeed; a newer successful run does not supersede a failed matching run.
