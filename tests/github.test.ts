@@ -463,6 +463,291 @@ describe('GitHub adapter', () => {
     expect(app).toHaveLength(0);
   });
 
+  it('reads the required pre-merge checks with their state and evidence', async () => {
+    const { adapter, gh, app } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: 'delivered-head',
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: 'CheckRun',
+                      name: 'validate',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: 'https://github.com/acme/nexus/actions/runs/5/job/6',
+                      isRequired: true,
+                    },
+                    {
+                      __typename: 'CheckRun',
+                      name: 'advisory',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: 'https://github.com/acme/nexus/actions/runs/7',
+                      isRequired: false,
+                    },
+                    {
+                      __typename: 'StatusContext',
+                      context: 'legacy-ci',
+                      state: 'SUCCESS',
+                      targetUrl: 'https://ci.example.test/builds/8',
+                      isRequired: true,
+                    },
+                    {
+                      __typename: 'StatusContext',
+                      context: 'expected-ci',
+                      state: 'EXPECTED',
+                      targetUrl: null,
+                      isRequired: true,
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const required = valueOf(await adapter.readRequiredChecks(repository, 9));
+
+    // Only the checks the repository's merge rules require are reported, in the check vocabulary,
+    // bound to the revision the provider reported with them.
+    expect(required).toEqual({
+      revision: 'delivered-head',
+      checks: [
+        {
+          name: 'validate',
+          status: 'completed',
+          conclusion: 'failure',
+          evidenceUrl: 'https://github.com/acme/nexus/actions/runs/5/job/6',
+        },
+        {
+          name: 'legacy-ci',
+          status: 'completed',
+          conclusion: 'success',
+          evidenceUrl: 'https://ci.example.test/builds/8',
+        },
+        { name: 'expected-ci', status: 'pending', conclusion: null, evidenceUrl: null },
+      ],
+    });
+    expect(app).toHaveLength(0);
+    expect(gh[0]?.slice(0, 4)).toEqual(['api', '--method', 'POST', 'graphql']);
+    const graphql = ghFields(gh[0] ?? []);
+    expect(graphql['query']).toContain('repository(owner: "acme", name: "nexus")');
+    expect(graphql['query']).toContain('pullRequest(number: 9)');
+    expect(graphql['query']).toContain('isRequired(pullRequestNumber: 9)');
+    expect(graphql['query']).toContain('headRefOid');
+  });
+
+  it('reports no required checks when the pull request has no check rollup', async () => {
+    const { adapter } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: { headRefOid: 'delivered-head', statusCheckRollup: null },
+          },
+        },
+      }),
+    ]);
+
+    const required = valueOf(await adapter.readRequiredChecks(repository, 9));
+
+    expect(required).toEqual({ revision: 'delivered-head', checks: [] });
+  });
+
+  it('reads every page of required checks and reports a failure beyond the first page', async () => {
+    const advisories = Array.from({ length: 100 }, (_, index) => ({
+      __typename: 'CheckRun',
+      name: `advisory-${String(index)}`,
+      status: 'COMPLETED',
+      conclusion: 'SUCCESS',
+      detailsUrl: null,
+      isRequired: false,
+    }));
+    const { adapter, gh } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: 'delivered-head',
+              statusCheckRollup: {
+                contexts: {
+                  nodes: advisories,
+                  pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+                },
+              },
+            },
+          },
+        },
+      }),
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: 'delivered-head',
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: 'CheckRun',
+                      name: 'validate',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: 'https://github.com/acme/nexus/actions/runs/9',
+                      isRequired: true,
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const required = valueOf(await adapter.readRequiredChecks(repository, 9));
+
+    expect(required).toEqual({
+      revision: 'delivered-head',
+      checks: [
+        {
+          name: 'validate',
+          status: 'completed',
+          conclusion: 'failure',
+          evidenceUrl: 'https://github.com/acme/nexus/actions/runs/9',
+        },
+      ],
+    });
+    expect(gh).toHaveLength(2);
+    expect(ghFields(gh[0] ?? [])['query']).toContain('contexts(first: 100)');
+    expect(ghFields(gh[1] ?? [])['query']).toContain('contexts(first: 100, after: "cursor-1")');
+  });
+
+  it.each([
+    { revisions: ['delivered-head', 'other-head'], finalRollupAbsent: false },
+    { revisions: ['other-head', 'delivered-head'], finalRollupAbsent: false },
+    { revisions: ['delivered-head', 'delivered-head', 'other-head'], finalRollupAbsent: false },
+    { revisions: ['other-head', 'delivered-head'], finalRollupAbsent: true },
+  ])('rejects required-check pages with inconsistent revisions: %j', async (scenario) => {
+    const { adapter } = harness(
+      scenario.revisions.map((revision, index) => {
+        const last = index === scenario.revisions.length - 1;
+        return ghJson({
+          data: {
+            repository: {
+              pullRequest: {
+                headRefOid: revision,
+                statusCheckRollup:
+                  last && scenario.finalRollupAbsent
+                    ? null
+                    : {
+                        contexts: {
+                          nodes: [
+                            {
+                              __typename: 'CheckRun',
+                              name: 'validate',
+                              status: 'COMPLETED',
+                              conclusion: 'FAILURE',
+                              detailsUrl: `https://ci.example.test/${revision}`,
+                              isRequired: true,
+                            },
+                          ],
+                          pageInfo: {
+                            hasNextPage: !last,
+                            endCursor: last ? null : `cursor-${String(index)}`,
+                          },
+                        },
+                      },
+              },
+            },
+          },
+        });
+      }),
+    );
+
+    const result = await adapter.readRequiredChecks(repository, 9);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: {
+        message:
+          `GitHub pull request 9 changed revision from ${scenario.revisions[0]} to ` +
+          `${scenario.revisions.at(-1)} while reading required checks`,
+      },
+    });
+    expect(result).not.toHaveProperty('value');
+  });
+
+  it('reports a failed later page of required checks instead of a partial read', async () => {
+    const { adapter } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: 'delivered-head',
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: 'CheckRun',
+                      name: 'advisory',
+                      status: 'COMPLETED',
+                      conclusion: 'FAILURE',
+                      detailsUrl: null,
+                      isRequired: false,
+                    },
+                  ],
+                  pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+                },
+              },
+            },
+          },
+        },
+      }),
+      { exitCode: 1, stderr: 'gh: Something went wrong (HTTP 502)\n' },
+    ]);
+
+    const result = await adapter.readRequiredChecks(repository, 9);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('gh: Something went wrong (HTTP 502)') },
+    });
+  });
+
+  it('reports a required-check page without a cursor as an error', async () => {
+    const { adapter } = harness([
+      ghJson({
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: 'delivered-head',
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [],
+                  pageInfo: { hasNextPage: true, endCursor: null },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const result = await adapter.readRequiredChecks(repository, 9);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('without a cursor') },
+    });
+  });
+
   it.each([
     ['approved', 'APPROVE'],
     ['changesRequested', 'REQUEST_CHANGES'],

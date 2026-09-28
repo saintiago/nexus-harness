@@ -19,7 +19,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 | StartDevRound | Initial profile, repair triggers, executed-turn counting, changes-requested promotion, no downgrade, planned-round reuse and exhaustion | Round history, developer ladder and current-round record |
 | Shared round storage | Current-plan validation, numbered history, directory creation and plan persistence without role or route decisions | Finite and idea plan fixtures in temporary workspaces |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
-| CompleteTask | Completion only after merge and successful configured checks for that merge | GitHub observations and source updates |
+| CompleteTask | Completion only after merge with no failed required pre-merge check and successful configured checks for that merge | GitHub observations and source updates |
 | AgentRuntime | Profile resolution and complete context assembly | Coding-provider response |
 | OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
 | Workflow | Initial, repair and terminal transitions | Named action outcomes, using the real XState definition |

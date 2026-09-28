@@ -515,6 +515,7 @@ describe('CompleteTask', () => {
     let runs = 0;
     const { github } = scriptedGitHub({
       readChecks: () => ok([reviewCheckObservation]),
+      readRequiredChecks: () => ok({ revision: headRevision, checks: [] }),
       readPullRequest: () => {
         reads += 1;
         return reads === 1
@@ -548,6 +549,7 @@ describe('CompleteTask', () => {
     const { wait: expiredWait, calls: expiredWaitCalls } = scriptedWait();
     const expiredHub = scriptedGitHub({
       readChecks: () => ok([reviewCheckObservation]),
+      readRequiredChecks: () => ok({ revision: headRevision, checks: [] }),
       readPullRequest: () => ok(pullRequest()),
     });
     await expect(
@@ -565,6 +567,188 @@ describe('CompleteTask', () => {
       type: 'failed',
       data: { reason: expect.stringMatching(/completion wait of 0s expired/) },
     });
+  });
+
+  it('reports a failed required pre-merge check instead of waiting for the merge', async () => {
+    const failed = await workspace({ name: 'required-check-failed' });
+    const { github, calls: githubCalls } = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      readPullRequest: () => ok(pullRequest()),
+      readRequiredChecks: () =>
+        ok({
+          revision: headRevision,
+          checks: [
+            {
+              name: 'validate',
+              status: 'completed',
+              conclusion: 'failure',
+              evidenceUrl: `${pullRequestUrl}/checks/1`,
+            },
+            { name: 'build', status: 'in_progress', conclusion: null, evidenceUrl: null },
+          ],
+        }),
+    });
+    const { jira, calls: jiraCalls } = scriptedJira({});
+    const { wait, calls: waitCalls } = scriptedWait();
+
+    await expect(
+      completeTaskAction({ selectionFile: failed.selectionFile, github, jira, wait })(),
+    ).resolves.toBe('failed');
+
+    // The failing check is reported with its evidence, without waiting or touching the ticket.
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: {
+        reason:
+          'required pre-merge check "validate" concluded "failure" for revision ' +
+          `${headRevision} (evidence: ${pullRequestUrl}/checks/1).`,
+      },
+    });
+    expect(waitCalls).toEqual([]);
+    expect(jiraCalls).toEqual([]);
+    expect(githubCalls).toEqual([`readChecks:${headRevision}`, 'read:7', 'readRequiredChecks:7']);
+    await expect(
+      stat(path.join(failed.workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).rejects.toThrow(/ENOENT/);
+
+    // Required checks that have not reported or are still running stay pending within the wait;
+    // a satisfied conclusion set still completes once the pull request merges.
+    events = [];
+    const pending = await workspace({ name: 'required-check-pending' });
+    let requiredReads = 0;
+    let mergeReads = 0;
+    const pendingHub = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      readPullRequest: () => {
+        mergeReads += 1;
+        return mergeReads < 3
+          ? ok(pullRequest())
+          : ok(pullRequest({ state: 'closed', merged: true, mergeRevision }));
+      },
+      readRequiredChecks: () => {
+        requiredReads += 1;
+        return ok({
+          revision: headRevision,
+          checks: [
+            requiredReads === 1
+              ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
+              : { name: 'validate', status: 'completed', conclusion: 'skipped', evidenceUrl: null },
+          ],
+        });
+      },
+      readWorkflowRuns: () => ok([workflowRun()]),
+    });
+    const { jira: pendingJira, calls: pendingJiraCalls } = scriptedJira({
+      readIssue: () => ok(inReviewIssue),
+      readTransitions: () => ok([{ id: '41', name: 'Done', to: { id: '5', name: 'Done' } }]),
+      transitionIssue: () => ok(undefined),
+    });
+    const { wait: pendingWait, calls: pendingWaitCalls } = scriptedWait();
+
+    await expect(
+      completeTaskAction({
+        selectionFile: pending.selectionFile,
+        github: pendingHub.github,
+        jira: pendingJira,
+        wait: pendingWait,
+      })(),
+    ).resolves.toBe('completed');
+
+    expect(requiredReads).toBe(2);
+    expect(pendingWaitCalls).toEqual([5000, 5000]);
+    expect(pendingJiraCalls).toContain('transition:1:41');
+
+    // A required check that fails while the merge is pending is reported on that observation.
+    events = [];
+    const later = await workspace({ name: 'required-check-later' });
+    let laterReads = 0;
+    const laterHub = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      readPullRequest: () => ok(pullRequest()),
+      readRequiredChecks: () => {
+        laterReads += 1;
+        return ok({
+          revision: headRevision,
+          checks: [
+            laterReads === 1
+              ? { name: 'validate', status: 'in_progress', conclusion: null, evidenceUrl: null }
+              : {
+                  name: 'validate',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  evidenceUrl: `${pullRequestUrl}/checks/2`,
+                },
+          ],
+        });
+      },
+    });
+    const { wait: laterWait, calls: laterWaitCalls } = scriptedWait();
+
+    await expect(
+      completeTaskAction({
+        selectionFile: later.selectionFile,
+        github: laterHub.github,
+        jira: scriptedJira({}).jira,
+        wait: laterWait,
+      })(),
+    ).resolves.toBe('failed');
+
+    expect(laterWaitCalls).toEqual([5000]);
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: {
+        reason: expect.stringMatching(
+          /required pre-merge check "validate" concluded "failure" for revision/u,
+        ),
+      },
+    });
+  });
+
+  it('reports a head change observed by the required-check read as a changed head', async () => {
+    const changed = await workspace({ name: 'required-check-changed-head' });
+    const { github } = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      // The merge observation still sees the delivered head; the required-check read then reports
+      // the pull request at another revision carrying a failed required check.
+      readPullRequest: () => ok(pullRequest()),
+      readRequiredChecks: () =>
+        ok({
+          revision: otherRevision,
+          checks: [
+            {
+              name: 'validate',
+              status: 'completed',
+              conclusion: 'failure',
+              evidenceUrl: `${pullRequestUrl}/checks/3`,
+            },
+          ],
+        }),
+    });
+    const { wait, calls: waitCalls } = scriptedWait();
+
+    await expect(
+      completeTaskAction({
+        selectionFile: changed.selectionFile,
+        github,
+        jira: scriptedJira({}).jira,
+        wait,
+      })(),
+    ).resolves.toBe('failed');
+
+    // The failure names the observed revision as a changed head, not the delivered revision as a
+    // failed check, and stops waiting immediately.
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: {
+        reason:
+          `Pull request #7 is at revision ${otherRevision}, not the delivered ${headRevision}; ` +
+          'the approval is not transferred.',
+      },
+    });
+    expect(waitCalls).toEqual([]);
   });
 
   it('does not let a newer successful run supersede a failed matching run', async () => {

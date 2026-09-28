@@ -7,6 +7,7 @@ import type {
   PullRequestIdentity,
   PullRequestPublication,
   PullRequestUpdates,
+  RequiredChecksObservation,
   ReviewCheckIdentity,
   ReviewCheckPublicationRequest,
   ReviewIdentity,
@@ -52,6 +53,10 @@ export type GitHubOperations = {
     repository: string,
     revision: string,
   ): Result<readonly CheckObservation[]> | Promise<Result<readonly CheckObservation[]>>;
+  readRequiredChecks?(
+    repository: string,
+    pullRequestNumber: number,
+  ): Result<RequiredChecksObservation> | Promise<Result<RequiredChecksObservation>>;
   publishReviewCheck?(
     repository: string,
     publication: ReviewCheckPublicationRequest,
@@ -119,6 +124,12 @@ export function scriptedGitHub(operations: GitHubOperations): {
       return operations.readChecks
         ? await operations.readChecks(repository, revision)
         : unexpected('readChecks');
+    },
+    async readRequiredChecks(repository, pullRequestNumber) {
+      calls.push(`readRequiredChecks:${pullRequestNumber}`);
+      return operations.readRequiredChecks
+        ? await operations.readRequiredChecks(repository, pullRequestNumber)
+        : unexpected('readRequiredChecks');
     },
     async publishReviewCheck(repository, publication) {
       calls.push(`publishCheck:${publication.revision}:${publication.name}:${publication.result}`);
