@@ -57,6 +57,10 @@ identify the provider's installed native tool configuration. Unknown profiles or
 return a fault. Each call starts one
 invocation with the supplied context.
 
+[Memory integration](../memory/integration.md#before-an-invocation) adds optional historical evidence
+to caller-prepared context. Retrieval, limits and evidence persistence belong outside AgentRuntime;
+its existing run interface and complete-context preservation remain unchanged.
+
 additionalContext is caller-prepared text containing the invocation instructions, information and any
 file paths the agent needs. Include it in the prompt as supplied; do not read workspace files to
 discover or construct the request.

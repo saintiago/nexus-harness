@@ -149,3 +149,30 @@ idea verdict. The source pointer names the shared issue root, handoff references
 read retained artifacts, and a fresh finite delivery attempt preserves the refinement area.
 
 Reuse existing component and system test scopes; do not duplicate XState's own parallel-state tests.
+
+## Memory coverage
+
+Use the [Memory contract](memory/architecture.md) and [integration mapping](memory/integration.md)
+as the authority. At component scope, verify whole-note context budgeting, provenance and ordering,
+empty/unavailable behavior, deterministic field mapping, and source identity across repeated and
+changed artifacts. Exercise findings and responses with their actual producer output; preserve
+original claim strength, referenced finding evidence and diagnostic omission markers.
+
+Use the real standalone package public API in a focused contract test with controlled model,
+embedding and storage providers. Verify that accepted observations reach add, returned note IDs
+reach receipts, and search results reach the saved invocation block. Do not substitute both the
+consumer and the package contract or retest the package's evolution algorithm in Nexus.
+
+With temporary storage and controlled child processes, verify exclusion across two writers sharing
+a collection, lock release on exit, deferred contention and receipts surviving worker/workspace
+replacement. Cover stored replay, known-unchanged retry, uncertain persistence and a crash between
+add and success-receipt storage. Uncertainty must defer further writes without blocking reads or
+business workflow progress; presence of the new note cannot stand in for successful neighbor writes.
+
+Extend representative delivery, idea-refinement and recovery system journeys to establish that
+recall runs for actual invocations, saved outputs are ingested, disabled memory has no provider
+effects, and memory faults do not alter business outcomes. Verify the actual supplied memory block
+matches saved retrieval evidence, including concurrent idea contributors and focused help. Exercise
+these through existing test scopes rather than a second workflow simulator. Verify fresh-checkout
+installation/build of the pinned external package without sibling repositories. Routine checks
+require no paid model calls, live credentials or running Qdrant; targeted live evidence is separate.
