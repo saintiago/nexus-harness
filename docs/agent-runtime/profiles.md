@@ -3,13 +3,14 @@
 Repository templates:
 
 - [nexus-flash](../../profiles/codex/nexus-flash.config.toml): DeepSeek Flash, maximum effort.
+- [nexus-sol](../../profiles/codex/nexus-sol.config.toml): GPT-5.6 Sol, high effort.
 - [nexus-astra](../../profiles/codex/nexus-astra.config.toml): Astra, high effort.
 - [nexus-recovery](../../profiles/codex/nexus-recovery.config.toml): Astra, high effort, selected for recovery.
 
 All configure OpenAI Docs, Context7 and Tavily. They disable connector apps by default,
 explicitly disable the existing GitHub connector, and exclude personal-service plugins.
 They also select non-interactive approval and the shell, filesystem and network access the roles'
-work needs: dependency installation, builds, tests, commits and recovery operations. Neither
+work needs: dependency installation, builds, tests, commits and recovery operations. No
 profile imposes read-only reviewer access, and selecting a profile leaves the operator's
 interactive defaults unchanged. Role instructions are supplied separately.
 
@@ -23,9 +24,9 @@ mkdir -p "$nexus_codex_home"
 cp profiles/codex/nexus-*.config.toml "$nexus_codex_home/"
 ```
 
-Select with `codex --profile nexus-flash`, `codex --profile nexus-astra` or
-`codex --profile nexus-recovery`. Recovery's project-management tools use authenticated shell
-commands as defined in [RecoveryRole](recovery-role.md#tools).
+Select with `codex --profile nexus-flash`, `codex --profile nexus-sol`,
+`codex --profile nexus-astra` or `codex --profile nexus-recovery`. Recovery's project-management
+tools use authenticated shell commands as defined in [RecoveryRole](recovery-role.md#tools).
 The installed CLI must support named profile files alongside its base configuration.
 Saving a template in the repository does not install or activate it.
 
