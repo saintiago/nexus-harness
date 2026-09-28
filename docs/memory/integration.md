@@ -79,10 +79,12 @@ subsequent diagnosis of such a failure.
 
 ## Source identity and deterministic extraction
 
-Derive each source key from the canonical artifact path, a digest of the validated artifact content,
-and the observation selector (summary, finding ID, response ID, check index or contribution). Use a
-stable canonical JSON representation. Identical content at the same source and selector is the same
-observation; changed content is a new observation. This handles repeated action-outcome events and
+Derive each source key from the canonical artifact path, the observation selector (summary, finding
+ID, response ID, check index or contribution), and a digest covering both the validated artifact
+and the deterministically extracted observation content. Include referenced content used in that
+observation, such as diagnostic excerpts or an original finding, not merely its filepath. Use a
+stable canonical JSON representation, excluding the generated capture timestamp. Identical content
+at the same source and selector is the same observation; changed content is a new observation. This handles repeated action-outcome events and
 rewritten artifacts without confusing the key with a library note ID. Include the originating
 artifact's timestamp when known; otherwise fix the observation timestamp at first capture and retain
 it across retries. Provenance includes all source artifact references used in a composite note.

@@ -72,6 +72,8 @@ artifact fields and stable formatting, without another LLM summarization pass. T
 operation then generates semantic attributes and evolves related notes. Do not create a separate
 update-old-memories operation or import a provider's internal evolution machinery.
 
+Capture the immutable source observation with create-if-absent semantics, without replacing an
+existing snapshot or receipt on contention. Only the writer-lock holder changes receipt state.
 Persist the source observation before calling add. Keep a receipt with its source key, content,
 provenance and state: pending, in-flight, stored or uncertain. Stored receipts contain the returned
 note ID. An already-stored key is a no-op. A known unchanged failure returns the receipt to pending

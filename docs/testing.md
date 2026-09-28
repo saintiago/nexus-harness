@@ -155,7 +155,7 @@ Reuse existing component and system test scopes; do not duplicate XState's own p
 Use the [Memory contract](memory/architecture.md) and [integration mapping](memory/integration.md)
 as the authority. At component scope, verify whole-note context budgeting, provenance and ordering,
 empty/unavailable behavior, deterministic field mapping, and source identity across repeated and
-changed artifacts. Exercise findings and responses with their actual producer output; preserve
+changed artifacts, including identical verification.json with changed diagnostic excerpts. Exercise findings and responses with their actual producer output; preserve
 original claim strength, referenced finding evidence and diagnostic omission markers.
 
 Use the real standalone package public API in a focused contract test with controlled model,
