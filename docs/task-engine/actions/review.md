@@ -25,6 +25,7 @@ reviewArtifact = { pathFromArtifactsRoot: "review.json", type: ReviewOutput }
 
 ```ts
 type ReviewOutput = {
+  taskSubject?: string;
   profile: string;
   headRevision: string;
   verdict: 'approved' | 'changesRequested' | 'inconclusive';
@@ -35,6 +36,10 @@ type ReviewOutput = {
 
 type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings' | 'priorFindings'>;
 ```
+
+The action captures the refreshed task subject in taskSubject when saving a new report. Memory
+uses this retained subject on production and replay, even if selection is refreshed later. Older
+reports without it use the stable task key as their envelope subject.
 
 Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
 its finding definitions, identity/disposition rules and verdict rules in the context. Parse and validate the response, then add

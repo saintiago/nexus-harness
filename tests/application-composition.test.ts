@@ -6,11 +6,13 @@
  */
 
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import {
+  createConfiguredMemory,
   executionPaths,
   recoveryEnvironment,
   toolEnvironment,
@@ -22,10 +24,17 @@ import type { CodingRuntime } from '../src/adapters/coding-runtime.js';
 import type { GitHubAdapter } from '../src/adapters/github.js';
 import type { GitAdapter } from '../src/adapters/git.js';
 import type { JiraAdapter } from '../src/adapters/jira.js';
-import { parseNexusConfiguration, parseProjectConfiguration } from '../src/configuration/index.js';
+import {
+  parseNexusConfiguration,
+  parseProjectConfiguration,
+  type NexusConfiguration,
+} from '../src/configuration/index.js';
+import type { MemoryProviders } from '../src/memory/index.js';
 import { ok } from '../src/result.js';
 import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { deterministicEmbedder } from './support/memory.js';
+import { recallForInvocation, rememberObserved } from '../src/task-engine/actions/memory.js';
 
 const installationDirectory = '/srv/nexus/installation';
 const projectDirectory = '/srv/target-project';
@@ -46,6 +55,44 @@ const hostEnvironment = {
   DEEPSEEK_API_KEY: 'provider-key',
   UNSET_SETTING: undefined,
 };
+
+/** The host settings the memory providers resolve, beside the other controlled credentials. */
+const memoryEnvironment = {
+  ...hostEnvironment,
+  MEMORY_STORE_KEY: 'memory-store-secret',
+  MEMORY_MODEL_KEY: 'memory-model-secret',
+};
+
+/** The supplied Nexus configuration with the optional memory integration enabled and writable. */
+function memoryNexus(storageRoot: string): NexusConfiguration {
+  const configuration = nexusConfiguration();
+  configuration.storage.root = storageRoot;
+  configuration.credentials['memoryStoreKey'] = { environment: 'MEMORY_STORE_KEY' };
+  configuration.credentials['memoryModelKey'] = { environment: 'MEMORY_MODEL_KEY' };
+  configuration.memory = {
+    enabled: true,
+    storeId: 'shared-collection',
+    qdrant: {
+      url: 'http://127.0.0.1:6333',
+      collection: 'notes',
+      credential: 'memoryStoreKey',
+    },
+    embedding: { cacheDir: './embeddings', allowDownloads: false },
+    model: {
+      endpoint: 'http://127.0.0.1:9/chat/completions',
+      model: 'memory-model',
+      credential: 'memoryModelKey',
+      maxOutputTokens: 6000,
+    },
+    neighbors: 5,
+    searchLimit: 5,
+    linkedLimit: 5,
+    contextMaxChars: 12000,
+    lockWaitMs: 500,
+    providerTimeoutMs: 1000,
+  };
+  return parseNexusConfiguration(configuration, installationDirectory);
+}
 
 const temporaryDirectories: string[] = [];
 
@@ -153,6 +200,181 @@ describe('credential isolation', () => {
     expect(environment['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
     expect(environment['AWS_SESSION_TOKEN']).toBeUndefined();
     expect(environment['UNSET_SETTING']).toBeUndefined();
+  });
+
+  it('keeps the memory provider credentials out of commands and agents but in the worker', () => {
+    const configured = memoryNexus('/srv/nexus/state');
+
+    // The commands and agents Memory's coordination does not cover run without its credentials.
+    for (const environment of [
+      toolEnvironment(project, configured, memoryEnvironment),
+      recoveryEnvironment(configured, memoryEnvironment),
+    ]) {
+      expect(environment['MEMORY_STORE_KEY']).toBeUndefined();
+      expect(environment['MEMORY_MODEL_KEY']).toBeUndefined();
+      expect(environment['DEEPSEEK_API_KEY']).toBe('provider-key');
+    }
+
+    // The worker constructs Memory, so it resolves both credential settings itself.
+    const worker = workerProcessEnvironment(configured, memoryEnvironment, installationConfigPath);
+    expect(worker['MEMORY_STORE_KEY']).toBe('memory-store-secret');
+    expect(worker['MEMORY_MODEL_KEY']).toBe('memory-model-secret');
+  });
+});
+
+describe('memory construction', () => {
+  it('redacts echoed credentials from real Qdrant initialization and subsequent diagnostics', async () => {
+    const directory = await temporaryDirectory();
+    const configured = memoryNexus(directory);
+    const diagnostics: string[] = [];
+    const events: EngineEvent[] = [];
+    const credentials: unknown[] = [];
+    const server = createServer((request, response) => {
+      credentials.push(request.headers['api-key']);
+      response.writeHead(
+        401,
+        `Rejected ${String(request.headers['api-key'])} ${memoryEnvironment.MEMORY_MODEL_KEY}`,
+      );
+      response.end();
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string' || configured.memory?.enabled !== true) {
+        throw new Error('Missing test server or memory configuration');
+      }
+      const memory = await createConfiguredMemory(
+        {
+          ...configured,
+          memory: {
+            ...configured.memory,
+            qdrant: {
+              ...configured.memory.qdrant,
+              url: `http://127.0.0.1:${String(address.port)}`,
+            },
+          },
+        },
+        memoryEnvironment,
+        { write: (text) => diagnostics.push(text) },
+        {
+          openEmbedder: () => Promise.resolve(deterministicEmbedder()),
+        },
+      );
+      try {
+        const recall = await recallForInvocation({
+          memory,
+          evidenceDirectory: directory,
+          publish: (event) => events.push(event),
+          source: 'develop',
+          scope: { project: 'NEX', workflow: 'finite-delivery', role: 'developer' },
+          query: 'retry guard',
+        });
+        expect(recall.block).toBeNull();
+        await rememberObserved(
+          { memory, publish: (event) => events.push(event), source: 'develop' },
+          {
+            sourceKey: 'accepted-report',
+            content: 'The retry guard is committed.',
+            provenance: { project: 'NEX' },
+          },
+        );
+        expect(credentials).toContain(memoryEnvironment.MEMORY_STORE_KEY);
+        expect(diagnostics.join('')).toContain('Rejected [redacted] [redacted]');
+        expect(events).toMatchObject([
+          { data: { outcome: 'recall-unavailable' } },
+          { data: { outcome: 'failed' } },
+        ]);
+        for (const text of [
+          diagnostics.join(''),
+          ...events.map((event) => JSON.stringify(event)),
+        ]) {
+          expect(text).toContain('[redacted]');
+          expect(text).not.toContain(memoryEnvironment.MEMORY_STORE_KEY);
+          expect(text).not.toContain(memoryEnvironment.MEMORY_MODEL_KEY);
+        }
+      } finally {
+        await memory.close();
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it('degrades without aborting when a configured memory credential is missing, keeping snapshots', async () => {
+    const directory = await temporaryDirectory();
+    const configured = memoryNexus(directory);
+    const diagnostics: string[] = [];
+    const memory = await createConfiguredMemory(
+      configured,
+      // MEMORY_STORE_KEY is deliberately absent: a valid reference the host cannot resolve.
+      { ...memoryEnvironment, MEMORY_STORE_KEY: undefined },
+      { write: (text) => diagnostics.push(text) },
+    );
+
+    expect(
+      await memory.recall({
+        invocationId: 'unavailable',
+        query: 'memory',
+        evidenceFile: path.join(directory, 'evidence.json'),
+        scope: { project: 'NEX', workflow: 'finite-delivery', role: 'developer' },
+      }),
+    ).toMatchObject({ kind: 'unavailable' });
+
+    const result = await memory.remember({
+      sourceKey: 'artifacts/1/development.json#summary#sha256:missing-credential',
+      content: 'Task NEX-7 — project NEX, role developer, round 1: the repair is committed.',
+      provenance: { project: 'NEX', role: 'developer' },
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed' || result.receipt === null) {
+      return;
+    }
+    const receipt = JSON.parse(await readFile(result.receipt, 'utf8')) as {
+      readonly state: string;
+      readonly content: string;
+    };
+    expect(receipt.state).toBe('pending');
+    expect(receipt.content).toContain('the repair is committed');
+    expect(diagnostics.join('')).toContain('Nexus memory is unavailable');
+    await memory.close();
+  });
+
+  it('captures the observation when provider initialization fails', async () => {
+    const directory = await temporaryDirectory();
+    const configured = memoryNexus(directory);
+    const diagnostics: string[] = [];
+    const providers: Partial<MemoryProviders> = {
+      openEmbedder: () => Promise.reject(new Error('the encoder cache is unavailable')),
+    };
+    const memory = await createConfiguredMemory(
+      configured,
+      memoryEnvironment,
+      { write: (text) => diagnostics.push(text) },
+      providers,
+    );
+
+    const result = await memory.remember({
+      sourceKey: 'artifacts/1/development.json#summary#sha256:provider-failure',
+      content: 'Task NEX-7 — project NEX, role developer, round 1: the repair is committed.',
+      provenance: { project: 'NEX', role: 'developer' },
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed' || result.receipt === null) {
+      return;
+    }
+    expect(result.receipt).toContain(path.join('memory', 'shared-collection', 'receipts'));
+    const receipt = JSON.parse(await readFile(result.receipt, 'utf8')) as {
+      readonly state: string;
+    };
+    expect(receipt.state).toBe('pending');
+    expect(diagnostics.join('')).toContain('the encoder cache is unavailable');
+    await memory.close();
   });
 });
 

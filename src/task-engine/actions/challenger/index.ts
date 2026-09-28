@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { Observation } from '../../../memory/index.js';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
 import {
@@ -17,7 +18,22 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import { challengerArtifact, challengerResponseSchema } from './artifacts.js';
+import {
+  capturedIdeaQueryMaterial,
+  observationEnvelope,
+  observationSourceKey,
+  rememberObserved,
+  retrievalQuery,
+  memoryContextOf,
+  type MemoryContext,
+} from '../memory.js';
+import type { IdeaInput } from '../select-idea/artifacts.js';
+import { issueSummary } from '../source.js';
+import {
+  challengerArtifact,
+  challengerResponseSchema,
+  type ChallengerReport,
+} from './artifacts.js';
 
 /**
  * Challenger decides whether pursuing the current refined idea makes sense for this project. It
@@ -34,10 +50,82 @@ export type ChallengerSettings = {
   /** The Challenger role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
+  /**
+   * The memory capability, project identity and evidence directory of this execution; Application
+   * supplies it, and an action without one performs no recall or ingestion.
+   */
+  readonly memory?: MemoryContext;
 };
+
+/**
+ * The deterministic observation one saved Challenger result yields: its verdict and reasoning,
+ * the concerns with their consequences and resolutions, and the exact refined idea revision and
+ * editor response it assessed.
+ */
+function challengerObservation(settings: {
+  readonly memory: MemoryContext;
+  readonly input: IdeaInput;
+  readonly subject: string | null;
+  readonly submission: number;
+  readonly cycle: number;
+  readonly file: string;
+  readonly report: ChallengerReport;
+}): Observation {
+  const selector = 'assessment';
+  const content = [
+    observationEnvelope({
+      subjectKind: 'Idea',
+      key: settings.input.taskKey,
+      subject: settings.subject,
+      project: settings.memory.project,
+      role: 'challenger',
+      outcome: settings.report.verdict,
+      iteration: [
+        `submission ${String(settings.submission)}`,
+        `cycle ${String(settings.cycle)}`,
+        `revision ${String(settings.report.revision)}`,
+      ],
+    }),
+    `Assessment: ${settings.report.assessment}`,
+    ...(settings.report.obstacle === null
+      ? []
+      : [`Obstacle stated for the author: ${settings.report.obstacle}`]),
+    `Concerns: ${JSON.stringify(settings.report.concerns)}`,
+    `Suggestions: ${JSON.stringify(settings.report.suggestions)}`,
+    `Assessed refined idea revision: ${settings.report.refinedIdea}`,
+    `Assessed editor response: ${
+      settings.report.editorResponse ?? 'none; the revision stood alone'
+    }`,
+  ].join('\n');
+  return {
+    sourceKey: observationSourceKey({
+      artifact: settings.file,
+      selector,
+      material: { artifact: settings.report, content },
+    }),
+    content,
+    provenance: {
+      project: settings.memory.project,
+      issue: settings.input.taskKey,
+      workflow: settings.memory.workflow,
+      role: 'challenger',
+      artifact: settings.file,
+      element: selector,
+      submission: settings.submission,
+      cycle: settings.cycle,
+      revision: settings.report.revision,
+      references: [
+        settings.report.refinedIdea,
+        ...(settings.report.editorResponse === null ? [] : [settings.report.editorResponse]),
+      ],
+    },
+  };
+}
 
 /** Create Challenger over the refinement area it reports into. */
 export function createChallenger(settings: ChallengerSettings): BoundAction {
+  const memory = memoryContextOf(settings.memory);
+
   return async () => {
     const root = settings.workspace.root;
     const plan = await readIdeaPlan(root);
@@ -76,11 +164,29 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       existing.editorResponse === turnFile &&
       existing.revision === revision.value.revision
     ) {
-      // This result already answers for this exact revision and response; reuse it.
+      // This result already answers for this exact revision and response; reuse it and re-observe
+      // the same source key, so an accepted assessment becomes a note.
+      await rememberObserved(
+        { memory: memory.memory, publish: settings.publish, source: 'challenger' },
+        challengerObservation({
+          memory,
+          input,
+          subject: issueSummary(input.issue),
+          submission: plan.submission,
+          cycle: plan.cycle,
+          file,
+          report: existing,
+        }),
+      );
       return reported(existing.verdict);
     }
 
     const guidance = await projectGuidanceText(root);
+    const scope = {
+      project: memory.project,
+      workflow: memory.workflow,
+      role: 'challenger',
+    };
     const context = [
       'Decide whether pursuing this idea makes sense for this project: consider value,',
       'feasibility and avoidable complexity. Recommend approval when there is a plausible way',
@@ -112,6 +218,14 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       context,
       schema: challengerResponseSchema,
       runner: settings.runner,
+      memory,
+      publish: settings.publish,
+      memoryQuery: retrievalQuery(scope, [
+        ...capturedIdeaQueryMaterial(input),
+        `current refined idea revision (${String(revision.value.revision)}): ` +
+          JSON.stringify(revision.value),
+        ...(turn === null ? [] : [`editor response: ${JSON.stringify(turn)}`]),
+      ]),
     });
     if (response.verdict === 'approve' && response.concerns.length > 0) {
       throw new Error(
@@ -132,12 +246,25 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       );
     }
 
-    await writeCycleArtifact(cycleRoot, challengerArtifact, {
+    const report: ChallengerReport = {
       ...response,
       refinedIdea: revision.path,
       editorResponse: turnFile,
       revision: revision.value.revision,
-    });
+    };
+    await writeCycleArtifact(cycleRoot, challengerArtifact, report);
+    await rememberObserved(
+      { memory: memory.memory, publish: settings.publish, source: 'challenger' },
+      challengerObservation({
+        memory,
+        input,
+        subject: issueSummary(input.issue),
+        submission: plan.submission,
+        cycle: plan.cycle,
+        file,
+        report,
+      }),
+    );
     return reported(response.verdict);
   };
 }

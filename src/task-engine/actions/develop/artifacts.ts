@@ -17,6 +17,8 @@ export type FindingResponse = z.infer<typeof findingResponseSchema>;
 
 /** The development result: the agent's report bound to the observed repository revisions. */
 export const developmentOutputSchema = z.object({
+  /** Task subject captured for this report; older reports may omit it. */
+  taskSubject: z.string().optional(),
   taskKey: z.string(),
   profile: z.string(),
   status: z.enum(['completed', 'failed']),

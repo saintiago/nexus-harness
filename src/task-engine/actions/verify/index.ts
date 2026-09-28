@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type {
@@ -7,6 +7,8 @@ import type {
   ProcessResult,
 } from '../../../adapters/processes.js';
 import type { Command } from '../../../configuration/index.js';
+import type { Observation } from '../../../memory/index.js';
+import { messageOf } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { devArtifact } from '../develop/artifacts.js';
@@ -16,6 +18,12 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
+import {
+  observationSourceKey,
+  rememberObserved,
+  memoryContextOf,
+  type MemoryContext,
+} from '../memory.js';
 import { verificationArtifact, type VerificationOutput } from './artifacts.js';
 
 /**
@@ -45,10 +53,121 @@ export type VerifySettings = {
   readonly git: GitAdapter;
   readonly runCommand: CommandExecution;
   readonly publish: EventPublisher;
+  /**
+   * The memory capability, project identity and evidence directory of this execution; Application
+   * supplies it, and an action without one performs no recall or ingestion.
+   */
+  readonly memory?: MemoryContext;
 };
 
 /** One recorded check result, from the artifact's shape. */
 type CheckResult = VerificationOutput['checks'][number];
+
+/** The characters of each end of one failed check's combined output the observation retains. */
+const diagnosticExcerptChars = 2000;
+
+/**
+ * The bounded diagnostic excerpt of one failed check: the first and last characters of the
+ * combined standard output and standard error, without overlap, with the omitted length marked.
+ * Clipping is a record of the log, never a claim that a cause has been established.
+ */
+function diagnosticExcerpt(stdout: string, stderr: string): string {
+  const combined = [stdout, stderr].filter((text) => text !== '').join('\n');
+  if (combined.length <= diagnosticExcerptChars * 2) {
+    return combined;
+  }
+  const omitted = combined.length - diagnosticExcerptChars * 2;
+  return [
+    combined.slice(0, diagnosticExcerptChars),
+    `\n[omitted ${String(omitted)} characters]\n`,
+    combined.slice(combined.length - diagnosticExcerptChars),
+  ].join('');
+}
+
+/**
+ * The deterministic observations one failed verification yields: one note per failed check with
+ * its command identity, exit result, bounded diagnostic excerpt and its log references. Successful
+ * checks supply provenance and operational evidence, not standalone experience notes.
+ */
+async function verificationObservations(settings: {
+  readonly root: string;
+  readonly memory: MemoryContext;
+  readonly taskKey: string;
+  readonly round: number;
+  readonly output: VerificationOutput;
+  readonly checks: VerifySettings['checks'];
+}): Promise<Observation[]> {
+  const artifact = roundArtifactPath(
+    settings.root,
+    settings.round,
+    verificationArtifact.pathFromArtifactsRoot,
+  );
+  const envelope =
+    `Task ${settings.taskKey} — project ${settings.memory.project}, role verification, round ` +
+    `${String(settings.round)}, outcome ${settings.output.status}, revision ` +
+    `${settings.output.headRevision}.`;
+  const observations: Observation[] = [];
+  for (const [index, check] of settings.output.checks.entries()) {
+    if (check.exitCode === 0) {
+      continue;
+    }
+    const command = settings.checks[index];
+    const stdoutFile = path.join(
+      settings.root,
+      'artifacts',
+      String(settings.round),
+      check.stdoutPath,
+    );
+    const stderrFile = path.join(
+      settings.root,
+      'artifacts',
+      String(settings.round),
+      check.stderrPath,
+    );
+    const read = async (file: string): Promise<string> => {
+      try {
+        return await readFile(file, 'utf8');
+      } catch (error) {
+        throw new Error(`The check log at "${file}" could not be read: ${messageOf(error)}`, {
+          cause: error,
+        });
+      }
+    };
+    const excerpt = diagnosticExcerpt(await read(stdoutFile), await read(stderrFile));
+    const content = [
+      envelope,
+      `Check "${check.name}" failed with exit code ${String(check.exitCode)}.`,
+      `Command: ${command?.command.executable ?? check.name} ${
+        command?.command.args.join(' ') ?? ''
+      }`,
+      'Diagnostics (first and last characters of combined stdout and stderr, omissions marked):',
+      excerpt,
+      `stdout log: ${stdoutFile}`,
+      `stderr log: ${stderrFile}`,
+    ].join('\n');
+    const selector = `check:${String(index)}`;
+    observations.push({
+      sourceKey: observationSourceKey({
+        artifact,
+        selector,
+        material: { artifact: settings.output, content },
+      }),
+      content,
+      provenance: {
+        project: settings.memory.project,
+        issue: settings.taskKey,
+        workflow: settings.memory.workflow,
+        role: 'verification',
+        artifact,
+        element: selector,
+        round: settings.round,
+        revision: settings.output.headRevision,
+        references: [stdoutFile, stderrFile],
+      },
+    });
+  }
+  return observations;
+}
 
 /** Read the worktree's identity and uncommitted work; a Git failure is an execution error. */
 async function inspectRepository(git: GitAdapter, worktree: string): Promise<RepositoryState> {
@@ -61,6 +180,8 @@ async function inspectRepository(git: GitAdapter, worktree: string): Promise<Rep
 
 /** Create Verify over the workspace, configured checks and command capability. */
 export function createVerify(settings: VerifySettings): BoundAction {
+  const memory = memoryContextOf(settings.memory);
+
   const root = settings.workspace.root;
   const worktree = path.join(root, 'worktree');
 
@@ -174,6 +295,30 @@ export function createVerify(settings: VerifySettings): BoundAction {
       settings.publish({ source: 'verify', type: 'failed', data: { reason: problems.join('; ') } });
     }
     await helpers.writeOutputArtifact(verificationArtifact, output);
+    try {
+      const observations = await verificationObservations({
+        root,
+        memory,
+        taskKey: development.taskKey,
+        round: round.number,
+        output,
+        checks: settings.checks,
+      });
+      for (const observation of observations) {
+        await rememberObserved(
+          { memory: memory.memory, publish: settings.publish, source: 'verify' },
+          observation,
+        );
+      }
+    } catch (error) {
+      // A failed check log that cannot be read is reported; it does not turn verification into an
+      // execution error and does not change the recorded verdict.
+      settings.publish({
+        source: 'verify',
+        type: 'memory',
+        data: { outcome: 'remember-failed', detail: messageOf(error) },
+      });
+    }
     settings.publish(
       actionOutcomeEvent('verify', {
         task: development.taskKey,

@@ -56,6 +56,8 @@ export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
 
 /** The review result for one reviewed revision. */
 export const reviewOutputSchema = z.object({
+  /** Task subject captured for this report; older reports may omit it. */
+  taskSubject: z.string().optional(),
   profile: z.string(),
   headRevision: z.string(),
   verdict: z.enum(['approved', 'changesRequested', 'inconclusive']),

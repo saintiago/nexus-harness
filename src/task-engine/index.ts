@@ -60,6 +60,12 @@ export type AgentActivityPublisher = (activity: AgentActivity) => void;
 export type AgentInvocationSettings = {
   /** The role name of the invoked agent. */
   readonly agentName: string;
+  /**
+   * The invocation identity the caller assigned, when it assigned one. A caller that prepares
+   * invocation-scoped records (such as memory retrieval evidence) supplies it; otherwise the
+   * engine assigns a fresh identity.
+   */
+  readonly invocationId?: string;
   /** The operation the invoking action performs; the boundary events' source. */
   readonly operation: string;
   /** The caller-selected profile ID. */
@@ -93,7 +99,7 @@ export type AgentInvocationHandle = {
  */
 export function beginAgentInvocation(settings: AgentInvocationSettings): AgentInvocationHandle {
   const startedAtUnixMs = Date.now();
-  const invocationId = randomUUID();
+  const invocationId = settings.invocationId ?? randomUUID();
   const identity: AgentInvocation = {
     agentName: settings.agentName,
     invocationId,
@@ -186,6 +192,8 @@ export function agentInvocationOf(event: EngineEvent): AgentInvocation | null {
 export type AgentRoleRequest = {
   /** The operation the action performs; the invocation boundary events' source. */
   readonly operation: string;
+  /** The caller-assigned invocation identity, or absent for the engine to assign one. */
+  readonly invocationId?: string;
   /** The profile the action selected for this invocation. */
   readonly profile: string;
   readonly workspace: { readonly root: string };
