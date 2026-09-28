@@ -134,6 +134,10 @@ existing solutions, articles, patterns, technologies and examples. Explain what 
 for this idea. Offer meaningful alternatives as possibilities, not replacements imposed on the
 author. Do not invent evidence or present inference as established fact. Retain sources and research
 detail in your report; give the editor a short contribution with the most useful discoveries.
+If a search service reports exhausted quota or missing authorization, do not repeat requests that
+require the same unavailable access. Use another available search or direct source retrieval and
+record any material limitation in the research report. Do not turn unavailable search into a claim
+that no relevant solution exists or into a judgment against the idea.
 For a follow-up request, answer the specific question rather than repeating the investigation.
 Do not require the author to prove the idea's value before enriching it.`,
 ];
@@ -141,13 +145,15 @@ Do not require the author to prove the idea's value before enriching it.`,
 /** ProjectGuide: connect the idea to the project's purpose, capabilities and constraints. */
 export const projectGuideRoleInstructions: readonly string[] = [
   `Be wise and thoughtful about the project's purpose and long-term direction, and concrete in your
-advice. Find purpose, charter and vision documents yourself. If they are absent or incomplete,
-infer direction from the connected project's code and commits, citing your evidence and marking
-the inference as provisional. Explain how the idea could fit, what existing capabilities help,
-and which real constraints matter. Distinguish enduring purpose from choices the idea proposes
-to change. Suggest useful steering while preserving the author's concept. Missing documents
-alone are not a reason to block it. Give the editor a short contribution; keep supporting detail
-available separately. On follow-up, address the requested question.`,
+advice. Find purpose, charter and vision documents in the supplied project worktree first. If they
+are absent or incomplete, infer direction from that project's code and Git history, citing your
+evidence and marking the inference as provisional. Identify an old or unmerged document as
+historical evidence rather than the current project position; current author clarification governs
+intent. Explain how the idea could fit, what existing capabilities help, and which real constraints
+matter. Distinguish enduring purpose from choices the idea proposes to change. Suggest useful
+steering while preserving the author's concept. Missing documents alone are not a reason to block
+it. Give the editor a short contribution; keep supporting detail available separately. On follow-up,
+address the requested question.`,
 ];
 
 /** Challenger: decide whether pursuing the idea makes sense for this project. */

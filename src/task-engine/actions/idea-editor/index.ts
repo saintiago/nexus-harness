@@ -56,6 +56,26 @@ export const ideaEditorTasks = ['frame', 'edit', 'respond', 'respond-after-help'
 
 export type IdeaEditorTask = (typeof ideaEditorTasks)[number];
 
+/**
+ * The deliverable instruction every editor turn that writes or answers about the refined idea
+ * carries: the concise length and plain language of the decision aid, the precedence of benefit
+ * over implementation mechanics, and the cumulative refinement summary publication adds beside
+ * the cycle count. The specification owns the wording; the editor's role prompt adds only its
+ * particular duties.
+ */
+export const refinedIdeaDeliverableInstruction = [
+  'The refined idea is a concise decision aid of about 150-200 words across its stated parts, one',
+  'to three short sentences each, in plain language. The length guidance includes the open',
+  'questions and is not a validation gate. Explain the benefit and guiding principle before',
+  'component names or integration mechanics. Retain architectural directions the author supplied,',
+  'but keep supporting implementation detail in the research and project guidance artifacts.',
+  'Keep external sources and project measurements distinguishable: a claim from a source stays',
+  'attributed instead of reading as the author\u2019s proposal or a local measurement.',
+  'Remove repetition before returning the idea rather than relying on publication to shorten it.',
+  'Write changeSummary as one or two short sentences describing the useful changes, without',
+  'repeating the refined idea or narrating the agents\u2019 work.',
+].join('\n');
+
 /** The dispositions one task may return. */
 const taskDispositions: Readonly<Record<IdeaEditorTask, readonly EditorDisposition[]>> = {
   frame: [],
@@ -318,16 +338,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const projectGuidance = await projectGuidanceText(root);
     const context = [
       'Write the refined idea revision for the current captured idea from the contributions',
-      'below. Keep it short by default: about 150-200 words across its parts, one to three short',
-      'sentences each, only material detail and plain language. Its `idea` part states the',
-      'author\u2019s proposed change, why it matters and the principle behind it; `projectFit`',
-      'states why it belongs in this project; `feasibility` states a plausible way forward given',
-      'the known constraints and evidence; `openQuestions` lists only the material questions the',
-      'next workflow must answer and may be omitted. Preserve the author\u2019s intent and do not',
-      'turn the idea into requirements, design decisions or an implementation plan. Write',
-      'changeSummary as the cumulative account of what refinement has changed. If pursuing the',
-      'idea does not look sensible, return it as unsuitable with the author-facing reason; ask an',
-      'essential author decision plainly when only the author can make it.',
+      'below. Its `idea` part states the author\u2019s proposed change, why it matters and the',
+      'principle behind it; `projectFit` states why it belongs in this project; `feasibility`',
+      'states a plausible way forward given the known constraints and evidence; `openQuestions`',
+      'lists only the material questions the next workflow must answer and may be omitted.',
+      'Preserve the author\u2019s intent and do not turn the idea into requirements, design',
+      'decisions or an implementation plan. If pursuing the idea does not look sensible, return',
+      'it as unsuitable with the author-facing reason; ask an essential author decision plainly',
+      'when only the author can make it.',
+      refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
       ...(await contributionsText(root, plan.submission, plan.cycle, 'edit')),
@@ -423,6 +442,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
             'idea is unsuitable, explain why; ask an essential author decision plainly when only',
             'the author can make it.',
           ]),
+      refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
       `The refined idea revision currently in force: ${revision.path}`,

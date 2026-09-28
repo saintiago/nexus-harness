@@ -15,8 +15,12 @@ import {
 } from '../src/application/composition.js';
 import {
   createAgentRuntime,
+  challengerRoleInstructions,
   developmentRoleInstructions,
+  ideaEditorRoleInstructions,
+  projectGuideRoleInstructions,
   recoveryRoleInstructions,
+  researcherRoleInstructions,
   reviewerRoleInstructions,
 } from '../src/agent-runtime/index.js';
 import type { CodingRuntime, CodingRuntimeRequest } from '../src/adapters/coding-runtime.js';
@@ -333,6 +337,55 @@ describe('AgentRuntime construction', () => {
     for (const instruction of configured.instructions) {
       expect(occurrences(reviewerPrompt, instruction)).toBe(1);
       expect(occurrences(recoveryPrompt, instruction)).toBe(1);
+    }
+  });
+
+  it('gives each idea refinement role its own constant prompt', async () => {
+    const configuration = nexus();
+    const ideaProfiles = configuration.ideaRefinement.profiles;
+    const selected = [
+      {
+        role: 'idea-editor',
+        profile: ideaProfiles.editor,
+        instructions: ideaEditorRoleInstructions,
+      },
+      {
+        role: 'researcher',
+        profile: ideaProfiles.researcher,
+        instructions: researcherRoleInstructions,
+      },
+      {
+        role: 'project-guide',
+        profile: ideaProfiles.projectGuide,
+        instructions: projectGuideRoleInstructions,
+      },
+      {
+        role: 'challenger',
+        profile: ideaProfiles.challenger,
+        instructions: challengerRoleInstructions,
+      },
+    ] as const;
+
+    for (const { role, profile, instructions } of selected) {
+      const { runtime, settings, requests } = harness(configuration, role);
+      await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
+
+      const request = requests.at(-1)!;
+      const attached = settings.profiles.find(
+        (candidate) => candidate.id === profile,
+      )!.instructions;
+      for (const instruction of instructions) {
+        expect(occurrences(request.prompt, instruction)).toBe(1);
+        expect(attached).toContain(instruction);
+      }
+      // The editor, researcher and Project guide share a profile; each invocation carries only
+      // its own role constant and none of the other idea roles' duties.
+      for (const other of selected) {
+        if (other.role !== role) {
+          expect(request.prompt).not.toContain(other.instructions[0]!);
+        }
+      }
+      expect(request.prompt).toContain(context);
     }
   });
 
