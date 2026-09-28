@@ -382,6 +382,53 @@ describe('memory ingestion', () => {
     await memory.close();
   });
 
+  it.each(['unchanged-failure', 'uncertain'] as const)(
+    'redacts provider credentials from %s ingestion results and receipts',
+    async (kind) => {
+      const root = await temporaryRoot();
+      const secrets = ['store-secret', 'model-secret'] as const;
+      const settings = memorySettings({ storageRoot: root });
+      const memory = await createMemory({
+        ...settings,
+        qdrant: { ...settings.qdrant, apiKey: secrets[0] },
+        model: { ...settings.model, apiKey: secrets[1] },
+        providers: {
+          ...controlledMemoryProviders({}),
+          createEngine: () =>
+            Promise.resolve({
+              add: () =>
+                Promise.resolve({
+                  kind,
+                  stage: 'persist',
+                  reason: `Rejected ${secrets.join(' ')}`,
+                  noteId: null,
+                  affectedNoteIds: [],
+                }),
+              search: () => Promise.resolve([]),
+            }),
+        },
+      });
+      try {
+        const result = await memory.remember(observation());
+        expect(result.kind).toBe(kind === 'uncertain' ? 'uncertain' : 'failed');
+        if (result.kind !== 'failed' && result.kind !== 'uncertain') {
+          throw new Error('Expected an ingestion failure');
+        }
+        expect(result.receipt).not.toBeNull();
+        const receipt = await readFile(result.receipt ?? '', 'utf8');
+        const replay = await memory.remember(observation());
+        for (const text of [JSON.stringify(result), receipt, JSON.stringify(replay)]) {
+          expect(text).toContain('Rejected [redacted] [redacted]');
+          for (const secret of secrets) {
+            expect(text).not.toContain(secret);
+          }
+        }
+      } finally {
+        await memory.close();
+      }
+    },
+  );
+
   it('returns a known unchanged failure to pending and retries the same observation later', async () => {
     const root = await temporaryRoot();
     const failing: MemoryProviders = {

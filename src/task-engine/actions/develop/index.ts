@@ -347,7 +347,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
         root,
         memory,
         taskKey: selection.taskKey,
-        subject: issueSummary(selection.task) ?? selection.taskKey,
+        subject: output.taskSubject ?? selection.taskKey,
         round: round.number,
         output,
         findings: latestReview?.value.findings ?? [],
@@ -471,6 +471,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     }
 
     const output: DevelopmentOutput = {
+      taskSubject: issueSummary(issue) ?? selection.taskKey,
       taskKey: selection.taskKey,
       profile,
       status,

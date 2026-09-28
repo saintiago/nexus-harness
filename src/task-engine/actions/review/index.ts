@@ -528,7 +528,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
         root,
         memory,
         taskKey: selection.taskKey,
-        subject: issueSummary(selection.task) ?? selection.taskKey,
+        subject: review.taskSubject ?? selection.taskKey,
         round: round.number,
         review,
         priorFindings,
@@ -706,6 +706,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     const review: ReviewOutput = {
+      taskSubject: issueSummary(issue) ?? selection.taskKey,
       profile: settings.reviewerProfile,
       headRevision: reviewedHead,
       ...response,
