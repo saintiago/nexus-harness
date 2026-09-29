@@ -171,3 +171,12 @@ output. The Idea editor consumes their contributions and responds to the Challen
 answers, rebuttals or focused requests. Challenger results bind to the exact refined idea revision
 and editor response assessed. Actions persist those outputs and return typed outcomes; XState routes
 them and enforces the cycle limit. Source updates belong to explicit publication actions.
+
+## Terminal experience handoffs
+
+Every workflow invokes the shared [AnalyzeExperience](analyze-experience.md) action after terminal
+handoffs for selected work, on success and failure paths, before the next selection, final return or
+recovery. The action receives a generic handoff and producer-owned evidence; it has no task-source
+API. Preserve the original outcome and destination even when learning is skipped or unavailable.
+Intermediate retries and empty selection are not experience handoffs. The action contract owns
+background durability and the exclusive automatic Memory dependency; agents retain explicit MCP.

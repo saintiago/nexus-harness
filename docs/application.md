@@ -272,13 +272,10 @@ diagnoses execution failures without conflating them with idea decisions or cycl
 
 ## Memory composition
 
-Construct the optional service client and configure agent MCP access under the
-[Memory integration contract](memory/integration.md). Application owns durable completion-analysis
-requests and their background execution, including restart after a finite delivery worker exits.
-Workers publish confirmed completion inputs; their business outcome does not wait for analysis.
-Retain requests and evidence outside disposable workflow attempts. The shared AMEM service owns
-providers, writer coordination and accepted ingestion; closing a Nexus client does not stop it.
-Application resumes pending analysis before an execution's work and settles it after the worker
-exits, including when the queue drained, awaiting that work before the process ends. It reports
-outstanding analysis or submissions as diagnostics and surfaces memory and analysis failures
-without invoking business recovery solely for them or changing the execution result.
+Bind [AnalyzeExperience](task-engine/actions/analyze-experience.md) into every workflow's terminal
+handoff paths under [Memory integration](memory/integration.md). Application supervises and resumes
+the action-owned durable background capability across worker exit, queue drain and restart. It does
+not construct a memory client, process observations independently or automatically ingest/recall memory in other roles. It retains explicit agent MCP configuration
+through the coding provider settings. Memory calls and analysis logic belong exclusively to the action. Settling pending work
+reports diagnostics without changing business results. Operational-error handoffs retain the
+original fault and wait for active agents to settle before invoking the action and then recovery.
