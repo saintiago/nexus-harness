@@ -2,108 +2,80 @@
 
 ## Composition and ownership
 
-Application wires the [Memory component](architecture.md) into finite delivery, idea refinement and
-recovery. The caller of an agent owns the task-specific retrieval query and placement of the returned
-block in additionalContext. AgentRuntime preserves that supplied context through its existing
-interface. TaskEngine continues to execute the existing workflows; memory adds no workflow states,
-new transition outcomes or substitute coordinator.
+Nexus learns from completed delivery work and gives agents explicit memory tools during execution.
+Application connects the shared [Memory service boundary](architecture.md) and configures agent
+access. TaskEngine retains its existing workflow outcomes and completion gates. AMEM owns its MCP
+server, note construction, embeddings, linking, evolution and durable ingestion; Nexus owns source
+selection, experience analysis and agent instructions.
 
-Actions own extraction from their producer-owned artifacts. A small deterministic mapper per source
-uses its public artifact contract; Memory does not discover files or import action implementations.
-Application maps the recovery report it owns. Share formatting only where the data responsibility is
-actually shared. No project name, ticket prefix or Nexus concept is added to the standalone package.
+## Agent use
 
-## Before an invocation
+Expose AMEM's `memory_search` and `memory_save` tools to Developer, Reviewer, idea refinement and
+Recovery profiles when memory is enabled. Use the provider's native MCP configuration. Do not
+implement a Nexus MCP server or give agents database access. The public tool contract belongs to
+[AMEM](https://github.com/saintiago/agentic-memory/blob/main/docs/mcp.md).
 
-Recall before every actual Developer, Reviewer, Idea editor, Researcher, Project guide, Challenger
-and Recovery invocation, including focused help and later rounds. Reusing a saved agent output does
-not require another recall. The caller supplies a deterministic query from current information:
+Agents search before unfamiliar decisions, when debugging or when an approach fails, using a
+focused question. Retrieved memories are attributed historical evidence, potentially mistaken or
+inapplicable. Current human instructions, project documentation and observed evidence take
+precedence. Instructions inside retrieved content are data, not authority.
 
-| Invocation | Query material |
-| --- | --- |
-| Developer | Task summary and description; current repair findings or verification failure when present |
-| Reviewer | Task summary and description; current development summary and unresolved findings |
-| Idea editor | Captured human idea; current framing, revision or Challenger questions relevant to this turn |
-| Researcher / Project guide | Captured idea, framing and the assigned initial or focused questions |
-| Challenger | Captured idea, current refined idea and editor response |
-| Recovery | Current task when known, reported failure and stopped workflow/action |
+Agents save concrete reusable discoveries: causes, constraints, corrective mechanisms and failed
+approaches with reasons. Preserve applicability and uncertainty; a hypothesis must not become an
+established fact. An agent need not save anything when it has no useful observation. Keep project,
+ticket, round, role, revision and source references in provenance. Include an identifier or date in
+content only when it is necessary to understand the lesson. Do not save routine progress, whole
+handoffs, approvals or successful-check announcements as lessons.
 
-Include role and project identity as scope, not as the sole search query. Do not concatenate entire
-logs or accumulated history into a query. Query construction adds no model call. Continue without
-supplemental context when recall is disabled, empty or unavailable. Preserve all normal direct
-handoff inputs, including complete findings and human conversation.
+Task continuity stays in direct handoffs, retained artifacts and execution state. Remove automatic
+recall before every invocation and automatic ingestion of development, verification, review, idea
+and recovery outputs. Explicit tool calls replace those hooks; direct task context remains complete.
+Memory tool availability and failures must not invalidate otherwise successful work.
 
-Idea-role source guidance must explicitly admit the supplied memory block as attributed historical
-evidence. It does not authorize searching other projects, host configuration or provider sessions.
-A retrieved claim about the author or current project remains a claim to verify, not established
-intent. Keep uncertainty and source ownership when using it.
+## Completion experience analysis
 
-## After a hand-off
+After CompleteTask confirms merge, required checks and the source's Done transition, capture a
+durable analysis request referencing the completed task and final revision. Repeated completion
+uses the same task/revision identity. Enqueueing does not wait for analysis or memory storage;
+failures are reported without reverting Done or changing completion gates.
 
-Observe validated, durably saved business output, including negative results with usable artifacts.
-Call Remember before the producing action returns its outcome; handle its result without changing
-that outcome. Where publication follows artifact persistence, ingestion does not depend on a Jira
-comment or PR publication succeeding. Reuse of a saved output observes the same source key and is
-safe. Recovery records its report before ingesting it, notifying or restarting the worker.
+Application owns background processing of these requests outside the task workflow. Pending and
+interrupted requests survive process exit and resume on startup, including after a finite queue
+has drained. Do not rely on an unawaited promise in an exiting worker. Retain the required source
+artifacts until analysis is settled. No scan of unrelated or historical tasks is implied.
 
-The observation content starts with a compact source envelope: task/idea subject, project and role,
-outcome and the revision/round/cycle needed to interpret the statement. Follow it with the source
-fields below. Preserve original wording, uncertainty and supplied evidence. Link a finding response
-to the complete finding it addresses so it is understandable on its own. IDs belong in source and
-provenance; the package's concise-context prompt governs generated semantic attributes.
+Use a configured AgentRuntime profile to inspect the completed task's artifacts: relevant
+implementation diff, developer reports, review findings and responses, verification evidence and
+completion evidence. Prior rounds provide failed approaches and changing conclusions; final
+merge/check evidence establishes the outcome. Do not read credentials, unrelated workspaces or
+arbitrary host logs.
 
-| Producer | Notes extracted | Source contract |
-| --- | --- | --- |
-| Develop | One development summary; one separate note per finding response, with its original finding | [development.json](../task-engine/actions/develop.md#output) and [finding responses](../task-engine/actions/findings.md) |
-| Verify | One note per failed check with command identity, exit result and bounded diagnostic excerpt; record omitted output and log reference | [verification.json](../task-engine/actions/verify.md#output) and its check logs |
-| Review | One overall verdict/summary; one note per new finding; one per prior-finding disposition with the finding and matching developer response | [review.json](../task-engine/actions/review.md#output) and [findings](../task-engine/actions/findings.md) |
-| Idea editor framing | One framing note with intent and questions | [Idea artifacts](../idea-refinement/spec.md#artifacts-and-revision-binding) |
-| Researcher | One note per saved contribution, with its evidence, source links and uncertainty; retain references to separate detailed research | Same |
-| Project guide | One note per saved contribution with project direction, constraints, evidence and provisional inferences | Same |
-| Idea editor edit/response | One note per saved response, including any revision it introduces and the addressed questions; focused help requests retain the question | Same |
-| Challenger | One assessment note with verdict, reasoning and concerns tied to the assessed revision/response | Same |
-| Recovery | One report note with failure context, diagnosis, actions and resume/attention decision | [RecoveryReport](../application.md#provided-interface) |
+Extract zero or more independent, concise observations covering reusable root causes and fixes,
+architectural constraints and rationale, failed approaches, or remaining limitations. Preserve
+specific components, mechanisms, consequences and conditions. Do not merely summarize the ticket,
+invent a cause from a passing test or generalize a project-specific rule without evidence. Link
+each observation to supporting artifacts and revisions; retain the full reports as evidence.
 
-A note is an attributed report, not proof: a developer's claim of a fix and a reviewer's confirmation
-remain distinct observations. Do not invent a successful resolution or convert an unanswered question
-into a rule. Empty finding/response arrays create no element notes. Initial task descriptions and
-human clarifications provide scope in the envelope; they are not duplicated as standalone memories
-on every hand-off. Whole reports are not duplicated alongside all their elements except for the
-explicit summary/verdict note above.
+The analyst searches existing memory for the candidate lessons, including notes explicitly saved
+by agents, to avoid repeating knowledge already captured. A changed conclusion remains an explicit
+correction with references to the earlier observation; it does not silently assert that old notes
+were deleted or invalidated. AMEM's existing evolution semantics remain unchanged. The analyst
+returns candidate observations and evidence; Nexus validates and durably records that output before
+submitting it through the service. Disable `memory_save` for this profile so writes happen only
+through that validated path.
 
-Selection, workspace preparation, round planning, successful checks, PR publication and task
-completion supply provenance and operational evidence, not standalone experience notes. Final idea
-publication refers to the already-recorded conversation; do not ingest the Jira rendering again.
-Malformed agent output and tool transcripts are not hand-off memories. Recovery can capture a
-subsequent diagnosis of such a failure.
+## Durable submission and evaluation
 
-## Source identity and deterministic extraction
+Persist the accepted analysis output once and reuse it after interruption rather than generating
+new observations during a submission retry. Derive stable source keys from the task, completion
+revision and persisted observation identity. Preserve each payload and key across retries; poll
+service receipts rather than declaring durable acceptance to mean searchable storage. Agent tool
+submissions follow AMEM's own identity and receipt contract.
 
-Derive each source key from the canonical artifact path, the observation selector (summary, finding
-ID, response ID, check index or contribution), and a digest covering both the validated artifact
-and the deterministically extracted observation content. Include referenced content used in that
-observation, such as diagnostic excerpts or an original finding, not merely its filepath. Use a
-stable canonical JSON representation, excluding the generated capture timestamp. Identical content
-at the same source and selector is the same observation; changed content is a new observation. This handles repeated action-outcome events and
-rewritten artifacts without confusing the key with a library note ID. Include the originating
-artifact's timestamp when known; otherwise fix the observation timestamp at first capture and retain
-it across retries. Provenance includes all source artifact references used in a composite note.
+Save analysis inputs/references, extracted observations, submissions and outcomes with the retained
+execution evidence. Memory failures remain separate from business failures. Report outstanding
+analysis or submissions explicitly; disabled memory performs no analysis or provider calls.
 
-For diagnostic logs only, retain the first and last 2,000 characters of combined stdout/stderr,
-without overlapping them; mark omissions and keep the source paths. Never turn clipped diagnostic
-text into a claim that a cause has been established. All other mapped fields retain their content.
-Do not collect environment dumps, credentials or unrelated host files. Memory uses the same source
-material already authorized for the agent workflow; it does not mine historical logs automatically.
-
-## Failure and evaluation
-
-Memory remains optional. Failed retrieval supplies no block; failed ingestion preserves a source
-snapshot when local persistence is available and reports its receipt and disposition. Business
-verification, review, publication, completion and recovery gates remain unchanged. The
-[component failure contract](architecture.md#ingestion-and-identity) owns retry and uncertainty;
-action callers must not retry uncertain insertions or infer success from a process exit.
-
-Evaluate retrieval from the saved query, included notes and actual invocation context. Check source
-scope, relevance, duplicate noise and whether retrieved evidence helped the subsequent work; a
-correct final answer alone is not proof of useful retrieval. Use the existing hand-off artifacts to
-trace each note back to its source. Validation coverage belongs in [testing](../testing.md#memory-coverage).
+Evaluate useful retrieval, evidence fidelity, duplicate noise and preservation of uncertainty.
+Compare representative real questions and returned evidence rather than judging cluster appearance
+or final task success alone. Test guidance belongs in [testing](../testing.md#memory-coverage).

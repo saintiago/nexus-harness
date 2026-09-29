@@ -38,7 +38,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Idea refinement | Four role profile references and the maximum conversation cycles per selection |
-| Memory | Optional enablement, store identity, Qdrant, embedding and model settings, retrieval and lock limits |
+| Memory | Optional enablement, service URL, MCP access and completion-analysis profile |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -104,22 +104,13 @@ The operator command selects the workflow explicitly.
 
 ## Memory settings
 
-Nexus owns the optional `memory` settings; omission or `enabled: false` disables the integration.
-When enabled, require a nonempty `storeId`, Qdrant URL and collection, explicit embedding cache path
-and download permission, model endpoint and ID, and any provider credential references. Resolve
-secrets through the existing Credentials settings. Use the standalone package's pinned reference
-encoder and default prompts; model generation has thinking disabled. Host transport must support
-that provider setting explicitly rather than assuming a profile's effort value controls it.
+Nexus owns optional `memory` settings; omission or `enabled: false` disables tools and completion
+analysis. When enabled, require a service URL and configured experience-analysis profile. Agent
+profiles use the AMEM MCP entry point and service URL through native tool settings. The analysis
+profile can search memory but cannot save directly; Nexus submits its validated output.
 
-Use `neighbors: 5`, `searchLimit: 5`, `linkedLimit: 5`, `contextMaxChars: 12000`,
-`lockWaitMs: 5000`, `providerTimeoutMs: 120000` and `modelMaxOutputTokens: 6000` as defaults.
-Counts and context/output bounds are positive integers; linkedLimit and lockWaitMs may be zero.
-Timeout is a positive integer in milliseconds. The context bound includes the framing and source
-labels, as defined by [Memory](memory/architecture.md#retrieval).
-
-A storeId names the receipt/coordination directory, not a project. Several local project runs may
-share it. Every writer of the same Qdrant endpoint/collection must use the same storeId and storage
-root; reusing a storeId for a different endpoint/collection is invalid. Persist and check that binding
-before writing. Collection aliases or access from other hosts require operator coordination; local
-locking is not distributed locking. Provider initialization failure degrades memory availability,
-while structurally invalid settings are configuration errors. Existing configurations remain valid.
+AMEM owns collection, encoder, model and durable ingestion settings. Nexus no longer configures
+Qdrant, encoder caches, memory-generation credentials, neighbor evolution or writer locks. Remove
+those obsolete direct-integration settings when migrating; do not silently fall back to direct
+access. Structurally invalid settings fail configuration; a valid but unavailable service degrades
+only memory access. Existing configurations with memory disabled remain valid.

@@ -37,9 +37,8 @@ type ReviewOutput = {
 type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings' | 'priorFindings'>;
 ```
 
-The action captures the refreshed task subject in taskSubject when saving a new report. Memory
-uses this retained subject on production and replay, even if selection is refreshed later. Older
-reports without it use the stable task key as their envelope subject.
+The action captures the refreshed task subject in taskSubject when saving a new report, retaining
+the subject for later artifact interpretation even if task selection is refreshed.
 
 Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
 its finding definitions, identity/disposition rules and verdict rules in the context. Parse and validate the response, then add

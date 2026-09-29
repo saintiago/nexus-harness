@@ -44,9 +44,8 @@ type DevelopmentOutput = {
 type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary' | 'findingResponses'>;
 ```
 
-The action captures the refreshed task subject in taskSubject when saving a new report. Memory
-uses this retained subject on production and replay, even if selection is refreshed later. Older
-reports without it use the stable task key as their envelope subject.
+The action captures the refreshed task subject in taskSubject when saving a new report, retaining
+the subject for later artifact interpretation even if task selection is refreshed.
 
 Request one JSON object conforming to DevelopmentResponse as the agent's final output. Include that
 shape, FindingResponse and its response/identity rules in context. Require exactly one response per supplied finding ID; use an

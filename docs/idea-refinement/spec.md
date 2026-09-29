@@ -165,11 +165,10 @@ and waiting-for-feedback mappings. Nexus supplies four role profiles and the cyc
 source configuration mechanism is needed. HARN uses `Idea`, `Idea Refinement`, `Draft` and
 `Waiting for Feedback`, respectively.
 
-The [memory integration](../memory/integration.md) may supply a bounded, attributed historical
-evidence block before each role invocation. It is an explicit input, not permission to inspect
-unrelated workspaces or host history. Preserve its uncertainty and source ownership; it cannot
-override human intent or establish current project facts without relevant evidence. Saved role
-outputs feed the documented memory mapping after validation and persistence.
+The [memory integration](../memory/integration.md#agent-use) exposes optional explicit search/save
+tools to idea roles. Historical results preserve uncertainty and source ownership; they cannot
+override human intent or establish project facts without evidence. Direct conversation artifacts
+remain the handoff; saved role outputs are not automatically ingested.
 
 ## Conversation and cycles
 

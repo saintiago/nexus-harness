@@ -266,9 +266,10 @@ diagnoses execution failures without conflating them with idea decisions or cycl
 
 ## Memory composition
 
-Construct optional [Memory](memory/architecture.md) from resolved Nexus settings and supply it to
-worker action callers and recovery under the [integration contract](memory/integration.md). Each
-process owns its providers and closes them after settling operations. All writers sharing a store
-use its common receipt directory and OS lock. The parent starts recovery only after worker exit.
-Provide per-invocation retrieval evidence paths beside agent logs, and surface memory failures
-without invoking recovery solely for them. Existing execution and recovery decisions remain intact.
+Construct the optional service client and configure agent MCP access under the
+[Memory integration contract](memory/integration.md). Application owns durable completion-analysis
+requests and their background execution, including restart after a finite delivery worker exits.
+Workers publish confirmed completion inputs; their business outcome does not wait for analysis.
+Retain requests and evidence outside disposable workflow attempts. The shared AMEM service owns
+providers, writer coordination and accepted ingestion; closing a Nexus client does not stop it.
+Surface memory and analysis failures without invoking business recovery solely for them.
