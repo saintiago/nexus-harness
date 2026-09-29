@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import {
+  createAnalysisAgentRuntimeSettings,
   createAgentRuntimeSettings,
   createConfiguredMemory,
   executionPaths,
@@ -29,7 +30,7 @@ import {
   parseProjectConfiguration,
   type NexusConfiguration,
 } from '../src/configuration/index.js';
-import { memoryUseGuidance } from '../src/agent-runtime/index.js';
+import { memoryAnalysisGuidance, memoryUseGuidance } from '../src/agent-runtime/index.js';
 import { ok } from '../src/result.js';
 import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
@@ -266,6 +267,36 @@ describe('memory composition', () => {
     expect(settings.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
       true,
     );
+    expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
+  });
+
+  it('runs the configured analysis profile with search-only memory tools and guidance', () => {
+    const configured = memoryNexus('/srv/nexus/state');
+    const settings = createAnalysisAgentRuntimeSettings(
+      configured,
+      unusedCapability<CodingRuntime>('coding runtime'),
+    );
+
+    // The configured analysis profile carries the AMEM server restricted to search: Nexus submits
+    // the validated output itself, so the analyst cannot save directly.
+    const analyst = settings.profiles.find((profile) => profile.id === 'nexus-astra');
+    expect(analyst?.toolSettings).toEqual({
+      profile: 'nexus-astra',
+      config: {
+        'mcp_servers.amem.command': 'npm',
+        'mcp_servers.amem.args': ['run', '--silent', 'mcp'],
+        'mcp_servers.amem.cwd': path.join(installationDirectory, 'agentic-memory'),
+        'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: 'http://127.0.0.1:4748' },
+        'mcp_servers.amem.enabled': true,
+        'mcp_servers.amem.enabled_tools': ['memory_search'],
+      },
+    });
+    expect(
+      settings.profiles
+        .filter((profile) => profile.id !== 'nexus-astra')
+        .every((profile) => profile.toolSettings['config'] === undefined),
+    ).toBe(true);
+    expect(settings.baseInstructions).toContain(memoryAnalysisGuidance);
     expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
   });
 });

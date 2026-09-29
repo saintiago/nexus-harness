@@ -46,6 +46,10 @@ import { createStartIdeaRound } from '../task-engine/actions/start-idea-round/in
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
 import {
+  completionAnalysisDirectory,
+  createCompletionAnalysisRequestPublisher,
+} from './analysis.js';
+import {
   createAgentRuntimeSettings,
   workspaceRoot,
   type ExecutionPaths,
@@ -164,6 +168,15 @@ function finiteDeliveryActions(
   // constant instructions.
   const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
   const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
+  // A memory-disabled configuration records no analysis request, so completion performs no
+  // analysis or provider call and no local observation write.
+  const requestAnalysis =
+    nexus.memory?.enabled === true
+      ? createCompletionAnalysisRequestPublisher({
+          directory: completionAnalysisDirectory(paths.directory),
+          project: project.taskSource.project,
+        })
+      : null;
 
   /** An action constructed with the selection the workflow currently retains. */
   const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
@@ -255,6 +268,7 @@ function finiteDeliveryActions(
       jira: settings.jira,
       publish,
       wait: settings.wait,
+      requestAnalysis,
     }),
   };
 }

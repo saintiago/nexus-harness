@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { GitHubAdapter } from '../../../adapters/github.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
+import { messageOf } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
@@ -20,7 +21,10 @@ import { completionArtifact, type CompletionOutput } from './artifacts.js';
  *
  * The recorded completion evidence is reused on repetition, so only the outstanding completion
  * step runs again. A merged pull request or an already-completed ticket does not by itself establish
- * that the post-merge checks passed. Adapter faults are execution errors.
+ * that the post-merge checks passed. Once Done is confirmed, the action captures one durable
+ * experience-analysis request for the task and final revision; recording never waits for analysis
+ * or memory storage and its failure is reported without changing the outcome. Adapter faults are
+ * execution errors.
  */
 
 export type CompleteTaskSettings = {
@@ -46,6 +50,23 @@ export type CompleteTaskSettings = {
   readonly publish: EventPublisher;
   /** Wait before the next completion poll; supplied so tests control time instead of passing it. */
   readonly wait: (milliseconds: number) => Promise<void>;
+  /**
+   * Records one confirmed completion for asynchronous experience analysis. Null when memory is
+   * disabled: no request, analysis or provider call happens then. Recording never waits for the
+   * analysis and its failure is reported without changing the completion outcome.
+   */
+  readonly requestAnalysis: ((request: ConfirmedCompletion) => Promise<void>) | null;
+};
+
+/**
+ * The confirmed completion Application durably records for asynchronous experience analysis: the
+ * completed task, its final merge revision and the workspace retaining the source artifacts. The
+ * task and revision are the request's identity, so repeated completion reuses it.
+ */
+export type ConfirmedCompletion = {
+  readonly taskKey: string;
+  readonly completionRevision: string;
+  readonly workspaceRoot: string;
 };
 
 /** One observation of the publication's merge state. */
@@ -316,6 +337,27 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       return 'completed';
     }
 
+    /**
+     * Confirm Done and capture the durable analysis request afterwards. Analysis and memory
+     * storage never delay completion, and a request that cannot be recorded is reported without
+     * reverting the Done transition or changing the returned outcome.
+     */
+    async function finishCompletion(completionRevision: string): Promise<'completed' | 'failed'> {
+      const outcome = await completeTicket();
+      if (outcome === 'completed' && settings.requestAnalysis !== null) {
+        try {
+          await settings.requestAnalysis({ taskKey, completionRevision, workspaceRoot: root });
+        } catch (error) {
+          settings.publish({
+            source: 'complete-task',
+            type: 'analysis-request-failed',
+            data: { task: taskKey, revision: completionRevision, reason: messageOf(error) },
+          });
+        }
+      }
+      return outcome;
+    }
+
     // Confirmed evidence for this task and pull request is reused: a merged pull request is not
     // enough on its own, but the saved evidence already carries the checks confirmed for its merge.
     const confirmed =
@@ -331,7 +373,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
         return fail(observed.reason);
       }
       if (observed.kind === 'merged' && observed.revision === confirmed.mergeRevision) {
-        const outcome = await completeTicket();
+        const outcome = await finishCompletion(confirmed.mergeRevision);
         report(outcome);
         return outcome;
       }
@@ -383,7 +425,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       checks: observed.checks,
     };
     await helpers.writeOutputArtifact(completionArtifact, output);
-    const outcome = await completeTicket();
+    const outcome = await finishCompletion(merge.revision);
     report(outcome);
     return outcome;
   };

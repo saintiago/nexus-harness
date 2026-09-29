@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { AgentResult } from '../src/agent-runtime/index.js';
 import type {
   CodingRuntime,
   CodingRuntimeRequest,
@@ -33,6 +34,12 @@ import type {
 } from '../src/adapters/github.js';
 import type { JiraAdapter, JiraComment, JiraIssue, JiraTransition } from '../src/adapters/jira.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
+import {
+  analysisObservationSourceKey,
+  completionAnalysisDirectory,
+  completionAnalysisIdentity,
+  type AnalysisAgentRequest,
+} from '../src/application/analysis.js';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import { runOperatorCommand } from '../src/application/command.js';
 import { executionPaths, toolEnvironment } from '../src/application/composition.js';
@@ -74,6 +81,7 @@ import type { VerificationOutput } from '../src/task-engine/actions/verify/artif
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
+import { controlledMemoryService, type ControlledMemoryService } from './support/memory.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 /** The configured workflow is the real finite workflow module, loaded through Application. */
@@ -109,14 +117,23 @@ const hostEnvironment = {
 const mergeRevision = '4'.repeat(40);
 
 const temporaryDirectories: string[] = [];
+const memoryServices: ControlledMemoryService[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
+  await Promise.all([
+    ...memoryServices.splice(0).map((service) => service.close()),
+    ...temporaryDirectories
       .splice(0)
       .map((directory) => rm(directory, { recursive: true, force: true })),
-  );
+  ]);
 });
+
+/** One controlled AMEM service closed after the test. */
+async function controlledService(): Promise<ControlledMemoryService> {
+  const service = await controlledMemoryService();
+  memoryServices.push(service);
+  return service;
+}
 
 /** Decode one stream's chunks as text. */
 function textOf(outputs: readonly ProcessOutput[], stream: ProcessOutput['stream']): string {
@@ -217,6 +234,10 @@ const unexpectedRecovery: RecoveryTurn = () =>
     decision: { kind: 'needs-attention' },
   });
 
+/** The default analysis turn: the completed work holds no reusable lesson. */
+const noLessons = (): Promise<AgentResult> =>
+  Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+
 /**
  * The in-process worker launch: the real worker wiring (configuration loading, workflow loading,
  * TaskEngine over the real action binding), with the external service and agent capabilities
@@ -282,6 +303,8 @@ type Journey = {
   readonly activity: readonly AgentActivity[];
   readonly prompts: readonly string[];
   readonly requests: readonly CodingRuntimeRequest[];
+  /** The parent's completion-analysis invocations, after confirmed completions. */
+  readonly analyses: readonly AnalysisAgentRequest[];
   readonly recoveries: readonly RecoveryInvocationRequest[];
   readonly notifications: readonly { readonly subject: string; readonly body: string }[];
   readonly diagnostics: readonly string[];
@@ -305,6 +328,8 @@ async function finiteJourney(
   options: {
     readonly memory?: boolean;
     readonly memoryServiceUrl?: string;
+    /** The controlled analyst turn; the default reports no reusable lesson. */
+    readonly analysis?: (request: AnalysisAgentRequest) => Promise<AgentResult>;
   } = {},
 ): Promise<Journey> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-journey-'));
@@ -517,6 +542,7 @@ async function finiteJourney(
   const activity: AgentActivity[] = [];
   const prompts: string[] = [];
   const requests: CodingRuntimeRequest[] = [];
+  const analyses: AnalysisAgentRequest[] = [];
   const recoveries: RecoveryInvocationRequest[] = [];
   const notifications: { readonly subject: string; readonly body: string }[] = [];
   const diagnostics: string[] = [];
@@ -534,6 +560,7 @@ async function finiteJourney(
     activity,
     prompts,
     requests,
+    analyses,
     recoveries,
     notifications,
     diagnostics,
@@ -594,6 +621,12 @@ async function finiteJourney(
             ...settings,
             launchWorker,
             recovery,
+            analysis: () => ({
+              analyze: (request) => {
+                analyses.push(request);
+                return (options.analysis ?? noLessons)(request);
+              },
+            }),
           });
           application.subscribe((event) => events.push(event));
           application.subscribeActivity((packet) => activity.push(packet));
@@ -1204,10 +1237,136 @@ describe('finite execution journeys', () => {
     await expect(
       stat(path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+    // The confirmed completion was recorded once and analyzed after the queue drained; the
+    // controlled analyst reported no reusable lesson, so nothing was submitted.
+    expect(journey.analyses).toHaveLength(1);
+    expect(journey.analyses[0]?.workspace.root).toBe(journey.workspace);
+    expect(journey.analyses[0]?.context).toContain('Round artifacts:');
+    const requests = await readdir(
+      path.join(completionAnalysisDirectory(journey.executionDirectory), 'requests'),
+    );
+    expect(requests).toHaveLength(1);
+    expect(journey.diagnostics).toEqual([]);
+  });
+
+  it('analyzes a confirmed completion and settles its submission after a restart', async () => {
+    const service = await controlledService();
+    let statusAtAnalysis = '';
+    let journeyHandle: Journey | null = null;
+    const journey = await finiteJourney({
+      memory: true,
+      memoryServiceUrl: service.url,
+      analysis: (request) => {
+        // The analyst runs only after the worker confirmed the merge, the checks and Done.
+        statusAtAnalysis = journeyHandle?.status() ?? '';
+        return Promise.resolve(
+          ok({
+            output: JSON.stringify({
+              observations: [
+                {
+                  content: 'The completion artifact binds the merged revision to its checks.',
+                  evidence: [
+                    {
+                      path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
+                      revision: mergeRevision,
+                      detail: 'The completion evidence of the merged revision.',
+                    },
+                  ],
+                  relatedMemories: [],
+                },
+              ],
+            }),
+          }),
+        );
+      },
+    });
+    journeyHandle = journey;
+
+    const exitCode = await journey.run([
+      developerTurn(async (request) => {
+        await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
+        await commitAll(request.directory, 'add the feature');
+        return {
+          status: 'completed',
+          summary: 'Added feature.txt for the analysis journey.',
+          findingResponses: [],
+        };
+      }),
+      reviewerTurn(async () => ({
+        verdict: 'approved',
+        summary: 'The change fulfils the task.',
+        findings: [],
+        priorFindings: [],
+      })),
+    ]);
+
+    const result = journey.finished();
+    expect(exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.outcome).toBe('completed');
+    expect(journey.status()).toBe('Done');
+    // Analysis ran only after the confirmed completion, and the outcome did not wait for memory.
+    expect(statusAtAnalysis).toBe('Done');
+    expect(journey.analyses).toHaveLength(1);
+    const submitted = service.requests.find((request) => request.path === '/v1/observations')
+      ?.body as { readonly sourceKey: string; readonly content: string } | undefined;
+    // The stable source key binds the task, the merge revision and the persisted observation.
+    expect(submitted?.sourceKey).toBe(analysisObservationSourceKey('NEX-1', mergeRevision, '1'));
+    expect(submitted?.content).toBe(
+      'The completion artifact binds the merged revision to its checks.',
+    );
+    // Acceptance is queued durably, not stored: the outstanding submission is reported.
+    expect(journey.diagnostics.join('')).toContain(
+      'the submission of observation 1 of task NEX-1 is outstanding',
+    );
+
+    // The stored receipt settles the submission on the next start without another analysis.
+    service.store(analysisObservationSourceKey('NEX-1', mergeRevision, '1'));
+    const reported = journey.diagnostics.length;
+    const restarted = await journey.run([]);
+
+    expect(restarted).toBe(0);
+    expect(journey.analyses).toHaveLength(1);
+    expect(journey.diagnostics.slice(reported)).toEqual([]);
+    const submission = JSON.parse(
+      await readFile(
+        path.join(
+          completionAnalysisDirectory(journey.executionDirectory),
+          'submissions',
+          `${completionAnalysisIdentity('NEX-1', mergeRevision)}`,
+          '1.json',
+        ),
+        'utf8',
+      ),
+    ) as { readonly status: string; readonly noteId: string | null };
+    expect(submission.status).toBe('stored');
+    expect(submission.noteId).not.toBeNull();
   });
 
   it('keeps the business outcome when the configured memory service is unreachable', async () => {
-    const journey = await finiteJourney({ memory: true, memoryServiceUrl: 'http://127.0.0.1:1' });
+    const journey = await finiteJourney({
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+      analysis: (request) =>
+        Promise.resolve(
+          ok({
+            output: JSON.stringify({
+              observations: [
+                {
+                  content: 'A lesson the unreachable service cannot accept.',
+                  evidence: [
+                    {
+                      path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
+                      revision: mergeRevision,
+                      detail: 'The completion evidence.',
+                    },
+                  ],
+                  relatedMemories: [],
+                },
+              ],
+            }),
+          }),
+        ),
+    });
 
     const exitCode = await journey.run([
       developerTurn(async (request) => {
@@ -1231,8 +1390,13 @@ describe('finite execution journeys', () => {
     expect(exitCode, JSON.stringify(result)).toBe(0);
     expect(result.outcome).toBe('completed');
     expect(journey.status()).toBe('Done');
-    // Memory is supplemental: no workflow event or diagnostic records an outage.
+    // Memory is supplemental: the outage is reported as outstanding work, no workflow event
+    // changes and no business recovery runs for it.
     expect(journey.events.filter((event) => event.type === 'memory')).toEqual([]);
-    expect(journey.diagnostics.join('')).not.toContain('memory');
+    expect(journey.recoveries).toEqual([]);
+    expect(journey.diagnostics.join('')).toContain(
+      'Nexus memory analysis: the submission of observation 1 of task NEX-1 is outstanding',
+    );
+    expect(journey.diagnostics.join('')).toContain('could not be reached');
   });
 });

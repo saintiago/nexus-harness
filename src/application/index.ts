@@ -2,9 +2,12 @@ import path from 'node:path';
 import {
   loadNexusConfiguration,
   loadProjectConfiguration,
+  type NexusConfiguration,
+  type ProjectConfiguration,
   type WorkflowName,
 } from '../configuration/index.js';
-import type { ArtifactRef, Observer } from '../result.js';
+import type { Memory } from '../memory/index.js';
+import { messageOf, type ArtifactRef, type Observer } from '../result.js';
 import { readRecord } from '../task-engine/actions/records.js';
 import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
@@ -22,6 +25,12 @@ import {
   toolEnvironment,
   workerProcessEnvironment,
 } from './composition.js';
+import {
+  completionAnalysisDirectory,
+  createCompletionAnalysis,
+  type CompletionAnalysis,
+} from './analysis.js';
+import { createAnalysisRuntime, type AnalysisRuntimeFactory } from './analysis-runtime.js';
 import { createActivityLog } from './activity-log.js';
 import {
   createExecutionLog,
@@ -119,12 +128,50 @@ export type ApplicationSettings = {
    * runtime so no provider, ticket or notification service is contacted.
    */
   readonly recovery?: RecoveryRuntimeFactory;
+  /**
+   * Builds the completion-experience analyst; the default wires the configured analysis profile
+   * over the coding provider. Tests substitute a controlled analyst so no provider turn is spent.
+   */
+  readonly analysis?: AnalysisRuntimeFactory;
 };
 
 /** How one worker launch ended, as execution completion or a failure that needs recovery. */
 type Completion =
   | { readonly kind: 'completed'; readonly outcome: string }
   | { readonly kind: 'stopped'; readonly failure: string; readonly diagnostics: string };
+
+/**
+ * The completion-analysis lifecycle of one execution: the configured analyst over the project's
+ * durable request store, or a no-op when memory is disabled. A disabled integration performs no
+ * analysis, provider call or local observation write.
+ */
+function configuredCompletionAnalysis(
+  nexus: NexusConfiguration,
+  project: ProjectConfiguration,
+  settings: ApplicationSettings,
+  memory: Memory,
+): CompletionAnalysis {
+  const configured = nexus.memory;
+  if (configured === undefined || !configured.enabled) {
+    return { processPending: () => Promise.resolve([]) };
+  }
+  const runtime = (settings.analysis ?? createAnalysisRuntime)({
+    nexus,
+    // The analyst runs with the provider's own settings and without any Nexus credential.
+    environment: toolEnvironment(project, nexus, settings.environment),
+  });
+  return createCompletionAnalysis({
+    // The store sits beside the finite-delivery execution state, outside every task workspace and
+    // any disposable delivery attempt, so requests and evidence survive process exit.
+    directory: completionAnalysisDirectory(
+      executionPaths(nexus, project, 'finite-delivery').directory,
+    ),
+    project: project.taskSource.project,
+    profile: configured.analysisProfile,
+    memory,
+    analyze: (request) => runtime.analyze(request),
+  });
+}
 
 /**
  * Evaluate both the worker's result and its process exit. Zero exit alone is not completion; a
@@ -259,6 +306,27 @@ export function createApplication(settings: ApplicationSettings): Application {
       // Application owns the optional shared-memory client for the whole execution: one client
       // per process, closed after its operations settle. The AMEM service stays running.
       const memory = createConfiguredMemory(nexus, settings.memoryTransport);
+      const analysis = configuredCompletionAnalysis(nexus, project, settings, memory);
+      /**
+       * Resume and settle durable completion-analysis requests. Enqueueing did not wait for the
+       * analysis, and this processing reports its problems as diagnostics without changing the
+       * business outcome or invoking recovery solely for memory.
+       */
+      const settleAnalysis = async (): Promise<void> => {
+        let problems: readonly string[];
+        try {
+          problems = await analysis.processPending();
+        } catch (error) {
+          problems = [`completion-analysis processing failed: ${messageOf(error)}`];
+        }
+        for (const problem of problems) {
+          try {
+            diagnostics.write(`Nexus memory analysis: ${problem}\n`);
+          } catch {
+            // A failed report leaves nothing further to say.
+          }
+        }
+      };
       /** Record and forward one activity packet, so live panes and the durable log both see it. */
       const recordActivity = (activity: AgentActivity): void => {
         activityLog.record(activity);
@@ -282,6 +350,8 @@ export function createApplication(settings: ApplicationSettings): Application {
       listeners.add(log.record);
       try {
         emitLifecycle('starting', null);
+        // A request left pending by an earlier process resumes before this execution's work.
+        await settleAnalysis();
         const recovery = createRecovery({
           nexus,
           project,
@@ -360,6 +430,9 @@ export function createApplication(settings: ApplicationSettings): Application {
           });
         }
       } finally {
+        // The worker exit and a drained queue do not stop the analysis: pending requests settle
+        // before the process ends, and their failures stay diagnostics.
+        await settleAnalysis();
         listeners.delete(log.record);
         await log.close();
         await activityLog.close();

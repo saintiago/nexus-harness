@@ -191,8 +191,14 @@ Finite delivery uses:
 ├── workflow.json
 ├── selection.json
 ├── logs/
-└── recovery/
+├── recovery/
+└── memory/
 ```
+
+`memory/` exists once memory is enabled and retains the project's confirmed completion-analysis
+requests, extracted observations, submissions and outcomes beside the queue execution state. The
+store is outside every task workspace and disposable delivery attempt, so pending and interrupted
+analysis survives process exit.
 
 Idea refinement uses a separate `<storage root>/executions/<project>/idea-refinement/` directory
 with its own workflow.json, selection.json, logs/ and recovery/. Its selected source item and
@@ -272,4 +278,7 @@ requests and their background execution, including restart after a finite delive
 Workers publish confirmed completion inputs; their business outcome does not wait for analysis.
 Retain requests and evidence outside disposable workflow attempts. The shared AMEM service owns
 providers, writer coordination and accepted ingestion; closing a Nexus client does not stop it.
-Surface memory and analysis failures without invoking business recovery solely for them.
+Application resumes pending analysis before an execution's work and settles it after the worker
+exits, including when the queue drained, awaiting that work before the process ends. It reports
+outstanding analysis or submissions as diagnostics and surfaces memory and analysis failures
+without invoking business recovery solely for them or changing the execution result.
