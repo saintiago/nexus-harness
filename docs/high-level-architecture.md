@@ -53,10 +53,10 @@ Workspace and configuration are data designs. One issue workspace retains artifa
 workflows. WorkspaceRef identifies the active workflow area; each workflow owns its artifact layout
 and later workflows can read retained artifacts from the shared issue root.
 
-[Memory](memory/architecture.md) supplies optional historical experience. Application composes it;
-action callers and recovery use the [integration mapping](memory/integration.md) to retrieve before
-agent invocations and ingest saved hand-offs. AgentRuntime receives supplemental text through its
-existing context interface. Workflow routing and authoritative artifacts remain unchanged.
+[Memory](memory/architecture.md) supplies optional historical experience. Application composes the
+shared service client and configures the [AMEM MCP tools](memory/integration.md#agent-use) agents
+use explicitly; completion experience is analyzed asynchronously after confirmed completion.
+Workflow routing, direct hand-offs and authoritative artifacts remain unchanged.
 
 ## Application and configuration
 
@@ -101,7 +101,7 @@ coordination are outside these workflows.
 | Application | Commands, configuration loading, component wiring, worker lifecycle, recovery invocation and process exit | Task phases or judging the adequacy of a recovery repair |
 | OperatorInterface | Event subscriptions, display state and terminal presentation | Commands, execution startup, queue decisions or recovery policy |
 | TaskEngine | XState workflow execution, bound actions, persisted state and event subscriptions | Interpreting action artifacts or operational recovery policy |
-| Memory | Bounded retrieval, ingestion receipts and single-host writer coordination | Workflow decisions or the standalone library's note evolution algorithms |
+| Memory | Service-backed search, observation submission and receipt inspection | Workflow decisions or the AMEM service's semantic memory and ingestion |
 | AgentRuntime | Profiles, prompt assembly, invocation and output collection | Business output schemas, task selection or declaring completion |
 | Adapters | External protocols, authentication and observed results | Business lifecycle or recovery decisions |
 

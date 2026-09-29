@@ -76,22 +76,81 @@ export type CodingRuntimeSettings = {
 };
 
 /**
- * The one tool setting the Codex provider takes: the name of an installed native profile. The CLI
- * layers `$CODEX_HOME/<name>.config.toml` on top of the base user configuration, which leaves the
- * operator's personal defaults in place. The profile configures the research MCP servers, the
- * enabled tools, the connector exclusions and the file and shell permissions the invocation runs
- * with, so the adapter applies permissions by selecting that configuration and never derives them
- * from a role name or prompt text.
+ * The tool settings the Codex provider takes: the name of an installed native profile and
+ * optional native configuration overrides. The CLI layers `$CODEX_HOME/<name>.config.toml` on top
+ * of the base user configuration, which leaves the operator's personal defaults in place. The
+ * profile configures the research MCP servers, the enabled tools, the connector exclusions and
+ * the file and shell permissions the invocation runs with, so the adapter applies permissions by
+ * selecting that configuration and never derives them from a role name or prompt text. Each
+ * override names one native configuration path with the value the caller resolved, for example
+ * `mcp_servers.<name>.command`, and reaches the provider through its own `--config` setting.
  */
 const profileSetting = 'profile';
+const configSetting = 'config';
+
+/** One TOML key: a bare key where the grammar allows it, a quoted key otherwise. */
+function tomlKey(key: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key);
+}
+
+/** The TOML rendering of one configuration override value, or null when it cannot be expressed. */
+function tomlValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (Array.isArray(value)) {
+    const items: string[] = [];
+    for (const item of value) {
+      const text = tomlValue(item);
+      if (text === null) {
+        return null;
+      }
+      items.push(text);
+    }
+    return `[${items.join(', ')}]`;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const entries: string[] = [];
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      const text = tomlValue(nested);
+      if (text === null) {
+        return null;
+      }
+      entries.push(`${tomlKey(key)} = ${text}`);
+    }
+    return `{ ${entries.join(', ')} }`;
+  }
+  return null;
+}
+
+/** The native configuration path one override names. */
+const configurationPath = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/** What the supplied tool settings select: the installed profile and its native overrides. */
+type SelectedToolSettings = {
+  readonly profile: string;
+  /** The `--config` arguments in supply order. */
+  readonly overrides: readonly string[];
+};
 
 /**
- * The installed native profile the supplied tool settings select, or the fault explaining why the
- * settings cannot select one. Unknown settings are errors: applying a setting this adapter does not
- * know would silently ignore what the caller asked for.
+ * The installed native profile and configuration overrides the supplied tool settings select, or
+ * the fault explaining why they cannot. Unknown top-level settings and unexpressible override
+ * values are errors: applying a setting this adapter does not know, or ignoring part of one, would
+ * silently drop what the caller asked for.
  */
-function selectedProfile(toolSettings: Readonly<Record<string, unknown>>): Result<string> {
-  const unsupported = Object.keys(toolSettings).filter((key) => key !== profileSetting);
+function selectedToolSettings(
+  toolSettings: Readonly<Record<string, unknown>>,
+): Result<SelectedToolSettings> {
+  const unsupported = Object.keys(toolSettings).filter(
+    (key) => key !== profileSetting && key !== configSetting,
+  );
   if (unsupported.length > 0) {
     return fault(`Unsupported Codex tool setting "${unsupported.join('", "')}".`);
   }
@@ -99,7 +158,24 @@ function selectedProfile(toolSettings: Readonly<Record<string, unknown>>): Resul
   if (typeof profile !== 'string' || profile.trim() === '') {
     return fault('The Codex tool settings must name the installed profile to select.');
   }
-  return ok(profile);
+  const configured = toolSettings[configSetting];
+  const overrides: string[] = [];
+  if (configured !== undefined) {
+    if (typeof configured !== 'object' || configured === null || Array.isArray(configured)) {
+      return fault('The Codex tool setting "config" must be an object of native values.');
+    }
+    for (const [key, value] of Object.entries(configured as Record<string, unknown>)) {
+      if (!configurationPath.test(key)) {
+        return fault(`The Codex configuration override "${key}" is not a dotted path.`);
+      }
+      const text = tomlValue(value);
+      if (text === null) {
+        return fault(`The Codex configuration override "${key}" cannot be expressed as TOML.`);
+      }
+      overrides.push(`${key}=${text}`);
+    }
+  }
+  return ok({ profile, overrides });
 }
 
 /**
@@ -175,7 +251,7 @@ async function writeOutputSchema(
  * supplied output schema is passed as the provider's own structured-output setting.
  */
 function invocationArguments(
-  profile: string,
+  selected: SelectedToolSettings,
   request: CodingRuntimeRequest,
   outputSchemaFile: OutputSchemaFile | null,
 ): readonly string[] {
@@ -183,10 +259,11 @@ function invocationArguments(
     'exec',
     '--json',
     '--profile',
-    profile,
+    selected.profile,
     '--model',
     request.model,
     ...(request.effort === null ? [] : ['-c', `model_reasoning_effort="${request.effort}"`]),
+    ...selected.overrides.flatMap((override) => ['-c', override]),
     ...(outputSchemaFile === null ? [] : ['--output-schema', outputSchemaFile.file]),
     '-',
   ];
@@ -371,21 +448,24 @@ function failureText(event: ProviderEvent): string | null {
 export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRuntime {
   return {
     async execute(request, onActivity) {
-      const profile = selectedProfile(request.toolSettings);
-      if (!profile.ok) {
-        return profile;
+      const selected = selectedToolSettings(request.toolSettings);
+      if (!selected.ok) {
+        return selected;
       }
-      const configurationPath = profileConfigurationPath(profile.value, settings.environment);
+      const configurationPath = profileConfigurationPath(
+        selected.value.profile,
+        settings.environment,
+      );
       if (configurationPath === null) {
         return fault(
-          `Cannot verify the selected Codex profile "${profile.value}": the provider environment ` +
+          `Cannot verify the selected Codex profile "${selected.value.profile}": the provider environment ` +
             'sets neither CODEX_HOME nor HOME.',
         );
       }
       const installationProblem = await profileInstallationProblem(configurationPath);
       if (installationProblem !== null) {
         return fault(
-          `The selected Codex profile "${profile.value}" is not installed: ${installationProblem}`,
+          `The selected Codex profile "${selected.value.profile}" is not installed: ${installationProblem}`,
         );
       }
 
@@ -485,7 +565,7 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
         const result = await run(
           {
             executable: settings.executable,
-            args: invocationArguments(profile.value, request, outputSchemaFile),
+            args: invocationArguments(selected.value, request, outputSchemaFile),
             directory: request.directory,
             environment: settings.environment,
             timeLimitMs: request.timeLimitMs,

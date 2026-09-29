@@ -4,6 +4,7 @@ import {
   developmentRoleInstructions,
   type IdeaRole,
   ideaEditorRoleInstructions,
+  memoryUseGuidance,
   projectGuideRoleInstructions,
   recoveryRoleInstructions,
   researcherRoleInstructions,
@@ -21,15 +22,11 @@ import {
   type WorkflowName,
 } from '../configuration/index.js';
 import {
-  createMemory,
-  createReceiptStore,
+  createMemoryServiceClient,
   disabledMemory,
-  unavailableMemory,
   type Memory,
-  type MemoryProviders,
-  type MemorySettings,
+  type MemoryServiceSettings,
 } from '../memory/index.js';
-import { messageOf } from '../result.js';
 import { installationConfigSetting } from './installation.js';
 
 /**
@@ -63,6 +60,57 @@ const ideaRoleSettings: Record<IdeaRole, keyof NexusConfiguration['ideaRefinemen
   'project-guide': 'projectGuide',
   challenger: 'challenger',
 };
+
+/**
+ * The roles whose invocations receive the explicit AMEM memory tools when memory is enabled. The
+ * completion-analysis profile is configured separately under the completion contract, which
+ * exposes search without direct saving.
+ */
+const memoryToolRoles: ReadonlySet<ProfileRole> = new Set<ProfileRole>([
+  'developer',
+  'reviewer',
+  'recovery',
+  'idea-editor',
+  'researcher',
+  'project-guide',
+  'challenger',
+]);
+
+/**
+ * The provider-native settings that launch the AMEM MCP server for one invocation: the configured
+ * entry point, the shared service URL and the server's own identity. The provider's MCP support
+ * owns the protocol; Nexus exports no tool server of its own.
+ */
+function memoryAgentSettings(
+  memory: NexusConfiguration['memory'],
+): Readonly<Record<string, unknown>> {
+  if (memory === undefined || !memory.enabled) {
+    return {};
+  }
+  return {
+    'mcp_servers.amem.command': memory.mcp.command,
+    'mcp_servers.amem.args': [...memory.mcp.args],
+    'mcp_servers.amem.cwd': memory.mcp.directory,
+    'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: memory.serviceUrl },
+    'mcp_servers.amem.enabled': true,
+  };
+}
+
+/** One configured profile's tool settings with the memory tools added to its native overrides. */
+function withMemoryTools(
+  profile: AgentProfile,
+  memoryTools: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  if (Object.keys(memoryTools).length === 0) {
+    return profile.toolSettings;
+  }
+  const configured = profile.toolSettings['config'];
+  const config =
+    typeof configured === 'object' && configured !== null && !Array.isArray(configured)
+      ? (configured as Readonly<Record<string, unknown>>)
+      : {};
+  return { ...profile.toolSettings, config: { ...config, ...memoryTools } };
+}
 
 /**
  * The profiles the execution policy selects for one role: developer ladder entries identify
@@ -147,9 +195,15 @@ export function createAgentRuntimeSettings(
   codingRuntime: CodingRuntime,
 ): AgentRuntimeSettings {
   const selected = profilesForRole(nexus, role);
+  // The memory guidance and tools accompany each other: a role without the tools does not carry
+  // instructions for a capability its invocation cannot use.
+  const memoryTools = memoryToolRoles.has(role) ? memoryAgentSettings(nexus.memory) : {};
   return {
     codingRuntime,
-    baseInstructions: nexus.agentRuntime.baseInstructions,
+    baseInstructions:
+      Object.keys(memoryTools).length > 0
+        ? [...nexus.agentRuntime.baseInstructions, memoryUseGuidance]
+        : nexus.agentRuntime.baseInstructions,
     profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => {
       const constants = selected.has(profile.id) ? roleInstructions[role] : undefined;
       return {
@@ -163,7 +217,9 @@ export function createAgentRuntimeSettings(
                 ...constants,
                 ...profile.instructions.filter((instruction) => !constants.includes(instruction)),
               ],
-        toolSettings: profile.toolSettings,
+        toolSettings: selected.has(profile.id)
+          ? withMemoryTools(profile, memoryTools)
+          : profile.toolSettings,
       };
     }),
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
@@ -209,90 +265,23 @@ export function workspaceRoot(nexus: NexusConfiguration): string {
 }
 
 /**
- * The resolved Memory construction settings of one configuration, or null when the integration is
- * disabled. Secrets resolve through the Credentials settings and stay out of artifacts and
- * prompts.
+ * The Memory capability one process uses: the service client, or a no-op when the integration is
+ * disabled. A valid but unavailable service degrades only memory access, so every call reports its
+ * own explicit unavailability and normal workflow execution continues. The AMEM service owns its
+ * collection, providers and credentials, so the consumer configures only its URL.
  */
-export function createMemorySettings(
+export function createConfiguredMemory(
   nexus: NexusConfiguration,
-  environment: HostEnvironment = process.env,
-): MemorySettings | null {
-  const memory = nexus.memory;
-  if (memory === undefined || !memory.enabled) {
-    return null;
-  }
-  return {
-    storeId: memory.storeId,
-    storageRoot: nexus.storage.root,
-    qdrant: {
-      url: memory.qdrant.url,
-      collection: memory.qdrant.collection,
-      ...(memory.qdrant.credential === undefined
-        ? {}
-        : { apiKey: resolveCredential(nexus, memory.qdrant.credential, environment) }),
-    },
-    embedding: {
-      cacheDir: memory.embedding.cacheDir,
-      allowDownloads: memory.embedding.allowDownloads,
-    },
-    model: {
-      endpoint: memory.model.endpoint,
-      model: memory.model.model,
-      ...(memory.model.credential === undefined
-        ? {}
-        : { apiKey: resolveCredential(nexus, memory.model.credential, environment) }),
-    },
-    neighbors: memory.neighbors,
-    searchLimit: memory.searchLimit,
-    linkedLimit: memory.linkedLimit,
-    contextMaxChars: memory.contextMaxChars,
-    lockWaitMs: memory.lockWaitMs,
-    providerTimeoutMs: memory.providerTimeoutMs,
-    modelMaxOutputTokens: memory.model.maxOutputTokens,
-  };
-}
-
-/** Where one process reports diagnostics that do not affect execution. */
-type MemoryDiagnostics = { write(text: string): unknown };
-
-/**
- * The Memory capability one process uses. A disabled integration constructs nothing; a provider
- * that cannot be initialized — including a memory credential the host does not supply — is
- * reported and degrades to an unavailable memory, so normal workflow execution continues without
- * supplemental context or ingestion. The degraded memory still captures every observation it
- * receives as a pending receipt, so an accepted hand-off keeps its snapshot instead of being lost
- * with its workspace.
- */
-export async function createConfiguredMemory(
-  nexus: NexusConfiguration,
-  environment: HostEnvironment,
-  diagnostics: MemoryDiagnostics,
-  providers?: Partial<MemoryProviders>,
-): Promise<Memory> {
+  transport?: typeof globalThis.fetch,
+): Memory {
   const memory = nexus.memory;
   if (memory === undefined || !memory.enabled) {
     return disabledMemory();
   }
-  // Capturing an observation needs only local storage, so it stays available while the external
-  // providers are unavailable.
-  const capture = createReceiptStore({ root: nexus.storage.root, storeId: memory.storeId });
-  const unavailable = (reason: string): Memory => {
-    try {
-      diagnostics.write(`Nexus memory is unavailable: ${reason}\n`);
-    } catch {
-      // A failed diagnostic report leaves the degradation itself unchanged.
-    }
-    return unavailableMemory(reason, capture);
-  };
-  try {
-    const settings = createMemorySettings(nexus, environment);
-    if (settings === null) {
-      return disabledMemory();
-    }
-    return await createMemory(providers === undefined ? settings : { ...settings, providers });
-  } catch (error) {
-    return unavailable(messageOf(error));
-  }
+  const settings: MemoryServiceSettings = { url: memory.serviceUrl };
+  return createMemoryServiceClient(
+    transport === undefined ? settings : { ...settings, fetch: transport },
+  );
 }
 
 /** The host environment without the named settings, ready to spawn a child with. */
@@ -327,23 +316,10 @@ function notificationCredentialReferences(nexus: NexusConfiguration): string[] {
 }
 
 /**
- * The credential references Memory resolves for its Qdrant and model providers. They are
- * Nexus-owned settings: a process that constructs Memory resolves them, while the commands and
- * agents it does not cover run without them.
- */
-function memoryCredentialReferences(nexus: NexusConfiguration): string[] {
-  return [nexus.memory?.qdrant?.credential, nexus.memory?.model?.credential].filter(
-    (reference): reference is string => reference !== undefined,
-  );
-}
-
-/**
  * The environment the worker process runs with: the parent environment without the notification
  * credentials only the parent's Notifications adapter resolves, and with the installation
  * configuration filepath the worker must read. The worker resolves the project's Jira credential
- * and the Nexus Lens private key for its own adapters and constructs Memory, so it keeps the
- * memory provider credentials its own Memory resolves; the commands and agents it runs do not
- * receive them.
+ * and the Nexus Lens private key for its own adapters.
  */
 export function workerProcessEnvironment(
   nexus: NexusConfiguration,
@@ -362,8 +338,9 @@ export function workerProcessEnvironment(
 /**
  * The environment Nexus commands and agents run with: the host settings they need without any
  * credential setting the project or Nexus configuration resolves — the Jira API token, the Nexus
- * Lens private key, the SNS keys and the Memory provider credentials. Provider credentials stay,
- * because the coding provider's own installed settings supply them. Credential values never enter
+ * Lens private key and the SNS keys. Provider credentials stay, because the coding provider's own
+ * installed settings supply them. The AMEM service owns its own collection, provider and model
+ * credentials, so agents reach it through the service URL alone. Credential values never enter
  * prompts or artifacts.
  */
 export function toolEnvironment(
@@ -376,7 +353,6 @@ export function toolEnvironment(
     credentialSettings(nexus, [
       project.taskSource.credential,
       ...notificationCredentialReferences(nexus),
-      ...memoryCredentialReferences(nexus),
       nexus.nexusLens.privateKey,
     ]),
   );
@@ -385,9 +361,9 @@ export function toolEnvironment(
 /**
  * The environment the recovery agent runs with: the host settings its tools need — the current
  * project's Jira credential, the coding provider's credentials and the operator's Git and gh CLI
- * configuration — without the Nexus Lens private key, the notification credentials and the Memory
- * provider credentials, which recovery does not use. Recovery reads and changes tickets through
- * its authenticated shell tools; it publishes no reviews and sends no notifications itself.
+ * configuration — without the Nexus Lens private key and the notification credentials, which
+ * recovery does not use. Recovery reads and changes tickets through its authenticated shell tools;
+ * it publishes no reviews and sends no notifications itself.
  */
 export function recoveryEnvironment(
   nexus: NexusConfiguration,
@@ -397,7 +373,6 @@ export function recoveryEnvironment(
     environment,
     credentialSettings(nexus, [
       ...notificationCredentialReferences(nexus),
-      ...memoryCredentialReferences(nexus),
       nexus.nexusLens.privateKey,
     ]),
   );

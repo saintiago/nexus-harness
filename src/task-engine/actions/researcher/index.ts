@@ -1,5 +1,4 @@
 import path from 'node:path';
-import type { Observation } from '../../../memory/index.js';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
@@ -16,17 +15,7 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import { editorHelpArtifact, framingArtifact } from '../idea-editor/artifacts.js';
-import {
-  capturedIdeaQueryMaterial,
-  observationEnvelope,
-  observationSourceKey,
-  rememberObserved,
-  retrievalQuery,
-  memoryContextOf,
-  type MemoryContext,
-} from '../memory.js';
-import { issueSummary } from '../source.js';
+import { editorHelpArtifact } from '../idea-editor/artifacts.js';
 import {
   researchArtifact,
   researchFollowUpArtifact,
@@ -48,73 +37,10 @@ export type ResearcherSettings = {
   /** The research role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
-  /**
-   * The memory capability, project identity and evidence directory of this execution; Application
-   * supplies it, and an action without one performs no recall or ingestion.
-   */
-  readonly memory?: MemoryContext;
 };
 
 /** The contribution phase the workflow supplied with the invocation. */
 type ResearchPhase = 'initial' | 'focused';
-
-/**
- * The deterministic observation one saved research contribution yields: its short contribution,
- * the source facts, the idea-level options, the external sources with their access dates and the
- * focused question it answers. Detailed research stays in the saved artifact the note references.
- */
-function researchObservation(settings: {
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string | null;
-  readonly submission: number;
-  readonly cycle: number;
-  readonly file: string;
-  readonly contribution: ResearchContribution;
-}): Observation {
-  const selector = 'contribution';
-  const content = [
-    observationEnvelope({
-      subjectKind: 'Idea',
-      key: settings.taskKey,
-      subject: settings.subject,
-      project: settings.memory.project,
-      role: 'researcher',
-      outcome: 'contributed',
-      iteration: [
-        `submission ${String(settings.submission)}`,
-        `cycle ${String(settings.cycle)}`,
-        ...(settings.contribution.question === null ? [] : ['focused follow-up contribution']),
-      ],
-    }),
-    `Contribution: ${settings.contribution.contribution}`,
-    `Source facts: ${JSON.stringify(settings.contribution.findings)}`,
-    `Idea-level options: ${JSON.stringify(settings.contribution.options)}`,
-    `Sources: ${JSON.stringify(settings.contribution.sources)}`,
-    ...(settings.contribution.question === null
-      ? []
-      : [`Focused question answered: ${settings.contribution.question}`]),
-    `Detailed research remains in the saved contribution: ${settings.file}`,
-  ].join('\n');
-  return {
-    sourceKey: observationSourceKey({
-      artifact: settings.file,
-      selector,
-      material: { artifact: settings.contribution, content },
-    }),
-    content,
-    provenance: {
-      project: settings.memory.project,
-      issue: settings.taskKey,
-      workflow: settings.memory.workflow,
-      role: 'researcher',
-      artifact: settings.file,
-      element: selector,
-      submission: settings.submission,
-      cycle: settings.cycle,
-    },
-  };
-}
 
 /** The phase the workflow supplied with the invocation. */
 function phaseOf(input: unknown): ResearchPhase {
@@ -132,29 +58,6 @@ function phaseOf(input: unknown): ResearchPhase {
 
 /** Create Researcher over the refinement area it contributes to. */
 export function createResearcher(settings: ResearcherSettings): BoundAction {
-  const memory = memoryContextOf(settings.memory);
-
-  /** Observe one saved contribution; the same source key makes a reuse a no-op. */
-  async function observe(contribution: {
-    readonly plan: { readonly submission: number; readonly cycle: number };
-    readonly input: Awaited<ReturnType<typeof readIdeaInput>>;
-    readonly file: string;
-    readonly value: ResearchContribution;
-  }): Promise<void> {
-    await rememberObserved(
-      { memory: memory.memory, publish: settings.publish, source: 'researcher' },
-      researchObservation({
-        memory,
-        taskKey: contribution.input.taskKey,
-        subject: issueSummary(contribution.input.issue),
-        submission: contribution.plan.submission,
-        cycle: contribution.plan.cycle,
-        file: contribution.file,
-        contribution: contribution.value,
-      }),
-    );
-  }
-
   /** Publish a saved contribution and return its workflow outcome. */
   function contributed(
     taskKey: string,
@@ -201,17 +104,10 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
 
     const existing = await readCycleArtifact(cycleRoot, artifact);
     if (existing !== null) {
-      await observe({ plan, input: inputRecord, file, value: existing });
       return contributed(inputRecord.taskKey, plan.cycle, existing.sources.length, file);
     }
 
     const guidance = await projectGuidanceText(root);
-    const framing = await readCycleArtifact(cycleRoot, framingArtifact);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'researcher',
-    };
     const context = [
       question === null
         ? 'Enrich the stated idea\u2019s proposed change, why it matters and the principle behind ' +
@@ -241,13 +137,7 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       context,
       schema: researchResponseSchema,
       runner: settings.runner,
-      memory,
       publish: settings.publish,
-      memoryQuery: retrievalQuery(scope, [
-        ...capturedIdeaQueryMaterial(inputRecord),
-        ...(framing === null ? [] : [`framing: ${JSON.stringify(framing)}`]),
-        ...(question === null ? [] : [`assigned focused question: ${question}`]),
-      ]),
     });
     const stored: ResearchContribution = {
       ...response,
@@ -255,7 +145,6 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    await observe({ plan, input: inputRecord, file, value: stored });
     return contributed(inputRecord.taskKey, plan.cycle, response.sources.length, file);
   };
 }

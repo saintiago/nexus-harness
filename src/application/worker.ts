@@ -14,15 +14,9 @@ import {
   type WorkflowName,
 } from '../configuration/index.js';
 import { messageOf } from '../result.js';
-import type { Memory, MemoryProviders } from '../memory/index.js';
 import { createTaskEngine } from '../task-engine/index.js';
 import { createActionBinding } from './action-bindings.js';
-import {
-  createConfiguredMemory,
-  createJiraSettings,
-  executionPaths,
-  toolEnvironment,
-} from './composition.js';
+import { createJiraSettings, executionPaths, toolEnvironment } from './composition.js';
 import { installationConfigSetting } from './installation.js';
 import { createWorkerProtocol, type OutputSink } from './protocol.js';
 import { loadWorkflow } from './workflow.js';
@@ -44,11 +38,6 @@ export type WorkerSettings = {
   readonly logDirectory: string;
   readonly installationConfigPath: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
-  /**
-   * The Memory provider construction; tests substitute controlled providers so no Qdrant, model
-   * endpoint or encoder is contacted.
-   */
-  readonly memoryProviders?: Partial<MemoryProviders>;
   readonly stdout: OutputSink;
   readonly stderr: OutputSink;
 };
@@ -62,7 +51,6 @@ function reportFailure(settings: WorkerSettings, phase: string, error: unknown):
 /** Run one work invocation of the configured workflow and return the worker's exit code. */
 export async function runWorker(settings: WorkerSettings): Promise<number> {
   let engine: ReturnType<typeof createTaskEngine>;
-  let memory: Memory | null;
   try {
     const nexus = await loadNexusConfiguration(settings.installationConfigPath);
     const project = await loadProjectConfiguration(settings.projectConfigPath);
@@ -86,12 +74,6 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
       },
     });
     const jira = createJiraAdapter(createJiraSettings(project, nexus, settings.environment));
-    memory = await createConfiguredMemory(
-      nexus,
-      settings.environment,
-      settings.stderr,
-      settings.memoryProviders,
-    );
 
     engine = createTaskEngine({
       workflow: workflow.machine,
@@ -111,8 +93,6 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
         runCommand: run,
         commandEnvironment: environment,
         activityDirectory: path.join(settings.logDirectory, 'agents'),
-        memory,
-        memoryEvidenceDirectory: path.join(settings.logDirectory, 'memory'),
         wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
       }),
     });
@@ -134,9 +114,6 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
     return result.ok ? 0 : 1;
   } catch (error) {
     return reportFailure(settings, 'execution', error);
-  } finally {
-    // Worker shutdown awaits active memory operations before recovery may use the same collection.
-    await memory?.close();
   }
 }
 

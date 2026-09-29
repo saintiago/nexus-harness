@@ -1,7 +1,6 @@
 import path from 'node:path';
-import type { Observation } from '../../../memory/index.js';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
-import { editorHelpArtifact, framingArtifact } from '../idea-editor/artifacts.js';
+import { editorHelpArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
   invokeIdeaRole,
@@ -17,16 +16,6 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import {
-  capturedIdeaQueryMaterial,
-  observationEnvelope,
-  observationSourceKey,
-  rememberObserved,
-  retrievalQuery,
-  memoryContextOf,
-  type MemoryContext,
-} from '../memory.js';
-import { issueSummary } from '../source.js';
 import {
   projectGuideArtifact,
   projectGuideFollowUpArtifact,
@@ -47,76 +36,10 @@ export type ProjectGuideSettings = {
   /** The guidance role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
-  /**
-   * The memory capability, project identity and evidence directory of this execution; Application
-   * supplies it, and an action without one performs no recall or ingestion.
-   */
-  readonly memory?: MemoryContext;
 };
 
 /** The contribution phase the workflow supplied with the invocation. */
 type GuidancePhase = 'initial' | 'focused';
-
-/**
- * The deterministic observation one saved project guidance contribution yields: its fit,
- * steering, constraints, evidence, provisional inference and stated uncertainty. Detailed
- * evidence stays in the saved contribution the note references.
- */
-function guidanceObservation(settings: {
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string | null;
-  readonly submission: number;
-  readonly cycle: number;
-  readonly file: string;
-  readonly contribution: ProjectGuideContribution;
-}): Observation {
-  const selector = 'contribution';
-  const content = [
-    observationEnvelope({
-      subjectKind: 'Idea',
-      key: settings.taskKey,
-      subject: settings.subject,
-      project: settings.memory.project,
-      role: 'project-guide',
-      outcome: settings.contribution.provisional ? 'provisional contribution' : 'contributed',
-      iteration: [
-        `submission ${String(settings.submission)}`,
-        `cycle ${String(settings.cycle)}`,
-        ...(settings.contribution.question === null ? [] : ['focused follow-up contribution']),
-      ],
-    }),
-    `Contribution: ${settings.contribution.contribution}`,
-    `Project fit: ${settings.contribution.fit}`,
-    `Steering: ${JSON.stringify(settings.contribution.steering)}`,
-    `Constraints: ${JSON.stringify(settings.contribution.constraints)}`,
-    `Evidence: ${JSON.stringify(settings.contribution.evidence)}`,
-    `Provisional inference: ${String(settings.contribution.provisional)}`,
-    `Uncertainty: ${JSON.stringify(settings.contribution.uncertainty)}`,
-    ...(settings.contribution.question === null
-      ? []
-      : [`Focused question answered: ${settings.contribution.question}`]),
-    `Detailed guidance remains in the saved contribution: ${settings.file}`,
-  ].join('\n');
-  return {
-    sourceKey: observationSourceKey({
-      artifact: settings.file,
-      selector,
-      material: { artifact: settings.contribution, content },
-    }),
-    content,
-    provenance: {
-      project: settings.memory.project,
-      issue: settings.taskKey,
-      workflow: settings.memory.workflow,
-      role: 'project-guide',
-      artifact: settings.file,
-      element: selector,
-      submission: settings.submission,
-      cycle: settings.cycle,
-    },
-  };
-}
 
 /** The phase the workflow supplied with the invocation. */
 function phaseOf(input: unknown): GuidancePhase {
@@ -134,29 +57,6 @@ function phaseOf(input: unknown): GuidancePhase {
 
 /** Create ProjectGuide over the refinement area it contributes to. */
 export function createProjectGuide(settings: ProjectGuideSettings): BoundAction {
-  const memory = memoryContextOf(settings.memory);
-
-  /** Observe one saved contribution; the same source key makes a reuse a no-op. */
-  async function observe(contribution: {
-    readonly plan: { readonly submission: number; readonly cycle: number };
-    readonly input: Awaited<ReturnType<typeof readIdeaInput>>;
-    readonly file: string;
-    readonly value: ProjectGuideContribution;
-  }): Promise<void> {
-    await rememberObserved(
-      { memory: memory.memory, publish: settings.publish, source: 'project-guide' },
-      guidanceObservation({
-        memory,
-        taskKey: contribution.input.taskKey,
-        subject: issueSummary(contribution.input.issue),
-        submission: contribution.plan.submission,
-        cycle: contribution.plan.cycle,
-        file: contribution.file,
-        contribution: contribution.value,
-      }),
-    );
-  }
-
   /** Publish a saved contribution and return its workflow outcome. */
   function contributed(
     taskKey: string,
@@ -203,17 +103,10 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
 
     const existing = await readCycleArtifact(cycleRoot, artifact);
     if (existing !== null) {
-      await observe({ plan, input: inputRecord, file, value: existing });
       return contributed(inputRecord.taskKey, plan.cycle, existing.provisional, file);
     }
 
     const guidance = await projectGuidanceText(root);
-    const framing = await readCycleArtifact(cycleRoot, framingArtifact);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'project-guide',
-    };
     const context = [
       question === null
         ? 'Assess how the current captured idea could fit this project\u2019s purpose and ' +
@@ -243,13 +136,7 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       context,
       schema: projectGuideResponseSchema,
       runner: settings.runner,
-      memory,
       publish: settings.publish,
-      memoryQuery: retrievalQuery(scope, [
-        ...capturedIdeaQueryMaterial(inputRecord),
-        ...(framing === null ? [] : [`framing: ${JSON.stringify(framing)}`]),
-        ...(question === null ? [] : [`assigned focused question: ${question}`]),
-      ]),
     });
     const stored: ProjectGuideContribution = {
       ...response,
@@ -257,7 +144,6 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    await observe({ plan, input: inputRecord, file, value: stored });
     return contributed(inputRecord.taskKey, plan.cycle, response.provisional, file);
   };
 }

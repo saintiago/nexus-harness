@@ -41,7 +41,9 @@ Profiles layer over the base Codex configuration. They do not replace it or excl
 inherited MCP servers and plugins. Before use, inspect the selected profile's effective tool
 catalogue and disable inherited tools outside shell, files and the three research services.
 Repeat that check when changing the base configuration. Explicit per-app settings can override
-the default app exclusion.
+the default app exclusion. Nexus adds the AMEM memory MCP server to memory-enabled invocations
+through the provider's native settings ([Memory integration](../memory/integration.md#agent-use));
+the templates do not install it, and an invocation without memory carries no memory tools.
 
 Verify connectivity to each research service and provider authentication on the execution host.
 Keep credentials and machine-specific settings out of the repository.

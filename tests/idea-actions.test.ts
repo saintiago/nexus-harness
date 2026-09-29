@@ -72,7 +72,6 @@ import {
 } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import { runnerOf } from './support/agent-runner.js';
 import { scriptedJira } from './support/jira.js';
-import { recordingMemory } from './support/memory.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 const profiles = {
@@ -400,7 +399,7 @@ describe('idea editor', () => {
     expect(agent.requests).toHaveLength(1);
   });
 
-  it('keeps a reused editor turn attributed to the Challenger it answered', async () => {
+  it('keeps a reused editor turn bound to the Challenger result it answered', async () => {
     const area = await refinementArea();
     await area.write(1, researchArtifact.pathFromArtifactsRoot, {
       ...researchFixture,
@@ -412,25 +411,18 @@ describe('idea editor', () => {
       role: 'project-guide',
       question: null,
     });
-    const memory = recordingMemory();
     const editing = scriptedRuntime([revisedTurn(1)]);
     const editor = createIdeaEditor({
       workspace: { root: area.root },
       runner: runnerOf(editing.runtime),
       publish: (event) => area.events.push(event),
-      memory: {
-        memory,
-        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
-        project: 'NEX',
-        workflow: 'idea-refinement',
-      },
     });
     await expect(editor({ task: 'edit' })).resolves.toBe('written');
-    const first = memory.observations[0];
-    expect(first?.content).not.toContain('Addressed Challenger result');
+    const turnFile = path.join(area.cycleRoot(), editorResponseArtifact.pathFromArtifactsRoot);
+    const saved = await readFile(turnFile, 'utf8');
 
     // The cycle's own Challenger runs after the editor wrote; its assessment is not an answer to
-    // this turn and cannot become one when the saved turn is observed again.
+    // this turn and cannot become one when the saved turn is reused.
     const challenging = scriptedRuntime([
       {
         verdict: 'discuss',
@@ -450,19 +442,13 @@ describe('idea editor', () => {
       workspace: { root: area.root },
       runner: runnerOf(challenging.runtime),
       publish: (event) => area.events.push(event),
-      memory: {
-        memory,
-        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
-        project: 'NEX',
-        workflow: 'idea-refinement',
-      },
     });
     await expect(challenger()).resolves.toBe('discuss');
 
     await expect(editor({ task: 'edit' })).resolves.toBe('written');
-    expect(memory.observations).toHaveLength(3);
-    expect(memory.observations[2]?.sourceKey).toBe(first?.sourceKey);
-    expect(memory.observations[2]?.content).toBe(first?.content);
+    // Reuse neither invokes the editor again nor rewrites the turn it already saved.
+    expect(editing.requests).toHaveLength(1);
+    expect(await readFile(turnFile, 'utf8')).toBe(saved);
   });
 
   it('answers a concern without changing the refined idea text', async () => {
@@ -890,56 +876,21 @@ describe('Researcher and Project guide', () => {
       help: { researcher: null, projectGuide: 'Which documented constraint matters most?' },
     });
     const agent = scriptedRuntime([guidanceFixture]);
-    const researcherMemory = recordingMemory();
-    const guideMemory = recordingMemory();
     const researcher = createResearcher({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
-      memory: {
-        memory: researcherMemory,
-        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
-        project: 'NEX',
-        workflow: 'idea-refinement',
-      },
     });
     const guide = createProjectGuide({
       workspace: { root: area.root },
       runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
-      memory: {
-        memory: guideMemory,
-        evidenceDirectory: path.join(area.root, 'logs', 'memory'),
-        project: 'NEX',
-        workflow: 'idea-refinement',
-      },
     });
 
     // The editor asked the Project guide only; the Researcher contributes nothing.
     await expect(researcher({ phase: 'focused' })).resolves.toBe('not-requested');
     await expect(guide({ phase: 'focused' })).resolves.toBe('contributed');
-    // The skipped role recalled nothing; the answering role recalled with the focused question and
-    // observed its contribution bound to that question.
-    expect(researcherMemory.recalls).toEqual([]);
-    expect(researcherMemory.observations).toEqual([]);
-    expect(guideMemory.recalls).toHaveLength(1);
-    expect(guideMemory.recalls[0]?.query).toContain('role: project-guide');
-    expect(guideMemory.recalls[0]?.query).toContain(
-      'assigned focused question: Which documented constraint matters most?',
-    );
-    expect(guideMemory.observations).toHaveLength(1);
-    expect(guideMemory.observations[0]?.content).toContain(
-      'Focused question answered: Which documented constraint matters most?',
-    );
-    expect(guideMemory.observations[0]?.provenance).toMatchObject({
-      project: 'NEX',
-      workflow: 'idea-refinement',
-      role: 'project-guide',
-      element: 'contribution',
-      submission: 1,
-      cycle: 2,
-    });
-
+    // Only the role the question addressed ran one invocation.
     expect(agent.requests).toHaveLength(1);
     expect(agent.requests[0]?.context).toContain('Which documented constraint matters most?');
     expectSharedContext(agent.requests[0]?.context ?? '');

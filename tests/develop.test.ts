@@ -27,7 +27,6 @@ import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
-import { recordingMemory } from './support/memory.js';
 
 const baseRevision = '1'.repeat(40);
 const headRevision = '2'.repeat(40);
@@ -236,50 +235,6 @@ function developmentOutcome(
 }
 
 describe('Develop', () => {
-  it('keeps observation content and identity after task refresh and later selection changes', async () => {
-    const { workspaceRoot, selectionFile } = await workspace();
-    const memory = recordingMemory();
-    const { jira } = sourceWithComments();
-    const { git } = scriptedGit([repositoryState(), repositoryState({ headRevision })]);
-    const { runtime, requests } = scriptedRuntime(() =>
-      JSON.stringify({
-        status: 'completed',
-        summary: 'Implemented the retry guard.',
-        findingResponses: [],
-      }),
-    );
-    const develop = createDevelop({
-      selectionFile,
-      runner: runnerOf(runtime),
-      git,
-      jira,
-      publish: () => {},
-      memory: { memory, project: 'NEX', workflow: 'finite-delivery', evidenceDirectory: root },
-    });
-    await expect(develop()).resolves.toBe('completed');
-    const artifact = path.join(workspaceRoot, 'artifacts', '1', 'development.json');
-    const saved = await readFile(artifact, 'utf8');
-    expect(memory.observations).toHaveLength(1);
-    const original = memory.observations[0];
-    expect(original?.content).toContain('"Implement the retry guard"');
-    expect(original?.content).not.toContain('stale selection copy');
-    await expect(develop()).resolves.toBe('completed');
-    // Another action can refresh selection after this report has been accepted.
-    const selection = JSON.parse(await readFile(selectionFile, 'utf8')) as Record<string, unknown>;
-    await writeFile(
-      selectionFile,
-      JSON.stringify({
-        ...selection,
-        task: { ...taskIssue, fields: { ...taskIssue.fields, summary: 'A later task subject' } },
-      }),
-    );
-    await expect(develop()).resolves.toBe('completed');
-    expect(memory.observations).toEqual([original, original, original]);
-    expect(await readFile(artifact, 'utf8')).toBe(saved);
-    expect(requests).toHaveLength(1);
-    expect(memory.recalls).toHaveLength(1);
-  });
-
   it('implements the task and records the observed profile and revisions', async () => {
     const { taskKey, workspaceRoot, selectionFile } = await workspace();
     const { jira } = sourceWithComments();

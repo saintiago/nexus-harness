@@ -31,7 +31,6 @@ import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
-import { recordingMemory } from './support/memory.js';
 
 const baseRevision = '1'.repeat(40);
 const headRevision = '2'.repeat(40);
@@ -337,67 +336,6 @@ function reviewAction(options: {
 }
 
 describe('Review', () => {
-  it('keeps observation content and identity after task refresh and later selection changes', async () => {
-    const { workspaceRoot, selectionFile } = await workspace();
-    const memory = recordingMemory();
-    await writeDeliveredRound(workspaceRoot);
-    const { runtime, requests } = scriptedRuntime(() =>
-      JSON.stringify({
-        verdict: 'approved',
-        summary: 'The change matches the task.',
-        findings: [],
-        priorFindings: [],
-      }),
-    );
-    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
-    const { github } = scriptedGitHub({
-      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
-      readChecks: () => ok([]),
-      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
-      publishReviewCheck: () => ok({ id: 12 }),
-    });
-    const { jira } = scriptedJira({
-      readIssue: () => ok(taskIssue),
-      readComments: () => ok([]),
-      addComment: (_issueId, body) => ok({ id: 'c9', body }),
-    });
-    const review = createReview({
-      selectionFile,
-      runner: runnerOf(runtime),
-      git,
-      github,
-      jira,
-      publish: () => {},
-      repository,
-      reviewCheck,
-      nexusLens: { appId: lensAppId, login: lensLogin },
-      reviewerProfile: 'nexus-review',
-      memory: { memory, project: 'NEX', workflow: 'finite-delivery', evidenceDirectory: root },
-    });
-    await expect(review()).resolves.toBe('approved');
-    const artifact = path.join(workspaceRoot, 'artifacts', '1', 'review.json');
-    const saved = await readFile(artifact, 'utf8');
-    expect(memory.observations).toHaveLength(1);
-    const original = memory.observations[0];
-    expect(original?.content).toContain('"Implement the retry guard"');
-    expect(original?.content).not.toContain('stale selection copy');
-    await expect(review()).resolves.toBe('approved');
-    // Another action can refresh selection after this report has been accepted.
-    const selection = JSON.parse(await readFile(selectionFile, 'utf8')) as Record<string, unknown>;
-    await writeFile(
-      selectionFile,
-      JSON.stringify({
-        ...selection,
-        task: { ...taskIssue, fields: { ...taskIssue.fields, summary: 'A later task subject' } },
-      }),
-    );
-    await expect(review()).resolves.toBe('approved');
-    expect(memory.observations).toEqual([original, original, original]);
-    expect(await readFile(artifact, 'utf8')).toBe(saved);
-    expect(requests).toHaveLength(1);
-    expect(memory.recalls).toHaveLength(1);
-  });
-
   it('reviews the delivered revision and publishes the verdict for exactly that head', async () => {
     const { workspaceRoot, selectionFile, round } = await workspace();
     await writeDeliveredRound(workspaceRoot);
