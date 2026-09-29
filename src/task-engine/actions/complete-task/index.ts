@@ -9,7 +9,12 @@ import { reviewArtifact } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { applyTransition, readIssue, statusNameOf, transitionInto } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
-import { completionArtifact, type CompletionOutput } from './artifacts.js';
+import { retainTerminalReason } from '../terminal-reason.js';
+import {
+  completionArtifact,
+  completionFailureArtifact,
+  type CompletionOutput,
+} from './artifacts.js';
 
 /**
  * CompleteTask confirms that the approved delivered head is merged and that every configured
@@ -86,7 +91,13 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
     );
 
     /** Report an observed condition that prevents completion. */
-    function fail(reason: string): 'failed' {
+    async function fail(reason: string): Promise<'failed'> {
+      // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
+      // restart of the workflow binding.
+      await retainTerminalReason(
+        roundArtifactPath(root, round.number, completionFailureArtifact.pathFromArtifactsRoot),
+        reason,
+      );
       settings.publish({ source: 'complete-task', type: 'failed', data: { reason } });
       return 'failed';
     }

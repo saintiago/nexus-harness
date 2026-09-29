@@ -22,8 +22,9 @@ import {
   updateIssueFields,
 } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
+import { retainTerminalReason } from '../terminal-reason.js';
 import { verificationArtifact } from '../verify/artifacts.js';
-import { deliveryArtifact, type DeliveryOutput } from './artifacts.js';
+import { deliveryArtifact, deliveryFailureArtifact, type DeliveryOutput } from './artifacts.js';
 
 /**
  * Deliver publishes the current round's verified revision: it pushes the prepared branch, confirms
@@ -153,7 +154,13 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     );
 
     /** Report an observed condition that prevents publication. */
-    function fail(reason: string): 'failed' {
+    async function fail(reason: string): Promise<'failed'> {
+      // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
+      // restart of the workflow binding.
+      await retainTerminalReason(
+        roundArtifactPath(root, round.number, deliveryFailureArtifact.pathFromArtifactsRoot),
+        reason,
+      );
       settings.publish({ source: 'deliver', type: 'failed', data: { reason } });
       return 'failed';
     }

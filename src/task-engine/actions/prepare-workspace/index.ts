@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CheckoutIdentity, GitAdapter } from '../../../adapters/git.js';
@@ -11,7 +12,11 @@ import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
+import { retainTerminalReason } from '../terminal-reason.js';
 import {
+  attemptDeclaration,
+  attemptFile,
+  preparationFailureDeclaration,
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
   type PreparedWorkspace,
@@ -71,9 +76,23 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
   const { source, mainBranch } = settings.repository;
 
   /** Report a repository condition or completed command that prevents readiness. */
-  function fail(reason: string): 'failed' {
+  async function fail(root: string, reason: string): Promise<'failed'> {
+    // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
+    // restart of the workflow binding.
+    await retainTerminalReason(path.join(root, preparationFailureDeclaration.file), reason);
     publish({ source: 'prepare-workspace', type: 'failed', data: { reason } });
     return 'failed';
+  }
+
+  /**
+   * The attempt identity this invocation works under: the retained one, or a fresh identity for a
+   * new attempt. Writing it before any repository work identifies attempts that never prepare.
+   */
+  async function retainAttempt(root: string): Promise<void> {
+    const file = path.join(root, attemptFile);
+    if ((await readRecord(file, attemptDeclaration)) === null) {
+      await writeRecord(file, { attemptId: randomUUID() });
+    }
   }
 
   /** An unused task branch name, so a discarded attempt's remote branch is never adopted. */
@@ -260,6 +279,7 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     const worktree = path.join(root, 'worktree');
     await mkdir(path.join(root, 'artifacts'), { recursive: true });
     await mkdir(path.join(root, 'state', 'preparation'), { recursive: true });
+    await retainAttempt(root);
 
     const recordFile = path.join(root, preparedWorkspaceFile);
     const saved = await readRecord(recordFile, preparedWorkspaceDeclaration);
@@ -268,12 +288,12 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
         ? await startAttempt(selection, worktree)
         : await reuseAttempt(selection, saved, worktree);
     if (!established.ok) {
-      return fail(established.fault.message);
+      return await fail(root, established.fault.message);
     }
 
     const problem = await runPreparation(root, worktree);
     if (problem !== null) {
-      return fail(problem);
+      return await fail(root, problem);
     }
 
     await writeRecord(recordFile, established.value);

@@ -35,6 +35,7 @@ import { installationConfigSetting } from '../src/application/installation.js';
 import { fault, ok } from '../src/result.js';
 import type { AgentActivity } from '../src/task-engine/index.js';
 import {
+  experienceEvidenceRoot,
   experienceIdentity,
   experienceObservationSourceKey,
   type ExperienceHandoff,
@@ -484,7 +485,10 @@ describe('Application execution', () => {
     expect(first.outcome).toBe('completed');
     expect(executed.timeline).toEqual(['worker']);
     expect(analyses).toHaveLength(1);
-    expect(analyses[0]?.workspace.root).toBe(workspace);
+    // The analyst reads the retained copy of the handoff's evidence, not the mutable workspace.
+    expect(analyses[0]?.workspace.root).toBe(
+      experienceEvidenceRoot(path.join(executed.executionDirectory, 'memory'), identity),
+    );
     expect(analyses[0]?.outputSchema).toMatchObject({ type: 'object' });
     expect(service.observations.size).toBe(1);
     // Durable acceptance is reported as outstanding until the receipt is stored.
@@ -559,9 +563,30 @@ describe('Application execution', () => {
     );
     const analyses: ExperienceAnalystRequest[] = [];
     const executed = await harness({
-      completions: [stopped('the provider invocation failed'), successful],
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'the provider invocation failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: 'the worker died after selecting the item',
+        },
+        successful,
+      ],
       memory: true,
       memoryServiceUrl: service.url,
+      // The invocation's own events establish the attempt it worked on.
+      emit: ({ event }) =>
+        event({
+          source: 'select-task',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'selected',
+            detail: null,
+            artifact: { path: '/execution/selection.json' },
+          },
+        }),
       analysis: (request) => {
         analyses.push(request);
         return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
@@ -594,6 +619,124 @@ describe('Application execution', () => {
     expect(analyses[0]?.context).toContain(evidence);
     const requests = await readdir(path.join(executed.executionDirectory, 'memory', 'requests'));
     expect(requests).toHaveLength(1);
+  });
+
+  it('records no operational handoff for a declared blocked outcome or a failed selection', async () => {
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    await mkdir(workspace, { recursive: true });
+    const executed = await harness({
+      completions: [stopped('the selection found no eligible item\n'), successful],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+      emit: ({ event }) =>
+        event({
+          source: 'select-task',
+          type: 'failed',
+          data: { reason: 'The task source is unavailable.' },
+        }),
+    });
+    // An earlier attempt left its selection behind; the blocked outcome is not an operational fault.
+    await mkdir(executed.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(executed.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    // Neither the failed selection nor the later stopped invocation recorded an operational fault.
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    // A blocked outcome that published no selection event of its own records nothing either: the
+    // retained selection belongs to a previous attempt, whichever outcome that attempt reached.
+    const silent = await harness({
+      completions: [stopped('the workflow declared its blocked outcome\n'), successful],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+    });
+    await mkdir(silent.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(silent.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
+
+    const silentResult = await silent.application.execute({
+      projectConfigPath: silent.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(silentResult.outcome).toBe('completed');
+    await expect(stat(path.join(silent.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('records no second operational handoff when the workflow already captured the attempt', async () => {
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'the provider invocation failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        },
+        successful,
+      ],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+      emit: ({ event }) => {
+        event({
+          source: 'select-task',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'selected',
+            detail: null,
+            artifact: { path: '/execution/selection.json' },
+          },
+        });
+        event({
+          source: 'analyze-experience',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'recorded',
+            detail: 'NEX-1 finite-delivery/task/NEX-1/complete-completed ("completed")',
+            artifact: { path: '/execution/memory/captures/NEX-1.json' },
+          },
+        });
+      },
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('records no operational handoff without a retained selection or when memory is disabled', async () => {

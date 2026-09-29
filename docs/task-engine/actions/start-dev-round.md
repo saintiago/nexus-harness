@@ -54,8 +54,8 @@ output shapes, and it creates no repair decision artifact.
   through the action's event publisher.
 
 started publishes the [action outcome event](architecture.md#action-outcome-events) referencing the
-saved current-round record and naming the round and profile. exhausted claims no output and publishes
-only its reason.
+saved current-round record and naming the round and profile. exhausted opens no round; it retains
+its reason at state/round-exhaustion.json for the terminal handoff and publishes it.
 
 Filesystem or input errors fail the action. A later invocation without a repair trigger is an
 execution error, not a new round or an exhausted policy.

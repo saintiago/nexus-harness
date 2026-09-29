@@ -35,19 +35,26 @@ idea submission has a new identity. Revisions belong in evidence when available;
 is not required for failed work or idea refinement. Never infer success from the outcome's name.
 The bindings own workflow-specific artifact selection; the action has no switch on workflow names,
 ticket statuses or concrete action implementations. Consumers use artifact declarations only.
+A binding reads the reason and the evidence its terminal's producer retained — the producer's failure
+record and the attempt's own artifacts — instead of an event that lived only in the stopped process,
+so a restarted worker reconstructs the identical handoff. A terminal the producer states no reason
+for carries a null reason.
 
 ### Output and outcomes
 
-Persist an experience request with the complete immutable handoff, source references and capture
-time outside disposable workflow attempts. The request identity combines work, workflow, attempt
-and terminal identities. An existing identical request is reused; conflicting input fails explicitly.
-Record the request reference and capture outcome as the action's durable handoff evidence.
+Persist an experience request with the complete immutable handoff, its retained copy of the selected
+evidence, source references and capture time outside disposable workflow attempts. The request
+identity combines work, workflow, attempt and terminal identities. An existing identical request is
+reused; conflicting input fails explicitly. Record the request reference and capture outcome as the
+action's durable handoff evidence.
 
 Return `recorded`, `skipped` or `unavailable`. Recorded means durably scheduled, not analyzed or
 stored in memory. Skip when disabled or no selected work/evidence exists; an empty queue or selection
 failure must not reuse a previous item's selection. Unavailable reports the capture failure. All
 three outcomes continue to the same original business destination; analysis cannot mask success,
-convert failure to success, prevent the next item or replace operational recovery.
+convert failure to success, prevent the next item or replace operational recovery. A binding that
+cannot resolve its selection or evidence reports unavailable without an execution fault, and
+disabled memory discovers nothing.
 
 ## Workflow placement
 
@@ -71,6 +78,11 @@ Unexpected execution errors are terminal handoffs only after already-started age
 Retain the original fault and invoke the same action before recovery, with saved evidence. A killed
 process cannot execute a transition: recovery resumes recording from the retained interrupted
 attempt before replacing its artifacts. Do not invent a business verdict for an operational fault.
+Application records an operational error only for an execution fault of the attempt the stopped
+invocation's own events established, and never a second time for an attempt that already reached a
+terminal handoff. A declared blocked outcome is the workflow's own verdict: its selected-item routes
+already handed off, a failed selection and an empty queue hand off nothing, so neither invents an
+operational fault from whatever selection record an earlier attempt retained.
 
 Completion/publication actions supply their ordinary evidence and outcomes but never call memory
 or schedule analysis themselves. In particular, a failed source update can yield a failed handoff
@@ -83,7 +95,11 @@ Capturing the request never waits for an LLM, network call or embedding. The act
 background processing of its recorded requests; Application supervises that capability and settles
 or resumes it across worker exit, queue drain and restart. There is no second Application analysis
 implementation or memory caller. Persist pending work before returning; do not rely on detached
-promises in an exiting worker. Retain source evidence until analysis is settled.
+promises in an exiting worker. Retain source evidence until analysis is settled: capture copies the
+selected evidence into the request's own area before recording it, and the analyst reads that copy,
+so recovery discarding or replacing the attempt can neither orphan an outstanding request nor make a
+retry read replacement artifacts. The analyst runs in the retained evidence area, so a handoff whose
+attempt never prepared a repository still has a valid invocation location.
 
 The configured analyst reads the supplied artifacts and relevant history, searches existing memory
 for related lessons, and returns zero or more substantive observations with applicability,
@@ -92,7 +108,8 @@ it must distinguish demonstrated causes from hypotheses. Idea analysis preserves
 provisional decisions and unanswered questions. Do not save routine status reports or entire handoffs.
 
 This action's analyst receives AMEM MCP restricted to search. The action validates the
-response and readable evidence files within the canonical workspace, persists accepted observations
+response and readable evidence files within the request's canonical evidence scope — the retained
+copy's file, or a cited original location whose retained copy exists — persists accepted observations
 once, and submits them itself. Preserve original artifacts. Other agents retain explicit AMEM search/save tools under the
 [agent-use contract](../../memory/integration.md#agent-use); these are deliberate agent calls, not
 automatic workflow hooks. No other Nexus operation adds automatic memory context.

@@ -507,6 +507,17 @@ describe('CompleteTask', () => {
     await expect(
       stat(path.join(failedCheck.workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).rejects.toThrow(/ENOENT/);
+    // The stated reason is retained for the terminal handoff, not only published.
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(failedCheck.workspaceRoot, 'artifacts', '1', 'completion-failure.json'),
+          'utf8',
+        ),
+      ),
+    ).toEqual({
+      reason: expect.stringMatching(/concluded "failure" for revision/),
+    });
   });
 
   it('waits within the configured completion window and fails on expiry', async () => {

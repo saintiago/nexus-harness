@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { RecordDeclaration } from '../records.js';
+import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
  * PrepareWorkspace's record: the task, repository, development branch and comparison base the
@@ -24,3 +25,33 @@ export const preparedWorkspaceDeclaration = {
   file: preparedWorkspaceFile,
   schema: preparedWorkspaceSchema,
 } satisfies RecordDeclaration<typeof preparedWorkspaceSchema>;
+
+/**
+ * The identity of one finite delivery attempt. PrepareWorkspace owns the record and writes it
+ * before it touches the repository, so every terminal handoff of the attempt, including a failure
+ * before preparation, names the same attempt. Recovery discards the attempt's state directory on a
+ * fresh restart, so the next attempt carries a new identity even when it reuses the branch name.
+ */
+export const attemptFile = 'state/attempt.json';
+
+export const attemptSchema = z.object({
+  attemptId: z.string().trim().min(1),
+});
+
+export type Attempt = z.infer<typeof attemptSchema>;
+
+export const attemptDeclaration = {
+  file: attemptFile,
+  schema: attemptSchema,
+} satisfies RecordDeclaration<typeof attemptSchema>;
+
+/**
+ * The reason PrepareWorkspace stated for its failed outcome, retained in the attempt for the
+ * terminal handoff. The record exists only when preparation failed.
+ */
+export const preparationFailureFile = 'state/preparation-failure.json';
+
+export const preparationFailureDeclaration = {
+  file: preparationFailureFile,
+  schema: terminalReasonSchema,
+} satisfies RecordDeclaration<typeof terminalReasonSchema>;

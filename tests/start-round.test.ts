@@ -569,6 +569,10 @@ describe('StartRound', () => {
         },
       },
     ]);
+    // The stated reason is retained for the terminal handoff, not only published.
+    expect(
+      JSON.parse(await readFile(path.join(root, 'state', 'round-exhaustion.json'), 'utf8')),
+    ).toEqual({ reason: (events[0]!.data as { readonly reason: string }).reason });
   });
 
   it('produces the same plan when the saved plan is evaluated again', async () => {

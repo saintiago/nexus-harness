@@ -368,6 +368,16 @@ describe('Deliver', () => {
         type: 'failed',
         data: { reason: expect.stringMatching(testCase.expected) },
       });
+      // The stated reason is retained for the terminal handoff, not only published.
+      expect(
+        JSON.parse(
+          await readFile(
+            path.join(workspaceRoot, 'artifacts', '1', 'delivery-failure.json'),
+            'utf8',
+          ),
+        ),
+        testCase.label,
+      ).toEqual({ reason: expect.stringMatching(testCase.expected) });
     }
   });
 

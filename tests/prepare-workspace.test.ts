@@ -166,6 +166,14 @@ function worktreeOf(workspaceRoot: string): string {
   return path.join(workspaceRoot, 'worktree');
 }
 
+/** The attempt identity one workspace recorded for its current attempt. */
+async function readAttempt(workspaceRoot: string): Promise<string> {
+  const record = JSON.parse(
+    await readFile(path.join(workspaceRoot, 'state', 'attempt.json'), 'utf8'),
+  ) as { readonly attemptId: string };
+  return record.attemptId;
+}
+
 /** The prepared outcome event referencing one workspace's saved record. */
 function preparedOutcome(taskKey: string, workspaceRoot: string): EngineEvent {
   return {
@@ -503,6 +511,33 @@ describe('PrepareWorkspace', () => {
     await expect(stat(path.join(workspace, 'state', 'prepared-workspace.json'))).rejects.toThrow(
       /ENOENT/,
     );
+    // The stated reason and the attempt identity are retained for the terminal handoff.
+    expect(
+      JSON.parse(await readFile(path.join(workspace, 'state', 'preparation-failure.json'), 'utf8')),
+    ).toEqual({ reason: expect.stringContaining('exit code 3') });
+    expect(
+      JSON.parse(await readFile(path.join(workspace, 'state', 'attempt.json'), 'utf8')),
+    ).toMatchObject({ attemptId: expect.any(String) });
+  });
+
+  it('keeps one attempt identity through repetition and mints a new one for a fresh attempt', async () => {
+    const { origin } = await repositoryWithOrigin();
+    const workspace = path.join(root, 'workspace');
+    const selectionFile = await writeSelection('NEX-9', workspace);
+    const prepare = prepareOver({ selectionFile, source: origin });
+
+    await expect(prepare()).resolves.toBe('prepared');
+    const first = await readAttempt(workspace);
+    // Repeating the invocation continues the same attempt.
+    await expect(prepare()).resolves.toBe('prepared');
+    expect(await readAttempt(workspace)).toBe(first);
+
+    // Recovery discards the attempt's state; the fresh attempt carries its own identity.
+    await rm(path.join(workspace, 'state'), { recursive: true, force: true });
+    await rm(path.join(workspace, 'worktree'), { recursive: true, force: true });
+    await rm(path.join(workspace, 'artifacts'), { recursive: true, force: true });
+    await expect(prepare()).resolves.toBe('prepared');
+    expect(await readAttempt(workspace)).not.toBe(first);
   });
 
   it('treats a preparation launch failure as an execution error', async () => {

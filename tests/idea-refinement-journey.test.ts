@@ -783,7 +783,11 @@ describe('idea refinement journeys', () => {
     // The approval's terminal handoff was recorded once and analyzed after the worker exited; the
     // controlled analyst reported no reusable lesson, so nothing was submitted.
     expect(journey.analyses).toHaveLength(1);
-    expect(journey.analyses[0]?.context).toContain('Retained submission artifacts:');
+    // The analyst reads the request's retained copy of the submission's evidence.
+    expect(journey.analyses[0]?.context).toContain('Retained evidence root:');
+    expect(journey.analyses[0]?.workspace.root).toContain(
+      path.join('memory', 'evidence', 'NEX-1-publish-approved-'),
+    );
     const requests = await readdir(path.join(journey.executionDirectory, 'memory', 'requests'));
     expect(requests).toHaveLength(1);
   });

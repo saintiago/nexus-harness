@@ -67,6 +67,7 @@ import type { ExperienceAnalystRequest } from '../src/task-engine/actions/analyz
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
 import { developmentResponseSchema } from '../src/task-engine/actions/develop/artifacts.js';
+import { attemptFile } from '../src/task-engine/actions/prepare-workspace/artifacts.js';
 import type {
   DevelopmentOutput,
   DevelopmentResponse,
@@ -314,6 +315,8 @@ type Journey = {
   status(): string;
   comments(): readonly JiraComment[];
   checks(): readonly CheckObservation[];
+  /** The attempt identity the journey's workspace recorded for its delivery attempt. */
+  attemptId(): Promise<string>;
   finished(): ExecutionResult;
   artifact<Value>(round: number, name: string): Promise<Value>;
   run(turns: readonly AgentTurn[], recovery?: RecoveryTurn): Promise<number>;
@@ -328,6 +331,8 @@ async function finiteJourney(
   options: {
     readonly memory?: boolean;
     readonly memoryServiceUrl?: string;
+    /** The configured preparation commands; the default succeeds without effects. */
+    readonly preparation?: readonly { readonly executable: string; readonly args: string[] }[];
     /** The controlled analyst turn; the default reports no reusable lesson. */
     readonly analysis?: (request: ExperienceAnalystRequest) => Promise<AgentResult>;
   } = {},
@@ -365,7 +370,9 @@ async function finiteJourney(
   nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
   const project = projectConfiguration();
   project.repository.source = origin;
-  project.preparation = [{ executable: 'bash', args: ['-c', 'echo preparing'] }];
+  project.preparation = [
+    ...(options.preparation ?? [{ executable: 'bash', args: ['-c', 'echo preparing'] }]),
+  ];
   project.checks = [
     { name: 'journey check', command: { executable: 'bash', args: ['-c', 'test -s feature.txt'] } },
   ];
@@ -570,6 +577,12 @@ async function finiteJourney(
     status: () => status,
     comments: () => comments,
     checks: () => checks,
+    async attemptId() {
+      const record = JSON.parse(await readFile(path.join(workspace, attemptFile), 'utf8')) as {
+        readonly attemptId: string;
+      };
+      return record.attemptId;
+    },
     finished() {
       const finished = events
         .filter((event) => event.source === 'application' && event.type === 'finished')
@@ -1241,11 +1254,76 @@ describe('finite execution journeys', () => {
     // The confirmed completion was recorded once by the terminal handoff and analyzed after the
     // queue drained; the controlled analyst reported no reusable lesson, so nothing was submitted.
     expect(journey.analyses).toHaveLength(1);
-    expect(journey.analyses[0]?.workspace.root).toBe(journey.workspace);
-    expect(journey.analyses[0]?.context).toContain('Retained round artifacts:');
+    // The analyst reads the request's retained copy of the handoff's evidence.
+    expect(journey.analyses[0]?.context).toContain('Retained evidence root:');
+    expect(journey.analyses[0]?.workspace.root).toContain(
+      path.join('memory', 'evidence', 'NEX-1-complete-completed-'),
+    );
     const requests = await readdir(path.join(journey.executionDirectory, 'memory', 'requests'));
     expect(requests).toHaveLength(1);
     expect(journey.diagnostics).toEqual([]);
+  });
+
+  it('records a blocked preparation failure with the reason and evidence its producer retained', async () => {
+    const service = await controlledService();
+    const journey = await finiteJourney({
+      memory: true,
+      memoryServiceUrl: service.url,
+      preparation: [{ executable: 'bash', args: ['-c', 'echo cannot prepare >&2; exit 3'] }],
+    });
+
+    const exitCode = await journey.run([], async () => ({
+      summary: 'The blocked preparation needs its own delivery attempt.',
+      decision: { kind: 'resume' },
+    }));
+
+    const result = journey.finished();
+    expect(exitCode, JSON.stringify(result)).toBe(1);
+    expect(result.outcome).toBe('needs-attention');
+    // The blocked outcome is the workflow's own verdict: recovery runs, an operational-error
+    // handoff does not.
+    expect(journey.recoveries.length).toBeGreaterThan(0);
+    expect(result.reason).toContain('blocked');
+
+    const requestsDirectory = path.join(journey.executionDirectory, 'memory', 'requests');
+    const requestFiles = await readdir(requestsDirectory);
+    expect(requestFiles).toHaveLength(1);
+    const request = JSON.parse(
+      await readFile(path.join(requestsDirectory, requestFiles[0]!), 'utf8'),
+    ) as {
+      readonly identity: string;
+      readonly handoff: {
+        readonly attemptId: string;
+        readonly terminalId: string;
+        readonly outcome: string;
+        readonly reason: string | null;
+        readonly artifacts: readonly { readonly path: string }[];
+      };
+      readonly evidenceRoot: string | null;
+    };
+    // The producer's stated reason and the attempt identity both survive in the durable record.
+    expect(request.handoff.terminalId).toBe('prepare-failed');
+    expect(request.handoff.outcome).toBe('failed');
+    expect(request.handoff.reason).toContain('exit code 3');
+    const attempt = JSON.parse(
+      await readFile(path.join(journey.workspace, attemptFile), 'utf8'),
+    ) as { readonly attemptId: string };
+    expect(request.handoff.attemptId).toBe(attempt.attemptId);
+
+    // The evidence is retained outside the attempt and still readable after the blocked execution.
+    expect(request.evidenceRoot).not.toBeNull();
+    const retainedRoot = request.evidenceRoot!;
+    const retainedReason = JSON.parse(
+      await readFile(path.join(retainedRoot, 'state', 'preparation-failure.json'), 'utf8'),
+    ) as { readonly reason: string };
+    expect(retainedReason.reason).toContain('exit code 3');
+    expect(request.handoff.artifacts.map((artifact) => artifact.path)).toContain(
+      path.join(journey.workspace, 'state', 'preparation-failure.json'),
+    );
+    // The terminal handoff reached the analyst with the producer's reason.
+    expect(journey.analyses).toHaveLength(1);
+    expect(journey.analyses[0]?.context).toContain('exit code 3');
+    expect(journey.analyses[0]?.workspace.root).toBe(retainedRoot);
   });
 
   it('analyzes a confirmed completion and settles its submission after a restart', async () => {
@@ -1309,7 +1387,7 @@ describe('finite execution journeys', () => {
     const handoff: ExperienceHandoff = {
       workId: 'NEX-1',
       workflow: 'finite-delivery',
-      attemptId: 'task/NEX-1',
+      attemptId: await journey.attemptId(),
       terminalId: 'complete-completed',
       outcome: 'completed',
       reason: null,

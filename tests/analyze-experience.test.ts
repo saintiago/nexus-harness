@@ -14,8 +14,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../src/agent-runtime/index.js';
 import { fault, ok, type Result } from '../src/result.js';
 import {
+  experienceAnalysisFile,
   experienceAnalysisOutputSchema,
   experienceCaptureFile,
+  experienceEvidenceRoot,
   experienceIdentity,
   experienceObservationSourceKey,
   experienceRequestFile,
@@ -150,9 +152,9 @@ async function harness(analyze: Skill): Promise<Harness> {
   };
 }
 
-/** One well-formed analyst response with one observation citing the retained artifact. */
-function observation(
-  workspace: string,
+/** One well-formed analyst response with one observation citing an explicit evidence file. */
+function observationAt(
+  file: string,
   content = 'The retry guard must preserve its source key.',
 ): string {
   return JSON.stringify({
@@ -161,7 +163,7 @@ function observation(
         content,
         evidence: [
           {
-            path: path.join(workspace, 'artifacts', '1', 'completion.json'),
+            path: file,
             revision: mergeRevision,
             detail: 'The completion evidence of the merged revision.',
           },
@@ -170,6 +172,14 @@ function observation(
       },
     ],
   });
+}
+
+/** One well-formed analyst response with one observation citing the work area's evidence. */
+function observation(
+  workspace: string,
+  content = 'The retry guard must preserve its source key.',
+): string {
+  return observationAt(path.join(workspace, 'artifacts', '1', 'completion.json'), content);
 }
 
 /** The submission record one observation was retained under. */
@@ -190,6 +200,16 @@ async function analysisOf(harnessValue: Harness): Promise<ExperienceAnalysisOutp
       'utf8',
     ),
   ) as ExperienceAnalysisOutput;
+}
+
+/** The retained evidence directory of one harness's request. */
+function evidenceRootOf(harnessValue: Harness): string {
+  return experienceEvidenceRoot(harnessValue.directory, harnessValue.identity);
+}
+
+/** The retained copy of one harness's selected evidence file. */
+function retainedEvidenceOf(harnessValue: Harness): string {
+  return path.join(evidenceRootOf(harnessValue), 'artifacts', '1', 'completion.json');
 }
 
 describe('experience capture', () => {
@@ -639,54 +659,60 @@ describe('experience analysis', () => {
     await expect(submissionOf(retained)).resolves.toMatchObject({ status: 'accepted' });
   });
 
-  it('rejects evidence that is not a file and evidence that escapes the workspace', async () => {
-    const directoryCase = await harness((_context, workspace) =>
-      ok(
-        JSON.stringify({
-          observations: [
-            {
-              content: 'A lesson citing the round artifacts directory.',
-              evidence: [
-                {
-                  path: path.join(workspace, 'artifacts'),
-                  revision: mergeRevision,
-                  detail: 'A directory, not a retained report.',
-                },
-              ],
-              relatedMemories: [],
-            },
-          ],
-        }),
-      ),
-    );
-    const directoryProblems = await directoryCase.process();
+  it('rejects evidence that is not a file and evidence that escapes the retained root', async () => {
+    const directoryCase = await harness(() => ok('{"observations":[]}'));
+    const directoryProblems = await directoryCase.process({
+      analyze: () =>
+        ok(
+          JSON.stringify({
+            observations: [
+              {
+                content: 'A lesson citing the retained evidence directory.',
+                evidence: [
+                  {
+                    path: path.join(evidenceRootOf(directoryCase), 'artifacts'),
+                    revision: mergeRevision,
+                    detail: 'A directory, not a retained report.',
+                  },
+                ],
+                relatedMemories: [],
+              },
+            ],
+          }),
+        ),
+    });
     expect(directoryProblems[0]).toContain('is not a file of the work item');
     expect(directoryCase.service.requests).toEqual([]);
 
     const outside = path.join(await temporaryDirectory(), 'outside.json');
     await writeFile(outside, '{"outside":true}\n');
-    const symlinkCase = await harness((_context, workspace) =>
-      ok(
-        JSON.stringify({
-          observations: [
-            {
-              content: 'A lesson citing a file outside the work item.',
-              evidence: [
-                {
-                  path: path.join(workspace, 'artifacts', '1', 'escaped.json'),
-                  revision: mergeRevision,
-                  detail: 'A symlink to a file outside the work item workspace.',
-                },
-              ],
-              relatedMemories: [],
-            },
-          ],
-        }),
-      ),
-    );
-    await symlink(outside, path.join(symlinkCase.workspace, 'artifacts', '1', 'escaped.json'));
+    const symlinkCase = await harness(() => ok('{"observations":[]}'));
+    // The retained copy itself is replaced by a link that leaves the retained evidence root.
+    const retainedCopy = retainedEvidenceOf(symlinkCase);
+    const escaped = path.join(path.dirname(retainedCopy), 'escaped.json');
+    await symlink(outside, escaped);
+    await rm(retainedCopy);
 
-    const symlinkProblems = await symlinkCase.process();
+    const symlinkProblems = await symlinkCase.process({
+      analyze: () =>
+        ok(
+          JSON.stringify({
+            observations: [
+              {
+                content: 'A lesson citing a file outside the retained evidence root.',
+                evidence: [
+                  {
+                    path: escaped,
+                    revision: mergeRevision,
+                    detail: 'A symlink to a file outside the retained evidence root.',
+                  },
+                ],
+                relatedMemories: [],
+              },
+            ],
+          }),
+        ),
+    });
     expect(symlinkProblems[0]).toContain('resolves outside the work item workspace');
     expect(symlinkCase.service.requests).toEqual([]);
   });
@@ -812,6 +838,136 @@ describe('experience analysis', () => {
 
     const problems = await restarted.processPending();
 
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
+    expect(service.observations.size).toBe(1);
+  });
+
+  it('keeps an unresolved request analyzable after the attempt is discarded and replaced', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    // A temporary analyst outage leaves the request outstanding while recovery discards the attempt.
+    const unresolved = await retained.process({
+      analyze: () => fault('The analysis provider is unavailable.'),
+    });
+    expect(unresolved[0]).toContain('is outstanding');
+    await rm(retained.workspace, { recursive: true, force: true });
+    // A fresh attempt writes different content at the original evidence path.
+    await mkdir(path.dirname(retained.evidence), { recursive: true });
+    await writeFile(retained.evidence, '{"replacement":true}\n', 'utf8');
+
+    // The analyst cites the file's recorded location, whose content a fresh attempt replaced.
+    const settled = await retained.process({
+      analyze: () => ok(observationAt(retained.evidence)),
+    });
+
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
+    expect(retained.service.observations.size).toBe(1);
+    // The observation was validated against the retained copy, not the replacement artifact.
+    expect(await readFile(retainedEvidenceOf(retained), 'utf8')).toContain(mergeRevision);
+    const output = await analysisOf(retained);
+    expect(output.observations[0]?.evidence[0]?.path).toBe(retained.evidence);
+  });
+
+  it('analyzes a handoff that never prepared a repository in a valid work area of its own', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'executions', project, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    await mkdir(workspace, { recursive: true });
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'finite-delivery',
+      attemptId,
+      terminalId: 'prepare-failed',
+      outcome: 'failed',
+      reason: 'The repository condition prevents preparation.',
+      workspaceRoot: workspace,
+      artifacts: [],
+    };
+    const service = await controlledService();
+    let analysisRoot: string | null = null;
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: async (request) => {
+        analysisRoot = request.workspace.root;
+        // The invocation's working directory exists even though the handoff has no worktree.
+        expect((await stat(path.join(request.workspace.root, 'worktree'))).isDirectory()).toBe(
+          true,
+        );
+        return ok({ output: JSON.stringify({ observations: [] }) });
+      },
+    });
+    await owner.capture(handoff);
+
+    const problems = await owner.processPending();
+
+    expect(problems).toEqual([]);
+    expect(analysisRoot).not.toBe(workspace);
+    // Analysis never mutates the work item workspace it read the failure from.
+    await expect(stat(path.join(workspace, 'worktree'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const analysis = JSON.parse(
+      await readFile(experienceAnalysisFile(directory, experienceIdentity(handoff)), 'utf8'),
+    ) as ExperienceAnalysisOutput;
+    expect(analysis.observations).toEqual([]);
+  });
+
+  it('analyzes a request recorded before retention in its own recorded workspace', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{}\n', 'utf8');
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'finite-delivery',
+      attemptId,
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    };
+    const identity = experienceIdentity(handoff);
+    // The earlier store recorded the handoff before requests retained a copy of their evidence.
+    await mkdir(path.join(directory, 'requests'), { recursive: true });
+    await writeFile(
+      path.join(directory, 'requests', `${identity}.json`),
+      `${JSON.stringify(
+        {
+          identity,
+          project,
+          handoff,
+          migrated: null,
+          requestedAt: '2026-09-29T10:00:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    const service = await controlledService();
+    const workspaces: string[] = [];
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: (request) => {
+        workspaces.push(request.workspace.root);
+        // The earlier request has no retained copy: its evidence stays at the recorded location.
+        return Promise.resolve(ok({ output: observationAt(evidence) }));
+      },
+    });
+
+    const problems = await owner.processPending();
+
+    // The record's own workspace remains its scope, and the invocation still has a valid location.
+    expect(workspaces).toHaveLength(1);
+    expect((await stat(path.join(workspaces[0]!, 'worktree'))).isDirectory()).toBe(true);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
     expect(service.observations.size).toBe(1);

@@ -50,6 +50,12 @@ export const experienceRequestSchema = z.strictObject({
   project: z.string().trim().min(1),
   handoff: experienceHandoffSchema,
   /**
+   * The directory holding this request's retained copy of the handoff's evidence, or null for a
+   * request recorded before retention. The copy keeps the evidence readable after recovery
+   * discards or replaces the workflow attempt that produced it.
+   */
+  evidenceRoot: z.string().trim().min(1).nullable().default(null),
+  /**
    * The earlier completion investigation this request migrated from, when it predates the shared
    * action. Its task and revision keep the migrated request's provenance intact.
    */
@@ -216,6 +222,15 @@ export function experienceIdentity(handoff: ExperienceHandoff): string {
 /** The recorded request of one experience identity. */
 export function experienceRequestFile(directory: string, identity: string): string {
   return path.join(directory, 'requests', `${identity}.json`);
+}
+
+/**
+ * The retained evidence directory of one experience identity: the durable copy of the terminal
+ * handoff's evidence, outside the attempt that produced it, and the analyst's own work area. Every
+ * selected evidence file is mirrored at its path relative to the work item's workspace root.
+ */
+export function experienceEvidenceRoot(directory: string, identity: string): string {
+  return path.join(directory, 'evidence', identity);
 }
 
 /** The capture evidence of one experience identity. */

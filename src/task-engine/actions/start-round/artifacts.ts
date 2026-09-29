@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { RecordDeclaration } from '../records.js';
+import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
  * StartRound's current-round record: the planned round's number, the developer profile Develop must
@@ -25,3 +26,14 @@ export const currentRoundDeclaration = {
   file: currentRoundFile,
   schema: currentRoundSchema,
 } satisfies RecordDeclaration<typeof currentRoundSchema>;
+
+/**
+ * The reason StartRound stated for its exhausted outcome, retained in the attempt for the terminal
+ * handoff. The record exists only when the policy exhausted the ladder.
+ */
+export const roundExhaustionFile = 'state/round-exhaustion.json';
+
+export const roundExhaustionDeclaration = {
+  file: roundExhaustionFile,
+  schema: terminalReasonSchema,
+} satisfies RecordDeclaration<typeof terminalReasonSchema>;

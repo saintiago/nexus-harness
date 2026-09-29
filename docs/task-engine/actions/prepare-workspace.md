@@ -28,6 +28,15 @@ type PreparedWorkspace = {
 The workspace root comes from Selection. The base revision is the implementation's comparison base,
 not a requirement to reset retained work to that revision.
 
+It also owns the attempt's retained records, outside the round artifact roots:
+
+- state/attempt.json: the identity of one finite delivery attempt. PrepareWorkspace writes a fresh
+  identity before any repository work, so the terminal handoff of an attempt that never prepares still
+  names its own attempt, and the next attempt after recovery discarded the state carries a new one
+  even when it reuses the branch name.
+- state/preparation-failure.json: the reason of the action's failed outcome, retained so the terminal
+  handoff states it after a restart instead of relying on the event of a stopped process.
+
 ### Outcomes
 
 - prepared: the directory layout, repository and configured preparation commands are ready.
@@ -35,8 +44,9 @@ not a requirement to reset retained work to that revision.
 
 prepared writes the record and publishes the
 [action outcome event](architecture.md#action-outcome-events) referencing it, naming the task branch;
-reusing a retained workspace publishes the same reference. failed saves no record and publishes only
-its reason. Preserve preparation output under state/preparation/ and emit failure
+reusing a retained workspace publishes the same reference and keeps the attempt identity. failed
+saves no prepared-workspace record; it retains its reason at state/preparation-failure.json and
+publishes it. Preserve preparation output under state/preparation/ and emit failure
 reasons for recovery. Launch and filesystem errors are execution errors.
 
 ## Behavior

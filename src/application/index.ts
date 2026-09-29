@@ -135,14 +135,21 @@ export type ApplicationSettings = {
   readonly analysis?: AnalysisRuntimeFactory;
 };
 
-/** How one worker launch ended, as execution completion or a failure that needs recovery. */
+/**
+ * How one worker launch ended. A declared blocked outcome is the workflow's own business verdict,
+ * not an execution fault: it needs recovery but never an invented operational-error handoff.
+ */
 type Completion =
   | { readonly kind: 'completed'; readonly outcome: string }
-  | { readonly kind: 'stopped'; readonly failure: string; readonly diagnostics: string };
+  | { readonly kind: 'blocked'; readonly failure: string; readonly diagnostics: string }
+  | { readonly kind: 'fault'; readonly failure: string; readonly diagnostics: string };
 
 /**
  * Evaluate both the worker's result and its process exit. Zero exit alone is not completion; a
- * blocked outcome, fault, missing or invalid result and a failed exit all stop the execution.
+ * blocked outcome, fault, missing or invalid result and a failed exit all stop the execution. Only
+ * an execution fault is an operational error; a valid non-successful result is the workflow's own
+ * declared blocked outcome, whose terminal handoff the workflow already routed through
+ * AnalyzeExperience, or skipped for a failed selection.
  */
 function completionOf(
   completion: WorkerCompletion,
@@ -152,28 +159,28 @@ function completionOf(
   const detail = diagnostics === '' ? '' : `\n${diagnostics}`;
   if (completion.problem !== null) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `${completion.problem}${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (completion.result === null) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `The worker exited without reporting a workflow result.${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (!completion.result.ok) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `Execution fault: ${completion.result.fault.message}${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (completion.exitCode !== 0) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure:
         `The worker exited with code ${completion.exitCode} after reporting outcome ` +
         `"${completion.result.value}".${detail}`,
@@ -182,7 +189,7 @@ function completionOf(
   }
   if (!successfulOutcomes.includes(completion.result.value)) {
     return {
-      kind: 'stopped',
+      kind: 'blocked',
       failure:
         `The workflow reached outcome "${completion.result.value}" without completing ` +
         `successfully.${detail}`,
@@ -276,10 +283,60 @@ export function createApplication(settings: ApplicationSettings): Application {
         publishActivity(activity);
       };
       /**
+       * What this invocation's own events established about the attempt it worked on. A selection
+       * failure leaves no attempt of its own, and a workflow capture proves the attempt's terminal
+       * handoff is already recorded; either way the stopped invocation records no operational
+       * fault for whatever selection record a previous attempt retained.
+       */
+      const progress: {
+        owned: { readonly task: string; captured: boolean } | null;
+        selectionFailed: boolean;
+      } = { owned: null, selectionFailed: false };
+      /** Track one event's contribution to the attempt this invocation owns. */
+      const recordAttemptProgress = (event: EngineEvent): void => {
+        if (event.type === 'failed' || event.type === 'exhausted') {
+          if (event.source === 'select-task' || event.source === 'select-idea') {
+            // The invocation's own selection failed; any retained selection belongs to another one.
+            progress.owned = null;
+            progress.selectionFailed = true;
+          }
+          return;
+        }
+        if (event.type !== 'outcome') {
+          return;
+        }
+        const data = event.data as { readonly task?: unknown; readonly outcome?: unknown };
+        const task = typeof data.task === 'string' ? data.task : null;
+        if (task === null) {
+          return;
+        }
+        if (event.source === 'select-task' || event.source === 'select-idea') {
+          if (data.outcome === 'selected') {
+            progress.owned = { task, captured: false };
+            progress.selectionFailed = false;
+          } else {
+            // An empty queue selects nothing; no attempt belongs to this invocation.
+            progress.owned = null;
+          }
+          return;
+        }
+        if (event.source === 'analyze-experience') {
+          if (progress.owned !== null) {
+            progress.owned = { task: progress.owned.task, captured: true };
+          }
+          return;
+        }
+        if (progress.owned === null && !progress.selectionFailed) {
+          // The invocation resumed an attempt in flight rather than selecting one itself.
+          progress.owned = { task, captured: false };
+        }
+      };
+      /**
        * Receive one boundary or progress event: an invocation's activity file is opened before its
        * first packet and closed after its last, then the event reaches the observers unchanged.
        */
       const receive = (event: EngineEvent): void => {
+        recordAttemptProgress(event);
         const invocation = agentInvocationOf(event);
         if (invocation !== null) {
           if (event.type === 'agent-started') {
@@ -344,10 +401,13 @@ export function createApplication(settings: ApplicationSettings): Application {
       /**
        * Record the stopped invocation's retained fault before recovery can discard or replace its
        * attempt. The already-started agents have settled by the time the worker stopped; the
-       * durable capture survives the attempt, and the analysis then reads its evidence while the
-       * retained files still exist.
+       * durable capture retains its evidence, so the analysis reads that attempt's evidence even
+       * after recovery replaced it.
        */
-      const captureOperationalError = async (failure: string): Promise<void> => {
+      const captureOperationalError = async (
+        failure: string,
+        expectedTask: string | null,
+      ): Promise<void> => {
         let retained: Selection | IdeaSelection | null;
         try {
           retained = await readRecord(paths.selectionFile, selection.declaration);
@@ -359,6 +419,13 @@ export function createApplication(settings: ApplicationSettings): Application {
         }
         if (retained === null) {
           // No selected work exists: an empty or failed selection is not an experience handoff.
+          return;
+        }
+        if (expectedTask !== null && retained.taskKey !== expectedTask) {
+          reportMemory(
+            `the stopped invocation of "${expectedTask}" does not own the retained selection ` +
+              `"${retained.taskKey}"; no operational handoff was recorded`,
+          );
           return;
         }
         try {
@@ -446,10 +513,19 @@ export function createApplication(settings: ApplicationSettings): Application {
           // Recovery reads the log, so writes pending before its invocation are drained.
           await log.drain();
           await activityLog.drain();
-          // The stopped invocation's fault is a terminal handoff: record it with the retained
-          // evidence before recovery may discard or replace the attempt, then settle the analysis
-          // while that evidence still exists.
-          await captureOperationalError(completion.failure);
+          // An execution fault of an established attempt is a terminal handoff: record it with the
+          // attempt's retained evidence before recovery may discard or replace that attempt, then
+          // settle the analysis. A declared blocked outcome and a failed selection record nothing
+          // here, and an attempt the workflow already captured is never recorded twice. An
+          // invocation that published no selection event of its own continued the retained
+          // workflow attempt, whose selection the handoff must still match.
+          if (
+            completion.kind === 'fault' &&
+            !progress.selectionFailed &&
+            (progress.owned === null || !progress.owned.captured)
+          ) {
+            await captureOperationalError(completion.failure, progress.owned?.task ?? null);
+          }
           await settleAnalysis();
           const outcome = await recovery.recover({
             failure: completion.failure,

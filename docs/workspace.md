@@ -25,6 +25,7 @@ uses the `refinement/` area. A later workflow adds its own area when its layout 
 | --- | --- |
 | `worktree/` | The target repository working copy |
 | `artifacts/<roundNumber>/` | Persistent inputs and outputs for one round; earlier rounds form history |
+| `state/attempt.json` | The retained identity of the current finite delivery attempt |
 | `state/prepared-workspace.json` | Task, repository, branch and comparison-base identity |
 | `state/preparation/` | Preparation command output |
 | `state/current-round.json` | The current round plan: number, developer profile and reason |

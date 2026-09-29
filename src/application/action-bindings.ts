@@ -61,7 +61,6 @@ import {
   finiteTerminalOf,
   ideaRefinementHandoff,
   ideaTerminalOf,
-  terminalProducer,
 } from './analysis-handoff.js';
 
 /**
@@ -108,34 +107,11 @@ export function createActionBinding(
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ) => Readonly<Record<string, BoundAction>> {
-  return (publish, publishActivity) => {
-    // A terminal handoff carries the reason its producer stated, and the producer is its only
-    // owner. The binding observes the events its own actions publish so AnalyzeExperience can
-    // carry that reason forward instead of inferring one from an outcome name.
-    const terminalReasons = new Map<string, string>();
-    const observed: EventPublisher = (event) => {
-      if (event.type === 'outcome') {
-        // A later successful outcome of the same producer supersedes its earlier failure.
-        terminalReasons.delete(event.source);
-      } else if (terminalReasonTypes.has(event.type)) {
-        const reason =
-          typeof event.data === 'object' && event.data !== null
-            ? (event.data as { readonly reason?: unknown }).reason
-            : undefined;
-        if (typeof reason === 'string' && reason.trim() !== '') {
-          terminalReasons.set(event.source, reason);
-        }
-      }
-      publish(event);
-    };
-    return settings.workflow === 'idea-refinement'
-      ? ideaRefinementActions(settings, observed, publishActivity, terminalReasons)
-      : finiteDeliveryActions(settings, observed, publishActivity, terminalReasons);
-  };
+  return (publish, publishActivity) =>
+    settings.workflow === 'idea-refinement'
+      ? ideaRefinementActions(settings, publish, publishActivity)
+      : finiteDeliveryActions(settings, publish, publishActivity);
 }
-
-/** The event types a producer states a terminal reason with. */
-const terminalReasonTypes: ReadonlySet<string> = new Set(['failed', 'exhausted']);
 
 /**
  * One role's agent runner: the shared caller boundary of AgentRuntime. A profile selected for
@@ -192,7 +168,6 @@ function finiteDeliveryActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
-  terminalReasons: ReadonlyMap<string, string>,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
@@ -215,13 +190,18 @@ function finiteDeliveryActions(
    */
   const experienceAction: BoundAction = async (input?: unknown) => {
     const terminal = finiteTerminalOf(input);
-    const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
-    const handoff = await finiteDeliveryHandoff({
-      selection,
-      terminal,
-      reason: terminalReason(terminalReasons, terminalProducer(settings.workflow, terminal)),
-    });
-    return analyzeExperience(handoff);
+    if (!analysisEnabled(nexus)) {
+      // Disabled memory discovers nothing and records nothing.
+      return 'skipped';
+    }
+    try {
+      const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
+      return await analyzeExperience(await finiteDeliveryHandoff({ selection, terminal }));
+    } catch (error) {
+      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
+      // terminal outcome the workflow preserves.
+      return captureUnavailable(publish, terminal, error);
+    }
   };
 
   /** An action constructed with the selection the workflow currently retains. */
@@ -319,12 +299,32 @@ function finiteDeliveryActions(
   };
 }
 
-/** The reason the named producer last stated, when the binding observed one. */
-function terminalReason(
-  reasons: ReadonlyMap<string, string>,
-  producer: string | null,
-): string | null {
-  return producer === null ? null : (reasons.get(producer) ?? null);
+/** Whether the configured memory integration records and analyzes terminal handoffs at all. */
+function analysisEnabled(nexus: NexusConfiguration): boolean {
+  const memory = nexus.memory;
+  return memory !== undefined && memory.enabled;
+}
+
+/**
+ * Report one capture that could not even resolve its handoff. The workflow preserves the terminal
+ * outcome it reached; the failure is reported on the event stream because it saved no capture
+ * evidence to reference.
+ */
+function captureUnavailable(
+  publish: EventPublisher,
+  terminal: string,
+  error: unknown,
+): 'unavailable' {
+  try {
+    publish({
+      source: 'analyze-experience',
+      type: 'unavailable',
+      data: { terminal, reason: messageOf(error) },
+    });
+  } catch {
+    // Reporting is not part of the terminal outcome.
+  }
+  return 'unavailable';
 }
 
 /**
@@ -337,13 +337,12 @@ function experienceCaptureSettings(
   paths: ExecutionPaths,
   project: string,
 ): Parameters<typeof createAnalyzeExperience>[0] {
-  const memory = nexus.memory;
-  const enabled = memory !== undefined && memory.enabled;
+  const memory = nexus.memory !== undefined && nexus.memory.enabled ? nexus.memory : null;
   return {
     directory: experienceStoreDirectory(paths),
     project,
-    profile: enabled ? memory.analysisProfile : null,
-    memory: enabled ? { url: memory.serviceUrl } : null,
+    profile: memory === null ? null : memory.analysisProfile,
+    memory: memory === null ? null : { url: memory.serviceUrl },
     analyze: null,
   };
 }
@@ -367,7 +366,6 @@ function ideaRefinementActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
-  terminalReasons: ReadonlyMap<string, string>,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
@@ -399,13 +397,18 @@ function ideaRefinementActions(
   });
   const experienceAction: BoundAction = async (input?: unknown) => {
     const terminal = ideaTerminalOf(input);
-    const selection = await selectedIdea();
-    const handoff = await ideaRefinementHandoff({
-      selection,
-      terminal,
-      reason: terminalReason(terminalReasons, terminalProducer(settings.workflow, terminal)),
-    });
-    return analyzeExperience(handoff);
+    if (!analysisEnabled(nexus)) {
+      // Disabled memory discovers nothing and records nothing.
+      return 'skipped';
+    }
+    try {
+      const selection = await selectedIdea();
+      return await analyzeExperience(await ideaRefinementHandoff({ selection, terminal }));
+    } catch (error) {
+      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
+      // terminal outcome the workflow preserves.
+      return captureUnavailable(publish, terminal, error);
+    }
   };
 
   return {

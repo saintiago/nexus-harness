@@ -279,3 +279,6 @@ not construct a memory client, process observations independently or automatical
 through the coding provider settings. Memory calls and analysis logic belong exclusively to the action. Settling pending work
 reports diagnostics without changing business results. Operational-error handoffs retain the
 original fault and wait for active agents to settle before invoking the action and then recovery.
+Application records one only for an execution fault of the attempt the invocation's own events
+established, and never for a declared blocked outcome or a failed selection, whose terminal handoff
+the workflow already routed or skipped.

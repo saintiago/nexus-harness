@@ -13,9 +13,11 @@ import {
 } from '../idea-storage.js';
 import { readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
 import type { IdeaInput } from '../select-idea/artifacts.js';
+import { retainTerminalReason } from '../terminal-reason.js';
 import {
   ideaRoundPlanDeclaration,
   ideaRoundPlanFile,
+  submissionExhaustionFile,
   type IdeaRoundPlan,
   type IdeaRoute,
 } from './artifacts.js';
@@ -115,6 +117,9 @@ export function createStartIdeaRound(
         `The configured maximum of ${String(settings.maxCycles)} conversation ` +
         `cycle${settings.maxCycles === 1 ? '' : 's'} for this selection is reached; another ` +
         'cycle would exceed it.';
+      // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
+      // restart of the workflow binding.
+      await retainTerminalReason(path.join(root, submissionExhaustionFile), reason);
       settings.publish({ source: 'start-idea-round', type: 'exhausted', data: { reason } });
       return 'exhausted';
     }
