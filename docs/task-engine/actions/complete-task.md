@@ -66,3 +66,10 @@ Do not directly merge or bypass repository gates.
 On repetition, read the current PR and ticket state. A merged PR or already-completed ticket does
 not by itself establish that required post-merge checks passed. Reuse confirmed evidence and finish
 any outstanding completion step without redoing the implementation.
+
+## Experience analysis handoff
+
+After confirmed completion, supply the task identity, merge revision and retained artifact references
+for [asynchronous experience analysis](../../memory/integration.md#completion-experience-analysis).
+Do not wait for analysis or memory ingestion, reinterpret its output as completion evidence or
+reverse Done on a memory failure. Repetition supplies the same completion identity.

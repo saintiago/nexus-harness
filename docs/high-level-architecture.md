@@ -221,3 +221,11 @@ Finite delivery starts from its own To Do queue.
 Every agent invocation uses the same identity, activity-log reference and terminal-pane contract,
 regardless of how many roles are active. The Application logger persists each agent's complete
 activity separately; the main execution stream carries lifecycle and artifact references.
+
+## Experience memory
+
+[Memory integration](memory/integration.md) combines explicit agent MCP use with asynchronous
+analysis of completed delivery artifacts. AMEM independently owns the shared service, MCP server,
+semantic memory and ingestion queue. Application wires clients/tools and supervises durable analysis
+requests; AgentRuntime executes the configured analyst without changing TaskEngine completion gates.
+Direct handoffs remain task context, rather than being automatically ingested as long-term memory.

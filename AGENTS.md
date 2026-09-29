@@ -57,8 +57,8 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Long-term vision](docs/LONG_TERM_VISION.md): purpose, direction and principles for the general-purpose workflow platform.
 - [Tech stack](docs/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
 - [High-level architecture](docs/high-level-architecture.md): system composition, component contracts and workflows.
-- [Memory component](docs/memory/architecture.md): retrieval, package integration, ingestion receipts and writer ownership.
-- [Memory integration](docs/memory/integration.md): agent context and deterministic hand-off mappings.
+- [Memory component](docs/memory/architecture.md): shared service access, observations, receipts and migration.
+- [Memory integration](docs/memory/integration.md): agent MCP use and asynchronous completion experience analysis.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
 - [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
 - [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.

@@ -57,9 +57,9 @@ identify the provider's installed native tool configuration. Unknown profiles or
 return a fault. Each call starts one
 invocation with the supplied context.
 
-[Memory integration](../memory/integration.md#before-an-invocation) adds optional historical evidence
-to caller-prepared context. Retrieval, limits and evidence persistence belong outside AgentRuntime;
-its existing run interface and complete-context preservation remain unchanged.
+[Memory integration](../memory/integration.md#agent-use) configures optional AMEM MCP tools through
+native provider settings. AgentRuntime transports those settings without owning memory semantics;
+its run interface and complete-context preservation remain unchanged.
 
 additionalContext is caller-prepared text containing the invocation instructions, information and any
 file paths the agent needs. Include it in the prompt as supplied; do not read workspace files to
@@ -103,6 +103,9 @@ Prompt assembly combines:
 Preserve the supplied context completely. If provider limits prevent this, return an input failure
 instead of silently truncating it.
 
+Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
+when memory tools are enabled; role prompts need not duplicate that policy.
+
 Profiles define model, effort and available tools. Invocation instructions do not change these
 settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
 
@@ -112,6 +115,7 @@ Developer and reviewer profiles expose the same tools:
 - Tavily web search and page extraction.
 - Context7 library documentation.
 - OpenAI documentation MCP.
+- AMEM memory MCP when enabled, with use governed by [Memory integration](../memory/integration.md#agent-use).
 
 Disable personal connectors and unrelated integrations, including the GitHub connector, for both
 profiles. Harness publication remains outside the agent tool set. Use the provider's native settings
