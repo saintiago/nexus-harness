@@ -240,6 +240,32 @@ describe('Nexus configuration', () => {
     expect(parseNexusConfiguration(migrated, configurationDirectory).memory?.enabled).toBe(false);
   });
 
+  it('disables a configured service integration without deleting its settings', () => {
+    const serviceSettings = {
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
+    };
+    const configuration = nexusConfiguration();
+    configuration.memory = memorySection({ enabled: true, ...serviceSettings });
+    expect(parseNexusConfiguration(configuration, configurationDirectory).memory?.enabled).toBe(
+      true,
+    );
+
+    // Only the switch changes: the retained service settings stay valid and unused.
+    configuration.memory = memorySection({ enabled: false, ...serviceSettings });
+    expect(parseNexusConfiguration(configuration, configurationDirectory).memory?.enabled).toBe(
+      false,
+    );
+
+    // The retained service settings are still validated while memory is disabled.
+    const invalid = nexusConfiguration();
+    invalid.memory = memorySection({ enabled: false, serviceUrl: 'not-a-url' });
+    expect(() => parseNexusConfiguration(invalid, configurationDirectory)).toThrow(
+      /memory\.serviceUrl/,
+    );
+  });
+
   it('requires the service URL, MCP entry point and analysis profile when memory is enabled', () => {
     const configuration = nexusConfiguration() as unknown as { memory?: unknown };
     configuration.memory = memorySection({ enabled: true });

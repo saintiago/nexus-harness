@@ -65,21 +65,30 @@ const memoryMcpSchema = z.strictObject({
   directory: identifier,
 });
 
-/** Enabled memory: the shared service URL, MCP access and completion-analysis profile. */
-const memoryEnabledSchema = z.strictObject({
-  enabled: z.literal(true),
+/** The service-backed memory settings: the service URL, MCP access and analysis profile. */
+const memoryServiceSettings = {
   serviceUrl: httpUrl('A memory service URL'),
   mcp: memoryMcpSchema,
   analysisProfile: identifier,
+};
+
+/** Enabled memory: the shared service URL, MCP access and completion-analysis profile. */
+const memoryEnabledSchema = z.strictObject({
+  enabled: z.literal(true),
+  ...memoryServiceSettings,
 });
 
 /**
- * A disabled memory integration performs no service call and exposes no agent tool. The obsolete
- * direct-integration settings are accepted and ignored here, so a configuration that already
- * disables memory stays valid while enabled memory can only name the service.
+ * A disabled memory integration performs no service call and exposes no agent tool. The service
+ * settings and the obsolete direct-integration settings are accepted and ignored here, so an
+ * operator can switch memory off without deleting its configuration while enabled memory can only
+ * name the service.
  */
 const memoryDisabledSchema = z.strictObject({
   enabled: z.literal(false),
+  serviceUrl: memoryServiceSettings.serviceUrl.optional(),
+  mcp: memoryServiceSettings.mcp.optional(),
+  analysisProfile: memoryServiceSettings.analysisProfile.optional(),
   storeId: identifier.optional(),
   qdrant: z
     .strictObject({

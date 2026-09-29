@@ -54,8 +54,8 @@ const hostEnvironment = {
   UNSET_SETTING: undefined,
 };
 
-/** The supplied Nexus configuration with the optional memory integration enabled and writable. */
-function memoryNexus(storageRoot: string): NexusConfiguration {
+/** The supplied Nexus configuration with the optional memory integration configured. */
+function memoryNexus(storageRoot: string, enabled = true): NexusConfiguration {
   const configuration = nexusConfiguration();
   configuration.storage.root = storageRoot;
   configuration.memory = {
@@ -64,7 +64,11 @@ function memoryNexus(storageRoot: string): NexusConfiguration {
     mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
     analysisProfile: 'nexus-astra',
   };
-  return parseNexusConfiguration(configuration, installationDirectory);
+  // Disabling flips only the switch: the configured service settings stay and stay inert.
+  const document = enabled
+    ? configuration
+    : { ...configuration, memory: { ...configuration.memory, enabled: false } };
+  return parseNexusConfiguration(document, installationDirectory);
 }
 
 const temporaryDirectories: string[] = [];
@@ -236,6 +240,33 @@ describe('memory composition', () => {
       true,
     );
     expect(disabled.baseInstructions).not.toContain(memoryUseGuidance);
+  });
+
+  it('keeps a disabled integration with retained service settings inert', async () => {
+    const disabled = memoryNexus('/srv/nexus/state', false);
+    const calls: string[] = [];
+    const transport: typeof globalThis.fetch = (input, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${input instanceof URL ? input.href : String(input)}`);
+      return Promise.reject(new Error('The disabled integration contacted the service.'));
+    };
+
+    const memory = createConfiguredMemory(disabled, transport);
+    await expect(memory.search({ query: 'retry guard' })).resolves.toEqual({ kind: 'disabled' });
+    await expect(
+      memory.submit({ sourceKey: 'HARN-83:round-2', content: 'A reusable discovery.' }),
+    ).resolves.toEqual({ kind: 'disabled' });
+    await memory.close();
+    expect(calls).toEqual([]);
+
+    const settings = createAgentRuntimeSettings(
+      disabled,
+      'developer',
+      unusedCapability<CodingRuntime>('coding runtime'),
+    );
+    expect(settings.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
+      true,
+    );
+    expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
   });
 });
 

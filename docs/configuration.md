@@ -105,9 +105,11 @@ The operator command selects the workflow explicitly.
 ## Memory settings
 
 Nexus owns optional `memory` settings; omission or `enabled: false` disables tools and completion
-analysis. When enabled, require a service URL and configured experience-analysis profile. Agent
-profiles use the AMEM MCP entry point and service URL through native tool settings. The analysis
-profile can search memory but cannot save directly; Nexus submits its validated output.
+analysis. A disabled integration keeps the service URL, MCP entry point and analysis profile valid
+but unused, so an operator can switch memory off without deleting them. When enabled, require a
+service URL and configured experience-analysis profile. Agent profiles use the AMEM MCP entry point
+and service URL through native tool settings. The analysis profile can search memory but cannot save
+directly; Nexus submits its validated output.
 
 AMEM owns collection, encoder, model and durable ingestion settings. Nexus no longer configures
 Qdrant, encoder caches, memory-generation credentials, neighbor evolution or writer locks. Remove
