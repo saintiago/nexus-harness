@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -286,6 +286,70 @@ describe('completion analysis', () => {
     });
   });
 
+  it('preserves the recorded payload and key when the configured profile changes', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    // The first process cannot submit, so the observation stays unsent.
+    await retained.memory.close();
+    await expect(retained.process()).resolves.toHaveLength(1);
+    const recorded = await submissionOf(retained);
+    expect(recorded.status).toBe('pending');
+    expect(recorded.observation.provenance).toMatchObject({ analysisProfile: 'nexus-astra' });
+
+    // A fresh process with a different configured profile resubmits the persisted payload.
+    const restarted = createCompletionAnalysis({
+      directory: retained.directory,
+      project,
+      profile: 'nexus-other',
+      memory: createMemoryServiceClient({ url: retained.service.url }),
+      analyze: () => Promise.reject(new Error('The persisted output must be reused.')),
+    });
+
+    const problems = await restarted.processPending();
+
+    const submitted = retained.service.requests.filter(
+      (request) => request.path === '/v1/observations',
+    );
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.body).toEqual(recorded.observation);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('the submission of observation 1 of task NEX-7 is outstanding');
+    await expect(submissionOf(retained)).resolves.toMatchObject({ status: 'accepted' });
+  });
+
+  it('keeps settling an accepted receipt when the configured profile changes', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    await expect(retained.process()).resolves.toHaveLength(1);
+    await expect(submissionOf(retained)).resolves.toMatchObject({
+      status: 'accepted',
+      receiptStatus: 'queued',
+    });
+    const lookups = retained.service.requests.filter((request) =>
+      request.path.startsWith('/v1/receipts/'),
+    ).length;
+
+    // A fresh process with a different configured profile still polls the stored receipt.
+    const restarted = createCompletionAnalysis({
+      directory: retained.directory,
+      project,
+      profile: 'nexus-other',
+      memory: createMemoryServiceClient({ url: retained.service.url }),
+      analyze: () => Promise.reject(new Error('The persisted output must be reused.')),
+    });
+    retained.service.store(analysisObservationSourceKey(taskKey, completionRevision, '1'));
+
+    await expect(restarted.processPending()).resolves.toEqual([]);
+
+    expect(
+      retained.service.requests.filter((request) => request.path.startsWith('/v1/receipts/'))
+        .length,
+    ).toBeGreaterThan(lookups);
+    await expect(submissionOf(retained)).resolves.toMatchObject({
+      status: 'stored',
+      receiptStatus: 'stored',
+      noteId: expect.any(String),
+    });
+  });
+
   it('accepts zero observations without contacting the service', async () => {
     const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
 
@@ -331,6 +395,105 @@ describe('completion analysis', () => {
     ).resolves.toHaveLength(1);
     expect(retained.service.requests.filter((r) => r.path === '/v1/observations')).toHaveLength(1);
     await expect(submissionOf(retained)).resolves.toMatchObject({ status: 'accepted' });
+  });
+
+  it('rejects an observation whose cited evidence was never retained', async () => {
+    const retained = await harness((_context, workspace) =>
+      ok(
+        JSON.stringify({
+          observations: [
+            {
+              content: 'A lesson citing a completion artifact that does not exist.',
+              evidence: [
+                {
+                  path: path.join(workspace, 'artifacts', '1', 'missing-completion.json'),
+                  revision: completionRevision,
+                  detail: 'A completion artifact that was never retained.',
+                },
+              ],
+              relatedMemories: [],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const problems = await retained.process();
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('does not exist as a retained file of the completed task');
+    expect(retained.service.requests).toEqual([]);
+    await expect(
+      stat(path.join(retained.directory, 'analyses', `${retained.identity}.json`)),
+    ).rejects.toThrow();
+    await expect(
+      stat(path.join(retained.directory, 'requests', `${retained.identity}.json`)),
+    ).resolves.toBeDefined();
+
+    // The request stays outstanding, so a later pass with real evidence still submits.
+    await expect(
+      retained.process({ analyze: (_context, workspace) => ok(observation(workspace)) }),
+    ).resolves.toHaveLength(1);
+    await expect(submissionOf(retained)).resolves.toMatchObject({ status: 'accepted' });
+  });
+
+  it('rejects an observation whose evidence symlink leaves the task workspace', async () => {
+    const outside = path.join(await temporaryDirectory(), 'outside.json');
+    await writeFile(outside, '{"outside":true}\n');
+    const retained = await harness((_context, workspace) =>
+      ok(
+        JSON.stringify({
+          observations: [
+            {
+              content: 'A lesson citing a file outside the completed task.',
+              evidence: [
+                {
+                  path: path.join(workspace, 'artifacts', '1', 'escaped.json'),
+                  revision: completionRevision,
+                  detail: 'A symlink to a file outside the task workspace.',
+                },
+              ],
+              relatedMemories: [],
+            },
+          ],
+        }),
+      ),
+    );
+    await symlink(outside, path.join(retained.workspace, 'artifacts', '1', 'escaped.json'));
+
+    const problems = await retained.process();
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('resolves outside the completed task workspace');
+    expect(retained.service.requests).toEqual([]);
+  });
+
+  it('rejects an observation whose evidence is not a file', async () => {
+    const retained = await harness((_context, workspace) =>
+      ok(
+        JSON.stringify({
+          observations: [
+            {
+              content: 'A lesson citing the round artifacts directory.',
+              evidence: [
+                {
+                  path: path.join(workspace, 'artifacts'),
+                  revision: completionRevision,
+                  detail: 'A directory, not a retained report.',
+                },
+              ],
+              relatedMemories: [],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const problems = await retained.process();
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('is not a file of the completed task');
+    expect(retained.service.requests).toEqual([]);
   });
 
   it('keeps an explicit correction and its compared note in the submitted provenance', async () => {
@@ -399,6 +562,42 @@ describe('completion analysis', () => {
     ]);
     await expect(submissionOf(retained)).resolves.toMatchObject({ status: 'failed' });
     await retained.process();
+    expect(retained.service.requests.filter((r) => r.path === '/v1/observations')).toHaveLength(1);
+  });
+
+  it('keeps polling a blocked receipt and reports it separately from failure', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    const sourceKey = analysisObservationSourceKey(taskKey, completionRevision, '1');
+    await retained.process();
+
+    // The service blocks the queued ingestion until an operator reconciles the configuration.
+    retained.service.block(sourceKey, 'The embedding provider is not configured.');
+    const blocked = await retained.process();
+
+    expect(blocked).toEqual([
+      'the submission of observation 1 of task NEX-7 is blocked in the memory service: ' +
+        'The embedding provider is not configured.',
+    ]);
+    await expect(submissionOf(retained)).resolves.toMatchObject({
+      status: 'accepted',
+      receiptStatus: 'blocked',
+    });
+
+    // The reconciled service stores the note; a restarted process settles the submission.
+    retained.service.store(sourceKey);
+    const restarted = createCompletionAnalysis({
+      directory: retained.directory,
+      project,
+      profile: 'nexus-astra',
+      memory: createMemoryServiceClient({ url: retained.service.url }),
+      analyze: () => Promise.reject(new Error('The persisted output must be reused.')),
+    });
+
+    await expect(restarted.processPending()).resolves.toEqual([]);
+    await expect(submissionOf(retained)).resolves.toMatchObject({
+      status: 'stored',
+      receiptStatus: 'stored',
+    });
     expect(retained.service.requests.filter((r) => r.path === '/v1/observations')).toHaveLength(1);
   });
 

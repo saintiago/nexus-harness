@@ -1,5 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import {
+  access,
+  appendFile,
+  mkdir,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { AgentEvent, AgentResult } from '../agent-runtime/index.js';
@@ -127,7 +138,10 @@ export const completionAnalysisOutputSchema = z.strictObject({
 
 export type CompletionAnalysisOutput = z.infer<typeof completionAnalysisOutputSchema>;
 
-/** The states one persisted submission passes through; stored and failed are terminal. */
+/**
+ * The states one persisted submission passes through; stored and failed are terminal. A receipt
+ * the service reports as blocked keeps its accepted status, so a later pass polls it again.
+ */
 const submissionStatuses = ['pending', 'accepted', 'stored', 'failed'] as const;
 
 /**
@@ -409,14 +423,52 @@ function inside(root: string, candidate: string): boolean {
 }
 
 /**
- * Validate the analyst's response against the completion it answered: the response format, the
- * evidence references and the compared note identities. An unusable response is a reported
- * analysis failure, never a submission.
+ * The problem one cited evidence path has, or null when it is an existing readable file whose
+ * canonical location stays inside the completed task's workspace. Lexical containment alone would
+ * accept a path that was never retained or a symlink that leaves the workspace, so the cited
+ * artifact must resolve to a real file inside the task that produced it.
  */
-function validateAnalysisResponse(
+async function evidenceProblem(
+  workspaceRoot: string,
+  evidencePath: string,
+): Promise<string | null> {
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await realpath(workspaceRoot);
+  } catch {
+    return 'which cannot be checked because the completed task workspace is not readable';
+  }
+  let canonical: string;
+  try {
+    canonical = await realpath(evidencePath);
+  } catch {
+    return 'which does not exist as a retained file of the completed task';
+  }
+  if (!inside(canonicalRoot, canonical)) {
+    return `which resolves outside the completed task workspace ${workspaceRoot}`;
+  }
+  try {
+    const stats = await stat(canonical);
+    if (!stats.isFile()) {
+      return 'which is not a file of the completed task';
+    }
+    await access(canonical, constants.R_OK);
+  } catch {
+    return 'which is not a readable file of the completed task';
+  }
+  return null;
+}
+
+/**
+ * Validate the analyst's response against the completion it answered: the response format, the
+ * evidence references and the compared note identities. An unusable response, including evidence
+ * that is missing, unreadable or resolves outside the completed task's workspace, is a reported
+ * analysis failure that leaves the request outstanding, never a submission.
+ */
+async function validateAnalysisResponse(
   output: string,
   request: CompletionAnalysisRequest,
-): Result<CompletionAnalysisResponse> {
+): Promise<Result<CompletionAnalysisResponse>> {
   let value: unknown;
   try {
     value = JSON.parse(output) as unknown;
@@ -447,6 +499,10 @@ function validateAnalysisResponse(
           `${label} cites "${evidence.path}", which is not a retained artifact of the completed ` +
             `task inside ${request.workspaceRoot}`,
         );
+      }
+      const problem = await evidenceProblem(request.workspaceRoot, resolved);
+      if (problem !== null) {
+        return fault(`${label} cites "${evidence.path}", ${problem}`);
       }
     }
     for (const related of observation.relatedMemories) {
@@ -564,7 +620,7 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
       );
       return null;
     }
-    const validated = validateAnalysisResponse(result.value.output, request);
+    const validated = await validateAnalysisResponse(result.value.output, request);
     if (!validated.ok) {
       await recordAttempt(identity, 'failed', validated.fault.message, null);
       problems.push(
@@ -592,11 +648,16 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
     return output;
   }
 
-  /** The observation payload one persisted observation is submitted as. */
+  /**
+   * The observation payload one persisted observation is submitted as, reconstructed from the
+   * durable request and the persisted analysis that produced it. The recorded profile, timestamp
+   * and evidence are reused, so changing the configured profile after acceptance never rewrites a
+   * payload that a submission retry must preserve.
+   */
   function observationPayload(
     request: CompletionAnalysisRequest,
+    output: CompletionAnalysisOutput,
     observation: CompletionAnalysisOutput['observations'][number],
-    analyzedAt: string,
   ): MemoryObservation {
     return {
       sourceKey: analysisObservationSourceKey(
@@ -605,13 +666,13 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
         observation.identity,
       ),
       content: observation.content,
-      timestamp: analyzedAt,
+      timestamp: output.analyzedAt,
       provenance: {
         project: request.project,
         task: request.taskKey,
         completionRevision: request.completionRevision,
         observation: observation.identity,
-        analysisProfile: settings.profile,
+        analysisProfile: output.profile,
         evidence: observation.evidence.map((evidence) => ({ ...evidence })),
         relatedMemories: observation.relatedMemories.map((related) => ({ ...related })),
       },
@@ -631,6 +692,12 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
     if (submission.status === 'failed') {
       return `the submission of ${label} failed: ${submission.problem ?? 'the service refused it'}`;
     }
+    if (submission.status === 'accepted' && submission.receiptStatus === 'blocked') {
+      return (
+        `the submission of ${label} is blocked in the memory service: ` +
+        (submission.problem ?? 'the service has not stored it yet')
+      );
+    }
     return (
       `the submission of ${label} is outstanding: ` +
       (submission.problem ?? 'the service has not stored it yet')
@@ -639,7 +706,8 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
 
   /**
    * Submit one persisted observation and poll its receipt. The identical payload and source key are
-   * preserved across retries; durable acceptance and stored storage are reported separately.
+   * preserved across retries; durable acceptance, a blocked receipt and stored storage are
+   * reported separately, and a blocked receipt stays pollable until the service settles it.
    */
   async function submitObservation(
     request: CompletionAnalysisRequest,
@@ -649,7 +717,7 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
   ): Promise<void> {
     const identity = completionAnalysisIdentity(request.taskKey, request.completionRevision);
     const file = submissionFile(identity, observation.identity);
-    const payload = observationPayload(request, observation, output.analyzedAt);
+    const payload = observationPayload(request, output, observation);
     let submission = await readRecord(file, submissionDeclaration);
     if (submission === null) {
       submission = {
@@ -718,11 +786,18 @@ export function createCompletionAnalysis(settings: CompletionAnalysisSettings): 
           if (lookup.receipt.status === 'stored') {
             submission.status = 'stored';
             submission.problem = null;
-          } else if (lookup.receipt.status === 'failed' || lookup.receipt.status === 'blocked') {
+            submission.retryable = null;
+          } else if (lookup.receipt.status === 'failed') {
             submission.status = 'failed';
             submission.problem =
-              lookup.receipt.lastError ??
-              `the memory service reported the receipt as ${lookup.receipt.status}`;
+              lookup.receipt.lastError ?? 'the memory service reported the receipt as failed';
+            submission.retryable = false;
+          } else if (lookup.receipt.status === 'blocked') {
+            // A blocked queue can recover after configuration correction or reconciliation, so the
+            // submission stays accepted and a later pass polls the receipt again.
+            submission.problem =
+              lookup.receipt.lastError ?? 'the memory service reported the receipt as blocked';
+            submission.retryable = true;
           } else {
             submission.problem = `the memory service accepted the observation and the receipt is ${lookup.receipt.status}`;
           }

@@ -60,7 +60,8 @@ The analyst searches existing memory for the candidate lessons, including notes 
 by agents, to avoid repeating knowledge already captured. A changed conclusion remains an explicit
 correction with references to the earlier observation; it does not silently assert that old notes
 were deleted or invalidated. AMEM's existing evolution semantics remain unchanged. The analyst
-returns candidate observations and evidence; Nexus validates and durably records that output before
+returns candidate observations and evidence; Nexus validates that output, including that every
+cited artifact exists inside the completed task's workspace, and durably records it before
 submitting it through the service. Disable `memory_save` for this profile so writes happen only
 through that validated path.
 
@@ -68,9 +69,12 @@ through that validated path.
 
 Persist the accepted analysis output once and reuse it after interruption rather than generating
 new observations during a submission retry. Derive stable source keys from the task, completion
-revision and persisted observation identity. Preserve each payload and key across retries; poll
-service receipts rather than declaring durable acceptance to mean searchable storage. Agent tool
-submissions follow AMEM's own identity and receipt contract.
+revision and persisted observation identity. Preserve each payload and key across retries, deriving
+the recorded profile, timestamp and evidence from the persisted analysis rather than current
+configuration; poll service receipts rather than declaring durable acceptance to mean searchable
+storage. A blocked receipt stays outstanding and is polled again once the service reconciles it; a
+failed receipt is the terminal local failure. Agent tool submissions follow AMEM's own identity and
+receipt contract.
 
 Save analysis inputs/references, extracted observations, submissions and outcomes with the retained
 execution evidence. Memory failures remain separate from business failures. Report outstanding
