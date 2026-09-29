@@ -1,8 +1,9 @@
 /**
- * Focused integration test: the parent-side completion-analysis runtime drives the real
+ * Focused integration test: Application's parent-side experience-analysis runtime drives the real
  * coding-provider adapter with a controlled provider process, establishing the configured analysis
- * profile, the search-only AMEM server, the completion-analysis guidance, the response schema and
- * the retained-worktree working directory. No live provider or memory service is involved.
+ * profile, the search-only AMEM server, the memory-analysis guidance, the action's response schema,
+ * the invocation boundaries and the retained-worktree working directory. No live provider or
+ * memory service is involved.
  */
 
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -11,9 +12,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import { memoryAnalysisGuidance, type AgentEvent } from '../src/agent-runtime/index.js';
-import { completionAnalysisResponseSchema } from '../src/application/analysis.js';
 import { createAnalysisRuntime } from '../src/application/analysis-runtime.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
+import { experienceAnalysisResponseSchema } from '../src/task-engine/actions/analyze-experience/artifacts.js';
+import type { EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration } from './support/configuration.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
@@ -116,18 +118,27 @@ describe('analysis runtime', () => {
     const workspace = { root: await temporaryDirectory() };
     await mkdir(path.join(workspace.root, 'worktree'));
     const activities: AgentEvent[] = [];
+    const events: EngineEvent[] = [];
 
-    const result = await createAnalysisRuntime({
+    const analyze = createAnalysisRuntime({
       nexus: configuration,
       environment: fixture.environment,
-    }).analyze({
-      context: 'Nexus completion experience analysis\n\nTask NEX-1 completed.',
+      publish: (event) => events.push(event),
+      publishActivity: () => undefined,
+      activityDirectory: path.join(workspace.root, 'agents'),
+    });
+    const result = await analyze({
+      context: 'Nexus terminal experience analysis\n\nWork item NEX-1 completed.',
       workspace,
+      outputSchema: z.toJSONSchema(experienceAnalysisResponseSchema),
       onActivity: (activity) => activities.push(activity),
     });
 
     expect(result).toEqual({ ok: true, value: { output: agentOutput } });
     expect(activities).toEqual([{ type: 'message', text: agentOutput }]);
+    // The invocation announces its own boundaries with its own activity-log reference.
+    expect(events.map((event) => event.type)).toEqual(['agent-started', 'agent-finished']);
+    expect(events[0]?.data).toMatchObject({ agentName: 'analysis', profile: analysisProfile });
     const invocation = await fixture.invocation();
     expect(invocation.args).toEqual(
       expect.arrayContaining([
@@ -146,15 +157,15 @@ describe('analysis runtime', () => {
         'mcp_servers.amem.enabled_tools=["memory_search"]',
       ]),
     );
-    // The completion analysis response schema reaches the provider's structured-output capability.
+    // The action's response schema reaches the provider's structured-output capability.
     expect(invocation.schema).toBe(
-      `${JSON.stringify(z.toJSONSchema(completionAnalysisResponseSchema), null, 2)}\n`,
+      `${JSON.stringify(z.toJSONSchema(experienceAnalysisResponseSchema), null, 2)}\n`,
     );
     expect(strictSchemaProblems(JSON.parse(invocation.schema ?? '{}'))).toEqual([]);
     await expect(stat(invocation.schemaPath ?? '')).rejects.toThrow(/ENOENT/);
     expect(invocation.directory).toBe(path.join(workspace.root, 'worktree'));
-    // The prompt carries the constant analysis guidance and the complete supplied context.
+    // The prompt carries the constant memory-analysis guidance and the complete supplied context.
     expect(invocation.prompt).toContain(memoryAnalysisGuidance);
-    expect(invocation.prompt).toContain('Nexus completion experience analysis');
+    expect(invocation.prompt).toContain('Nexus terminal experience analysis');
   });
 });

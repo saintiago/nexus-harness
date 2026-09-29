@@ -34,12 +34,6 @@ import type {
 } from '../src/adapters/github.js';
 import type { JiraAdapter, JiraComment, JiraIssue, JiraTransition } from '../src/adapters/jira.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
-import {
-  analysisObservationSourceKey,
-  completionAnalysisDirectory,
-  completionAnalysisIdentity,
-  type AnalysisAgentRequest,
-} from '../src/application/analysis.js';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import { runOperatorCommand } from '../src/application/command.js';
 import { executionPaths, toolEnvironment } from '../src/application/composition.js';
@@ -64,6 +58,12 @@ import {
   type AgentActivity,
   type EngineEvent,
 } from '../src/task-engine/index.js';
+import {
+  experienceIdentity,
+  experienceObservationSourceKey,
+  type ExperienceHandoff,
+} from '../src/task-engine/actions/analyze-experience/artifacts.js';
+import type { ExperienceAnalystRequest } from '../src/task-engine/actions/analyze-experience/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
 import { developmentResponseSchema } from '../src/task-engine/actions/develop/artifacts.js';
@@ -303,8 +303,8 @@ type Journey = {
   readonly activity: readonly AgentActivity[];
   readonly prompts: readonly string[];
   readonly requests: readonly CodingRuntimeRequest[];
-  /** The parent's completion-analysis invocations, after confirmed completions. */
-  readonly analyses: readonly AnalysisAgentRequest[];
+  /** The parent's experience-analysis invocations, after terminal handoffs. */
+  readonly analyses: readonly ExperienceAnalystRequest[];
   readonly recoveries: readonly RecoveryInvocationRequest[];
   readonly notifications: readonly { readonly subject: string; readonly body: string }[];
   readonly diagnostics: readonly string[];
@@ -329,7 +329,7 @@ async function finiteJourney(
     readonly memory?: boolean;
     readonly memoryServiceUrl?: string;
     /** The controlled analyst turn; the default reports no reusable lesson. */
-    readonly analysis?: (request: AnalysisAgentRequest) => Promise<AgentResult>;
+    readonly analysis?: (request: ExperienceAnalystRequest) => Promise<AgentResult>;
   } = {},
 ): Promise<Journey> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-journey-'));
@@ -542,7 +542,7 @@ async function finiteJourney(
   const activity: AgentActivity[] = [];
   const prompts: string[] = [];
   const requests: CodingRuntimeRequest[] = [];
-  const analyses: AnalysisAgentRequest[] = [];
+  const analyses: ExperienceAnalystRequest[] = [];
   const recoveries: RecoveryInvocationRequest[] = [];
   const notifications: { readonly subject: string; readonly body: string }[] = [];
   const diagnostics: string[] = [];
@@ -621,12 +621,10 @@ async function finiteJourney(
             ...settings,
             launchWorker,
             recovery,
-            analysis: () => ({
-              analyze: (request) => {
-                analyses.push(request);
-                return (options.analysis ?? noLessons)(request);
-              },
-            }),
+            analysis: () => (request) => {
+              analyses.push(request);
+              return (options.analysis ?? noLessons)(request);
+            },
           });
           application.subscribe((event) => events.push(event));
           application.subscribeActivity((packet) => activity.push(packet));
@@ -708,6 +706,7 @@ describe('finite execution journeys', () => {
       'deliver',
       'review',
       'complete',
+      'analyzeCompletion',
       'select',
       'finished',
     ]);
@@ -1006,6 +1005,7 @@ describe('finite execution journeys', () => {
       'deliver',
       'review',
       'complete',
+      'analyzeCompletion',
       'select',
       'finished',
     ]);
@@ -1143,6 +1143,7 @@ describe('finite execution journeys', () => {
       'deliver',
       'review',
       'complete',
+      'analyzeCompletion',
       'select',
       'finished',
     ]);
@@ -1237,14 +1238,12 @@ describe('finite execution journeys', () => {
     await expect(
       stat(path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
-    // The confirmed completion was recorded once and analyzed after the queue drained; the
-    // controlled analyst reported no reusable lesson, so nothing was submitted.
+    // The confirmed completion was recorded once by the terminal handoff and analyzed after the
+    // queue drained; the controlled analyst reported no reusable lesson, so nothing was submitted.
     expect(journey.analyses).toHaveLength(1);
     expect(journey.analyses[0]?.workspace.root).toBe(journey.workspace);
-    expect(journey.analyses[0]?.context).toContain('Round artifacts:');
-    const requests = await readdir(
-      path.join(completionAnalysisDirectory(journey.executionDirectory), 'requests'),
-    );
+    expect(journey.analyses[0]?.context).toContain('Retained round artifacts:');
+    const requests = await readdir(path.join(journey.executionDirectory, 'memory', 'requests'));
     expect(requests).toHaveLength(1);
     expect(journey.diagnostics).toEqual([]);
   });
@@ -1307,20 +1306,31 @@ describe('finite execution journeys', () => {
     // Analysis ran only after the confirmed completion, and the outcome did not wait for memory.
     expect(statusAtAnalysis).toBe('Done');
     expect(journey.analyses).toHaveLength(1);
+    const handoff: ExperienceHandoff = {
+      workId: 'NEX-1',
+      workflow: 'finite-delivery',
+      attemptId: 'task/NEX-1',
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: journey.workspace,
+      artifacts: [],
+    };
+    const identity = experienceIdentity(handoff);
     const submitted = service.requests.find((request) => request.path === '/v1/observations')
       ?.body as { readonly sourceKey: string; readonly content: string } | undefined;
-    // The stable source key binds the task, the merge revision and the persisted observation.
-    expect(submitted?.sourceKey).toBe(analysisObservationSourceKey('NEX-1', mergeRevision, '1'));
+    // The stable source key binds the captured request and the persisted observation.
+    expect(submitted?.sourceKey).toBe(experienceObservationSourceKey(identity, '1'));
     expect(submitted?.content).toBe(
       'The completion artifact binds the merged revision to its checks.',
     );
     // Acceptance is queued durably, not stored: the outstanding submission is reported.
     expect(journey.diagnostics.join('')).toContain(
-      'the submission of observation 1 of task NEX-1 is outstanding',
+      'the submission of observation 1 of NEX-1 is outstanding',
     );
 
     // The stored receipt settles the submission on the next start without another analysis.
-    service.store(analysisObservationSourceKey('NEX-1', mergeRevision, '1'));
+    service.store(experienceObservationSourceKey(identity, '1'));
     const reported = journey.diagnostics.length;
     const restarted = await journey.run([]);
 
@@ -1329,12 +1339,7 @@ describe('finite execution journeys', () => {
     expect(journey.diagnostics.slice(reported)).toEqual([]);
     const submission = JSON.parse(
       await readFile(
-        path.join(
-          completionAnalysisDirectory(journey.executionDirectory),
-          'submissions',
-          `${completionAnalysisIdentity('NEX-1', mergeRevision)}`,
-          '1.json',
-        ),
+        path.join(journey.executionDirectory, 'memory', 'submissions', identity, '1.json'),
         'utf8',
       ),
     ) as { readonly status: string; readonly noteId: string | null };
@@ -1395,7 +1400,7 @@ describe('finite execution journeys', () => {
     expect(journey.events.filter((event) => event.type === 'memory')).toEqual([]);
     expect(journey.recoveries).toEqual([]);
     expect(journey.diagnostics.join('')).toContain(
-      'Nexus memory analysis: the submission of observation 1 of task NEX-1 is outstanding',
+      'Nexus memory analysis: the submission of observation 1 of NEX-1 is outstanding',
     );
     expect(journey.diagnostics.join('')).toContain('could not be reached');
   });

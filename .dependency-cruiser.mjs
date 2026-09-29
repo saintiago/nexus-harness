@@ -25,6 +25,7 @@ const actionDirectories = [
   'project-guide',
   'challenger',
   'publish-decision',
+  'analyze-experience',
 ];
 
 /**
@@ -92,6 +93,17 @@ const config = {
       comment: 'src/application/index.ts is the application public module.',
       from: { path: '^src/', pathNot: '^src/application/' },
       to: { path: '^src/application/', pathNot: '^src/application/index\\.ts$' },
+    },
+    {
+      name: 'memory-exclusive-consumer',
+      severity: 'error',
+      comment:
+        'AnalyzeExperience is the sole automatic Memory caller; other implementations neither import nor invoke it, and agents reach AMEM through their explicit MCP tools.',
+      from: {
+        path: '^src/',
+        pathNot: ['^src/memory/', '^src/task-engine/actions/analyze-experience/'],
+      },
+      to: { path: '^src/memory/' },
     },
     ...actionDeclarationRules,
   ],

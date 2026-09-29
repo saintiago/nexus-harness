@@ -21,6 +21,10 @@ import {
   type BoundAction,
   type EventPublisher,
 } from '../task-engine/index.js';
+import {
+  createAnalyzeExperience,
+  createAnalyzeExperienceAction,
+} from '../task-engine/actions/analyze-experience/index.js';
 import { createChallenger } from '../task-engine/actions/challenger/index.js';
 import { createCompleteTask } from '../task-engine/actions/complete-task/index.js';
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
@@ -46,15 +50,19 @@ import { createStartIdeaRound } from '../task-engine/actions/start-idea-round/in
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
 import {
-  completionAnalysisDirectory,
-  createCompletionAnalysisRequestPublisher,
-} from './analysis.js';
-import {
   createAgentRuntimeSettings,
+  experienceStoreDirectory,
   workspaceRoot,
   type ExecutionPaths,
   type ProfileRole,
 } from './composition.js';
+import {
+  finiteDeliveryHandoff,
+  finiteTerminalOf,
+  ideaRefinementHandoff,
+  ideaTerminalOf,
+  terminalProducer,
+} from './analysis-handoff.js';
 
 /**
  * The worker's action binding: Application assembles the implementations the workflow invokes from
@@ -100,11 +108,34 @@ export function createActionBinding(
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ) => Readonly<Record<string, BoundAction>> {
-  return (publish, publishActivity) =>
-    settings.workflow === 'idea-refinement'
-      ? ideaRefinementActions(settings, publish, publishActivity)
-      : finiteDeliveryActions(settings, publish, publishActivity);
+  return (publish, publishActivity) => {
+    // A terminal handoff carries the reason its producer stated, and the producer is its only
+    // owner. The binding observes the events its own actions publish so AnalyzeExperience can
+    // carry that reason forward instead of inferring one from an outcome name.
+    const terminalReasons = new Map<string, string>();
+    const observed: EventPublisher = (event) => {
+      if (event.type === 'outcome') {
+        // A later successful outcome of the same producer supersedes its earlier failure.
+        terminalReasons.delete(event.source);
+      } else if (terminalReasonTypes.has(event.type)) {
+        const reason =
+          typeof event.data === 'object' && event.data !== null
+            ? (event.data as { readonly reason?: unknown }).reason
+            : undefined;
+        if (typeof reason === 'string' && reason.trim() !== '') {
+          terminalReasons.set(event.source, reason);
+        }
+      }
+      publish(event);
+    };
+    return settings.workflow === 'idea-refinement'
+      ? ideaRefinementActions(settings, observed, publishActivity, terminalReasons)
+      : finiteDeliveryActions(settings, observed, publishActivity, terminalReasons);
+  };
 }
+
+/** The event types a producer states a terminal reason with. */
+const terminalReasonTypes: ReadonlySet<string> = new Set(['failed', 'exhausted']);
 
 /**
  * One role's agent runner: the shared caller boundary of AgentRuntime. A profile selected for
@@ -161,6 +192,7 @@ function finiteDeliveryActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
+  terminalReasons: ReadonlyMap<string, string>,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
@@ -168,15 +200,29 @@ function finiteDeliveryActions(
   // constant instructions.
   const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
   const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
-  // A memory-disabled configuration records no analysis request, so completion performs no
-  // analysis or provider call and no local observation write.
-  const requestAnalysis =
-    nexus.memory?.enabled === true
-      ? createCompletionAnalysisRequestPublisher({
-          directory: completionAnalysisDirectory(paths.directory),
-          project: project.taskSource.project,
-        })
-      : null;
+  // The worker records terminal handoffs; Application supervises the action's analysis, memory
+  // calls and submission, so this instance never contacts the service or a provider.
+  const analyzeExperience = createAnalyzeExperienceAction({
+    owner: createAnalyzeExperience(
+      experienceCaptureSettings(nexus, paths, project.taskSource.project),
+    ),
+    publish,
+  });
+
+  /**
+   * AnalyzeExperience's binding: resolve the selected work item and the producer-owned evidence of
+   * the terminal handoff the workflow state supplied, then record it once.
+   */
+  const experienceAction: BoundAction = async (input?: unknown) => {
+    const terminal = finiteTerminalOf(input);
+    const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
+    const handoff = await finiteDeliveryHandoff({
+      selection,
+      terminal,
+      reason: terminalReason(terminalReasons, terminalProducer(settings.workflow, terminal)),
+    });
+    return analyzeExperience(handoff);
+  };
 
   /** An action constructed with the selection the workflow currently retains. */
   const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
@@ -268,8 +314,37 @@ function finiteDeliveryActions(
       jira: settings.jira,
       publish,
       wait: settings.wait,
-      requestAnalysis,
     }),
+    AnalyzeExperience: experienceAction,
+  };
+}
+
+/** The reason the named producer last stated, when the binding observed one. */
+function terminalReason(
+  reasons: ReadonlyMap<string, string>,
+  producer: string | null,
+): string | null {
+  return producer === null ? null : (reasons.get(producer) ?? null);
+}
+
+/**
+ * AnalyzeExperience's worker-side settings: the terminal handoffs are recorded in the project's
+ * durable store, while the analysis, memory calls and submission stay with the instance
+ * Application supervises. Disabled memory records nothing.
+ */
+function experienceCaptureSettings(
+  nexus: NexusConfiguration,
+  paths: ExecutionPaths,
+  project: string,
+): Parameters<typeof createAnalyzeExperience>[0] {
+  const memory = nexus.memory;
+  const enabled = memory !== undefined && memory.enabled;
+  return {
+    directory: experienceStoreDirectory(paths),
+    project,
+    profile: enabled ? memory.analysisProfile : null,
+    memory: enabled ? { url: memory.serviceUrl } : null,
+    analyze: null,
   };
 }
 
@@ -292,6 +367,7 @@ function ideaRefinementActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
+  terminalReasons: ReadonlyMap<string, string>,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
@@ -315,6 +391,22 @@ function ideaRefinementActions(
   const researcherRunner = agentRunnerFor(settings, publish, publishActivity, 'researcher');
   const projectGuideRunner = agentRunnerFor(settings, publish, publishActivity, 'project-guide');
   const challengerRunner = agentRunnerFor(settings, publish, publishActivity, 'challenger');
+
+  /** Record one idea-refinement terminal handoff once, as the finite delivery binding does. */
+  const analyzeExperience = createAnalyzeExperienceAction({
+    owner: createAnalyzeExperience(experienceCaptureSettings(nexus, paths, taskSource.project)),
+    publish,
+  });
+  const experienceAction: BoundAction = async (input?: unknown) => {
+    const terminal = ideaTerminalOf(input);
+    const selection = await selectedIdea();
+    const handoff = await ideaRefinementHandoff({
+      selection,
+      terminal,
+      reason: terminalReason(terminalReasons, terminalProducer(settings.workflow, terminal)),
+    });
+    return analyzeExperience(handoff);
+  };
 
   return {
     SelectIdea: createSelectIdea({
@@ -370,5 +462,6 @@ function ideaRefinementActions(
         publish,
       }),
     ),
+    AnalyzeExperience: experienceAction,
   };
 }

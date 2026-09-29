@@ -16,10 +16,7 @@ import {
   completionArtifact,
   type CompletionOutput,
 } from '../src/task-engine/actions/complete-task/artifacts.js';
-import {
-  createCompleteTask,
-  type ConfirmedCompletion,
-} from '../src/task-engine/actions/complete-task/index.js';
+import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -203,7 +200,6 @@ function completeTaskAction(options: {
   readonly jira: ReturnType<typeof scriptedJira>['jira'];
   readonly wait: (milliseconds: number) => Promise<void>;
   readonly waitLimitSeconds?: number;
-  readonly requestAnalysis?: (request: ConfirmedCompletion) => Promise<void>;
 }): ReturnType<typeof createCompleteTask> {
   return createCompleteTask({
     selectionFile: options.selectionFile,
@@ -220,7 +216,6 @@ function completeTaskAction(options: {
     jira: options.jira,
     publish: (event) => events.push(event),
     wait: options.wait,
-    requestAnalysis: options.requestAnalysis ?? null,
   });
 }
 
@@ -276,115 +271,6 @@ describe('CompleteTask', () => {
     expect(order).toEqual(['checks', 'workflow', 'done']);
     // The saved evidence is what the completed outcome event references.
     expect(events).toEqual([completionOutcome(workspaceRoot, 'completed')]);
-  });
-
-  it('captures one analysis request after Done and reuses its identity on repetition', async () => {
-    const { workspaceRoot, selectionFile } = await workspace();
-    let status = 'In Review';
-    const { github } = scriptedGitHub({
-      readChecks: () => ok([reviewCheckObservation]),
-      readPullRequest: () => ok(pullRequest({ state: 'closed', merged: true, mergeRevision })),
-      readWorkflowRuns: () => ok([workflowRun()]),
-    });
-    const { jira } = scriptedJira({
-      readIssue: () =>
-        ok({
-          ...inReviewIssue,
-          fields: { ...inReviewIssue.fields, status: { id: '5', name: status } },
-        }),
-      readTransitions: () => ok([{ id: '41', name: 'Done', to: { id: '5', name: 'Done' } }]),
-      transitionIssue: () => {
-        status = 'Done';
-        return ok(undefined);
-      },
-    });
-    const requests: ConfirmedCompletion[] = [];
-    const completeTask = completeTaskAction({
-      selectionFile,
-      github,
-      jira,
-      wait: scriptedWait().wait,
-      requestAnalysis: (request) => {
-        // The request is captured only after the source reached its completed status.
-        expect(status).toBe('Done');
-        requests.push(request);
-        return Promise.resolve();
-      },
-    });
-
-    await expect(completeTask()).resolves.toBe('completed');
-    // Repeating the confirmed completion reuses the same task and final-revision identity.
-    await expect(completeTask()).resolves.toBe('completed');
-
-    expect(requests).toEqual([
-      { taskKey: 'NEX-1', completionRevision: mergeRevision, workspaceRoot },
-      { taskKey: 'NEX-1', completionRevision: mergeRevision, workspaceRoot },
-    ]);
-  });
-
-  it('reports an analysis request that cannot be recorded without changing completion', async () => {
-    const { workspaceRoot, selectionFile } = await workspace();
-    const { github } = scriptedGitHub({
-      readChecks: () => ok([reviewCheckObservation]),
-      readPullRequest: () => ok(pullRequest({ state: 'closed', merged: true, mergeRevision })),
-      readWorkflowRuns: () => ok([workflowRun()]),
-    });
-    const { jira } = scriptedJira({
-      readIssue: () => ok(inReviewIssue),
-      readTransitions: () => ok([{ id: '41', name: 'Done', to: { id: '5', name: 'Done' } }]),
-      transitionIssue: () => ok(undefined),
-    });
-    const completeTask = completeTaskAction({
-      selectionFile,
-      github,
-      jira,
-      wait: scriptedWait().wait,
-      requestAnalysis: () =>
-        Promise.reject(new Error('The analysis request store is unavailable.')),
-    });
-
-    await expect(completeTask()).resolves.toBe('completed');
-
-    // Done was not reverted and the completed evidence is still what the outcome references.
-    expect(events).toEqual([
-      {
-        source: 'complete-task',
-        type: 'analysis-request-failed',
-        data: {
-          task: 'NEX-1',
-          revision: mergeRevision,
-          reason: 'The analysis request store is unavailable.',
-        },
-      },
-      completionOutcome(workspaceRoot, 'completed'),
-    ]);
-    expect(await readRoundArtifact(workspaceRoot, 'completion.json')).toMatchObject({
-      mergeRevision,
-    });
-  });
-
-  it('captures no analysis request when completion does not hold', async () => {
-    const { selectionFile } = await workspace();
-    const { github } = scriptedGitHub({
-      readChecks: () => ok([reviewCheckObservation]),
-      readPullRequest: () => ok(pullRequest({ state: 'closed', merged: true, mergeRevision })),
-      readWorkflowRuns: () => ok([workflowRun({ conclusion: 'failure' })]),
-    });
-    let requested = 0;
-    const completeTask = completeTaskAction({
-      selectionFile,
-      github,
-      jira: scriptedJira({}).jira,
-      wait: scriptedWait().wait,
-      requestAnalysis: () => {
-        requested += 1;
-        return Promise.resolve();
-      },
-    });
-
-    await expect(completeTask()).resolves.toBe('failed');
-
-    expect(requested).toBe(0);
   });
 
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {

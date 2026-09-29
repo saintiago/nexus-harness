@@ -50,22 +50,24 @@ export const memoryUseGuidance = [
 ].join('\n');
 
 /**
- * The constant completion-analysis instructions Application supplies with the configured analysis
- * profile. The Memory integration contract owns this policy: the analyst inspects one completed
- * task's retained evidence, compares the candidate lessons with existing shared memory and returns
- * candidate observations with their evidence; it never saves through a tool, because Nexus submits
- * the validated output itself.
+ * The constant experience-analysis instructions Application supplies with the configured analysis
+ * profile. The Memory integration contract owns this policy: the analyst inspects one terminal
+ * handoff's retained evidence, compares the candidate lessons with existing shared memory and
+ * returns candidate observations with their evidence; it never saves through a tool, because
+ * AnalyzeExperience submits the validated output itself.
  */
 export const memoryAnalysisGuidance = [
-  'Completion experience analysis guidance:',
-  '- Analyze one completed Nexus task from its retained evidence and the revisions bound to it.',
-  '  Read only the task artifacts, its worktree and the shared memory search tool; never read',
-  '  credentials, unrelated workspaces or arbitrary host logs.',
+  'Terminal experience analysis guidance:',
+  '- Analyze one terminal Nexus handoff — a completed, failed, inconclusive or returned work item —',
+  '  from its retained evidence and the revisions bound to it. Read only that work item’s',
+  '  artifacts, its worktree and the shared memory search tool; never read credentials, unrelated',
+  '  workspaces or arbitrary host logs.',
   '- Extract zero or more independent, concise observations covering reusable root causes and',
   '  fixes, architectural constraints and rationale, failed approaches, or remaining limitations.',
   '  Preserve specific components, mechanisms, consequences and conditions. Do not merely summarize',
-  '  the ticket, invent a cause from a passing test or generalize a project-specific rule without',
-  '  evidence.',
+  '  the work item, invent a cause from a passing test or generalize a project-specific rule',
+  '  without evidence. For failure, distinguish demonstrated causes from hypotheses; for idea',
+  '  refinement, preserve the author’s intent, provisional decisions and unanswered questions.',
   '- Link every observation to the retained artifacts and revisions that establish it. The full',
   '  reports remain the evidence; the observation is the reusable lesson.',
   '- Search existing shared memory, including notes agents saved explicitly, with focused questions',
@@ -73,7 +75,7 @@ export const memoryAnalysisGuidance = [
   '  changes an earlier conclusion, keep the correction explicit and reference the earlier note;',
   '  never claim that a note was deleted or invalidated.',
   '- Preserve applicability and uncertainty: a hypothesis must not become an established fact.',
-  '  Return no observation when the completed work holds no reusable lesson.',
+  '  Return no observation when the terminal handoff holds no reusable lesson.',
   '- Return only the requested JSON object, without Markdown fences and without other text.',
 ].join('\n');
 

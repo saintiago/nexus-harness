@@ -41,15 +41,19 @@ function suppliedActions(options: {
   readonly startRound?: (input: unknown) => string;
   /** The outcome of one PublishDecision route call. */
   readonly publish?: (input: unknown) => string;
+  /** The outcome of one AnalyzeExperience handoff. */
+  readonly analyze?: () => string;
 }): {
   readonly actions: Record<string, ActionStub>;
   readonly calls: string[];
   readonly routes: unknown[];
   readonly decisions: unknown[];
+  readonly handoffs: unknown[];
 } {
   const calls: string[] = [];
   const routes: unknown[] = [];
   const decisions: unknown[] = [];
+  const handoffs: unknown[] = [];
   let assessments = 0;
   let editorTurns = 0;
   const outcomes: Record<string, string> = {
@@ -60,11 +64,16 @@ function suppliedActions(options: {
     ProjectGuide: 'contributed',
     Challenger: 'approve',
     PublishDecision: 'approved',
+    AnalyzeExperience: 'recorded',
   };
   const record =
     (name: string): ActionStub =>
     async (input?: unknown) => {
       calls.push(name);
+      if (name === 'AnalyzeExperience') {
+        handoffs.push(input);
+        return options.analyze === undefined ? 'recorded' : options.analyze();
+      }
       if (name === 'StartIdeaRound') {
         routes.push(input);
         return options.startRound === undefined ? 'opened' : options.startRound(input);
@@ -91,7 +100,7 @@ function suppliedActions(options: {
   for (const name of Object.keys(outcomes)) {
     actions[name] = record(name);
   }
-  return { actions, calls, routes, decisions };
+  return { actions, calls, routes, decisions, handoffs };
 }
 
 /** The editor's default outcome for one task. */
@@ -115,10 +124,11 @@ async function run(
   readonly calls: string[];
   readonly routes: unknown[];
   readonly decisions: unknown[];
+  readonly handoffs: unknown[];
   readonly events: readonly EngineEvent[];
 }> {
   const file = stateFile ?? (await temporaryStateFile());
-  const { actions, calls, routes, decisions } = suppliedActions(options);
+  const { actions, calls, routes, decisions, handoffs } = suppliedActions(options);
   if (options.selectIdea !== undefined) {
     actions['SelectIdea'] = async () => {
       calls.push('SelectIdea');
@@ -133,7 +143,7 @@ async function run(
   });
   engine.subscribe((event) => events.push(event));
   const result = await engine.run();
-  return { result, calls, routes, decisions, events };
+  return { result, calls, routes, decisions, handoffs, events };
 }
 
 /** The parallel state values one run observed, in publication order. */
@@ -160,6 +170,7 @@ describe('idea refinement workflow', () => {
       'IdeaEditor',
       'Challenger',
       'PublishDecision',
+      'AnalyzeExperience',
     ]);
     // Both parallel groups stay observable while their regions run.
     expect(parallelStates(events)).toEqual(
@@ -174,6 +185,60 @@ describe('idea refinement workflow', () => {
   it('opens a new submission at cycle 1 with the new route', async () => {
     const { routes } = await run({});
     expect(routes).toEqual([{ route: 'new' }]);
+  });
+
+  it('analyzes every terminal publication and preserves its destination', async () => {
+    const approved = await run({});
+    expect(approved.result).toEqual({ ok: true, value: 'approved' });
+    expect(approved.handoffs).toEqual([{ terminal: 'publish-approved' }]);
+
+    const unsuitable = await run({
+      editor: (task) => (task === 'edit' ? 'unsuitable' : defaultEditor(task)),
+    });
+    expect(unsuitable.result).toEqual({ ok: true, value: 'waiting-for-feedback' });
+    expect(unsuitable.handoffs).toEqual([{ terminal: 'publish-unsuitable' }]);
+
+    const authorDecision = await run({
+      editor: (task) => (task === 'frame' ? 'author-decision-needed' : defaultEditor(task)),
+    });
+    expect(authorDecision.result).toEqual({ ok: true, value: 'waiting-for-feedback' });
+    expect(authorDecision.handoffs).toEqual([{ terminal: 'publish-author-decision' }]);
+
+    const exhausted = await run({
+      verdicts: ['discuss'],
+      startRound: (input) =>
+        (input as { readonly route?: string }).route === 'next' ? 'exhausted' : 'opened',
+    });
+    expect(exhausted.result).toEqual({ ok: true, value: 'waiting-for-feedback' });
+    expect(exhausted.handoffs).toEqual([{ terminal: 'publish-attempts-exhausted' }]);
+
+    // A skipped or unavailable capture still reaches the publication destination.
+    const skipped = await run({ analyze: () => 'skipped' });
+    expect(skipped.result).toEqual({ ok: true, value: 'approved' });
+    const unavailable = await run({ analyze: () => 'unavailable' });
+    expect(unavailable.result).toEqual({ ok: true, value: 'approved' });
+  });
+
+  it('analyzes a blocked selected submission and never an intermediate or empty exchange', async () => {
+    const blocked = await run({
+      startRound: () => 'exhausted',
+    });
+    expect(blocked.result).toEqual({ ok: true, value: 'blocked' });
+    expect(blocked.handoffs).toEqual([{ terminal: 'start-submission-exhausted' }]);
+
+    // Discussion cycles, focused help and empty or failed selection stay intermediate work.
+    const cycles = await run({ verdicts: ['discuss', 'approve'] });
+    expect(cycles.result).toEqual({ ok: true, value: 'approved' });
+    expect(cycles.handoffs).toEqual([{ terminal: 'publish-approved' }]);
+
+    await expect(run({ selectIdea: 'empty' })).resolves.toMatchObject({
+      result: { ok: true, value: 'drained' },
+      handoffs: [],
+    });
+    await expect(run({ selectIdea: 'failed' })).resolves.toMatchObject({
+      result: { ok: true, value: 'blocked' },
+      handoffs: [],
+    });
   });
 
   it('runs the Researcher and the Project guide concurrently', async () => {
@@ -216,6 +281,7 @@ describe('idea refinement workflow', () => {
       },
       Challenger: async () => 'approve',
       PublishDecision: async () => 'approved',
+      AnalyzeExperience: async () => 'recorded',
     };
     const stateFile = await temporaryStateFile();
 
@@ -265,6 +331,7 @@ describe('idea refinement workflow', () => {
       },
       Challenger: async () => (assessments++ === 0 ? 'discuss' : 'approve'),
       PublishDecision: async () => 'approved',
+      AnalyzeExperience: async () => 'recorded',
     };
     let assessments = 0;
     const stateFile = await temporaryStateFile();
@@ -352,7 +419,7 @@ describe('idea refinement workflow', () => {
 
     expect(secondRun).toEqual({ ok: true, value: 'approved' });
     // The restored invocation restarted; the completed actions did not run again.
-    expect(second.calls).toEqual(['PublishDecision']);
+    expect(second.calls).toEqual(['PublishDecision', 'AnalyzeExperience']);
   });
 
   it('reports an unexpected action outcome as an execution fault', async () => {
@@ -383,6 +450,7 @@ describe('idea refinement workflow', () => {
         (input as { readonly task?: string } | undefined)?.task === 'frame' ? 'framed' : 'written',
       Challenger: async () => 'approve',
       PublishDecision: async () => 'approved',
+      AnalyzeExperience: async () => 'recorded',
     };
     const engine = createTaskEngine({
       workflow: ideaRefinement,

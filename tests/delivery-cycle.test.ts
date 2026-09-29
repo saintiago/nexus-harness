@@ -326,7 +326,6 @@ describe('delivery cycle', () => {
       jira: jiraSource.jira,
       publish: (event) => events.push(event),
       wait: async () => undefined,
-      requestAnalysis: null,
     });
 
     // Develop and Verify produce the current round's real inputs.

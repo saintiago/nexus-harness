@@ -11,9 +11,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import {
-  createAnalysisAgentRuntimeSettings,
   createAgentRuntimeSettings,
-  createConfiguredMemory,
   executionPaths,
   recoveryEnvironment,
   toolEnvironment,
@@ -182,34 +180,6 @@ describe('credential isolation', () => {
 });
 
 describe('memory composition', () => {
-  it('constructs the service client from the configured URL and a no-op when disabled', async () => {
-    const configured = memoryNexus('/srv/nexus/state');
-    const calls: string[] = [];
-    const transport: typeof globalThis.fetch = (input, init) => {
-      calls.push(`${init?.method ?? 'GET'} ${input instanceof URL ? input.href : String(input)}`);
-      return Promise.resolve(
-        new Response(JSON.stringify({ searchedAt: '2026-09-29T10:00:00Z', results: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-    };
-
-    const memory = createConfiguredMemory(configured, transport);
-    await expect(memory.search({ query: 'retry guard' })).resolves.toEqual({
-      kind: 'results',
-      searchedAt: '2026-09-29T10:00:00Z',
-      results: [],
-    });
-    expect(calls).toEqual(['POST http://127.0.0.1:4748/v1/search']);
-
-    // A configuration that omits memory or disables it constructs no service call at all.
-    const disabled = createConfiguredMemory(nexus, transport);
-    await expect(disabled.search({ query: 'retry guard' })).resolves.toEqual({ kind: 'disabled' });
-    expect(calls).toHaveLength(1);
-    await Promise.all([memory.close(), disabled.close()]);
-  });
-
   it('adds the AMEM MCP settings and the shared guidance to memory-enabled roles', () => {
     const configured = memoryNexus('/srv/nexus/state');
     const settings = createAgentRuntimeSettings(
@@ -243,42 +213,17 @@ describe('memory composition', () => {
     expect(disabled.baseInstructions).not.toContain(memoryUseGuidance);
   });
 
-  it('keeps a disabled integration with retained service settings inert', async () => {
-    const disabled = memoryNexus('/srv/nexus/state', false);
-    const calls: string[] = [];
-    const transport: typeof globalThis.fetch = (input, init) => {
-      calls.push(`${init?.method ?? 'GET'} ${input instanceof URL ? input.href : String(input)}`);
-      return Promise.reject(new Error('The disabled integration contacted the service.'));
-    };
-
-    const memory = createConfiguredMemory(disabled, transport);
-    await expect(memory.search({ query: 'retry guard' })).resolves.toEqual({ kind: 'disabled' });
-    await expect(
-      memory.submit({ sourceKey: 'HARN-83:round-2', content: 'A reusable discovery.' }),
-    ).resolves.toEqual({ kind: 'disabled' });
-    await memory.close();
-    expect(calls).toEqual([]);
-
-    const settings = createAgentRuntimeSettings(
-      disabled,
-      'developer',
-      unusedCapability<CodingRuntime>('coding runtime'),
-    );
-    expect(settings.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
-      true,
-    );
-    expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
-  });
-
   it('runs the configured analysis profile with search-only memory tools and guidance', () => {
     const configured = memoryNexus('/srv/nexus/state');
-    const settings = createAnalysisAgentRuntimeSettings(
+    const settings = createAgentRuntimeSettings(
       configured,
+      'analysis',
       unusedCapability<CodingRuntime>('coding runtime'),
     );
 
     // The configured analysis profile carries the AMEM server restricted to search: Nexus submits
-    // the validated output itself, so the analyst cannot save directly.
+    // the validated output itself, so the analyst cannot save directly. No other profile is
+    // selected for the analysis role, so only the analyst gains those settings.
     const analyst = settings.profiles.find((profile) => profile.id === 'nexus-astra');
     expect(analyst?.toolSettings).toEqual({
       profile: 'nexus-astra',
@@ -298,6 +243,18 @@ describe('memory composition', () => {
     ).toBe(true);
     expect(settings.baseInstructions).toContain(memoryAnalysisGuidance);
     expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
+
+    // A disabled integration selects no analysis profile and exposes no memory guidance or tools.
+    const disabled = createAgentRuntimeSettings(
+      memoryNexus('/srv/nexus/state', false),
+      'analysis',
+      unusedCapability<CodingRuntime>('coding runtime'),
+    );
+    expect(disabled.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
+      true,
+    );
+    expect(disabled.baseInstructions).not.toContain(memoryAnalysisGuidance);
+    expect(disabled.baseInstructions).not.toContain(memoryUseGuidance);
   });
 });
 
@@ -332,6 +289,7 @@ describe('worker action binding', () => {
       ).sort(),
     ).toEqual(
       [
+        'AnalyzeExperience',
         'CompleteTask',
         'Deliver',
         'Develop',
@@ -388,6 +346,7 @@ describe('worker action binding', () => {
 
     expect(Object.keys(actions).sort()).toEqual(
       [
+        'AnalyzeExperience',
         'Challenger',
         'IdeaEditor',
         'ProjectGuide',

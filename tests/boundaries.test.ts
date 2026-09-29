@@ -62,6 +62,8 @@ describe('component import boundaries', () => {
 
     expect(reported).toEqual(
       [
+        // An action imports AnalyzeExperience's implementation instead of its declarations.
+        'action-declarations-only-analyze-experience: src/task-engine/actions/challenger/uses-analysis.ts -> src/task-engine/actions/analyze-experience/index.ts',
         // A review action imports another action's implementation instead of its declaration.
         'action-declarations-only-develop: src/task-engine/actions/review/index.ts -> src/task-engine/actions/develop/index.ts',
         // ExecutionRunner imports a concrete action implementation, which both rules forbid.
@@ -79,6 +81,14 @@ describe('component import boundaries', () => {
         'operator-interface-public-interface: src/application/index.ts -> src/operator-interface/activity.ts',
         // A component bypasses the task engine's public module with a type-only import.
         'task-engine-public-interface: src/operator-interface/activity.ts -> src/task-engine/execution-runner.ts',
+        // Application imports the Memory component instead of leaving it to AnalyzeExperience.
+        'memory-exclusive-consumer: src/application/memory-client.ts -> src/memory/index.ts',
+        // Another action imports the Memory component.
+        'memory-exclusive-consumer: src/task-engine/actions/review/memory-use.ts -> src/memory/index.ts',
+        // AgentRuntime imports the Memory component instead of transporting MCP settings.
+        'memory-exclusive-consumer: src/agent-runtime/memory-use.ts -> src/memory/index.ts',
+        // An adapter imports the Memory component.
+        'memory-exclusive-consumer: src/adapters/git-memory.ts -> src/memory/index.ts',
       ].sort(),
     );
   });

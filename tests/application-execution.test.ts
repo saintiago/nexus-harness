@@ -17,12 +17,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { AgentResult } from '../src/agent-runtime/index.js';
 import {
-  analysisObservationSourceKey,
-  completionAnalysisDirectory,
-  createCompletionAnalysisRequestPublisher,
-  type AnalysisAgentRequest,
-} from '../src/application/analysis.js';
-import {
   createApplication,
   type Application,
   type ApplicationSettings,
@@ -40,6 +34,15 @@ import {
 import { installationConfigSetting } from '../src/application/installation.js';
 import { fault, ok } from '../src/result.js';
 import type { AgentActivity } from '../src/task-engine/index.js';
+import {
+  experienceIdentity,
+  experienceObservationSourceKey,
+  type ExperienceHandoff,
+} from '../src/task-engine/actions/analyze-experience/artifacts.js';
+import {
+  createAnalyzeExperience,
+  type ExperienceAnalystRequest,
+} from '../src/task-engine/actions/analyze-experience/index.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
@@ -148,8 +151,8 @@ async function harness(options: {
   readonly memoryTransport?: typeof globalThis.fetch;
   /** The memory service URL the configured integration points at. */
   readonly memoryServiceUrl?: string;
-  /** The controlled completion analyst; it runs in the parent, after the worker exits. */
-  readonly analysis?: (request: AnalysisAgentRequest) => Promise<AgentResult>;
+  /** The controlled experience analyst; it runs in the parent, after the worker exits. */
+  readonly analysis?: (request: ExperienceAnalystRequest) => Promise<AgentResult>;
 }): Promise<Harness> {
   const root = await temporaryDirectory();
   const installationDirectory = path.join(root, 'installation');
@@ -225,7 +228,7 @@ async function harness(options: {
         return notify(subject, body);
       },
     }),
-    ...(options.analysis === undefined ? {} : { analysis: () => ({ analyze: options.analysis! }) }),
+    ...(options.analysis === undefined ? {} : { analysis: () => options.analysis! }),
   };
   const application = createApplication(settings);
   application.subscribe((event) => events.push(event));
@@ -250,6 +253,26 @@ function lifecycleOf(events: readonly ExecutionEvent[]): string[] {
   return events
     .filter((event) => event.source === 'application' && lifecycle.has(event.type))
     .map((event) => event.type);
+}
+
+/**
+ * Record one terminal handoff in the execution's durable store, as the worker's bound
+ * AnalyzeExperience action does when a workflow reaches a terminal state.
+ */
+async function recordHandoff(
+  executionDirectory: string,
+  handoff: ExperienceHandoff,
+): Promise<void> {
+  const owner = createAnalyzeExperience({
+    directory: path.join(executionDirectory, 'memory'),
+    project: 'NEX',
+    profile: 'nexus-astra',
+    // Capturing never contacts the service, so an unreachable URL is sufficient here.
+    memory: { url: 'http://127.0.0.1:1' },
+    analyze: null,
+  });
+  const captured = await owner.capture(handoff);
+  expect(captured.outcome).toBe('recorded');
 }
 
 /** The saved recovery execution record. */
@@ -410,7 +433,7 @@ describe('Application execution', () => {
     const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
     await mkdir(path.dirname(evidence), { recursive: true });
     await writeFile(evidence, '{"mergeRevision":"4444"}\n');
-    const analyses: AnalysisAgentRequest[] = [];
+    const analyses: ExperienceAnalystRequest[] = [];
     const executed = await harness({
       completions: [successful, successful],
       memory: true,
@@ -438,13 +461,19 @@ describe('Application execution', () => {
         );
       },
     });
-    // The worker published the confirmed completion before the parent settled it.
-    const requests = completionAnalysisDirectory(executed.executionDirectory);
-    await createCompletionAnalysisRequestPublisher({ directory: requests, project: 'NEX' })({
-      taskKey: 'NEX-1',
-      completionRevision: '4'.repeat(40),
+    // The worker recorded the confirmed completion in the execution's durable store.
+    const handoff: ExperienceHandoff = {
+      workId: 'NEX-1',
+      workflow: 'finite-delivery',
+      attemptId: 'task/NEX-1',
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
       workspaceRoot: workspace,
-    });
+      artifacts: [{ path: evidence }],
+    };
+    await recordHandoff(executed.executionDirectory, handoff);
+    const identity = experienceIdentity(handoff);
 
     const first = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -456,14 +485,15 @@ describe('Application execution', () => {
     expect(executed.timeline).toEqual(['worker']);
     expect(analyses).toHaveLength(1);
     expect(analyses[0]?.workspace.root).toBe(workspace);
+    expect(analyses[0]?.outputSchema).toMatchObject({ type: 'object' });
     expect(service.observations.size).toBe(1);
     // Durable acceptance is reported as outstanding until the receipt is stored.
     expect(executed.diagnostics.join('')).toContain(
-      'Nexus memory analysis: the submission of observation 1 of task NEX-1 is outstanding',
+      'Nexus memory analysis: the submission of observation 1 of NEX-1 is outstanding',
     );
 
     // The next start reuses the persisted analysis output and settles the stored receipt.
-    service.store(analysisObservationSourceKey('NEX-1', '4'.repeat(40), '1'));
+    service.store(experienceObservationSourceKey(identity, '1'));
     const reported = executed.diagnostics.length;
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -482,16 +512,25 @@ describe('Application execution', () => {
   it('reports a failed analysis without changing the completed outcome', async () => {
     const service = await controlledService();
     const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{"mergeRevision":"4444"}\n');
     const executed = await harness({
       completions: [successful],
       memory: true,
       memoryServiceUrl: service.url,
       analysis: () => Promise.reject(new Error('The analysis provider is unavailable.')),
     });
-    await createCompletionAnalysisRequestPublisher({
-      directory: completionAnalysisDirectory(executed.executionDirectory),
-      project: 'NEX',
-    })({ taskKey: 'NEX-1', completionRevision: '4'.repeat(40), workspaceRoot: workspace });
+    await recordHandoff(executed.executionDirectory, {
+      workId: 'NEX-1',
+      workflow: 'finite-delivery',
+      attemptId: 'task/NEX-1',
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    });
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -502,13 +541,65 @@ describe('Application execution', () => {
     expect(executed.invocations).toEqual([]);
     expect(service.requests).toEqual([]);
     expect(executed.diagnostics.join('')).toContain(
-      'Nexus memory analysis: the completion analysis of task NEX-1',
+      'Nexus memory analysis: the experience analysis of NEX-1',
     );
     expect(executed.diagnostics.join('')).toContain('is outstanding');
   });
 
-  it('writes no analysis request or observation when memory is disabled', async () => {
-    const executed = await harness({ completions: [successful] });
+  it('records the stopped invocation before recovery and analyzes its retained fault', async () => {
+    const service = await controlledService();
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const evidence = path.join(workspace, 'artifacts', '1', 'delivery.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{"headRevision":"aaaa"}\n');
+    await mkdir(path.join(workspace, 'state'), { recursive: true });
+    await writeFile(
+      path.join(workspace, 'state', 'current-round.json'),
+      '{"number":1,"profile":"nexus-flash","reason":"the interrupted round"}\n',
+    );
+    const analyses: ExperienceAnalystRequest[] = [];
+    const executed = await harness({
+      completions: [stopped('the provider invocation failed'), successful],
+      memory: true,
+      memoryServiceUrl: service.url,
+      analysis: (request) => {
+        analyses.push(request);
+        return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+      },
+    });
+    // The retained selection names the interrupted attempt Application records the fault for.
+    await mkdir(executed.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(executed.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    // The fault was recorded with its evidence and analyzed before recovery replaced the attempt;
+    // the recovery destination and the resumed execution are unchanged.
+    expect(result.outcome).toBe('completed');
+    expect(executed.timeline).toEqual(['worker', 'recovery', 'worker']);
+    expect(analyses).toHaveLength(1);
+    expect(analyses[0]?.context).toContain('the provider invocation failed');
+    expect(analyses[0]?.context).toContain(evidence);
+    const requests = await readdir(path.join(executed.executionDirectory, 'memory', 'requests'));
+    expect(requests).toHaveLength(1);
+  });
+
+  it('records no operational handoff without a retained selection or when memory is disabled', async () => {
+    const executed = await harness({
+      completions: [stopped('the worker died before selecting'), successful],
+    });
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -516,9 +607,9 @@ describe('Application execution', () => {
     });
 
     expect(result.outcome).toBe('completed');
-    await expect(
-      stat(completionAnalysisDirectory(executed.executionDirectory)),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(executed.diagnostics).toEqual([]);
   });
 

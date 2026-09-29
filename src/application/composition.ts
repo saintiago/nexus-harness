@@ -22,12 +22,6 @@ import {
   type ProjectConfiguration,
   type WorkflowName,
 } from '../configuration/index.js';
-import {
-  createMemoryServiceClient,
-  disabledMemory,
-  type Memory,
-  type MemoryServiceSettings,
-} from '../memory/index.js';
 import { installationConfigSetting } from './installation.js';
 
 /**
@@ -40,14 +34,18 @@ import { installationConfigSetting } from './installation.js';
 /** The host environment credential references resolve their values from. */
 type HostEnvironment = Readonly<Record<string, string | undefined>>;
 
-/** The role whose constant instructions one invocation carries, selected by the execution policy. */
-export type ProfileRole = 'developer' | 'reviewer' | 'recovery' | IdeaRole;
+/**
+ * The role whose constant instructions one invocation carries, selected by the execution policy.
+ * The analysis role has no role constants: its guidance is the shared memory-analysis instruction.
+ */
+export type ProfileRole = 'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole;
 
 /** The complete constant instructions of each role, defined by the role contracts. */
 const roleInstructions: Record<ProfileRole, readonly string[]> = {
   developer: developmentRoleInstructions,
   reviewer: reviewerRoleInstructions,
   recovery: recoveryRoleInstructions,
+  analysis: [],
   'idea-editor': ideaEditorRoleInstructions,
   researcher: researcherRoleInstructions,
   'project-guide': projectGuideRoleInstructions,
@@ -64,8 +62,8 @@ const ideaRoleSettings: Record<IdeaRole, keyof NexusConfiguration['ideaRefinemen
 
 /**
  * The roles whose invocations receive the explicit AMEM memory tools when memory is enabled. The
- * completion-analysis profile is configured separately under the completion contract, which
- * exposes search without direct saving.
+ * experience-analysis profile is configured separately under the analysis contract, which exposes
+ * search without direct saving because AnalyzeExperience submits the validated observations.
  */
 const memoryToolRoles: ReadonlySet<ProfileRole> = new Set<ProfileRole>([
   'developer',
@@ -98,7 +96,7 @@ function memoryAgentSettings(
 }
 
 /**
- * The AMEM MCP settings of the completion-analysis profile: the same configured server, restricted
+ * The AMEM MCP settings of the experience-analysis profile: the same configured server, restricted
  * to search because Nexus submits the analyst's validated observations itself.
  */
 function memoryAnalysisToolSettings(
@@ -129,8 +127,9 @@ function withMemoryTools(
 /**
  * The profiles the execution policy selects for one role: developer ladder entries identify
  * developer profiles, the reviewer profile identifies a reviewer profile, the recovery profile
- * identifies a recovery profile and the idea refinement settings identify the four idea roles. One
- * profile may be selected for more than one role.
+ * identifies a recovery profile, the configured analysis profile identifies the analysis role and
+ * the idea refinement settings identify the four idea roles. One profile may be selected for more
+ * than one role.
  */
 function profilesForRole(
   configuration: NexusConfiguration,
@@ -144,6 +143,10 @@ function profilesForRole(
       return new Set([reviewerProfile]);
     case 'recovery':
       return new Set([recoveryProfile]);
+    case 'analysis': {
+      const memory = configuration.memory;
+      return new Set(memory === undefined || !memory.enabled ? [] : [memory.analysisProfile]);
+    }
     case 'idea-editor':
     case 'researcher':
     case 'project-guide':
@@ -210,13 +213,25 @@ export function createAgentRuntimeSettings(
 ): AgentRuntimeSettings {
   const selected = profilesForRole(nexus, role);
   // The memory guidance and tools accompany each other: a role without the tools does not carry
-  // instructions for a capability its invocation cannot use.
-  const memoryTools = memoryToolRoles.has(role) ? memoryAgentSettings(nexus.memory) : {};
+  // instructions for a capability its invocation cannot use. The analysis role instead searches
+  // shared memory without saving, because AnalyzeExperience submits its validated observations.
+  const memoryTools =
+    role === 'analysis'
+      ? memoryAnalysisToolSettings(nexus.memory)
+      : memoryToolRoles.has(role)
+        ? memoryAgentSettings(nexus.memory)
+        : {};
+  const memoryGuidance =
+    Object.keys(memoryTools).length === 0
+      ? null
+      : role === 'analysis'
+        ? memoryAnalysisGuidance
+        : memoryUseGuidance;
   return {
     codingRuntime,
     baseInstructions:
-      Object.keys(memoryTools).length > 0
-        ? [...nexus.agentRuntime.baseInstructions, memoryUseGuidance]
+      memoryGuidance !== null
+        ? [...nexus.agentRuntime.baseInstructions, memoryGuidance]
         : nexus.agentRuntime.baseInstructions,
     profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => {
       const constants = selected.has(profile.id) ? roleInstructions[role] : undefined;
@@ -236,36 +251,6 @@ export function createAgentRuntimeSettings(
           : profile.toolSettings,
       };
     }),
-    invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
-  };
-}
-
-/**
- * The AgentRuntime construction settings of the completion-analysis profile: the configured
- * analysis profile with the shared memory server restricted to search, and the constant
- * completion-analysis guidance. Application runs it outside the task workflow over one completed
- * task's retained evidence. Memory-disabled configurations never build it.
- */
-export function createAnalysisAgentRuntimeSettings(
-  nexus: NexusConfiguration,
-  codingRuntime: CodingRuntime,
-): AgentRuntimeSettings {
-  const memory = nexus.memory;
-  const analysisProfile = memory !== undefined && memory.enabled ? memory.analysisProfile : null;
-  const searchTools = memoryAnalysisToolSettings(memory);
-  return {
-    codingRuntime,
-    baseInstructions: [...nexus.agentRuntime.baseInstructions, memoryAnalysisGuidance],
-    profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => ({
-      id: profile.id,
-      model: profile.model,
-      effort: profile.effort,
-      instructions: profile.instructions,
-      toolSettings:
-        profile.id === analysisProfile
-          ? withMemoryTools(profile, searchTools)
-          : profile.toolSettings,
-    })),
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
   };
 }
@@ -309,23 +294,12 @@ export function workspaceRoot(nexus: NexusConfiguration): string {
 }
 
 /**
- * The Memory capability one process uses: the service client, or a no-op when the integration is
- * disabled. A valid but unavailable service degrades only memory access, so every call reports its
- * own explicit unavailability and normal workflow execution continues. The AMEM service owns its
- * collection, providers and credentials, so the consumer configures only its URL.
+ * The project's durable experience store: AnalyzeExperience's requests, analyses, submissions and
+ * capture evidence, beside the workflow's execution state and outside every disposable workflow
+ * attempt, so pending and interrupted work survives process exit.
  */
-export function createConfiguredMemory(
-  nexus: NexusConfiguration,
-  transport?: typeof globalThis.fetch,
-): Memory {
-  const memory = nexus.memory;
-  if (memory === undefined || !memory.enabled) {
-    return disabledMemory();
-  }
-  const settings: MemoryServiceSettings = { url: memory.serviceUrl };
-  return createMemoryServiceClient(
-    transport === undefined ? settings : { ...settings, fetch: transport },
-  );
+export function experienceStoreDirectory(paths: ExecutionPaths): string {
+  return path.join(paths.directory, 'memory');
 }
 
 /** The host environment without the named settings, ready to spawn a child with. */
