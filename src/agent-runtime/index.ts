@@ -49,6 +49,34 @@ export const memoryUseGuidance = [
   '  lessons. Save nothing when there is no useful observation.',
 ].join('\n');
 
+/**
+ * The constant completion-analysis instructions Application supplies with the configured analysis
+ * profile. The Memory integration contract owns this policy: the analyst inspects one completed
+ * task's retained evidence, compares the candidate lessons with existing shared memory and returns
+ * candidate observations with their evidence; it never saves through a tool, because Nexus submits
+ * the validated output itself.
+ */
+export const memoryAnalysisGuidance = [
+  'Completion experience analysis guidance:',
+  '- Analyze one completed Nexus task from its retained evidence and the revisions bound to it.',
+  '  Read only the task artifacts, its worktree and the shared memory search tool; never read',
+  '  credentials, unrelated workspaces or arbitrary host logs.',
+  '- Extract zero or more independent, concise observations covering reusable root causes and',
+  '  fixes, architectural constraints and rationale, failed approaches, or remaining limitations.',
+  '  Preserve specific components, mechanisms, consequences and conditions. Do not merely summarize',
+  '  the ticket, invent a cause from a passing test or generalize a project-specific rule without',
+  '  evidence.',
+  '- Link every observation to the retained artifacts and revisions that establish it. The full',
+  '  reports remain the evidence; the observation is the reusable lesson.',
+  '- Search existing shared memory, including notes agents saved explicitly, with focused questions',
+  '  before proposing a lesson, and do not repeat knowledge already captured. When new evidence',
+  '  changes an earlier conclusion, keep the correction explicit and reference the earlier note;',
+  '  never claim that a note was deleted or invalidated.',
+  '- Preserve applicability and uncertainty: a hypothesis must not become an established fact.',
+  '  Return no observation when the completed work holds no reusable lesson.',
+  '- Return only the requested JSON object, without Markdown fences and without other text.',
+].join('\n');
+
 /** One activity entry the invocation reported while it ran. */
 export type AgentEvent = {
   readonly type: AgentEventKind;

@@ -17,6 +17,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { AgentResult } from '../src/agent-runtime/index.js';
 import {
+  analysisObservationSourceKey,
+  completionAnalysisDirectory,
+  createCompletionAnalysisRequestPublisher,
+  type AnalysisAgentRequest,
+} from '../src/application/analysis.js';
+import {
   createApplication,
   type Application,
   type ApplicationSettings,
@@ -43,6 +49,7 @@ import { selectionDeclaration } from '../src/task-engine/actions/select-task/art
 import { currentRoundDeclaration } from '../src/task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../src/task-engine/actions/verify/artifacts.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { controlledMemoryService, type ControlledMemoryService } from './support/memory.js';
 
 const workflowModule = fileURLToPath(
   new URL('./fixtures/workflow/start-round.mjs', import.meta.url),
@@ -79,6 +86,7 @@ const successful: WorkerCompletion = {
 };
 
 const temporaryDirectories: string[] = [];
+const memoryServices: ControlledMemoryService[] = [];
 
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-execution-'));
@@ -86,12 +94,20 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
+/** One controlled AMEM service closed after the test. */
+async function controlledService(): Promise<ControlledMemoryService> {
+  const service = await controlledMemoryService();
+  memoryServices.push(service);
+  return service;
+}
+
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
+  await Promise.all([
+    ...memoryServices.splice(0).map((service) => service.close()),
+    ...temporaryDirectories
       .splice(0)
       .map((directory) => rm(directory, { recursive: true, force: true })),
-  );
+  ]);
 });
 
 /** What one controlled Application run observed. */
@@ -130,6 +146,10 @@ async function harness(options: {
   readonly memory?: boolean;
   /** The memory service transport; a controlled one proves no service call is made. */
   readonly memoryTransport?: typeof globalThis.fetch;
+  /** The memory service URL the configured integration points at. */
+  readonly memoryServiceUrl?: string;
+  /** The controlled completion analyst; it runs in the parent, after the worker exits. */
+  readonly analysis?: (request: AnalysisAgentRequest) => Promise<AgentResult>;
 }): Promise<Harness> {
   const root = await temporaryDirectory();
   const installationDirectory = path.join(root, 'installation');
@@ -145,7 +165,7 @@ async function harness(options: {
   if (options.memory === true) {
     nexus.memory = {
       enabled: true,
-      serviceUrl: 'http://127.0.0.1:1',
+      serviceUrl: options.memoryServiceUrl ?? 'http://127.0.0.1:1',
       mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
       analysisProfile: 'nexus-astra',
     };
@@ -205,6 +225,7 @@ async function harness(options: {
         return notify(subject, body);
       },
     }),
+    ...(options.analysis === undefined ? {} : { analysis: () => ({ analyze: options.analysis! }) }),
   };
   const application = createApplication(settings);
   application.subscribe((event) => events.push(event));
@@ -380,6 +401,124 @@ describe('Application execution', () => {
     });
     // Memory is supplemental: an unreachable service changes no lifecycle event or diagnostic.
     expect(lifecycleOf(executed.events)).toEqual(['starting', 'running', 'finished']);
+    expect(executed.diagnostics).toEqual([]);
+  });
+
+  it('settles a confirmed completion after the worker exits and resumes it on restart', async () => {
+    const service = await controlledService();
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{"mergeRevision":"4444"}\n');
+    const analyses: AnalysisAgentRequest[] = [];
+    const executed = await harness({
+      completions: [successful, successful],
+      memory: true,
+      memoryServiceUrl: service.url,
+      analysis: (request) => {
+        analyses.push(request);
+        return Promise.resolve(
+          ok({
+            output: JSON.stringify({
+              observations: [
+                {
+                  content: 'The completion evidence must be read after the Done transition.',
+                  evidence: [
+                    {
+                      path: evidence,
+                      revision: '4'.repeat(40),
+                      detail: 'The completion artifact.',
+                    },
+                  ],
+                  relatedMemories: [],
+                },
+              ],
+            }),
+          }),
+        );
+      },
+    });
+    // The worker published the confirmed completion before the parent settled it.
+    const requests = completionAnalysisDirectory(executed.executionDirectory);
+    await createCompletionAnalysisRequestPublisher({ directory: requests, project: 'NEX' })({
+      taskKey: 'NEX-1',
+      completionRevision: '4'.repeat(40),
+      workspaceRoot: workspace,
+    });
+
+    const first = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    // The business outcome is unchanged and the analysis ran after the worker exit.
+    expect(first.outcome).toBe('completed');
+    expect(executed.timeline).toEqual(['worker']);
+    expect(analyses).toHaveLength(1);
+    expect(analyses[0]?.workspace.root).toBe(workspace);
+    expect(service.observations.size).toBe(1);
+    // Durable acceptance is reported as outstanding until the receipt is stored.
+    expect(executed.diagnostics.join('')).toContain(
+      'Nexus memory analysis: the submission of observation 1 of task NEX-1 is outstanding',
+    );
+
+    // The next start reuses the persisted analysis output and settles the stored receipt.
+    service.store(analysisObservationSourceKey('NEX-1', '4'.repeat(40), '1'));
+    const reported = executed.diagnostics.length;
+    const second = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(second.outcome).toBe('completed');
+    expect(analyses).toHaveLength(1);
+    // The stored receipt produced no further outstanding analysis or submission.
+    expect(executed.diagnostics.slice(reported)).toEqual([]);
+    expect(service.requests.filter((request) => request.path === '/v1/observations')).toHaveLength(
+      1,
+    );
+  });
+
+  it('reports a failed analysis without changing the completed outcome', async () => {
+    const service = await controlledService();
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const executed = await harness({
+      completions: [successful],
+      memory: true,
+      memoryServiceUrl: service.url,
+      analysis: () => Promise.reject(new Error('The analysis provider is unavailable.')),
+    });
+    await createCompletionAnalysisRequestPublisher({
+      directory: completionAnalysisDirectory(executed.executionDirectory),
+      project: 'NEX',
+    })({ taskKey: 'NEX-1', completionRevision: '4'.repeat(40), workspaceRoot: workspace });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(executed.invocations).toEqual([]);
+    expect(service.requests).toEqual([]);
+    expect(executed.diagnostics.join('')).toContain(
+      'Nexus memory analysis: the completion analysis of task NEX-1',
+    );
+    expect(executed.diagnostics.join('')).toContain('is outstanding');
+  });
+
+  it('writes no analysis request or observation when memory is disabled', async () => {
+    const executed = await harness({ completions: [successful] });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    await expect(
+      stat(completionAnalysisDirectory(executed.executionDirectory)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(executed.diagnostics).toEqual([]);
   });
 

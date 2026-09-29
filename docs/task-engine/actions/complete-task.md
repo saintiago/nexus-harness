@@ -69,7 +69,10 @@ any outstanding completion step without redoing the implementation.
 
 ## Experience analysis handoff
 
-After confirmed completion, supply the task identity, merge revision and retained artifact references
-for [asynchronous experience analysis](../../memory/integration.md#completion-experience-analysis).
-Do not wait for analysis or memory ingestion, reinterpret its output as completion evidence or
-reverse Done on a memory failure. Repetition supplies the same completion identity.
+After the Done transition is confirmed, capture one durable request for
+[asynchronous experience analysis](../../memory/integration.md#completion-experience-analysis)
+naming the completed task, its final merge revision and the retained workspace. The task and
+revision are the request identity, so repetition reuses it. Capture no request when completion does
+not hold, and when memory is disabled capture none at all. Do not wait for analysis or memory
+ingestion, reinterpret its output as completion evidence or reverse Done on a memory failure; a
+request that cannot be recorded is reported without changing the completed outcome.

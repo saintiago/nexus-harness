@@ -37,6 +37,8 @@ export type ControlledMemoryService = {
   intercept(path: string, handler: (request: ServiceRequest) => Interception | null): void;
   /** Advance one accepted observation's receipt to stored with its note identity. */
   store(sourceKey: string, noteId?: string): void;
+  /** Report one accepted observation's receipt as blocked, as a queue awaiting reconciliation. */
+  block(sourceKey: string, lastError?: string): void;
   close(): Promise<void>;
 };
 
@@ -192,6 +194,18 @@ export async function controlledMemoryService(
         ...stored.receipt,
         status: 'stored',
         noteId: noteId ?? randomUUID(),
+        updatedAt: timestamp(),
+      };
+    },
+    block(sourceKey, lastError = 'The ingestion queue is blocked pending reconciliation.') {
+      const stored = observations.get(sourceKey);
+      if (stored === undefined) {
+        throw new Error(`No observation was accepted for source key "${sourceKey}".`);
+      }
+      stored.receipt = {
+        ...stored.receipt,
+        status: 'blocked',
+        lastError,
         updatedAt: timestamp(),
       };
     },

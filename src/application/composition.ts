@@ -4,6 +4,7 @@ import {
   developmentRoleInstructions,
   type IdeaRole,
   ideaEditorRoleInstructions,
+  memoryAnalysisGuidance,
   memoryUseGuidance,
   projectGuideRoleInstructions,
   recoveryRoleInstructions,
@@ -94,6 +95,19 @@ function memoryAgentSettings(
     'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: memory.serviceUrl },
     'mcp_servers.amem.enabled': true,
   };
+}
+
+/**
+ * The AMEM MCP settings of the completion-analysis profile: the same configured server, restricted
+ * to search because Nexus submits the analyst's validated observations itself.
+ */
+function memoryAnalysisToolSettings(
+  memory: NexusConfiguration['memory'],
+): Readonly<Record<string, unknown>> {
+  if (memory === undefined || !memory.enabled) {
+    return {};
+  }
+  return { ...memoryAgentSettings(memory), 'mcp_servers.amem.enabled_tools': ['memory_search'] };
 }
 
 /** One configured profile's tool settings with the memory tools added to its native overrides. */
@@ -222,6 +236,36 @@ export function createAgentRuntimeSettings(
           : profile.toolSettings,
       };
     }),
+    invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
+  };
+}
+
+/**
+ * The AgentRuntime construction settings of the completion-analysis profile: the configured
+ * analysis profile with the shared memory server restricted to search, and the constant
+ * completion-analysis guidance. Application runs it outside the task workflow over one completed
+ * task's retained evidence. Memory-disabled configurations never build it.
+ */
+export function createAnalysisAgentRuntimeSettings(
+  nexus: NexusConfiguration,
+  codingRuntime: CodingRuntime,
+): AgentRuntimeSettings {
+  const memory = nexus.memory;
+  const analysisProfile = memory !== undefined && memory.enabled ? memory.analysisProfile : null;
+  const searchTools = memoryAnalysisToolSettings(memory);
+  return {
+    codingRuntime,
+    baseInstructions: [...nexus.agentRuntime.baseInstructions, memoryAnalysisGuidance],
+    profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => ({
+      id: profile.id,
+      model: profile.model,
+      effort: profile.effort,
+      instructions: profile.instructions,
+      toolSettings:
+        profile.id === analysisProfile
+          ? withMemoryTools(profile, searchTools)
+          : profile.toolSettings,
+    })),
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
   };
 }

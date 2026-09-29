@@ -105,6 +105,9 @@ instead of silently truncating it.
 
 Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
 when memory tools are enabled; role prompts need not duplicate that policy.
+The completion-analysis profile is invoked by Application with the AMEM server restricted to search
+and the constant analysis guidance, because Nexus validates and submits the returned observations
+itself ([Memory integration](../memory/integration.md#completion-experience-analysis)).
 
 Profiles define model, effort and available tools. Invocation instructions do not change these
 settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
