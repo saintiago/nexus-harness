@@ -104,15 +104,12 @@ The operator command selects the workflow explicitly.
 
 ## Memory settings
 
-Nexus owns optional `memory` settings; omission or `enabled: false` disables tools and completion
-analysis. A disabled integration keeps the service URL, MCP entry point and analysis profile valid
-but unused, so an operator can switch memory off without deleting them. When enabled, require a
-service URL and configured experience-analysis profile. Agent profiles use the AMEM MCP entry point
-and service URL through native tool settings. The analysis profile can search memory but cannot save
-directly; Nexus submits its validated output.
+Nexus owns optional `memory` settings; omission or `enabled: false` makes AnalyzeExperience skip
+without analysis or provider effects. A disabled integration may retain valid but unused service,
+MCP and profile settings. When enabled, require the shared service URL, AMEM MCP entry point and
+configured experience-analysis profile. The action's analyst receives search only; save is disabled because the action validates and
+submits its output. Other enabled agent profiles retain explicit AMEM search/save tools.
 
-AMEM owns collection, encoder, model and durable ingestion settings. Nexus no longer configures
-Qdrant, encoder caches, memory-generation credentials, neighbor evolution or writer locks. Remove
-those obsolete direct-integration settings when migrating; do not silently fall back to direct
-access. Structurally invalid settings fail configuration; a valid but unavailable service degrades
-only memory access. Existing configurations with memory disabled remain valid.
+AMEM owns collection, encoder, model and durable ingestion settings. Nexus does not configure direct
+Qdrant access, encoder caches, memory-generation credentials or writer locks. Invalid settings fail
+configuration; service unavailability degrades only learning. Disabled configurations remain valid.

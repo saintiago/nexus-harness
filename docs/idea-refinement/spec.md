@@ -314,3 +314,13 @@ identify the idea, cycle and saved artifact; terminal milestones omit internal p
 
 [Testing coverage](../testing.md#idea-refinement-coverage) verifies conversation routing, intent
 preservation, decision and publication boundaries, and retained workspace behavior.
+
+## Terminal experience analysis
+
+Invoke [AnalyzeExperience](../task-engine/actions/analyze-experience.md) after PublishDecision's
+approval or waiting-for-feedback handoff, including unsuitable, author-decision-needed and
+attempts-exhausted returns, and on selected-submission failure exits before blocked/recovery.
+Pass the terminal decision and retained conversation/evidence, not a Jira status trigger. Preserve
+approved, waiting-for-feedback and failure destinations; analysis failure does not change them.
+Do not analyze intermediate editor/Challenger cycles, focused help or an empty/failed selection.
+The same action serves finite delivery and any subsequent workflow's terminal handoffs.

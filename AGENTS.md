@@ -58,7 +58,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Tech stack](docs/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
 - [High-level architecture](docs/high-level-architecture.md): system composition, component contracts and workflows.
 - [Memory component](docs/memory/architecture.md): shared service access, observations, receipts and migration.
-- [Memory integration](docs/memory/integration.md): agent MCP use and asynchronous completion experience analysis.
+- [Memory integration](docs/memory/integration.md): agent MCP use and shared terminal experience analysis.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
 - [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
 - [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
@@ -74,6 +74,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Deliver design](docs/task-engine/actions/deliver.md): verified branch publication and developer reporting.
 - [Review design](docs/task-engine/actions/review.md): revision-specific review, complete findings and review publication.
 - [CompleteTask design](docs/task-engine/actions/complete-task.md): merge/check evidence and task completion.
+- [AnalyzeExperience design](docs/task-engine/actions/analyze-experience.md): terminal handoffs, resumable analysis and exclusive automatic memory access.
 - [AgentRuntime design](docs/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
 - [Native Codex profiles](docs/agent-runtime/profiles.md): repository templates and Linux installation.
 - [DevelopmentRole design](docs/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.

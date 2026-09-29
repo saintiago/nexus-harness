@@ -24,6 +24,7 @@ TaskEngine
     ├── Review
     ├── Deliver
     ├── CompleteTask
+    ├── AnalyzeExperience
     └── Idea refinement actions (see specification)
         └── StartIdeaRound
 ```

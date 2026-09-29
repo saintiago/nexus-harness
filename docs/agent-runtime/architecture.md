@@ -105,9 +105,10 @@ instead of silently truncating it.
 
 Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
 when memory tools are enabled; role prompts need not duplicate that policy.
-The completion-analysis profile is invoked by Application with the AMEM server restricted to search
-and the constant analysis guidance, because Nexus validates and submits the returned observations
-itself ([Memory integration](../memory/integration.md#completion-experience-analysis)).
+The experience-analysis profile is invoked by [AnalyzeExperience](../task-engine/actions/analyze-experience.md)
+with search-only AMEM MCP access. The action validates and submits observations. AgentRuntime
+does not import or invoke the Nexus Memory component; ordinary enabled roles retain explicit
+search/save MCP tools through native provider settings.
 
 Profiles define model, effort and available tools. Invocation instructions do not change these
 settings. Resolve credentials for configured tools and keep their values out of prompts and reports.

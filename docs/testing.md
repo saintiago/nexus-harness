@@ -152,18 +152,20 @@ Reuse existing component and system test scopes; do not duplicate XState's own p
 
 ## Memory coverage
 
-Use the [Memory contract](memory/architecture.md) and [integration contract](memory/integration.md).
-Contract tests verify service request/response handling, stable submission identities, lost-response
-retry and accepted-versus-stored reporting. Exercise agent MCP settings through the coding runtime
-boundary; the MCP server itself and queue/encoder correctness belong to AMEM.
+Use [AnalyzeExperience](task-engine/actions/analyze-experience.md) and
+[Memory integration](memory/integration.md). Exercise the dependency-cruiser rule with allowed
+public imports by the action and prohibited imports by Application, other actions, AgentRuntime
+and adapters. Separately verify native tool settings retain ordinary agents' explicit AMEM
+search/save access and restrict the action's analyst to search only.
 
-Verify enabled profiles can search/save, the analyst can only search, disabled memory has no effects,
-and unavailable tools preserve business outcomes. Retain query/result and receipt evidence. Ensure
-automatic invocation recall and handoff ingestion no longer occur.
+Workflow tests establish learning after every selected-work terminal handoff, original destination
+preservation, no capture on intermediate retries or empty/failed selection, multiple items in a
+finite queue and no stale selection. Cover delivery success/failure, all idea publication returns,
+operational errors after parallel agents settle, and recovery of interrupted requests. Analysis
+is independent of Jira status and does not change completion/publication/recovery gates.
 
-Completion journeys verify analysis is scheduled only after confirmed merge/checks and Done,
-without delaying completion or changing its gates. Pending/interrupted requests survive worker exit,
-queue drain and restart. Repeated completion and submission retries reuse identities and persisted
-analysis output. Cover zero lessons, invalid output, source references, existing-memory comparisons,
-explicit corrections and analysis/service failures. Test mechanics with controlled model output;
-semantic usefulness requires separate evaluation against source artifacts and real queries.
+Action tests cover stable handoff identities, durable capture, no-provider capture path, zero
+lessons, evidence validation, persisted output/provenance reuse and accepted-versus-stored receipts.
+Pending work survives queue drain/restart and migration of existing completion requests. Disabled
+memory has no effects; faults retain evidence and preserve business outcomes. Service/MCP algorithms
+belong to AMEM tests. Semantic quality requires separate source-grounded retrieval evaluation.

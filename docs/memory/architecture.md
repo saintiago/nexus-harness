@@ -7,11 +7,12 @@ current work; it does not decide workflow outcomes or replace task artifacts.
 
 ## Interface
 
-Application constructs the client from [Nexus settings](../configuration.md#memory-settings).
-The [integration contract](integration.md) owns agent use and completion experience analysis.
-Consume the provider-owned [AMEM service API](https://github.com/saintiago/agentic-memory/blob/main/docs/service.md)
-and [MCP tools](https://github.com/saintiago/agentic-memory/blob/main/docs/mcp.md), without importing
-provider internals. AgentRuntime exposes the configured tools through its existing provider settings.
+The sole consumer is [AnalyzeExperience](../task-engine/actions/analyze-experience.md), which constructs
+the client from [Nexus settings](../configuration.md#memory-settings). The
+[integration contract](integration.md) defines composition. Consume provider-owned
+[AMEM service](https://github.com/saintiago/agentic-memory/blob/main/docs/service.md) and
+[MCP](https://github.com/saintiago/agentic-memory/blob/main/docs/mcp.md) contracts without internal imports.
+Only the action invokes search, submission and receipt operations.
 
 | Capability | Input | Result |
 | --- | --- | --- |
@@ -45,7 +46,7 @@ identical payloads under the same key after lost acknowledgements. Acceptance me
 not stored or searchable. Receipt state determines completion. An unsent observation is not in the
 service queue, so retain it locally for resubmission after restart.
 
-All agents and completion analysis use one separately supervised service. Shutdown settles local
+The action uses one separately supervised service. Shutdown settles local
 persistence and client operations; service-owned accepted work continues independently. Optional
 memory unavailability produces explicit diagnostics without invoking workflow recovery solely for
 memory. Disabled memory performs no calls or local observation writes.

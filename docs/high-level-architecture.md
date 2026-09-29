@@ -224,8 +224,10 @@ activity separately; the main execution stream carries lifecycle and artifact re
 
 ## Experience memory
 
-[Memory integration](memory/integration.md) combines explicit agent MCP use with asynchronous
-analysis of completed delivery artifacts. AMEM independently owns the shared service, MCP server,
-semantic memory and ingestion queue. Application wires clients/tools and supervises durable analysis
-requests; AgentRuntime executes the configured analyst without changing TaskEngine completion gates.
-Direct handoffs remain task context, rather than being automatically ingested as long-term memory.
+Every workflow invokes [AnalyzeExperience](task-engine/actions/analyze-experience.md) after terminal
+handoffs for selected work, preserving the original route. It is the sole automatic Memory component
+consumer and owns resumable analysis, search, validated submissions and receipts. Application binds
+and supervises that capability rather than implementing analysis itself. AMEM owns the shared
+service, MCP, semantic memory and queue. Agents retain explicit MCP search/save tools; direct
+handoffs remain task context. Source statuses do not trigger learning. Dependency-cruiser enforces
+the action's exclusive imports of the Memory component.
