@@ -2,15 +2,19 @@ import path from 'node:path';
 import {
   loadNexusConfiguration,
   loadProjectConfiguration,
-  type NexusConfiguration,
-  type ProjectConfiguration,
   type WorkflowName,
 } from '../configuration/index.js';
-import type { Memory } from '../memory/index.js';
 import { messageOf, type ArtifactRef, type Observer } from '../result.js';
+import { createAnalyzeExperience } from '../task-engine/actions/analyze-experience/index.js';
 import { readRecord } from '../task-engine/actions/records.js';
-import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
-import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
+import {
+  ideaSelectionDeclaration,
+  type IdeaSelection,
+} from '../task-engine/actions/select-idea/artifacts.js';
+import {
+  selectionDeclaration,
+  type Selection,
+} from '../task-engine/actions/select-task/artifacts.js';
 import { issueSummary } from '../task-engine/actions/source.js';
 import {
   agentInvocationOf,
@@ -20,17 +24,13 @@ import {
   type WorkflowResult,
 } from '../task-engine/index.js';
 import {
-  createConfiguredMemory,
   executionPaths,
+  experienceStoreDirectory,
   toolEnvironment,
   workerProcessEnvironment,
 } from './composition.js';
-import {
-  completionAnalysisDirectory,
-  createCompletionAnalysis,
-  type CompletionAnalysis,
-} from './analysis.js';
 import { createAnalysisRuntime, type AnalysisRuntimeFactory } from './analysis-runtime.js';
+import { operationalErrorHandoff } from './analysis-handoff.js';
 import { createActivityLog } from './activity-log.js';
 import {
   createExecutionLog,
@@ -129,53 +129,27 @@ export type ApplicationSettings = {
    */
   readonly recovery?: RecoveryRuntimeFactory;
   /**
-   * Builds the completion-experience analyst; the default wires the configured analysis profile
-   * over the coding provider. Tests substitute a controlled analyst so no provider turn is spent.
+   * Builds AnalyzeExperience's analyst; the default wires the configured analysis profile over the
+   * coding provider. Tests substitute a controlled analyst so no provider turn is spent.
    */
   readonly analysis?: AnalysisRuntimeFactory;
 };
 
-/** How one worker launch ended, as execution completion or a failure that needs recovery. */
+/**
+ * How one worker launch ended. A declared blocked outcome is the workflow's own business verdict,
+ * not an execution fault: it needs recovery but never an invented operational-error handoff.
+ */
 type Completion =
   | { readonly kind: 'completed'; readonly outcome: string }
-  | { readonly kind: 'stopped'; readonly failure: string; readonly diagnostics: string };
-
-/**
- * The completion-analysis lifecycle of one execution: the configured analyst over the project's
- * durable request store, or a no-op when memory is disabled. A disabled integration performs no
- * analysis, provider call or local observation write.
- */
-function configuredCompletionAnalysis(
-  nexus: NexusConfiguration,
-  project: ProjectConfiguration,
-  settings: ApplicationSettings,
-  memory: Memory,
-): CompletionAnalysis {
-  const configured = nexus.memory;
-  if (configured === undefined || !configured.enabled) {
-    return { processPending: () => Promise.resolve([]) };
-  }
-  const runtime = (settings.analysis ?? createAnalysisRuntime)({
-    nexus,
-    // The analyst runs with the provider's own settings and without any Nexus credential.
-    environment: toolEnvironment(project, nexus, settings.environment),
-  });
-  return createCompletionAnalysis({
-    // The store sits beside the finite-delivery execution state, outside every task workspace and
-    // any disposable delivery attempt, so requests and evidence survive process exit.
-    directory: completionAnalysisDirectory(
-      executionPaths(nexus, project, 'finite-delivery').directory,
-    ),
-    project: project.taskSource.project,
-    profile: configured.analysisProfile,
-    memory,
-    analyze: (request) => runtime.analyze(request),
-  });
-}
+  | { readonly kind: 'blocked'; readonly failure: string; readonly diagnostics: string }
+  | { readonly kind: 'fault'; readonly failure: string; readonly diagnostics: string };
 
 /**
  * Evaluate both the worker's result and its process exit. Zero exit alone is not completion; a
- * blocked outcome, fault, missing or invalid result and a failed exit all stop the execution.
+ * blocked outcome, fault, missing or invalid result and a failed exit all stop the execution. Only
+ * an execution fault is an operational error; a valid non-successful result is the workflow's own
+ * declared blocked outcome, whose terminal handoff the workflow already routed through
+ * AnalyzeExperience, or skipped for a failed selection.
  */
 function completionOf(
   completion: WorkerCompletion,
@@ -185,28 +159,28 @@ function completionOf(
   const detail = diagnostics === '' ? '' : `\n${diagnostics}`;
   if (completion.problem !== null) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `${completion.problem}${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (completion.result === null) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `The worker exited without reporting a workflow result.${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (!completion.result.ok) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure: `Execution fault: ${completion.result.fault.message}${detail}`,
       diagnostics: completion.diagnostics,
     };
   }
   if (completion.exitCode !== 0) {
     return {
-      kind: 'stopped',
+      kind: 'fault',
       failure:
         `The worker exited with code ${completion.exitCode} after reporting outcome ` +
         `"${completion.result.value}".${detail}`,
@@ -215,7 +189,7 @@ function completionOf(
   }
   if (!successfulOutcomes.includes(completion.result.value)) {
     return {
-      kind: 'stopped',
+      kind: 'blocked',
       failure:
         `The workflow reached outcome "${completion.result.value}" without completing ` +
         `successfully.${detail}`,
@@ -303,40 +277,112 @@ export function createApplication(settings: ApplicationSettings): Application {
         directory: path.join(logDirectory, 'agents'),
         diagnostics,
       });
-      // Application owns the optional shared-memory client for the whole execution: one client
-      // per process, closed after its operations settle. The AMEM service stays running.
-      const memory = createConfiguredMemory(nexus, settings.memoryTransport);
-      const analysis = configuredCompletionAnalysis(nexus, project, settings, memory);
-      /**
-       * Resume and settle durable completion-analysis requests. Enqueueing did not wait for the
-       * analysis, and this processing reports its problems as diagnostics without changing the
-       * business outcome or invoking recovery solely for memory.
-       */
-      const settleAnalysis = async (): Promise<void> => {
-        let problems: readonly string[];
-        try {
-          problems = await analysis.processPending();
-        } catch (error) {
-          problems = [`completion-analysis processing failed: ${messageOf(error)}`];
-        }
-        for (const problem of problems) {
-          try {
-            diagnostics.write(`Nexus memory analysis: ${problem}\n`);
-          } catch {
-            // A failed report leaves nothing further to say.
-          }
-        }
-      };
       /** Record and forward one activity packet, so live panes and the durable log both see it. */
       const recordActivity = (activity: AgentActivity): void => {
         activityLog.record(activity);
         publishActivity(activity);
       };
       /**
+       * What this invocation's own events established about the attempt it worked on. A selection
+       * failure leaves no attempt of its own, and a workflow capture proves the attempt's terminal
+       * handoff is already recorded; either way the stopped invocation records no operational
+       * fault for whatever selection record a previous attempt retained.
+       */
+      const progress: {
+        owned: { readonly task: string } | null;
+        captured: boolean;
+        selectionFailed: boolean;
+      } = { owned: null, captured: false, selectionFailed: false };
+      let continuation: RecoverySelection | null = null;
+      const resetAttemptProgress = (): void => {
+        progress.owned = null;
+        progress.captured = false;
+        progress.selectionFailed = false;
+      };
+      /** Track one event's contribution to the attempt this invocation owns. */
+      const recordAttemptProgress = (event: EngineEvent): void => {
+        if (event.source === 'execution-runner' && event.type === 'state') {
+          const value = (event.data as { readonly value?: unknown }).value;
+          const states =
+            typeof value === 'string'
+              ? [value]
+              : typeof value === 'object' && value !== null
+                ? Object.keys(value)
+                : [];
+          const active = states.map((name) => workflow.machine.root.states[name]);
+          if (
+            active.some((state) =>
+              state?.invoke.some(
+                (invoke) => invoke.src === 'SelectTask' || invoke.src === 'SelectIdea',
+              ),
+            )
+          ) {
+            // Starting source access invalidates the previous queue item's ownership, even if
+            // selection subsequently throws without publishing its failed outcome.
+            progress.owned = null;
+            progress.captured = false;
+            progress.selectionFailed = true;
+          } else if (
+            progress.owned === null &&
+            !progress.selectionFailed &&
+            continuation !== null &&
+            active.length > 0 &&
+            active.every((state) => state !== undefined && state.type !== 'final')
+          ) {
+            // A worker state in selected work establishes continuation; merely loading an old
+            // selection before launch does not. Initialization faults publish no such state.
+            progress.owned = { task: continuation.task };
+          }
+          return;
+        }
+        if (
+          event.source === 'analyze-experience' &&
+          (event.type === 'outcome' || event.type === 'unavailable')
+        ) {
+          // Restored capture may be the first action event, and discovery failures carry no
+          // task ID. Both still mark a terminal handoff, never a second operational fault.
+          progress.captured = true;
+          return;
+        }
+        if (event.type === 'failed' || event.type === 'exhausted') {
+          if (event.source === 'select-task' || event.source === 'select-idea') {
+            // The invocation's own selection failed; any retained selection belongs to another one.
+            progress.owned = null;
+            progress.captured = false;
+            progress.selectionFailed = true;
+          }
+          return;
+        }
+        if (event.type !== 'outcome') {
+          return;
+        }
+        const data = event.data as { readonly task?: unknown; readonly outcome?: unknown };
+        const task = typeof data.task === 'string' ? data.task : null;
+        if (task === null) {
+          return;
+        }
+        if (event.source === 'select-task' || event.source === 'select-idea') {
+          if (data.outcome === 'selected') {
+            progress.owned = { task };
+            progress.captured = false;
+            progress.selectionFailed = false;
+          } else {
+            // An empty queue selects nothing; no attempt belongs to this invocation.
+            progress.owned = null;
+          }
+          return;
+        }
+        if (progress.owned === null && !progress.selectionFailed) {
+          // The invocation resumed an attempt in flight rather than selecting one itself.
+          progress.owned = { task };
+        }
+      };
+      /**
        * Receive one boundary or progress event: an invocation's activity file is opened before its
        * first packet and closed after its last, then the event reaches the observers unchanged.
        */
       const receive = (event: EngineEvent): void => {
+        recordAttemptProgress(event);
         const invocation = agentInvocationOf(event);
         if (invocation !== null) {
           if (event.type === 'agent-started') {
@@ -346,6 +392,104 @@ export function createApplication(settings: ApplicationSettings): Application {
           }
         }
         publish(event);
+      };
+      // AnalyzeExperience owns every automatic Memory call: Application constructs and supervises
+      // its capability over the project's durable store without importing the Memory component.
+      const memory = nexus.memory;
+      const memoryEnabled = memory !== undefined && memory.enabled;
+      const analysis = createAnalyzeExperience({
+        directory: experienceStoreDirectory(paths),
+        project: project.taskSource.project,
+        profile: memoryEnabled ? memory.analysisProfile : null,
+        memory: memoryEnabled
+          ? {
+              url: memory.serviceUrl,
+              ...(settings.memoryTransport === undefined
+                ? {}
+                : { fetch: settings.memoryTransport }),
+            }
+          : null,
+        analyze: memoryEnabled
+          ? (settings.analysis ?? createAnalysisRuntime)({
+              nexus,
+              // The analyst runs with the provider's own settings and without any Nexus credential.
+              environment: toolEnvironment(project, nexus, settings.environment),
+              publish: receive,
+              publishActivity: recordActivity,
+              activityDirectory: path.join(logDirectory, 'agents'),
+            })
+          : null,
+      });
+      /**
+       * Report one durable capture or analysis problem. Capture never waits for the analysis, and
+       * this processing reports its problems as diagnostics without changing the business outcome
+       * or invoking recovery solely for memory.
+       */
+      const reportMemory = (problem: string): void => {
+        try {
+          diagnostics.write(`Nexus memory analysis: ${problem}\n`);
+        } catch {
+          // A failed report leaves nothing further to say.
+        }
+      };
+      /** Resume and settle AnalyzeExperience's durable requests. */
+      const settleAnalysis = async (): Promise<void> => {
+        let problems: readonly string[];
+        try {
+          problems = await analysis.processPending();
+        } catch (error) {
+          problems = [`experience-analysis processing failed: ${messageOf(error)}`];
+        }
+        for (const problem of problems) {
+          reportMemory(problem);
+        }
+      };
+      /**
+       * Record the stopped invocation's retained fault before recovery can discard or replace its
+       * attempt. The already-started agents have settled by the time the worker stopped; the
+       * durable capture retains its evidence, so the analysis reads that attempt's evidence even
+       * after recovery replaced it.
+       */
+      const captureOperationalError = async (
+        failure: string,
+        expectedTask: string,
+      ): Promise<void> => {
+        let retained: Selection | IdeaSelection | null;
+        try {
+          retained = await readRecord(paths.selectionFile, selection.declaration);
+        } catch (error) {
+          reportMemory(
+            `the retained selection could not be read for the stopped invocation: ${messageOf(error)}`,
+          );
+          return;
+        }
+        if (retained === null) {
+          // No selected work exists: an empty or failed selection is not an experience handoff.
+          return;
+        }
+        if (retained.taskKey !== expectedTask) {
+          reportMemory(
+            `the stopped invocation of "${expectedTask}" does not own the retained selection ` +
+              `"${retained.taskKey}"; no operational handoff was recorded`,
+          );
+          return;
+        }
+        try {
+          const handoff = await operationalErrorHandoff({
+            workflow: request.workflow,
+            selection: retained,
+            failure,
+          });
+          const captured = await analysis.capture(handoff);
+          if (captured.outcome === 'unavailable') {
+            reportMemory(
+              `the stopped invocation of ${handoff.workId} could not be captured: ` +
+                (captured.detail ?? 'the capture failed'),
+            );
+          }
+        } catch (error) {
+          reportMemory(`the stopped invocation could not be captured: ${messageOf(error)}`);
+        }
       };
       listeners.add(log.record);
       try {
@@ -385,6 +529,8 @@ export function createApplication(settings: ApplicationSettings): Application {
 
         // Work and recovery run sequentially: each invocation finishes before the next starts.
         for (;;) {
+          resetAttemptProgress();
+          continuation = await retainedSelection(paths.selectionFile, selection.declaration);
           emitLifecycle('running', null);
           const completion = completionOf(
             await settings.launchWorker(
@@ -415,6 +561,20 @@ export function createApplication(settings: ApplicationSettings): Application {
           // Recovery reads the log, so writes pending before its invocation are drained.
           await log.drain();
           await activityLog.drain();
+          // An execution fault of an established attempt is a terminal handoff: record it with the
+          // attempt's retained evidence before recovery may discard or replace that attempt, then
+          // settle the analysis. A declared blocked outcome and a failed selection record nothing
+          // here, and an attempt the workflow already captured is never recorded twice.
+          // Ownership must come from this worker's events, including a resumed active state.
+          if (
+            completion.kind === 'fault' &&
+            !progress.selectionFailed &&
+            progress.owned !== null &&
+            !progress.captured
+          ) {
+            await captureOperationalError(completion.failure, progress.owned.task);
+          }
+          await settleAnalysis();
           const outcome = await recovery.recover({
             failure: completion.failure,
             output: completion.diagnostics,
@@ -436,8 +596,6 @@ export function createApplication(settings: ApplicationSettings): Application {
         listeners.delete(log.record);
         await log.close();
         await activityLog.close();
-        // The parent's memory client settles its active operations before the execution ends.
-        await memory.close();
       }
     },
 

@@ -290,6 +290,14 @@ describe('StartIdeaRound', () => {
       type: 'exhausted',
       data: { reason: expect.stringContaining('maximum of 2 conversation cycles') },
     });
+    // The stated reason is retained for the terminal handoff, not only published.
+    expect(
+      JSON.parse(
+        await readFile(path.join(started.root, 'state', 'submission-exhaustion.json'), 'utf8'),
+      ),
+    ).toEqual({
+      reason: (started.events.at(-1)!.data as { readonly reason: string }).reason,
+    });
   });
 
   it('rejects a next route without an opened submission and an unknown route', async () => {

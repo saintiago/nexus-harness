@@ -4,7 +4,6 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { AgentEvent, AgentResult } from '../agent-runtime/index.js';
 import type { NotificationAcceptance } from '../adapters/notifications.js';
-import { run } from '../adapters/processes.js';
 import type { NexusConfiguration, ProjectConfiguration } from '../configuration/index.js';
 import { messageOf, type ArtifactRef, type Result } from '../result.js';
 import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
@@ -25,6 +24,7 @@ import type { WorkflowName } from '../configuration/index.js';
 import { workspaceRoot, type ExecutionPaths } from './composition.js';
 import type { ExecutionRequest } from './index.js';
 import type { Workflow } from './workflow.js';
+import { prepareOperationalWorktree } from './operational-worktree.js';
 
 /**
  * Application's recovery boundary and lifecycle. Application hands one stopped work invocation to
@@ -415,38 +415,6 @@ function reportNotification(settings: {
       `Saved report: ${settings.reportPath}`,
     ].join('\n'),
   };
-}
-
-/**
- * Prepare the recovery operational workspace's worktree. The configured Codex provider refuses to
- * start in a working directory outside a Git repository, so the worktree is initialized as an
- * empty repository; `git init` is idempotent for a later recovery invocation of the same
- * execution.
- */
-async function prepareOperationalWorktree(
-  directory: string,
-  environment: Readonly<Record<string, string>>,
-): Promise<void> {
-  await mkdir(directory, { recursive: true });
-  const diagnostics: Uint8Array[] = [];
-  const result = await run(
-    { executable: 'git', args: ['init', '--quiet'], directory, environment },
-    (output) => {
-      if (output.stream === 'stderr') {
-        diagnostics.push(output.chunk);
-      }
-    },
-  );
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  if (result.value.exitCode !== 0) {
-    const detail = Buffer.concat(diagnostics).toString('utf8').trim();
-    throw new Error(
-      `git init exited with code ${String(result.value.exitCode)}` +
-        (detail === '' ? '' : `: ${detail}`),
-    );
-  }
 }
 
 /** Create the recovery lifecycle of one execution over resolved configuration. */

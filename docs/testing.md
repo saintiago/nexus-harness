@@ -169,3 +169,10 @@ lessons, evidence validation, persisted output/provenance reuse and accepted-ver
 Pending work survives queue drain/restart and migration of existing completion requests. Disabled
 memory has no effects; faults retain evidence and preserve business outcomes. Service/MCP algorithms
 belong to AMEM tests. Semantic quality requires separate source-grounded retrieval evaluation.
+
+Restart and recovery coverage additionally establishes that a fresh attempt carries a new identity,
+that a producer's retained reason reconstructs the identical handoff, that an outstanding request
+stays analyzable after its attempt was discarded or replaced, that a partially initialized idea
+submission is the interrupted one, that an analysis invocation without a prepared repository still
+runs, and that a capture-discovery failure reports unavailable without replacing the terminal
+outcome.

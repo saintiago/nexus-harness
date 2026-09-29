@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ArtifactDeclaration } from '../artifacts.js';
+import { terminalReasonSchema } from '../terminal-reason.js';
 
 /** CompleteTask's artifact contract: the merge and post-merge check evidence for one task. */
 
@@ -25,3 +26,12 @@ export const completionArtifact = {
   pathFromArtifactsRoot: 'completion.json',
   schema: completionOutputSchema,
 } satisfies ArtifactDeclaration<typeof completionOutputSchema>;
+
+/**
+ * The reason CompleteTask stated for its failed outcome, retained in the round for the terminal
+ * handoff. The record exists only when completion failed.
+ */
+export const completionFailureArtifact = {
+  pathFromArtifactsRoot: 'completion-failure.json',
+  schema: terminalReasonSchema,
+} satisfies ArtifactDeclaration<typeof terminalReasonSchema>;

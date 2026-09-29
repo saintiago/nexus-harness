@@ -4,8 +4,9 @@ import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.j
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
 import { ensureRoundDirectory, readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
+import { retainTerminalReason } from '../terminal-reason.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
-import { currentRoundDeclaration, currentRoundFile } from './artifacts.js';
+import { currentRoundDeclaration, currentRoundFile, roundExhaustionFile } from './artifacts.js';
 
 /**
  * StartRound plans and opens an implementation round. It reads the current round's results and the
@@ -275,6 +276,9 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
       reviewTrigger,
     });
     if (plan.kind === 'exhausted') {
+      // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
+      // restart of the workflow binding.
+      await retainTerminalReason(path.join(root, roundExhaustionFile), plan.reason);
       settings.publish({ source: 'start-round', type: 'exhausted', data: { reason: plan.reason } });
       return 'exhausted';
     }

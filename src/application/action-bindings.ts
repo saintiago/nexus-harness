@@ -21,6 +21,10 @@ import {
   type BoundAction,
   type EventPublisher,
 } from '../task-engine/index.js';
+import {
+  createAnalyzeExperience,
+  createAnalyzeExperienceAction,
+} from '../task-engine/actions/analyze-experience/index.js';
 import { createChallenger } from '../task-engine/actions/challenger/index.js';
 import { createCompleteTask } from '../task-engine/actions/complete-task/index.js';
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
@@ -46,15 +50,18 @@ import { createStartIdeaRound } from '../task-engine/actions/start-idea-round/in
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
 import {
-  completionAnalysisDirectory,
-  createCompletionAnalysisRequestPublisher,
-} from './analysis.js';
-import {
   createAgentRuntimeSettings,
+  experienceStoreDirectory,
   workspaceRoot,
   type ExecutionPaths,
   type ProfileRole,
 } from './composition.js';
+import {
+  finiteDeliveryHandoff,
+  finiteTerminalOf,
+  ideaRefinementHandoff,
+  ideaTerminalOf,
+} from './analysis-handoff.js';
 
 /**
  * The worker's action binding: Application assembles the implementations the workflow invokes from
@@ -168,15 +175,34 @@ function finiteDeliveryActions(
   // constant instructions.
   const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
   const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
-  // A memory-disabled configuration records no analysis request, so completion performs no
-  // analysis or provider call and no local observation write.
-  const requestAnalysis =
-    nexus.memory?.enabled === true
-      ? createCompletionAnalysisRequestPublisher({
-          directory: completionAnalysisDirectory(paths.directory),
-          project: project.taskSource.project,
-        })
-      : null;
+  // The worker records terminal handoffs; Application supervises the action's analysis, memory
+  // calls and submission, so this instance never contacts the service or a provider.
+  const analyzeExperience = createAnalyzeExperienceAction({
+    owner: createAnalyzeExperience(
+      experienceCaptureSettings(nexus, paths, project.taskSource.project),
+    ),
+    publish,
+  });
+
+  /**
+   * AnalyzeExperience's binding: resolve the selected work item and the producer-owned evidence of
+   * the terminal handoff the workflow state supplied, then record it once.
+   */
+  const experienceAction: BoundAction = async (input?: unknown) => {
+    const terminal = finiteTerminalOf(input);
+    if (!analysisEnabled(nexus)) {
+      // Disabled memory discovers nothing and records nothing.
+      return 'skipped';
+    }
+    try {
+      const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
+      return await analyzeExperience(await finiteDeliveryHandoff({ selection, terminal }));
+    } catch (error) {
+      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
+      // terminal outcome the workflow preserves.
+      return captureUnavailable(publish, terminal, error);
+    }
+  };
 
   /** An action constructed with the selection the workflow currently retains. */
   const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
@@ -268,8 +294,56 @@ function finiteDeliveryActions(
       jira: settings.jira,
       publish,
       wait: settings.wait,
-      requestAnalysis,
     }),
+    AnalyzeExperience: experienceAction,
+  };
+}
+
+/** Whether the configured memory integration records and analyzes terminal handoffs at all. */
+function analysisEnabled(nexus: NexusConfiguration): boolean {
+  const memory = nexus.memory;
+  return memory !== undefined && memory.enabled;
+}
+
+/**
+ * Report one capture that could not even resolve its handoff. The workflow preserves the terminal
+ * outcome it reached; the failure is reported on the event stream because it saved no capture
+ * evidence to reference.
+ */
+function captureUnavailable(
+  publish: EventPublisher,
+  terminal: string,
+  error: unknown,
+): 'unavailable' {
+  try {
+    publish({
+      source: 'analyze-experience',
+      type: 'unavailable',
+      data: { terminal, reason: messageOf(error) },
+    });
+  } catch {
+    // Reporting is not part of the terminal outcome.
+  }
+  return 'unavailable';
+}
+
+/**
+ * AnalyzeExperience's worker-side settings: the terminal handoffs are recorded in the project's
+ * durable store, while the analysis, memory calls and submission stay with the instance
+ * Application supervises. Disabled memory records nothing.
+ */
+function experienceCaptureSettings(
+  nexus: NexusConfiguration,
+  paths: ExecutionPaths,
+  project: string,
+): Parameters<typeof createAnalyzeExperience>[0] {
+  const memory = nexus.memory !== undefined && nexus.memory.enabled ? nexus.memory : null;
+  return {
+    directory: experienceStoreDirectory(paths),
+    project,
+    profile: memory === null ? null : memory.analysisProfile,
+    memory: memory === null ? null : { url: memory.serviceUrl },
+    analyze: null,
   };
 }
 
@@ -315,6 +389,27 @@ function ideaRefinementActions(
   const researcherRunner = agentRunnerFor(settings, publish, publishActivity, 'researcher');
   const projectGuideRunner = agentRunnerFor(settings, publish, publishActivity, 'project-guide');
   const challengerRunner = agentRunnerFor(settings, publish, publishActivity, 'challenger');
+
+  /** Record one idea-refinement terminal handoff once, as the finite delivery binding does. */
+  const analyzeExperience = createAnalyzeExperienceAction({
+    owner: createAnalyzeExperience(experienceCaptureSettings(nexus, paths, taskSource.project)),
+    publish,
+  });
+  const experienceAction: BoundAction = async (input?: unknown) => {
+    const terminal = ideaTerminalOf(input);
+    if (!analysisEnabled(nexus)) {
+      // Disabled memory discovers nothing and records nothing.
+      return 'skipped';
+    }
+    try {
+      const selection = await selectedIdea();
+      return await analyzeExperience(await ideaRefinementHandoff({ selection, terminal }));
+    } catch (error) {
+      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
+      // terminal outcome the workflow preserves.
+      return captureUnavailable(publish, terminal, error);
+    }
+  };
 
   return {
     SelectIdea: createSelectIdea({
@@ -370,5 +465,6 @@ function ideaRefinementActions(
         publish,
       }),
     ),
+    AnalyzeExperience: experienceAction,
   };
 }

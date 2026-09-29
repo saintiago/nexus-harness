@@ -17,12 +17,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { AgentResult } from '../src/agent-runtime/index.js';
 import {
-  analysisObservationSourceKey,
-  completionAnalysisDirectory,
-  createCompletionAnalysisRequestPublisher,
-  type AnalysisAgentRequest,
-} from '../src/application/analysis.js';
-import {
   createApplication,
   type Application,
   type ApplicationSettings,
@@ -40,6 +34,16 @@ import {
 import { installationConfigSetting } from '../src/application/installation.js';
 import { fault, ok } from '../src/result.js';
 import type { AgentActivity } from '../src/task-engine/index.js';
+import {
+  experienceEvidenceRoot,
+  experienceIdentity,
+  experienceObservationSourceKey,
+  type ExperienceHandoff,
+} from '../src/task-engine/actions/analyze-experience/artifacts.js';
+import {
+  createAnalyzeExperience,
+  type ExperienceAnalystRequest,
+} from '../src/task-engine/actions/analyze-experience/index.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
@@ -137,6 +141,8 @@ type ControlledWorker = {
 async function harness(options: {
   /** The completions the worker launches report, in launch order; the last one repeats. */
   readonly completions: readonly WorkerCompletion[];
+  /** Use the shipped state definitions when testing ownership across restoration. */
+  readonly realWorkflows?: boolean;
   /** What the controlled worker reports: events, activity and its execution log directory. */
   readonly emit?: (worker: ControlledWorker) => void;
   readonly agent?: (request: RecoveryInvocationRequest) => Promise<AgentResult>;
@@ -148,8 +154,8 @@ async function harness(options: {
   readonly memoryTransport?: typeof globalThis.fetch;
   /** The memory service URL the configured integration points at. */
   readonly memoryServiceUrl?: string;
-  /** The controlled completion analyst; it runs in the parent, after the worker exits. */
-  readonly analysis?: (request: AnalysisAgentRequest) => Promise<AgentResult>;
+  /** The controlled experience analyst; it runs in the parent, after the worker exits. */
+  readonly analysis?: (request: ExperienceAnalystRequest) => Promise<AgentResult>;
 }): Promise<Harness> {
   const root = await temporaryDirectory();
   const installationDirectory = path.join(root, 'installation');
@@ -160,6 +166,11 @@ async function harness(options: {
   const nexus = nexusConfiguration();
   nexus.workflow['finite-delivery'] = workflowModule;
   nexus.workflow['idea-refinement'] = ideaWorkflowModule;
+  if (options.realWorkflows) {
+    for (const name of ['finite-delivery', 'idea-refinement'] as const) {
+      nexus.workflow[name] = fileURLToPath(new URL(`../workflows/${name}.ts`, import.meta.url));
+    }
+  }
   nexus.storage.root = './state';
   nexus.executionPolicy.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1;
   if (options.memory === true) {
@@ -225,7 +236,7 @@ async function harness(options: {
         return notify(subject, body);
       },
     }),
-    ...(options.analysis === undefined ? {} : { analysis: () => ({ analyze: options.analysis! }) }),
+    ...(options.analysis === undefined ? {} : { analysis: () => options.analysis! }),
   };
   const application = createApplication(settings);
   application.subscribe((event) => events.push(event));
@@ -250,6 +261,26 @@ function lifecycleOf(events: readonly ExecutionEvent[]): string[] {
   return events
     .filter((event) => event.source === 'application' && lifecycle.has(event.type))
     .map((event) => event.type);
+}
+
+/**
+ * Record one terminal handoff in the execution's durable store, as the worker's bound
+ * AnalyzeExperience action does when a workflow reaches a terminal state.
+ */
+async function recordHandoff(
+  executionDirectory: string,
+  handoff: ExperienceHandoff,
+): Promise<void> {
+  const owner = createAnalyzeExperience({
+    directory: path.join(executionDirectory, 'memory'),
+    project: 'NEX',
+    profile: 'nexus-astra',
+    // Capturing never contacts the service, so an unreachable URL is sufficient here.
+    memory: { url: 'http://127.0.0.1:1' },
+    analyze: null,
+  });
+  const captured = await owner.capture(handoff);
+  expect(captured.outcome).toBe('recorded');
 }
 
 /** The saved recovery execution record. */
@@ -410,7 +441,7 @@ describe('Application execution', () => {
     const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
     await mkdir(path.dirname(evidence), { recursive: true });
     await writeFile(evidence, '{"mergeRevision":"4444"}\n');
-    const analyses: AnalysisAgentRequest[] = [];
+    const analyses: ExperienceAnalystRequest[] = [];
     const executed = await harness({
       completions: [successful, successful],
       memory: true,
@@ -438,13 +469,19 @@ describe('Application execution', () => {
         );
       },
     });
-    // The worker published the confirmed completion before the parent settled it.
-    const requests = completionAnalysisDirectory(executed.executionDirectory);
-    await createCompletionAnalysisRequestPublisher({ directory: requests, project: 'NEX' })({
-      taskKey: 'NEX-1',
-      completionRevision: '4'.repeat(40),
+    // The worker recorded the confirmed completion in the execution's durable store.
+    const handoff: ExperienceHandoff = {
+      workId: 'NEX-1',
+      workflow: 'finite-delivery',
+      attemptId: 'task/NEX-1',
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
       workspaceRoot: workspace,
-    });
+      artifacts: [{ path: evidence }],
+    };
+    await recordHandoff(executed.executionDirectory, handoff);
+    const identity = experienceIdentity(handoff);
 
     const first = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -455,15 +492,19 @@ describe('Application execution', () => {
     expect(first.outcome).toBe('completed');
     expect(executed.timeline).toEqual(['worker']);
     expect(analyses).toHaveLength(1);
-    expect(analyses[0]?.workspace.root).toBe(workspace);
+    // The analyst reads the retained copy of the handoff's evidence, not the mutable workspace.
+    expect(analyses[0]?.workspace.root).toBe(
+      experienceEvidenceRoot(path.join(executed.executionDirectory, 'memory'), identity),
+    );
+    expect(analyses[0]?.outputSchema).toMatchObject({ type: 'object' });
     expect(service.observations.size).toBe(1);
     // Durable acceptance is reported as outstanding until the receipt is stored.
     expect(executed.diagnostics.join('')).toContain(
-      'Nexus memory analysis: the submission of observation 1 of task NEX-1 is outstanding',
+      'Nexus memory analysis: the submission of observation 1 of NEX-1 is outstanding',
     );
 
     // The next start reuses the persisted analysis output and settles the stored receipt.
-    service.store(analysisObservationSourceKey('NEX-1', '4'.repeat(40), '1'));
+    service.store(experienceObservationSourceKey(identity, '1'));
     const reported = executed.diagnostics.length;
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -482,16 +523,25 @@ describe('Application execution', () => {
   it('reports a failed analysis without changing the completed outcome', async () => {
     const service = await controlledService();
     const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{"mergeRevision":"4444"}\n');
     const executed = await harness({
       completions: [successful],
       memory: true,
       memoryServiceUrl: service.url,
       analysis: () => Promise.reject(new Error('The analysis provider is unavailable.')),
     });
-    await createCompletionAnalysisRequestPublisher({
-      directory: completionAnalysisDirectory(executed.executionDirectory),
-      project: 'NEX',
-    })({ taskKey: 'NEX-1', completionRevision: '4'.repeat(40), workspaceRoot: workspace });
+    await recordHandoff(executed.executionDirectory, {
+      workId: 'NEX-1',
+      workflow: 'finite-delivery',
+      attemptId: 'task/NEX-1',
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    });
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -502,13 +552,108 @@ describe('Application execution', () => {
     expect(executed.invocations).toEqual([]);
     expect(service.requests).toEqual([]);
     expect(executed.diagnostics.join('')).toContain(
-      'Nexus memory analysis: the completion analysis of task NEX-1',
+      'Nexus memory analysis: the experience analysis of NEX-1',
     );
     expect(executed.diagnostics.join('')).toContain('is outstanding');
   });
 
-  it('writes no analysis request or observation when memory is disabled', async () => {
-    const executed = await harness({ completions: [successful] });
+  it('records the stopped invocation before recovery and analyzes its retained fault', async () => {
+    const service = await controlledService();
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    const evidence = path.join(workspace, 'artifacts', '1', 'delivery.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, '{"headRevision":"aaaa"}\n');
+    await mkdir(path.join(workspace, 'state'), { recursive: true });
+    await writeFile(
+      path.join(workspace, 'state', 'current-round.json'),
+      '{"number":1,"profile":"nexus-flash","reason":"the interrupted round"}\n',
+    );
+    const analyses: ExperienceAnalystRequest[] = [];
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'the provider invocation failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: 'the worker died after selecting the item',
+        },
+        successful,
+      ],
+      memory: true,
+      memoryServiceUrl: service.url,
+      // The invocation's own events establish the attempt it worked on.
+      emit: ({ event }) =>
+        event({
+          source: 'select-task',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'selected',
+            detail: null,
+            artifact: { path: '/execution/selection.json' },
+          },
+        }),
+      analysis: (request) => {
+        analyses.push(request);
+        return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+      },
+    });
+    // The retained selection names the interrupted attempt Application records the fault for.
+    await mkdir(executed.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(executed.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    // The fault was recorded with its evidence and analyzed before recovery replaced the attempt;
+    // the recovery destination and the resumed execution are unchanged.
+    expect(result.outcome).toBe('completed');
+    expect(executed.timeline).toEqual(['worker', 'recovery', 'worker']);
+    expect(analyses).toHaveLength(1);
+    expect(analyses[0]?.context).toContain('the provider invocation failed');
+    expect(analyses[0]?.context).toContain(evidence);
+    const requests = await readdir(path.join(executed.executionDirectory, 'memory', 'requests'));
+    expect(requests).toHaveLength(1);
+  });
+
+  it('records no operational handoff for a declared blocked outcome or a failed selection', async () => {
+    const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+    await mkdir(workspace, { recursive: true });
+    const executed = await harness({
+      completions: [stopped('the selection found no eligible item\n'), successful],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+      emit: ({ event }) =>
+        event({
+          source: 'select-task',
+          type: 'failed',
+          data: { reason: 'The task source is unavailable.' },
+        }),
+    });
+    // An earlier attempt left its selection behind; the blocked outcome is not an operational fault.
+    await mkdir(executed.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(executed.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
@@ -516,9 +661,240 @@ describe('Application execution', () => {
     });
 
     expect(result.outcome).toBe('completed');
-    await expect(
-      stat(completionAnalysisDirectory(executed.executionDirectory)),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    // Neither the failed selection nor the later stopped invocation recorded an operational fault.
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    // A blocked outcome that published no selection event of its own records nothing either: the
+    // retained selection belongs to a previous attempt, whichever outcome that attempt reached.
+    const silent = await harness({
+      completions: [stopped('the workflow declared its blocked outcome\n'), successful],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+    });
+    await mkdir(silent.executionDirectory, { recursive: true });
+    await writeFile(
+      path.join(silent.executionDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: { id: '10518', key: 'NEX-1', fields: { summary: 'Interrupted work' } },
+        conversation: [],
+        workspace: { root: workspace },
+      }),
+    );
+
+    const silentResult = await silent.application.execute({
+      projectConfigPath: silent.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(silentResult.outcome).toBe('completed');
+    await expect(stat(path.join(silent.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('records no second operational handoff when the workflow already captured the attempt', async () => {
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'the provider invocation failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        },
+        successful,
+      ],
+      memory: true,
+      memoryServiceUrl: 'http://127.0.0.1:1',
+      emit: ({ event }) => {
+        event({
+          source: 'select-task',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'selected',
+            detail: null,
+            artifact: { path: '/execution/selection.json' },
+          },
+        });
+        event({
+          source: 'analyze-experience',
+          type: 'outcome',
+          data: {
+            task: 'NEX-1',
+            round: null,
+            outcome: 'recorded',
+            detail: 'NEX-1 finite-delivery/task/NEX-1/complete-completed ("completed")',
+            artifact: { path: '/execution/memory/captures/NEX-1.json' },
+          },
+        });
+      },
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it.each(['finite-delivery', 'idea-refinement'] as const)(
+    'requires current worker evidence of ownership for %s faults',
+    async (workflow) => {
+      const idea = workflow === 'idea-refinement';
+      const selectionSource = idea ? 'select-idea' : 'select-task';
+      for (const scenario of [
+        'initialization',
+        'selection-throws',
+        'restored-capture',
+        'restored-unavailable',
+        'restored-active',
+        'after-recovery',
+      ] as const) {
+        const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+        await mkdir(workspace, { recursive: true });
+        let launches = 0;
+        const faulted: WorkerCompletion = {
+          result: { ok: false, fault: { message: 'workflow persistence or source access failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        };
+        const executed = await harness({
+          realWorkflows: true,
+          completions: scenario === 'after-recovery' ? [stopped('blocked'), faulted] : [faulted],
+          maxRecoveryAttempts: scenario === 'after-recovery' ? 2 : 1,
+          memory: true,
+          analysis: () => Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) })),
+          agent: () =>
+            Promise.resolve(
+              ok({
+                output: report(
+                  'Recovered.',
+                  scenario === 'after-recovery' && launches === 1 ? 'resume' : 'needs-attention',
+                ),
+              }),
+            ),
+          emit: ({ event }) => {
+            launches += 1;
+            if (scenario === 'selection-throws') {
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: { value: idea ? 'selectIdea' : 'select' },
+              });
+              // Source access throws before SelectTask/SelectIdea can publish a failed outcome.
+            } else if (scenario === 'restored-capture') {
+              event({
+                source: 'analyze-experience',
+                type: 'outcome',
+                data: {
+                  task: 'NEX-1',
+                  outcome: 'recorded',
+                  round: null,
+                  detail: null,
+                  artifact: { path: '/memory/capture.json' },
+                },
+              });
+            } else if (scenario === 'restored-unavailable') {
+              event({
+                source: 'analyze-experience',
+                type: 'unavailable',
+                data: {
+                  terminal: 'complete-completed',
+                  reason: 'The selection could not be read.',
+                },
+              });
+            } else if (scenario === 'restored-active') {
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: { value: idea ? 'startSubmission' : 'prepare' },
+              });
+            } else if (scenario === 'after-recovery' && launches === 1) {
+              event({
+                source: selectionSource,
+                type: 'outcome',
+                data: {
+                  task: 'NEX-1',
+                  outcome: 'selected',
+                  round: null,
+                  detail: null,
+                  artifact: { path: '/execution/selection.json' },
+                },
+              });
+            }
+            if (scenario === 'restored-capture' || scenario === 'restored-unavailable') {
+              // A state observation can arrive after the restored action's own outcome.
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: {
+                  value: idea ? 'analyzeApproved' : 'analyzeCompletion',
+                },
+              });
+            }
+          },
+        });
+        const directory = idea
+          ? path.join(executed.executionDirectory, 'idea-refinement')
+          : executed.executionDirectory;
+        await mkdir(directory, { recursive: true });
+        const issue = { id: '10518', key: 'NEX-1', fields: { summary: 'Retained work' } };
+        await writeFile(
+          path.join(directory, 'selection.json'),
+          JSON.stringify({
+            taskKey: 'NEX-1',
+            source: { kind: 'jira', issueId: '10518' },
+            conversation: [],
+            workspace: { root: workspace },
+            ...(idea
+              ? {
+                  issue,
+                  transitions: { toActive: null, fromActive: [] },
+                  claimed: true,
+                  retainedSubmissions: 0,
+                  issueWorkspace: { root: path.dirname(workspace) },
+                }
+              : { task: issue }),
+          }),
+        );
+        await executed.application.execute({
+          projectConfigPath: executed.projectConfigPath,
+          workflow,
+        });
+        const requests = path.join(directory, 'memory', 'requests');
+        if (scenario === 'restored-active') {
+          expect(await readdir(requests), scenario).toHaveLength(1);
+        } else {
+          await expect(stat(requests), scenario).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+      }
+    },
+  );
+
+  it('records no operational handoff without a retained selection or when memory is disabled', async () => {
+    const executed = await harness({
+      completions: [stopped('the worker died before selecting'), successful],
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result.outcome).toBe('completed');
+    await expect(stat(path.join(executed.executionDirectory, 'memory'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(executed.diagnostics).toEqual([]);
   });
 

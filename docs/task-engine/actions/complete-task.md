@@ -36,7 +36,8 @@ Only completed produces a usable completionArtifact. The completed outcome publi
 [action outcome event](architecture.md#action-outcome-events) referencing the saved evidence and
 naming the pull request; reusing confirmed evidence publishes the same reference. A failed ticket
 transition that cannot finish the saved evidence publishes the failed outcome with that same
-reference. Provider access failures are execution errors.
+reference. failed also retains its reason at artifacts/&lt;round&gt;/completion-failure.json, so the
+terminal handoff states it after a restart. Provider access failures are execution errors.
 
 ## Behavior
 

@@ -35,7 +35,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return { ...actual, writeFile };
 });
 
-type ActionStub = () => Promise<string>;
+type ActionStub = (input?: unknown) => Promise<string>;
 
 const temporaryDirectories: string[] = [];
 
@@ -68,8 +68,10 @@ async function persistedState(stateFile: string): Promise<Record<string, unknown
 function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): {
   readonly actions: Record<string, ActionStub>;
   readonly calls: string[];
+  readonly inputs: { readonly action: string; readonly input: unknown }[];
 } {
   const calls: string[] = [];
+  const inputs: { readonly action: string; readonly input: unknown }[] = [];
   const outcomes: Record<string, string> = {
     SelectTask: 'empty',
     PrepareWorkspace: 'prepared',
@@ -79,16 +81,18 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
     Deliver: 'published',
     Review: 'approved',
     CompleteTask: 'completed',
+    AnalyzeExperience: 'recorded',
   };
   const actions: Record<string, ActionStub> = {};
   for (const [name, outcome] of Object.entries(outcomes)) {
     const override = overrides[name];
-    actions[name] = async () => {
+    actions[name] = async (input?: unknown) => {
       calls.push(name);
-      return override === undefined ? outcome : override();
+      inputs.push({ action: name, input });
+      return override === undefined ? outcome : override(input);
     };
   }
-  return { actions, calls };
+  return { actions, calls, inputs };
 }
 
 /** The observed state values, in publication order. */
@@ -97,6 +101,119 @@ function observedStates(events: readonly EngineEvent[]): unknown[] {
 }
 
 describe('TaskEngine over the finite workflow', () => {
+  /** Run one finite execution with the supplied outcomes and report its handoff invocations. */
+  async function runWith(overrides: Readonly<Record<string, ActionStub>>): Promise<{
+    readonly result: Awaited<ReturnType<ReturnType<typeof createTaskEngine>['run']>>;
+    readonly calls: string[];
+    readonly handoffs: unknown[];
+  }> {
+    const stateFile = await temporaryStateFile();
+    const { actions, calls, inputs } = suppliedActions(overrides);
+    const result = await createTaskEngine({
+      workflow: finiteDelivery,
+      stateFile,
+      bindActions: () => actions,
+    }).run();
+    return {
+      result,
+      calls,
+      handoffs: inputs.filter((entry) => entry.action === 'AnalyzeExperience').map((e) => e.input),
+    };
+  }
+
+  it('analyzes every terminal handoff of selected work and preserves its destination', async () => {
+    let selections = 0;
+    const completion = await runWith({
+      SelectTask: async () => (selections++ === 0 ? 'selected' : 'empty'),
+    });
+    expect(completion.result).toEqual({ ok: true, value: 'drained' });
+    expect(completion.handoffs).toEqual([{ terminal: 'complete-completed' }]);
+
+    const prepare = await runWith({
+      SelectTask: async () => 'selected',
+      PrepareWorkspace: async () => 'failed',
+    });
+    expect(prepare.result).toEqual({ ok: true, value: 'blocked' });
+    expect(prepare.calls).toEqual(['SelectTask', 'PrepareWorkspace', 'AnalyzeExperience']);
+    expect(prepare.handoffs).toEqual([{ terminal: 'prepare-failed' }]);
+
+    const exhausted = await runWith({
+      SelectTask: async () => 'selected',
+      StartRound: async () => 'exhausted',
+    });
+    expect(exhausted.result).toEqual({ ok: true, value: 'blocked' });
+    expect(exhausted.handoffs).toEqual([{ terminal: 'start-round-exhausted' }]);
+
+    const delivery = await runWith({
+      SelectTask: async () => 'selected',
+      Deliver: async () => 'failed',
+    });
+    expect(delivery.result).toEqual({ ok: true, value: 'blocked' });
+    expect(delivery.handoffs).toEqual([{ terminal: 'deliver-failed' }]);
+
+    const inconclusive = await runWith({
+      SelectTask: async () => 'selected',
+      Review: async () => 'inconclusive',
+    });
+    expect(inconclusive.result).toEqual({ ok: true, value: 'blocked' });
+    expect(inconclusive.handoffs).toEqual([{ terminal: 'review-inconclusive' }]);
+
+    const failedCompletion = await runWith({
+      SelectTask: async () => 'selected',
+      CompleteTask: async () => 'failed',
+    });
+    expect(failedCompletion.result).toEqual({ ok: true, value: 'blocked' });
+    expect(failedCompletion.handoffs).toEqual([{ terminal: 'complete-failed' }]);
+  });
+
+  it('analyzes every completed item of a finite queue and never an empty selection', async () => {
+    let selections = 0;
+    const { result, calls, handoffs } = await runWith({
+      SelectTask: async () => (selections++ < 2 ? 'selected' : 'empty'),
+    });
+
+    expect(result).toEqual({ ok: true, value: 'drained' });
+    // Two selected items complete and drain; the empty selection ends the queue without analysis.
+    expect(handoffs).toEqual([
+      { terminal: 'complete-completed' },
+      { terminal: 'complete-completed' },
+    ]);
+    expect(calls.filter((call) => call === 'AnalyzeExperience')).toHaveLength(2);
+
+    const failedSelection = await runWith({ SelectTask: async () => 'failed' });
+    expect(failedSelection.result).toEqual({ ok: true, value: 'blocked' });
+    expect(failedSelection.handoffs).toEqual([]);
+    expect(failedSelection.calls).toEqual(['SelectTask']);
+  });
+
+  it('never analyzes retry rounds, repair loops or a skipped analysis outcome', async () => {
+    let repairedSelections = 0;
+    let verifications = 0;
+    const repair = await runWith({
+      SelectTask: async () => (repairedSelections++ === 0 ? 'selected' : 'empty'),
+      Verify: async () => (verifications++ === 0 ? 'failed' : 'passed'),
+      AnalyzeExperience: async () => 'skipped',
+    });
+
+    // The intermediate repair round produced no handoff; the final completion did, and the
+    // skipped capture still reached the original destination.
+    expect(repair.result).toEqual({ ok: true, value: 'drained' });
+    expect(repair.calls.filter((call) => call === 'StartRound')).toHaveLength(2);
+    expect(repair.handoffs).toEqual([{ terminal: 'complete-completed' }]);
+    expect(repair.calls.filter((call) => call === 'AnalyzeExperience')).toHaveLength(1);
+
+    let reviewedSelections = 0;
+    let reviews = 0;
+    const changesRequested = await runWith({
+      SelectTask: async () => (reviewedSelections++ === 0 ? 'selected' : 'empty'),
+      Review: async () => (reviews++ === 0 ? 'changesRequested' : 'approved'),
+      AnalyzeExperience: async () => 'unavailable',
+    });
+    expect(changesRequested.result).toEqual({ ok: true, value: 'drained' });
+    expect(changesRequested.calls.filter((call) => call === 'StartRound')).toHaveLength(2);
+    expect(changesRequested.handoffs).toEqual([{ terminal: 'complete-completed' }]);
+  });
+
   it('returns the declared terminal outcome and persists the terminal snapshot', async () => {
     const stateFile = await temporaryStateFile();
     const { actions } = suppliedActions();
@@ -148,6 +265,7 @@ describe('TaskEngine over the finite workflow', () => {
       'Develop',
       'Verify',
       'StartRound',
+      'AnalyzeExperience',
     ]);
   });
 
@@ -180,6 +298,7 @@ describe('TaskEngine over the finite workflow', () => {
       'Deliver',
       'Review',
       'CompleteTask',
+      'AnalyzeExperience',
       'SelectTask',
     ]);
   });
@@ -212,7 +331,7 @@ describe('TaskEngine over the finite workflow', () => {
 
     expect(secondRun).toEqual({ ok: true, value: 'drained' });
     // The restored active invocation restarted, and completed actions did not run again.
-    expect(second.calls).toEqual(['CompleteTask', 'SelectTask']);
+    expect(second.calls).toEqual(['CompleteTask', 'AnalyzeExperience', 'SelectTask']);
   });
 
   it('starts from the initial state when the saved run is terminal', async () => {

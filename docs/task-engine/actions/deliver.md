@@ -34,8 +34,9 @@ type DeliveryOutput = {
 
 Only published produces a usable deliveryArtifact; it publishes the
 [action outcome event](architecture.md#action-outcome-events) referencing the saved record and naming
-the pull request. failed saves no record and publishes only its reason. API or command failures are
-execution errors.
+the pull request. failed saves no delivery record; it retains its reason at
+artifacts/&lt;round&gt;/delivery-failure.json and publishes it, so the terminal handoff states it after
+a restart. API or command failures are execution errors.
 
 ## Behavior
 

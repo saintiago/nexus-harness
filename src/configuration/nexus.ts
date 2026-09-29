@@ -72,7 +72,7 @@ const memoryServiceSettings = {
   analysisProfile: identifier,
 };
 
-/** Enabled memory: the shared service URL, MCP access and completion-analysis profile. */
+/** Enabled memory: the shared service URL, MCP access and experience-analysis profile. */
 const memoryEnabledSchema = z.strictObject({
   enabled: z.literal(true),
   ...memoryServiceSettings,
@@ -121,8 +121,8 @@ const memoryDisabledSchema = z.strictObject({
 
 /**
  * The optional memory settings. Omitting the section or setting `enabled: false` disables agent
- * tools and completion analysis; enabling it requires the shared service URL, the MCP entry point
- * and the configured completion-analysis profile.
+ * tools and experience analysis; enabling it requires the shared service URL, the MCP entry point
+ * and the configured experience-analysis profile.
  */
 const memorySchema = z
   .discriminatedUnion('enabled', [memoryDisabledSchema, memoryEnabledSchema])
@@ -236,7 +236,7 @@ const nexusConfigurationSchema = z
       }
     }
 
-    // The completion-analysis profile is one of the configured agent profiles.
+    // The experience-analysis profile is one of the configured agent profiles.
     if (
       configuration.memory?.enabled === true &&
       !profileIds.has(configuration.memory.analysisProfile)

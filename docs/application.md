@@ -195,14 +195,14 @@ Finite delivery uses:
 └── memory/
 ```
 
-`memory/` exists once memory is enabled and retains the project's confirmed completion-analysis
-requests, extracted observations, submissions and outcomes beside the queue execution state. The
-store is outside every task workspace and disposable delivery attempt, so pending and interrupted
-analysis survives process exit.
+`memory/` exists once memory is enabled and retains the project's recorded terminal handoffs,
+extracted observations, submissions and outcomes beside the queue execution state. The store is
+outside every task workspace and disposable workflow attempt, so pending and interrupted analysis
+survives process exit.
 
 Idea refinement uses a separate `<storage root>/executions/<project>/idea-refinement/` directory
-with its own workflow.json, selection.json, logs/ and recovery/. Its selected source item and
-business artifacts live in the shared issue workspace's refinement area.
+with its own workflow.json, selection.json, logs/, recovery/ and memory/. Its selected source item
+and business artifacts live in the shared issue workspace's refinement area.
 
 The runner owns workflow.json; the selection action owns selection.json. These records are outside task
 workspaces. Application retains its request, recovery count and reports under recovery/, alongside
@@ -279,3 +279,6 @@ not construct a memory client, process observations independently or automatical
 through the coding provider settings. Memory calls and analysis logic belong exclusively to the action. Settling pending work
 reports diagnostics without changing business results. Operational-error handoffs retain the
 original fault and wait for active agents to settle before invoking the action and then recovery.
+Application records one only for an execution fault of the attempt the invocation's own events
+established, and never for a declared blocked outcome or a failed selection, whose terminal handoff
+the workflow already routed or skipped.

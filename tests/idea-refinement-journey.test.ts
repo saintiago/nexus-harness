@@ -38,6 +38,7 @@ import type { RecoveryRuntimeFactory } from '../src/application/recovery.js';
 import { loadWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
+import type { ExperienceAnalystRequest } from '../src/task-engine/actions/analyze-experience/index.js';
 import {
   createTaskEngine,
   type AgentActivity,
@@ -185,6 +186,8 @@ type IdeaJourney = {
   readonly requests: readonly CodingRuntimeRequest[];
   readonly jiraCalls: readonly string[];
   readonly diagnostics: readonly string[];
+  /** The parent's experience-analysis invocations, after terminal publications. */
+  readonly analyses: readonly ExperienceAnalystRequest[];
   status(): string;
   comments(): readonly JiraComment[];
   resubmit(text: string): void;
@@ -348,6 +351,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   const prompts: string[] = [];
   const requests: CodingRuntimeRequest[] = [];
   const diagnostics: string[] = [];
+  const analyses: ExperienceAnalystRequest[] = [];
   const unusedGitHub = new Proxy({} as GitHubAdapter, {
     get: () => () => fault('GitHub is not used by idea refinement.'),
   });
@@ -417,6 +421,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
     requests,
     jiraCalls: source.calls,
     diagnostics,
+    analyses,
     status: () => status,
     comments: () => comments,
     resubmit(text) {
@@ -481,6 +486,12 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
             ...settings,
             launchWorker,
             recovery,
+            // The controlled analyst reports no reusable lesson, so the journey spends no
+            // provider turn and submits nothing.
+            analysis: () => (request) => {
+              analyses.push(request);
+              return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+            },
           });
           application.subscribe((event) => events.push(event));
           application.subscribeActivity((packet) => activity.push(packet));
@@ -769,6 +780,16 @@ describe('idea refinement journeys', () => {
     await expect(
       stat(path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+    // The approval's terminal handoff was recorded once and analyzed after the worker exited; the
+    // controlled analyst reported no reusable lesson, so nothing was submitted.
+    expect(journey.analyses).toHaveLength(1);
+    // The analyst reads the request's retained copy of the submission's evidence.
+    expect(journey.analyses[0]?.context).toContain('Retained evidence root:');
+    expect(journey.analyses[0]?.workspace.root).toContain(
+      path.join('memory', 'evidence', 'NEX-1-publish-approved-'),
+    );
+    const requests = await readdir(path.join(journey.executionDirectory, 'memory', 'requests'));
+    expect(requests).toHaveLength(1);
   });
 
   it('answers a concern without changing the idea and approves the revision it reviewed', async () => {

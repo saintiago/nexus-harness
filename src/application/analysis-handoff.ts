@@ -1,0 +1,422 @@
+import type { Dirent } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
+import type { WorkflowName } from '../configuration/index.js';
+import type { ExperienceHandoff } from '../task-engine/actions/analyze-experience/artifacts.js';
+import { roundArtifactPath } from '../task-engine/actions/artifacts.js';
+import { completionFailureArtifact } from '../task-engine/actions/complete-task/artifacts.js';
+import { deliveryFailureArtifact } from '../task-engine/actions/deliver/artifacts.js';
+import { listIdeaSubmissions } from '../task-engine/actions/idea-storage.js';
+import {
+  attemptDeclaration,
+  attemptFile,
+  preparationFailureDeclaration,
+  preparedWorkspaceDeclaration,
+  preparedWorkspaceFile,
+} from '../task-engine/actions/prepare-workspace/artifacts.js';
+import { readRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
+import type { IdeaSelection } from '../task-engine/actions/select-idea/artifacts.js';
+import type { Selection } from '../task-engine/actions/select-task/artifacts.js';
+import {
+  currentRoundDeclaration,
+  currentRoundFile,
+  roundExhaustionDeclaration,
+} from '../task-engine/actions/start-round/artifacts.js';
+import {
+  ideaRoundPlanDeclaration,
+  submissionExhaustionDeclaration,
+} from '../task-engine/actions/start-idea-round/artifacts.js';
+import { terminalReasonSchema } from '../task-engine/actions/terminal-reason.js';
+
+/**
+ * Application's workflow bindings for AnalyzeExperience: the terminal handoff each workflow state
+ * supplies and the producer-owned evidence it selects from the retained workspace. The action
+ * itself switches on no workflow name, task source status or concrete action implementation;
+ * these tables own that workflow knowledge. See docs/task-engine/actions/analyze-experience.md.
+ */
+
+/** The evidence area one finite-delivery terminal retained. */
+type FiniteEvidence = 'round' | 'preparation';
+
+/** How one terminal producer retains the reason for its failed or exhausted outcome. */
+type TerminalReasonRecord =
+  | { readonly kind: 'state'; readonly declaration: RecordDeclaration }
+  | { readonly kind: 'round'; readonly pathFromArtifactsRoot: string };
+
+/** One finite-delivery terminal: the outcome the workflow preserves and the producer that stated it. */
+export const finiteDeliveryTerminals = {
+  'complete-completed': {
+    outcome: 'completed',
+    producer: 'complete-task',
+    evidence: 'round',
+  },
+  'complete-failed': {
+    outcome: 'failed',
+    producer: 'complete-task',
+    evidence: 'round',
+    reason: {
+      kind: 'round',
+      pathFromArtifactsRoot: completionFailureArtifact.pathFromArtifactsRoot,
+    },
+  },
+  'prepare-failed': {
+    outcome: 'failed',
+    producer: 'prepare-workspace',
+    evidence: 'preparation',
+    reason: { kind: 'state', declaration: preparationFailureDeclaration },
+  },
+  'start-round-exhausted': {
+    outcome: 'exhausted',
+    producer: 'start-round',
+    evidence: 'round',
+    reason: { kind: 'state', declaration: roundExhaustionDeclaration },
+  },
+  'deliver-failed': {
+    outcome: 'failed',
+    producer: 'deliver',
+    evidence: 'round',
+    reason: { kind: 'round', pathFromArtifactsRoot: deliveryFailureArtifact.pathFromArtifactsRoot },
+  },
+  'review-inconclusive': { outcome: 'inconclusive', producer: 'review', evidence: 'round' },
+} as const satisfies Record<
+  string,
+  {
+    readonly outcome: string;
+    readonly producer: string;
+    readonly evidence: FiniteEvidence;
+    readonly reason?: TerminalReasonRecord;
+  }
+>;
+
+export type FiniteDeliveryTerminal = keyof typeof finiteDeliveryTerminals;
+
+/** One idea-refinement terminal: its preserved outcome and the producer that stated it. */
+export const ideaRefinementTerminals = {
+  'publish-approved': {
+    outcome: 'approved',
+    producer: 'publish-decision',
+  },
+  'publish-unsuitable': {
+    outcome: 'waiting-for-feedback',
+    producer: 'publish-decision',
+  },
+  'publish-author-decision': {
+    outcome: 'waiting-for-feedback',
+    producer: 'publish-decision',
+  },
+  'publish-attempts-exhausted': {
+    outcome: 'waiting-for-feedback',
+    producer: 'publish-decision',
+  },
+  'start-submission-exhausted': {
+    outcome: 'exhausted',
+    producer: 'start-idea-round',
+    reason: {
+      kind: 'state',
+      declaration: submissionExhaustionDeclaration,
+    } satisfies TerminalReasonRecord,
+  },
+} as const satisfies Record<
+  string,
+  {
+    readonly outcome: string;
+    readonly producer: string;
+    readonly reason?: TerminalReasonRecord;
+  }
+>;
+
+export type IdeaRefinementTerminal = keyof typeof ideaRefinementTerminals;
+
+/** The operation terminal one workflow state supplies with its AnalyzeExperience invocation. */
+type TerminalInput = { readonly terminal?: unknown };
+
+/** One workflow-supplied terminal name, or an execution error naming the unknown value. */
+function terminalOf<Terminal extends string>(
+  input: unknown,
+  terminals: Readonly<Record<Terminal, unknown>>,
+  workflow: string,
+): Terminal {
+  const terminal = (input as TerminalInput | undefined)?.terminal;
+  const found = Object.keys(terminals).find((candidate) => candidate === terminal);
+  if (found === undefined) {
+    throw new Error(
+      `The ${workflow} workflow supplied AnalyzeExperience the unknown terminal ` +
+        `${JSON.stringify(terminal)}.`,
+    );
+  }
+  return found as Terminal;
+}
+
+/** The finite-delivery terminal one workflow state supplied. */
+export function finiteTerminalOf(input: unknown): FiniteDeliveryTerminal {
+  return terminalOf(input, finiteDeliveryTerminals, 'finite delivery');
+}
+
+/** The idea-refinement terminal one workflow state supplied. */
+export function ideaTerminalOf(input: unknown): IdeaRefinementTerminal {
+  return terminalOf(input, ideaRefinementTerminals, 'idea refinement');
+}
+
+/** Whether one path currently exists as a file. */
+async function isFile(target: string): Promise<boolean> {
+  try {
+    return (await stat(target)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * The regular files one retained directory tree holds, in stable order. Symbolic links are left
+ * out: a citation must resolve to a real file inside the work item, and a link could point outside
+ * it when the analyst later reads it.
+ */
+async function retainedFiles(root: string, relative: string): Promise<string[]> {
+  const files: string[] = [];
+  /** One directory's entries, or null when it does not exist. */
+  async function entriesOf(directory: string): Promise<Dirent<string>[] | null> {
+    try {
+      return await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+  }
+  async function walk(directory: string): Promise<void> {
+    const entries = await entriesOf(directory);
+    if (entries === null) {
+      return;
+    }
+    for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(target);
+      } else if (entry.isFile()) {
+        files.push(target);
+      }
+    }
+  }
+  await walk(path.join(root, relative));
+  return files;
+}
+
+/**
+ * The attempt state one finite-delivery workspace retains: the identity PrepareWorkspace recorded
+ * for it and the current round it opened. An attempt prepared before the identity was retained
+ * falls back to its branch name, as the earlier binding did.
+ */
+async function finiteAttemptState(root: string): Promise<{
+  readonly attemptId: string;
+  readonly round: number | null;
+}> {
+  const [attempt, prepared, round] = await Promise.all([
+    readRecord(path.join(root, attemptFile), attemptDeclaration),
+    readRecord(path.join(root, preparedWorkspaceFile), preparedWorkspaceDeclaration),
+    readRecord(path.join(root, currentRoundFile), currentRoundDeclaration),
+  ]);
+  return {
+    attemptId: attempt?.attemptId ?? prepared?.branch ?? 'unprepared',
+    round: round?.number ?? null,
+  };
+}
+
+/** The finite-delivery evidence files one terminal retained, in the order the analyst reads them. */
+async function finiteEvidence(
+  root: string,
+  area: FiniteEvidence,
+  round: number | null,
+): Promise<string[]> {
+  const files: string[] = [];
+  if (area === 'preparation') {
+    files.push(...(await retainedFiles(root, 'state')));
+    return files;
+  }
+  const prepared = path.join(root, preparedWorkspaceFile);
+  if (await isFile(prepared)) {
+    files.push(prepared);
+  }
+  if (round === null) {
+    // No round was opened; whatever preparation retained is this attempt's evidence.
+    files.push(...(await retainedFiles(root, 'state')));
+    return files;
+  }
+  files.push(path.join(root, currentRoundFile));
+  // Earlier rounds are this attempt's history: they retain the failed approaches and changed
+  // conclusions the analyst needs after the attempt's own evidence is replaced.
+  for (let number = 1; number <= round; number += 1) {
+    files.push(...(await retainedFiles(root, path.join('artifacts', String(number)))));
+  }
+  return files;
+}
+
+/** How one terminal states its producer's reason record, when the producer retains one. */
+function terminalReasonRecordOf(terminal: {
+  readonly outcome: string;
+  readonly producer: string;
+  readonly reason?: TerminalReasonRecord;
+}): TerminalReasonRecord | undefined {
+  return terminal.reason;
+}
+
+/** The file one terminal producer retained its stated reason in, or null when it states none. */
+function terminalReasonFile(
+  root: string,
+  record: TerminalReasonRecord | undefined,
+  round: number | null,
+): string | null {
+  if (record === undefined) {
+    return null;
+  }
+  if (record.kind === 'state') {
+    return path.join(root, record.declaration.file);
+  }
+  return round === null ? null : roundArtifactPath(root, round, record.pathFromArtifactsRoot);
+}
+
+/**
+ * Read the reason the terminal's producer retained, or null when it stated none. A malformed
+ * record is an error: the binding reports it as an unavailable capture instead of dropping the
+ * producer's reason.
+ */
+async function retainedTerminalReason(file: string | null): Promise<string | null> {
+  if (file === null) {
+    return null;
+  }
+  const record = await readRecord(file, { file, schema: terminalReasonSchema });
+  return record === null ? null : record.reason;
+}
+
+/**
+ * The idea submission one terminal handoff belongs to: the planned submission, or the newest
+ * retained submission when a later one was created before its plan was saved. The retained
+ * selection names the submission it opens, and a partial initialization is that interrupted
+ * submission, never the previous plan's submission.
+ */
+async function ideaSubmission(root: string, expected: number): Promise<number | null> {
+  const plan = await readRecord(
+    path.join(root, ideaRoundPlanDeclaration.file),
+    ideaRoundPlanDeclaration,
+  );
+  const retained = (await listIdeaSubmissions(root)).at(-1) ?? 0;
+  const submission = Math.max(plan?.submission ?? 0, retained, expected);
+  return submission === 0 ? null : submission;
+}
+
+/** One idea submission's identity and retained artifacts. */
+async function ideaAttempt(selection: IdeaSelection): Promise<{
+  readonly attemptId: string;
+  readonly files: string[];
+}> {
+  const root = selection.workspace.root;
+  const submission = await ideaSubmission(root, selection.retainedSubmissions + 1);
+  if (submission === null) {
+    return { attemptId: 'unprepared', files: [] };
+  }
+  return {
+    attemptId: `submission-${String(submission)}`,
+    files: await retainedFiles(root, path.join('artifacts', 'submissions', String(submission))),
+  };
+}
+
+/** The evidence one finite-delivery terminal handoff carries, as the action's input shape. */
+function evidence(handoff: { readonly files: readonly string[] }): { readonly path: string }[] {
+  return handoff.files.map((file) => ({ path: file }));
+}
+
+/** Build the terminal handoff of one finite-delivery terminal for the selected work item. */
+export async function finiteDeliveryHandoff(options: {
+  readonly selection: Selection;
+  readonly terminal: FiniteDeliveryTerminal;
+}): Promise<ExperienceHandoff> {
+  const root = options.selection.workspace.root;
+  const terminal = finiteDeliveryTerminals[options.terminal];
+  const attempt = await finiteAttemptState(root);
+  const files = await finiteEvidence(root, terminal.evidence, attempt.round);
+  const reasonFile = terminalReasonFile(root, terminalReasonRecordOf(terminal), attempt.round);
+  if (reasonFile !== null && !files.includes(reasonFile) && (await isFile(reasonFile))) {
+    files.push(reasonFile);
+  }
+  return {
+    workId: options.selection.taskKey,
+    workflow: 'finite-delivery',
+    attemptId: attempt.attemptId,
+    terminalId: options.terminal,
+    outcome: terminal.outcome,
+    reason: await retainedTerminalReason(reasonFile),
+    workspaceRoot: root,
+    artifacts: evidence({ files }),
+  };
+}
+
+/** Build the terminal handoff of one idea-refinement terminal for the selected submission. */
+export async function ideaRefinementHandoff(options: {
+  readonly selection: IdeaSelection;
+  readonly terminal: IdeaRefinementTerminal;
+}): Promise<ExperienceHandoff> {
+  const root = options.selection.workspace.root;
+  const terminal = ideaRefinementTerminals[options.terminal];
+  const attempt = await ideaAttempt(options.selection);
+  const reasonFile = terminalReasonFile(root, terminalReasonRecordOf(terminal), null);
+  if (reasonFile !== null && !attempt.files.includes(reasonFile) && (await isFile(reasonFile))) {
+    attempt.files.push(reasonFile);
+  }
+  return {
+    workId: options.selection.taskKey,
+    workflow: 'idea-refinement',
+    attemptId: attempt.attemptId,
+    terminalId: options.terminal,
+    outcome: terminal.outcome,
+    reason: await retainedTerminalReason(reasonFile),
+    workspaceRoot: root,
+    artifacts: evidence(attempt),
+  };
+}
+
+/**
+ * Build the handoff of an operational error Application observed after the worker settled: the
+ * original fault and the interrupted attempt's retained evidence, recorded before recovery can
+ * replace that attempt.
+ */
+export async function operationalErrorHandoff(options: {
+  readonly workflow: WorkflowName;
+  readonly selection: Selection | IdeaSelection;
+  readonly failure: string;
+}): Promise<ExperienceHandoff> {
+  if (options.workflow === 'idea-refinement') {
+    const selection = options.selection as IdeaSelection;
+    const attempt = await ideaAttempt(selection);
+    return {
+      workId: selection.taskKey,
+      workflow: options.workflow,
+      attemptId: attempt.attemptId,
+      terminalId: 'operational-error',
+      outcome: 'error',
+      reason: options.failure,
+      workspaceRoot: selection.workspace.root,
+      artifacts: evidence(attempt),
+    };
+  }
+  const selection = options.selection as Selection;
+  const root = selection.workspace.root;
+  const attempt = await finiteAttemptState(root);
+  const files = await finiteEvidence(
+    root,
+    attempt.round === null ? 'preparation' : 'round',
+    attempt.round,
+  );
+  return {
+    workId: selection.taskKey,
+    workflow: options.workflow,
+    attemptId: attempt.attemptId,
+    terminalId: 'operational-error',
+    outcome: 'error',
+    reason: options.failure,
+    workspaceRoot: root,
+    artifacts: evidence({ files }),
+  };
+}

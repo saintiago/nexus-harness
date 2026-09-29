@@ -252,7 +252,11 @@ StartIdeaRound owns `state/current-round.json`: submission identity, cycle numbe
 profiles. On selection it opens the next submission at cycle 1; on discussion it opens the next cycle
 within the configured limit. It reuses the shared round storage functions for history and persistence.
 It does not apply finite delivery's repair counters or developer ladder, interpret concerns or choose
-conversation routes. XState supplies the route; the actions use the saved plan.
+conversation routes. XState supplies the route; the actions use the saved plan. An exhausted route
+opens no cycle and retains its reason at `state/submission-exhaustion.json`, so the terminal handoff
+states it after a restart. A later submission created but not yet planned is the interrupted
+submission: a terminal handoff for it names that submission and its retained input, never the previous
+plan's submission.
 
 Actions persist complete outputs before returning small outcomes and artifact references. Machine
 context holds control state and references, not full reports. Later workflows can read retained

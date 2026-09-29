@@ -36,6 +36,13 @@ semantics for every terminal outcome. Existing pending completion requests must 
 through that owner; do not orphan them when moving processing out of Application. Existing notes
 remain intact. Automatic historical backfill is outside scope.
 
+Requests retain their own copy of the handoff's selected evidence, outside the disposable attempt,
+so an outage can neither orphan an outstanding request nor make a retry analyze a replacement
+attempt's artifacts under the original request. Producers retain their failed and exhausted reasons
+in the attempt, and bindings read them back, so a restarted worker reconstructs the identical
+handoff. Application records an operational-error handoff only for an execution fault of an attempt
+the stopped invocation established.
+
 Evaluate lesson usefulness, source fidelity, duplicate noise and preserved uncertainty on success,
 failure and idea handoffs. Cluster appearance and final task success alone do not establish useful
 memory. Boundary and workflow coverage belong in [testing](../testing.md#memory-coverage).

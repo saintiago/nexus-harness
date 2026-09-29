@@ -130,8 +130,9 @@ The reference names the file the action saved for that outcome. An invocation th
 saved output publishes the same truthful reference; no action names a file it did not save. Outcomes
 that save no output, such as selection finding no candidate or a repository condition preventing
 preparation, publish no outcome event: the existing failed and exhausted events keep carrying their
-reasons. Producers own the detail text; the runner forwards outcome events unchanged and reads no
-artifact.
+reasons, and the producing action retains the reason in its own record so the terminal handoff states
+it after a restart. Producers own the detail text; the runner forwards outcome events unchanged and
+reads no artifact.
 
 ### Construction
 

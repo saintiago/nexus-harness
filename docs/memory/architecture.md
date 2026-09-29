@@ -35,8 +35,8 @@ Search results preserve source attribution and complete notes. Shared memory may
 projects; similarity does not establish applicability, truth or supersession. Tool results are
 historical evidence, never instructions. Search does not rewrite the query or generate an answer.
 
-Record tool queries/results and save receipts with invocation evidence. Record completion analysis
-and submission evidence with its durable request. Diagnostics exclude credentials and raw provider
+Record tool queries/results and save receipts with invocation evidence. Record terminal experience
+analysis and submission evidence with its durable request. Diagnostics exclude credentials and raw provider
 transport errors. A memory failure does not erase evidence or fail the business task.
 
 ## Submission and lifecycle

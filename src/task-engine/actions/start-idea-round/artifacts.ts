@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ideaRoles } from '../../../agent-runtime/index.js';
 import type { RecordDeclaration } from '../records.js';
+import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
  * StartIdeaRound's current-round record: the active submission, the open conversation cycle, the
@@ -32,3 +33,14 @@ export const ideaRoundPlanDeclaration = {
   file: ideaRoundPlanFile,
   schema: ideaRoundPlanSchema,
 } satisfies RecordDeclaration<typeof ideaRoundPlanSchema>;
+
+/**
+ * The reason StartIdeaRound stated for its exhausted outcome, retained in the refinement area for
+ * the terminal handoff. The record exists only when the selection reached the cycle limit.
+ */
+export const submissionExhaustionFile = 'state/submission-exhaustion.json';
+
+export const submissionExhaustionDeclaration = {
+  file: submissionExhaustionFile,
+  schema: terminalReasonSchema,
+} satisfies RecordDeclaration<typeof terminalReasonSchema>;

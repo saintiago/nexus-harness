@@ -38,7 +38,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Idea refinement | Four role profile references and the maximum conversation cycles per selection |
-| Memory | Optional enablement, service URL, MCP access and completion-analysis profile |
+| Memory | Optional enablement, service URL, MCP access and experience-analysis profile |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |

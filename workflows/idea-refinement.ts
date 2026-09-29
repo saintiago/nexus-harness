@@ -13,6 +13,16 @@ import { createMachine } from 'xstate';
  * Bind Nexus operations as promise actors with machine.provide({ actors }) before execution.
  */
 
+/**
+ * AnalyzeExperience's capture outcomes; all three preserve the publication destination, so a
+ * skipped or unavailable capture never changes what the author is told or which queue item runs.
+ */
+const experienceOutcomes: readonly string[] = ['recorded', 'skipped', 'unavailable'];
+
+/** Whether one AnalyzeExperience outcome preserves the original destination. */
+const preservesDestination = ({ event }: { readonly event: { readonly output: unknown } }) =>
+  typeof event.output === 'string' && experienceOutcomes.includes(event.output);
+
 export const ideaRefinement = createMachine(
   {
     id: 'idea-refinement',
@@ -38,7 +48,10 @@ export const ideaRefinement = createMachine(
           input: { route: 'new' },
           onDone: [
             { guard: ({ event }) => event.output === 'opened', target: 'frameIdea' },
-            { guard: ({ event }) => event.output === 'exhausted', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'analyzeStartSubmissionExhausted',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -233,7 +246,7 @@ export const ideaRefinement = createMachine(
           src: 'PublishDecision',
           input: { decision: 'approved' },
           onDone: [
-            { guard: ({ event }) => event.output === 'approved', target: 'approved' },
+            { guard: ({ event }) => event.output === 'approved', target: 'analyzeApproved' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -245,7 +258,7 @@ export const ideaRefinement = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'waitingForFeedback',
+              target: 'analyzeUnsuitable',
             },
             { actions: 'unexpectedOutcome' },
           ],
@@ -258,7 +271,7 @@ export const ideaRefinement = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'waitingForFeedback',
+              target: 'analyzeAuthorDecision',
             },
             { actions: 'unexpectedOutcome' },
           ],
@@ -271,8 +284,61 @@ export const ideaRefinement = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'waitingForFeedback',
+              target: 'analyzeAttemptsExhausted',
             },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // One handoff state per terminal publication: approval and the three author returns are
+      // terminal, while conversation cycles, focused help and empty/failed selection stay
+      // intermediate work that never reaches AnalyzeExperience.
+      analyzeApproved: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'publish-approved' },
+          onDone: [
+            { guard: preservesDestination, target: 'approved' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeUnsuitable: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'publish-unsuitable' },
+          onDone: [
+            { guard: preservesDestination, target: 'waitingForFeedback' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeAuthorDecision: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'publish-author-decision' },
+          onDone: [
+            { guard: preservesDestination, target: 'waitingForFeedback' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeAttemptsExhausted: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'publish-attempts-exhausted' },
+          onDone: [
+            { guard: preservesDestination, target: 'waitingForFeedback' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeStartSubmissionExhausted: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'start-submission-exhausted' },
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
         },
