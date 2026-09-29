@@ -62,8 +62,8 @@ export type AgentInvocationSettings = {
   readonly agentName: string;
   /**
    * The invocation identity the caller assigned, when it assigned one. A caller that prepares
-   * invocation-scoped records (such as memory retrieval evidence) supplies it; otherwise the
-   * engine assigns a fresh identity.
+   * invocation-scoped records under a preassigned identity supplies it; otherwise the engine
+   * assigns a fresh identity.
    */
   readonly invocationId?: string;
   /** The operation the invoking action performs; the boundary events' source. */

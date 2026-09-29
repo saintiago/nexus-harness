@@ -55,64 +55,74 @@ const ideaRefinementSchema = z.strictObject({
   maxCycles: z.number().int().positive(),
 });
 
-/** The Qdrant settings of the optional memory integration. */
-const memoryQdrantSchema = z.strictObject({
-  url: httpUrl('A Qdrant URL'),
-  collection: identifier,
-  credential: credentialReference.optional(),
+/** The AMEM MCP stdio entry point one memory-enabled agent session launches. */
+const memoryMcpSchema = z.strictObject({
+  /** The launcher command of the MCP server. */
+  command: identifier,
+  /** Its arguments. */
+  args: z.array(z.string()),
+  /** The working directory the server process runs in. */
+  directory: identifier,
 });
 
-/** The pinned reference encoder's cache and download permission. */
-const memoryEmbeddingSchema = z.strictObject({
-  cacheDir: identifier,
-  allowDownloads: z.boolean(),
-});
-
-/** The explicit model endpoint, provider model ID, optional credential and output bound. */
-const memoryModelSchema = z.strictObject({
-  endpoint: httpUrl('A model endpoint'),
-  model: identifier,
-  credential: credentialReference.optional(),
-  maxOutputTokens: positiveInteger.default(6000),
-});
-
-/**
- * Memory's retrieval, context and lock bounds. The defaults are the documented ones; linkedLimit
- * and lockWaitMs may be zero and every other bound is positive.
- */
-const memoryBounds = {
-  neighbors: positiveInteger.default(5),
-  searchLimit: positiveInteger.default(5),
-  linkedLimit: nonNegativeInteger.default(5),
-  contextMaxChars: positiveInteger.default(12000),
-  lockWaitMs: nonNegativeInteger.default(5000),
-  providerTimeoutMs: positiveInteger.default(120000),
+/** The service-backed memory settings: the service URL, MCP access and analysis profile. */
+const memoryServiceSettings = {
+  serviceUrl: httpUrl('A memory service URL'),
+  mcp: memoryMcpSchema,
+  analysisProfile: identifier,
 };
 
-/** A disabled memory integration: it names no store and performs no provider call. */
-const memoryDisabledSchema = z.strictObject({
-  enabled: z.literal(false),
-  storeId: identifier.optional(),
-  qdrant: memoryQdrantSchema.optional(),
-  embedding: memoryEmbeddingSchema.optional(),
-  model: memoryModelSchema.optional(),
-  ...memoryBounds,
-});
-
-/** An enabled memory integration: the store identity, providers and bounds are all present. */
+/** Enabled memory: the shared service URL, MCP access and completion-analysis profile. */
 const memoryEnabledSchema = z.strictObject({
   enabled: z.literal(true),
-  storeId: identifier,
-  qdrant: memoryQdrantSchema,
-  embedding: memoryEmbeddingSchema,
-  model: memoryModelSchema,
-  ...memoryBounds,
+  ...memoryServiceSettings,
 });
 
 /**
- * The optional memory settings. Omitting the section or setting `enabled: false` disables the
- * integration; enabling it requires the store identity, Qdrant connection, embedding cache and
- * model endpoint, and the provider credentials resolve through the Credentials settings.
+ * A disabled memory integration performs no service call and exposes no agent tool. The service
+ * settings and the obsolete direct-integration settings are accepted and ignored here, so an
+ * operator can switch memory off without deleting its configuration while enabled memory can only
+ * name the service.
+ */
+const memoryDisabledSchema = z.strictObject({
+  enabled: z.literal(false),
+  serviceUrl: memoryServiceSettings.serviceUrl.optional(),
+  mcp: memoryServiceSettings.mcp.optional(),
+  analysisProfile: memoryServiceSettings.analysisProfile.optional(),
+  storeId: identifier.optional(),
+  qdrant: z
+    .strictObject({
+      url: httpUrl('A Qdrant URL'),
+      collection: identifier,
+      credential: credentialReference.optional(),
+    })
+    .optional(),
+  embedding: z
+    .strictObject({
+      cacheDir: identifier,
+      allowDownloads: z.boolean(),
+    })
+    .optional(),
+  model: z
+    .strictObject({
+      endpoint: httpUrl('A model endpoint'),
+      model: identifier,
+      credential: credentialReference.optional(),
+      maxOutputTokens: positiveInteger.optional(),
+    })
+    .optional(),
+  neighbors: positiveInteger.optional(),
+  searchLimit: positiveInteger.optional(),
+  linkedLimit: nonNegativeInteger.optional(),
+  contextMaxChars: positiveInteger.optional(),
+  lockWaitMs: nonNegativeInteger.optional(),
+  providerTimeoutMs: positiveInteger.optional(),
+});
+
+/**
+ * The optional memory settings. Omitting the section or setting `enabled: false` disables agent
+ * tools and completion analysis; enabling it requires the shared service URL, the MCP entry point
+ * and the configured completion-analysis profile.
  */
 const memorySchema = z
   .discriminatedUnion('enabled', [memoryDisabledSchema, memoryEnabledSchema])
@@ -226,20 +236,16 @@ const nexusConfigurationSchema = z
       }
     }
 
-    // A store identity names one Qdrant endpoint/collection; the runtime binding check refuses a
-    // later reuse for another one.
-    const memoryCredentials: [string | undefined, (string | number)[]][] = [
-      [configuration.memory?.qdrant?.credential, ['memory', 'qdrant', 'credential']],
-      [configuration.memory?.model?.credential, ['memory', 'model', 'credential']],
-    ];
-    for (const [reference, location] of memoryCredentials) {
-      if (reference !== undefined && !Object.hasOwn(configuration.credentials, reference)) {
-        context.addIssue({
-          code: 'custom',
-          path: [...location],
-          message: `Unknown credential reference "${reference}"`,
-        });
-      }
+    // The completion-analysis profile is one of the configured agent profiles.
+    if (
+      configuration.memory?.enabled === true &&
+      !profileIds.has(configuration.memory.analysisProfile)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['memory', 'analysisProfile'],
+        message: `Unknown profile "${configuration.memory.analysisProfile}"`,
+      });
     }
 
     const credentialReferences: [string, (string | number)[]][] = [
@@ -297,18 +303,14 @@ function resolveNexusConfiguration(
   directory: string,
 ): NexusConfiguration {
   const memory =
-    configuration.memory === undefined
+    configuration.memory === undefined || !configuration.memory.enabled
       ? undefined
       : {
           ...configuration.memory,
-          ...(configuration.memory.embedding === undefined
-            ? {}
-            : {
-                embedding: {
-                  ...configuration.memory.embedding,
-                  cacheDir: path.resolve(directory, configuration.memory.embedding.cacheDir),
-                },
-              }),
+          mcp: {
+            ...configuration.memory.mcp,
+            directory: path.resolve(directory, configuration.memory.mcp.directory),
+          },
         };
   return deepFreeze({
     ...configuration,

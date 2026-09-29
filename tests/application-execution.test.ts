@@ -126,6 +126,10 @@ async function harness(options: {
   readonly agent?: (request: RecoveryInvocationRequest) => Promise<AgentResult>;
   readonly notify?: RecoveryNotifier;
   readonly maxRecoveryAttempts?: number;
+  /** Whether the configured memory integration is enabled for the execution. */
+  readonly memory?: boolean;
+  /** The memory service transport; a controlled one proves no service call is made. */
+  readonly memoryTransport?: typeof globalThis.fetch;
 }): Promise<Harness> {
   const root = await temporaryDirectory();
   const installationDirectory = path.join(root, 'installation');
@@ -138,6 +142,14 @@ async function harness(options: {
   nexus.workflow['idea-refinement'] = ideaWorkflowModule;
   nexus.storage.root = './state';
   nexus.executionPolicy.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1;
+  if (options.memory === true) {
+    nexus.memory = {
+      enabled: true,
+      serviceUrl: 'http://127.0.0.1:1',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
+    };
+  }
   const project = projectConfiguration();
   const installationConfigPath = path.join(installationDirectory, 'nexus.config.json');
   const projectConfigPath = path.join(projectDirectory, 'project.config.json');
@@ -176,6 +188,7 @@ async function harness(options: {
       NEXUS_LENS_PRIVATE_KEY: 'host-lens-key',
     },
     launchWorker,
+    ...(options.memoryTransport === undefined ? {} : { memoryTransport: options.memoryTransport }),
     diagnostics: {
       write: (text) => {
         diagnostics.push(text);
@@ -344,6 +357,30 @@ describe('Application execution', () => {
     expect(request?.environment[installationConfigSetting]).toBeDefined();
     expect(request?.environment['AWS_ACCESS_KEY_ID']).toBeUndefined();
     expect(request?.environment['JIRA_API_TOKEN']).toBe('host-jira-token');
+  });
+
+  it('completes with memory enabled without contacting the configured service', async () => {
+    const executed = await harness({
+      completions: [successful],
+      memory: true,
+      memoryTransport: () => {
+        throw new Error('the execution lifecycle must not call the memory service');
+      },
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+
+    expect(result).toEqual({
+      outcome: 'completed',
+      reason: 'The workflow finished with the successful outcome "started".',
+      report: null,
+    });
+    // Memory is supplemental: an unreachable service changes no lifecycle event or diagnostic.
+    expect(lifecycleOf(executed.events)).toEqual(['starting', 'running', 'finished']);
+    expect(executed.diagnostics).toEqual([]);
   });
 
   it('forwards worker events unchanged before the lifecycle result', async () => {

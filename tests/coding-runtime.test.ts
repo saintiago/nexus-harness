@@ -592,6 +592,76 @@ process.stdout.write(${literal(
     expect(await fixture.invocation()).toBeNull();
   });
 
+  it('passes native configuration overrides through the provider config setting', async () => {
+    const fixture = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([
+        { type: 'thread.started', thread_id: 'thread-1' },
+        { type: 'turn.started' },
+        { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'done' } },
+        { type: 'turn.completed', usage: { input_tokens: 3 } },
+      ])}\n`,
+    )});
+`);
+
+    const { result } = await execute(fixture, {
+      toolSettings: {
+        profile,
+        config: {
+          'mcp_servers.amem.command': 'npm',
+          'mcp_servers.amem.args': ['run', '--silent', 'mcp'],
+          'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: 'http://127.0.0.1:4748' },
+          'mcp_servers.amem.enabled': true,
+        },
+      },
+    });
+
+    expect(result).toEqual({ ok: true, value: { output: 'done' } });
+    const invocation = await fixture.invocation();
+    expect(invocation?.args).toEqual([
+      'exec',
+      '--json',
+      '--profile',
+      profile,
+      '--model',
+      'deepseek-flash',
+      '-c',
+      'model_reasoning_effort="max"',
+      '-c',
+      'mcp_servers.amem.command="npm"',
+      '-c',
+      'mcp_servers.amem.args=["run", "--silent", "mcp"]',
+      '-c',
+      'mcp_servers.amem.env={ AMEM_MCP_SERVICE_URL = "http://127.0.0.1:4748" }',
+      '-c',
+      'mcp_servers.amem.enabled=true',
+      '-',
+    ]);
+  });
+
+  it('reports a fault for an override that is not a dotted path or holds an unsupported value', async () => {
+    const fixture = await providerFixture(`${recordInvocation}\nprocess.stdout.write('');\n`, {
+      install: false,
+    });
+
+    const pathFault = await execute(fixture, {
+      toolSettings: { profile, config: { 'mcp servers.amem': 'npm' } },
+    });
+    expect(pathFault.result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('is not a dotted path') },
+    });
+
+    const valueFault = await execute(fixture, {
+      toolSettings: { profile, config: { 'mcp_servers.amem.enabled': null } },
+    });
+    expect(valueFault.result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('cannot be expressed as TOML') },
+    });
+    expect(await fixture.invocation()).toBeNull();
+  });
+
   it("returns the provider's failure message when the invocation fails", async () => {
     const fixture = await providerFixture(`${recordInvocation}
 process.stdout.write(${literal(

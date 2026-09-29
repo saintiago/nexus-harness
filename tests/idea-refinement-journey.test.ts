@@ -25,11 +25,7 @@ import type { JiraComment, JiraIssue, JiraTransition } from '../src/adapters/jir
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import { runOperatorCommand } from '../src/application/command.js';
-import {
-  createConfiguredMemory,
-  executionPaths,
-  toolEnvironment,
-} from '../src/application/composition.js';
+import { executionPaths, toolEnvironment } from '../src/application/composition.js';
 import {
   createApplication,
   type ApplicationSettings,
@@ -41,7 +37,6 @@ import { installationConfigSetting } from '../src/application/installation.js';
 import type { RecoveryRuntimeFactory } from '../src/application/recovery.js';
 import { loadWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
-import type { MemoryProviders } from '../src/memory/index.js';
 import { fault, ok } from '../src/result.js';
 import {
   createTaskEngine,
@@ -75,7 +70,6 @@ import type { IdeaRoundPlan } from '../src/task-engine/actions/start-idea-round/
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
-import { controlledMemoryProviders, inMemoryNoteStore, seedNote } from './support/memory.js';
 
 /** The configured workflow is the real idea refinement module, loaded through Application. */
 const workflowPath = fileURLToPath(new URL('../workflows/idea-refinement.ts', import.meta.url));
@@ -188,6 +182,7 @@ type IdeaJourney = {
   readonly events: readonly ExecutionEvent[];
   readonly activity: readonly AgentActivity[];
   readonly prompts: string[];
+  readonly requests: readonly CodingRuntimeRequest[];
   readonly jiraCalls: readonly string[];
   readonly diagnostics: readonly string[];
   status(): string;
@@ -213,8 +208,8 @@ type IdeaJourneySetup = {
    * refinement area's absolute path so a retained record may reference its artifacts.
    */
   readonly retained?: (refinement: string) => Readonly<Record<string, unknown>>;
-  /** The memory provider construction; supplied enables the integration with controlled providers. */
-  readonly memory?: Partial<MemoryProviders>;
+  /** Whether the configured memory integration is enabled for the journey. */
+  readonly memory?: boolean;
 };
 
 /** Assemble one journey: a local remote, temporary configuration and a controlled Jira source. */
@@ -244,23 +239,12 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  if (options.memory !== undefined) {
+  if (options.memory === true) {
     nexus.memory = {
       enabled: true,
-      storeId: 'journey-collection',
-      qdrant: { url: 'http://127.0.0.1:6333', collection: 'journey-notes' },
-      embedding: { cacheDir: './embeddings', allowDownloads: false },
-      model: {
-        endpoint: 'http://127.0.0.1:9/chat/completions',
-        model: 'journey-model',
-        maxOutputTokens: 600,
-      },
-      neighbors: 5,
-      searchLimit: 5,
-      linkedLimit: 5,
-      contextMaxChars: 12000,
-      lockWaitMs: 500,
-      providerTimeoutMs: 1000,
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
     };
   }
   nexus.workflow['idea-refinement'] = workflowPath;
@@ -362,6 +346,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   const events: ExecutionEvent[] = [];
   const activity: AgentActivity[] = [];
   const prompts: string[] = [];
+  const requests: CodingRuntimeRequest[] = [];
   const diagnostics: string[] = [];
   const unusedGitHub = new Proxy({} as GitHubAdapter, {
     get: () => () => fault('GitHub is not used by idea refinement.'),
@@ -374,12 +359,6 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
     const workflow = await loadWorkflow(loaded.workflow[request.workflow]);
     const paths = executionPaths(loaded, loadedProject, request.workflow);
     await mkdir(paths.directory, { recursive: true });
-    const memory = await createConfiguredMemory(
-      loaded,
-      hostEnvironment,
-      { write: () => undefined },
-      options.memory,
-    );
     const engine = createTaskEngine({
       workflow: workflow.machine,
       stateFile: paths.workflowStateFile,
@@ -395,8 +374,6 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
         runCommand: run,
         commandEnvironment: toolEnvironment(loadedProject, loaded, hostEnvironment),
         activityDirectory: path.join(request.logDirectory, 'agents'),
-        memory,
-        memoryEvidenceDirectory: path.join(request.logDirectory, 'memory'),
         wait: () => Promise.resolve(),
       }),
     });
@@ -437,6 +414,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
     events,
     activity,
     prompts,
+    requests,
     jiraCalls: source.calls,
     diagnostics,
     status: () => status,
@@ -477,6 +455,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
       journeyRuntime = {
         async execute(request, onActivity): Promise<CodingRuntimeResult> {
           prompts.push(request.prompt);
+          requests.push(request);
           onActivity({ type: 'message', text: 'controlled idea turn' });
           const role = roleOf(request.prompt);
           if (role === null) {
@@ -502,7 +481,6 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
             ...settings,
             launchWorker,
             recovery,
-            ...(options.memory === undefined ? {} : { memoryProviders: options.memory }),
           });
           application.subscribe((event) => events.push(event));
           application.subscribeActivity((packet) => activity.push(packet));
@@ -759,109 +737,38 @@ describe('idea refinement journeys', () => {
     );
   });
 
-  it('recalls earlier experience for every idea role and ingests their contributions', async () => {
-    const store = inMemoryNoteStore();
-    seedNote(store, {
-      id: '77777777-7777-4777-8777-777777777777',
-      content: 'An earlier idea conversation kept the lint gate at idea level.',
-      context: 'An earlier refinement hand-off about the lint gate.',
-      keywords: ['lint', 'idea'],
-      tags: ['refinement'],
-      metadata: { provenance: { project: 'NEX', role: 'idea-editor' } },
-    });
-    const journey = await ideaJourney({ memory: controlledMemoryProviders({ store }) });
+  it('exposes the memory tools to every idea role without automatic recall or ingestion', async () => {
+    const journey = await ideaJourney({ memory: true });
 
     const exitCode = await journey.run(approvingAnswers());
     expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
     expect(journey.status()).toBe('Draft');
     expect(journey.diagnostics).toEqual([]);
 
-    // Every role invocation carried the supplied historical-evidence block exactly once.
+    // Every role invocation carries the configured AMEM MCP server and the shared guidance.
     expect(journey.prompts).toHaveLength(5);
-    for (const prompt of journey.prompts) {
-      expect(
-        prompt.split('Historical evidence from earlier Nexus hand-offs (agent memory).'),
-      ).toHaveLength(2);
-      expect(prompt).toContain('An earlier idea conversation kept the lint gate at idea level.');
+    expect(journey.requests).toHaveLength(5);
+    for (const request of journey.requests) {
+      expect(request.toolSettings).toMatchObject({
+        config: {
+          'mcp_servers.amem.command': 'npm',
+          'mcp_servers.amem.args': ['run', '--silent', 'mcp'],
+          'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: 'http://127.0.0.1:4748' },
+        },
+      });
+      expect(request.prompt).toContain('Shared memory guidance');
     }
 
-    // Each invocation saved its own retrieval evidence beside the agent activity logs.
+    // No invocation received a prepared retrieval block, and no action ingested a role output.
+    for (const prompt of journey.prompts) {
+      expect(prompt).not.toContain('Historical evidence from earlier Nexus hand-offs');
+    }
+    expect(journey.events.filter((event) => event.type === 'memory')).toEqual([]);
     const logDirectories = await readdir(path.join(journey.executionDirectory, 'logs'));
     expect(logDirectories).toHaveLength(1);
-    const evidenceDirectory = path.join(
-      journey.executionDirectory,
-      'logs',
-      logDirectories[0]!,
-      'memory',
-    );
-    const evidenceFiles = await readdir(evidenceDirectory);
-    expect(evidenceFiles).toHaveLength(5);
-    const evidence = await Promise.all(
-      evidenceFiles.map(async (file) => {
-        return JSON.parse(await readFile(path.join(evidenceDirectory, file), 'utf8')) as {
-          readonly scope: { readonly role: string; readonly workflow: string };
-          readonly included: readonly string[];
-          readonly block: string | null;
-        };
-      }),
-    );
-    const roles = evidence.map((entry) => entry.scope.role);
-    expect(new Set(roles)).toEqual(
-      new Set(['idea-editor', 'researcher', 'project-guide', 'challenger']),
-    );
-    expect(
-      evidence.every(
-        (entry) =>
-          entry.scope.workflow === 'idea-refinement' &&
-          entry.included.includes('77777777-7777-4777-8777-777777777777') &&
-          entry.block !== null,
-      ),
-    ).toBe(true);
-    // The block the agent actually saw is exactly the block the evidence file recorded.
-    for (const prompt of journey.prompts) {
-      const role = roleOf(prompt);
-      const recorded = evidence.find(
-        (entry) => entry.scope.role === role && prompt.includes(entry.block ?? '\u0000'),
-      );
-      expect(recorded?.block).toBeDefined();
-    }
-    expect(evidence.some((entry) => entry.scope.role === 'idea-editor')).toBe(true);
-    // The two editor invocations (framing and edit) each saved their own record.
-    expect(roles.filter((role) => role === 'idea-editor')).toHaveLength(2);
-
-    // Framing, contributions, the editor response and the Challenger assessment became notes.
-    const receiptsDirectory = path.join(
-      journey.root,
-      'installation',
-      'state',
-      'memory',
-      'journey-collection',
-      'receipts',
-    );
-    const receipts = await Promise.all(
-      (await readdir(receiptsDirectory)).map(async (file) => {
-        return JSON.parse(await readFile(path.join(receiptsDirectory, file), 'utf8')) as {
-          readonly state: string;
-          readonly content: string;
-          readonly provenance: { readonly role?: string; readonly element?: string };
-        };
-      }),
-    );
-    expect(receipts.every((receipt) => receipt.state === 'stored')).toBe(true);
-    const receiptRoles = receipts.map((receipt) => receipt.provenance.role);
-    expect(new Set(receiptRoles)).toEqual(
-      new Set(['idea-editor', 'researcher', 'project-guide', 'challenger']),
-    );
-    expect(receipts.find((receipt) => receipt.provenance.element === 'framing')?.content).toContain(
-      'The author proposes a lint gate so reviews can stay on behaviour.',
-    );
-    expect(receipts.find((receipt) => receipt.provenance.role === 'researcher')?.content).toContain(
-      'Linters are widely used to keep reviews focused.',
-    );
-    expect(receipts.find((receipt) => receipt.provenance.role === 'challenger')?.content).toContain(
-      'Assessment:',
-    );
-    expect(store.records.size).toBe(6);
+    await expect(
+      stat(path.join(journey.executionDirectory, 'logs', logDirectories[0]!, 'memory')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('answers a concern without changing the idea and approves the revision it reviewed', async () => {

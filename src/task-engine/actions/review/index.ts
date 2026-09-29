@@ -11,7 +11,6 @@ import {
   type PullRequestConversation,
 } from '../../../adapters/github.js';
 import type { JiraAdapter, JiraComment } from '../../../adapters/jira.js';
-import type { Observation } from '../../../memory/index.js';
 import { messageOf } from '../../../result.js';
 import {
   actionOutcomeEvent,
@@ -36,15 +35,6 @@ import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary, publishComment, readComments, readIssue } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
-import {
-  issueQueryMaterial,
-  observationSourceKey,
-  recallForInvocation,
-  rememberObserved,
-  retrievalQuery,
-  memoryContextOf,
-  type MemoryContext,
-} from '../memory.js';
 import {
   reviewArtifact,
   reviewResponseSchema,
@@ -117,11 +107,6 @@ export type ReviewSettings = {
   readonly github: GitHubAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
-  /**
-   * The memory capability, project identity and evidence directory of this execution; Application
-   * supplies it, and an action without one performs no recall or ingestion.
-   */
-  readonly memory?: MemoryContext;
 };
 
 /** Read the worktree's identity and uncommitted work; a Git failure is an execution error. */
@@ -312,95 +297,6 @@ function reviewComment(review: ReviewOutput): string {
   ].join('\n');
 }
 
-/**
- * The deterministic observations one saved review yields: its overall verdict and summary, one
- * note per new finding, and one per prior-finding disposition carrying the finding it disposes of
- * and the matching developer response. A finding and the disposition of an earlier finding stay
- * distinct observations.
- */
-function reviewObservations(settings: {
-  readonly root: string;
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string;
-  readonly round: number;
-  readonly review: ReviewOutput;
-  readonly priorFindings: readonly Finding[];
-  readonly responses: readonly FindingResponse[];
-  /** The earlier review artifact the prior findings came from, when one was read. */
-  readonly priorReviewArtifact: string | null;
-  /** The development artifact the developer responses came from. */
-  readonly developmentArtifact: string;
-}): Observation[] {
-  const artifact = roundArtifactPath(
-    settings.root,
-    settings.round,
-    reviewArtifact.pathFromArtifactsRoot,
-  );
-  const envelope =
-    `Task ${settings.taskKey} "${settings.subject}" — project ${settings.memory.project}, role ` +
-    `reviewer, round ${String(settings.round)}, verdict ${settings.review.verdict}, revision ` +
-    `${settings.review.headRevision}.`;
-  const observation = (selector: string, content: string): Observation => {
-    const text = `${envelope}\n${content}`;
-    return {
-      sourceKey: observationSourceKey({
-        artifact,
-        selector,
-        material: { artifact: settings.review, content: text },
-      }),
-      content: text,
-      provenance: {
-        project: settings.memory.project,
-        issue: settings.taskKey,
-        workflow: settings.memory.workflow,
-        role: 'reviewer',
-        artifact,
-        element: selector,
-        round: settings.round,
-        revision: settings.review.headRevision,
-        ...(selector.startsWith('disposition:')
-          ? {
-              references: [
-                ...(settings.priorReviewArtifact === null ? [] : [settings.priorReviewArtifact]),
-                settings.developmentArtifact,
-              ],
-            }
-          : {}),
-      },
-    };
-  };
-  return [
-    observation(
-      'verdict',
-      `Review verdict: ${settings.review.verdict}.\n${settings.review.summary}`,
-    ),
-    ...settings.review.findings.map((finding) =>
-      observation(
-        `finding:${finding.id}`,
-        `Review finding "${finding.id}" (${finding.severity}): ${finding.title}\n` +
-          JSON.stringify(finding, null, 2),
-      ),
-    ),
-    ...settings.review.priorFindings.map((disposition) => {
-      const finding = settings.priorFindings.find(
-        (candidate) => candidate.id === disposition.findingId,
-      );
-      const response = settings.responses.find(
-        (candidate) => candidate.findingId === disposition.findingId,
-      );
-      return observation(
-        `disposition:${disposition.findingId}`,
-        `Prior finding "${disposition.findingId}" disposition: ${disposition.disposition}. ` +
-          `${disposition.reason}\nOriginal finding: ` +
-          (finding === undefined ? 'not supplied' : JSON.stringify(finding, null, 2)) +
-          `\nDeveloper response: ` +
-          (response === undefined ? 'not supplied' : JSON.stringify(response, null, 2)),
-      );
-    }),
-  ];
-}
-
 /** The report shape, finding definitions and identity, disposition and verdict rules. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
 {"verdict":"approved"|"changesRequested"|"inconclusive","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"id":"<task-stable finding ID>","title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}],"priorFindings":[{"findingId":"<eligible prior finding ID>","disposition":"resolved"|"open"|"withdrawn","reason":"<the current implementation and developer response that support the disposition>"}]}
@@ -409,8 +305,6 @@ Apply the verdict rules: approved requires sufficient evidence and no current bl
 
 /** Create Review over the selected workspace, reviewer runtime, publication and adapters. */
 export function createReview(settings: ReviewSettings): BoundAction {
-  const memory = memoryContextOf(settings.memory);
-
   return async () => {
     const selection = await readRequiredRecord(
       settings.selectionFile,
@@ -517,37 +411,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       );
     }
 
-    /** Observe one saved review report, whether it was just produced or reused. */
-    async function observe(
-      review: ReviewOutput,
-      priorFindings: readonly Finding[],
-      responses: readonly FindingResponse[],
-      priorReviewArtifact: string | null,
-    ): Promise<void> {
-      const observations = reviewObservations({
-        root,
-        memory,
-        taskKey: selection.taskKey,
-        subject: review.taskSubject ?? selection.taskKey,
-        round: round.number,
-        review,
-        priorFindings,
-        responses,
-        priorReviewArtifact,
-        developmentArtifact: roundArtifactPath(
-          root,
-          round.number,
-          devArtifact.pathFromArtifactsRoot,
-        ),
-      });
-      for (const observation of observations) {
-        await rememberObserved(
-          { memory: memory.memory, publish: settings.publish, source: 'review' },
-          observation,
-        );
-      }
-    }
-
     // A saved report for the delivered head is the review of this revision: finish any missing
     // publication for that exact head instead of reviewing again. A report for another revision
     // is not evidence for this one.
@@ -560,17 +423,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       if (!conversation.ok) {
         throw new Error(conversation.fault.message);
       }
-      // Reuse re-observes the same source keys; an accepted report becomes a note even when the
-      // first attempt's ingestion did not complete.
-      const reusedPrior = latest(await helpers.readArtifactHistory(reviewArtifact));
-      await observe(
-        recorded,
-        reusedPrior?.value.findings ?? [],
-        development.findingResponses,
-        reusedPrior === null
-          ? null
-          : roundArtifactPath(root, reusedPrior.number, reviewArtifact.pathFromArtifactsRoot),
-      );
       await publishReport(recorded, conversation.value, comments);
       report(recorded);
       return recorded.verdict;
@@ -624,31 +476,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const priorReview = latest(reviews);
     const priorFindings = priorReview?.value.findings ?? [];
 
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'reviewer',
-    };
-    const unresolved = priorFindings
-      .map((finding) => ({
-        finding,
-        response:
-          development.findingResponses.find((candidate) => candidate.findingId === finding.id) ??
-          null,
-      }))
-      .filter((entry) => entry.response === null || entry.response.status !== 'addressed');
-    const recall = await recallForInvocation({
-      memory: memory.memory,
-      evidenceDirectory: memory.evidenceDirectory,
-      publish: settings.publish,
-      source: 'review',
-      scope,
-      query: retrievalQuery(scope, [
-        ...issueQueryMaterial(issue),
-        `development summary: ${development.summary}`,
-        ...(unresolved.length === 0 ? [] : [`unresolved findings: ${JSON.stringify(unresolved)}`]),
-      ]),
-    });
     const context = [
       `Task ${selection.taskKey} (Jira issue ${issue.id}):`,
       JSON.stringify(issue, null, 2),
@@ -668,7 +495,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
       dispositionInput(priorReview?.number ?? null, priorFindings, development.findingResponses),
       historySection(root, reviews, developments),
-      ...(recall.block === null ? [] : [recall.block]),
       responseInstructions,
     ].join('\n\n');
 
@@ -678,7 +504,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       workspace: { root },
       context,
       outputSchema: z.toJSONSchema(reviewResponseSchema),
-      invocationId: recall.invocationId,
       task: selection.taskKey,
       summary: issueSummary(issue),
     });
@@ -715,14 +540,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       findings: response.findings.map(toFinding),
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
-    await observe(
-      review,
-      priorFindings,
-      development.findingResponses,
-      priorReview === null
-        ? null
-        : roundArtifactPath(root, priorReview.number, reviewArtifact.pathFromArtifactsRoot),
-    );
     await publishReport(review, conversation.value, comments);
     report(review);
     return review.verdict;

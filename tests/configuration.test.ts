@@ -220,6 +220,16 @@ describe('Nexus configuration', () => {
     disabled.memory = memorySection({ enabled: false });
     expect(parseNexusConfiguration(disabled, configurationDirectory).memory).toEqual({
       enabled: false,
+    });
+
+    // A configuration that already disabled the removed direct integration stays valid.
+    const migrated = nexusConfiguration();
+    migrated.memory = memorySection({
+      enabled: false,
+      storeId: 'shared-collection',
+      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes', credential: 'absent' },
+      embedding: { cacheDir: './embeddings', allowDownloads: false },
+      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
       neighbors: 5,
       searchLimit: 5,
       linkedLimit: 5,
@@ -227,88 +237,86 @@ describe('Nexus configuration', () => {
       lockWaitMs: 5000,
       providerTimeoutMs: 120000,
     });
+    expect(parseNexusConfiguration(migrated, configurationDirectory).memory?.enabled).toBe(false);
   });
 
-  it('requires the store, providers and declared bounds when memory is enabled', () => {
+  it('disables a configured service integration without deleting its settings', () => {
+    const serviceSettings = {
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
+    };
+    const configuration = nexusConfiguration();
+    configuration.memory = memorySection({ enabled: true, ...serviceSettings });
+    expect(parseNexusConfiguration(configuration, configurationDirectory).memory?.enabled).toBe(
+      true,
+    );
+
+    // Only the switch changes: the retained service settings stay valid and unused.
+    configuration.memory = memorySection({ enabled: false, ...serviceSettings });
+    expect(parseNexusConfiguration(configuration, configurationDirectory).memory?.enabled).toBe(
+      false,
+    );
+
+    // The retained service settings are still validated while memory is disabled.
+    const invalid = nexusConfiguration();
+    invalid.memory = memorySection({ enabled: false, serviceUrl: 'not-a-url' });
+    expect(() => parseNexusConfiguration(invalid, configurationDirectory)).toThrow(
+      /memory\.serviceUrl/,
+    );
+  });
+
+  it('requires the service URL, MCP entry point and analysis profile when memory is enabled', () => {
     const configuration = nexusConfiguration() as unknown as { memory?: unknown };
     configuration.memory = memorySection({ enabled: true });
     expect(() => parseNexusConfiguration(configuration, configurationDirectory)).toThrow(
-      /memory\.(storeId|qdrant|embedding|model)/,
+      /memory\.(serviceUrl|mcp|analysisProfile)/,
     );
 
-    const invalid = nexusConfiguration();
-    invalid.memory = memorySection({
+    const unknownProfile = nexusConfiguration();
+    unknownProfile.memory = memorySection({
       enabled: true,
-      storeId: 'shared-collection',
-      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes' },
-      embedding: { cacheDir: './embeddings', allowDownloads: false },
-      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
-      neighbors: 0,
-      searchLimit: 5,
-      linkedLimit: 0,
-      contextMaxChars: 12000,
-      lockWaitMs: 0,
-      providerTimeoutMs: 120000,
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: '.amem' },
+      analysisProfile: 'missing-profile',
     });
-    expect(() => parseNexusConfiguration(invalid, configurationDirectory)).toThrow(
-      /memory\.neighbors/,
+    expect(() => parseNexusConfiguration(unknownProfile, configurationDirectory)).toThrow(
+      /memory\.analysisProfile: Unknown profile "missing-profile"/,
     );
   });
 
-  it('resolves the embedding cache against the configuration directory and applies defaults', () => {
+  it('resolves the MCP working directory against the configuration directory', () => {
     const configuration = nexusConfiguration();
     configuration.memory = memorySection({
       enabled: true,
-      storeId: 'shared-collection',
-      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes' },
-      embedding: { cacheDir: './embeddings', allowDownloads: true },
-      model: {
-        endpoint: 'http://127.0.0.1:9/chat/completions',
-        model: 'model',
-        maxOutputTokens: 6000,
-      },
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
     });
     const resolved = parseNexusConfiguration(configuration, '/etc/nexus/installation');
 
-    expect(resolved.memory).toMatchObject({
+    expect(resolved.memory).toEqual({
       enabled: true,
-      storeId: 'shared-collection',
-      embedding: {
-        cacheDir: '/etc/nexus/installation/embeddings',
-        allowDownloads: true,
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: {
+        command: 'npm',
+        args: ['run', '--silent', 'mcp'],
+        directory: '/etc/nexus/installation/agentic-memory',
       },
-      neighbors: 5,
-      searchLimit: 5,
-      linkedLimit: 5,
-      contextMaxChars: 12000,
-      lockWaitMs: 5000,
-      providerTimeoutMs: 120000,
+      analysisProfile: 'nexus-astra',
     });
   });
 
-  it('requires configured memory credentials and rejects credential-bearing endpoints', () => {
-    const unknown = nexusConfiguration();
-    unknown.memory = memorySection({
-      enabled: true,
-      storeId: 'shared-collection',
-      qdrant: { url: 'http://127.0.0.1:6333', collection: 'notes', credential: 'missing' },
-      embedding: { cacheDir: './embeddings', allowDownloads: false },
-      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
-    });
-    expect(() => parseNexusConfiguration(unknown, configurationDirectory)).toThrow(
-      /memory\.qdrant\.credential: Unknown credential reference "missing"/,
-    );
-
+  it('rejects a credential-bearing memory service URL', () => {
     const embedded = nexusConfiguration();
     embedded.memory = memorySection({
       enabled: true,
-      storeId: 'shared-collection',
-      qdrant: { url: 'http://user:secret@127.0.0.1:6333', collection: 'notes' },
-      embedding: { cacheDir: './embeddings', allowDownloads: false },
-      model: { endpoint: 'http://127.0.0.1:9/chat/completions', model: 'model' },
+      serviceUrl: 'http://user:secret@127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: '.amem' },
+      analysisProfile: 'nexus-astra',
     });
     expect(() => parseNexusConfiguration(embedded, configurationDirectory)).toThrow(
-      /memory\.qdrant\.url/,
+      /memory\.serviceUrl/,
     );
   });
 

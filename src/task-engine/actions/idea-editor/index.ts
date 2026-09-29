@@ -1,6 +1,5 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import type { Observation } from '../../../memory/index.js';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
@@ -19,19 +18,8 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import {
-  capturedIdeaQueryMaterial,
-  observationEnvelope,
-  observationSourceKey,
-  rememberObserved,
-  retrievalQuery,
-  memoryContextOf,
-  type MemoryContext,
-} from '../memory.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
-import type { IdeaInput } from '../select-idea/artifacts.js';
-import { issueSummary } from '../source.js';
 import {
   editorHelpArtifact,
   editorResponseArtifact,
@@ -61,151 +49,7 @@ export type IdeaEditorSettings = {
   /** The editor role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
-  /**
-   * The memory capability, project identity and evidence directory of this execution; Application
-   * supplies it, and an action without one performs no recall or ingestion.
-   */
-  readonly memory?: MemoryContext;
 };
-
-/** The framing observation's content: the editor's interpretation and its developing questions. */
-function framingObservation(settings: {
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string | null;
-  readonly submission: number;
-  readonly cycle: number;
-  readonly file: string;
-  readonly framing: {
-    readonly framing: string;
-    readonly questions: readonly string[];
-    readonly authorDecision: { readonly question: string } | null;
-  };
-}): Observation {
-  const selector = 'framing';
-  const content = [
-    observationEnvelope({
-      subjectKind: 'Idea',
-      key: settings.taskKey,
-      subject: settings.subject,
-      project: settings.memory.project,
-      role: 'idea-editor',
-      outcome: settings.framing.authorDecision === null ? 'framed' : 'author-decision-needed',
-      iteration: [`submission ${String(settings.submission)}`, `cycle ${String(settings.cycle)}`],
-    }),
-    `Framing of the captured proposal: ${settings.framing.framing}`,
-    `Developing questions: ${JSON.stringify(settings.framing.questions)}`,
-    ...(settings.framing.authorDecision === null
-      ? []
-      : [`Essential author decision: ${settings.framing.authorDecision.question}`]),
-  ].join('\n');
-  return {
-    sourceKey: observationSourceKey({
-      artifact: settings.file,
-      selector,
-      material: { artifact: settings.framing, content },
-    }),
-    content,
-    provenance: {
-      project: settings.memory.project,
-      issue: settings.taskKey,
-      workflow: settings.memory.workflow,
-      role: 'idea-editor',
-      artifact: settings.file,
-      element: selector,
-      submission: settings.submission,
-      cycle: settings.cycle,
-    },
-  };
-}
-
-/**
- * The editor response observation's content: the disposition, the response, the essential return
- * reason, the focused help questions it asked, the refined idea revision it introduced and the
- * questions it addressed from the Challenger result it answered.
- */
-function turnObservation(settings: {
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string | null;
-  readonly submission: number;
-  readonly cycle: number;
-  readonly file: string;
-  readonly turn: EditorTurn;
-  readonly addressed: {
-    readonly path: string;
-    readonly concerns: readonly {
-      readonly concern: string;
-      readonly consequence: string;
-      readonly resolution: string;
-    }[];
-  } | null;
-  readonly revision: {
-    readonly value: unknown;
-    readonly path: string;
-    readonly number: number;
-  } | null;
-}): Observation {
-  const selector = 'response';
-  const content = [
-    observationEnvelope({
-      subjectKind: 'Idea',
-      key: settings.taskKey,
-      subject: settings.subject,
-      project: settings.memory.project,
-      role: 'idea-editor',
-      outcome: settings.turn.disposition,
-      iteration: [
-        `submission ${String(settings.submission)}`,
-        `cycle ${String(settings.cycle)}`,
-        ...(settings.revision === null ? [] : [`revision ${String(settings.revision.number)}`]),
-      ],
-    }),
-    `Editor response (${settings.turn.disposition}): ${settings.turn.response}`,
-    ...(settings.turn.reason === null ? [] : [`Return reason: ${settings.turn.reason}`]),
-    ...(settings.turn.help === null
-      ? []
-      : [
-          'Focused help requested — researcher: ' +
-            `${settings.turn.help.researcher ?? 'none'}; project guide: ` +
-            `${settings.turn.help.projectGuide ?? 'none'}.`,
-        ]),
-    ...(settings.revision === null
-      ? []
-      : [
-          `Refined idea revision written (${settings.revision.path}): ` +
-            JSON.stringify(settings.revision.value),
-        ]),
-    ...(settings.addressed === null
-      ? []
-      : [
-          `Addressed Challenger result: ${settings.addressed.path}`,
-          `Addressed concerns: ${JSON.stringify(settings.addressed.concerns)}`,
-        ]),
-  ].join('\n');
-  return {
-    sourceKey: observationSourceKey({
-      artifact: settings.file,
-      selector,
-      material: { artifact: settings.turn, content },
-    }),
-    content,
-    provenance: {
-      project: settings.memory.project,
-      issue: settings.taskKey,
-      workflow: settings.memory.workflow,
-      role: 'idea-editor',
-      artifact: settings.file,
-      element: selector,
-      submission: settings.submission,
-      cycle: settings.cycle,
-      references: [
-        ...(settings.addressed === null ? [] : [settings.addressed.path]),
-        ...(settings.revision === null ? [] : [settings.revision.path]),
-      ],
-    },
-  };
-}
 
 /** The editor task XState supplies with the invocation. */
 export const ideaEditorTasks = ['frame', 'edit', 'respond', 'respond-after-help'] as const;
@@ -405,74 +249,6 @@ async function focusedText(root: string, submission: number, cycle: number): Pro
 
 /** Create IdeaEditor over the refinement area it writes into. */
 export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
-  const memory = memoryContextOf(settings.memory);
-
-  /** Observe one saved framing; a repetition observes the same source key. */
-  async function observeFraming(
-    plan: { readonly submission: number; readonly cycle: number },
-    input: IdeaInput,
-    framing: {
-      readonly framing: string;
-      readonly questions: readonly string[];
-      readonly authorDecision: { readonly question: string } | null;
-    },
-    file: string,
-  ): Promise<void> {
-    await rememberObserved(
-      { memory: memory.memory, publish: settings.publish, source: 'idea-editor' },
-      framingObservation({
-        memory,
-        taskKey: input.taskKey,
-        subject: issueSummary(input.issue),
-        submission: plan.submission,
-        cycle: plan.cycle,
-        file,
-        framing,
-      }),
-    );
-  }
-
-  /** Observe one saved editor turn; a repetition observes the same source key. */
-  async function observeTurn(
-    root: string,
-    plan: { readonly submission: number; readonly cycle: number },
-    input: IdeaInput,
-    turn: EditorTurn,
-  ): Promise<void> {
-    const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const discussion = await latestChallengerBefore(root, plan.submission, plan.cycle);
-    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
-    const file = path.join(
-      cycleRoot,
-      (turn.disposition === 'help-requested' ? editorHelpArtifact : editorResponseArtifact)
-        .pathFromArtifactsRoot,
-    );
-    await rememberObserved(
-      { memory: memory.memory, publish: settings.publish, source: 'idea-editor' },
-      turnObservation({
-        memory,
-        taskKey: input.taskKey,
-        subject: issueSummary(input.issue),
-        submission: plan.submission,
-        cycle: plan.cycle,
-        file,
-        turn,
-        addressed:
-          discussion === null || turn.disposition === 'help-requested'
-            ? null
-            : { path: discussion.path, concerns: discussion.report.concerns },
-        revision:
-          turn.disposition === 'revised' && revision !== null
-            ? {
-                value: revision.value,
-                path: revision.path,
-                number: revision.value.revision,
-              }
-            : null,
-      }),
-    );
-  }
-
   /** Publish a saved editor artifact and return its workflow outcome. */
   function reported(
     taskKey: string,
@@ -500,7 +276,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const file = path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot);
     const existing = await readCycleArtifact(cycleRoot, framingArtifact);
     if (existing !== null) {
-      await observeFraming(plan, await readIdeaInput(root, plan.submission), existing, file);
       return reported(
         taskKey,
         cycle,
@@ -512,11 +287,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
 
     const input = await readIdeaInput(root, plan.submission);
     const guidance = await projectGuidanceText(root);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'idea-editor',
-    };
     const context = [
       'Frame the author\u2019s proposed change and the few questions that could usefully develop',
       'it for this refinement conversation. Preserve their intent; keep your interpretation open',
@@ -537,12 +307,9 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       context,
       schema: framingResponseSchema,
       runner: settings.runner,
-      memory,
       publish: settings.publish,
-      memoryQuery: retrievalQuery(scope, capturedIdeaQueryMaterial(input)),
     });
     await writeCycleArtifact(cycleRoot, framingArtifact, framing);
-    await observeFraming(plan, input, framing, file);
     return reported(
       taskKey,
       cycle,
@@ -559,7 +326,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const turnFile = path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
     const existing = await readCycleArtifact(cycleRoot, editorResponseArtifact);
     if (existing !== null) {
-      await observeTurn(root, plan, await readIdeaInput(root, plan.submission), existing);
       const outcome = editOutcome(existing.disposition);
       return reported(
         taskKey,
@@ -571,12 +337,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     }
     const input = await readIdeaInput(root, plan.submission);
     const projectGuidance = await projectGuidanceText(root);
-    const framing = await readCycleArtifact(cycleRoot, framingArtifact);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'idea-editor',
-    };
     const context = [
       'Write the refined idea revision for the current captured idea from the contributions',
       'below. Its `idea` part states the author\u2019s proposed change, why it matters and the',
@@ -605,12 +365,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
-      memory,
       publish: settings.publish,
-      memoryQuery: retrievalQuery(scope, [
-        ...capturedIdeaQueryMaterial(input),
-        ...(framing === null ? [] : [`framing: ${JSON.stringify(framing)}`]),
-      ]),
     });
     if (!turnIsValid('edit', turn)) {
       throw new Error(
@@ -633,7 +388,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const turnFile = path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
     const existing = await readCycleArtifact(cycleRoot, editorResponseArtifact);
     if (existing !== null) {
-      await observeTurn(root, plan, await readIdeaInput(root, plan.submission), existing);
       return reported(
         taskKey,
         cycle,
@@ -647,7 +401,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
     if (task === 'respond' && help !== null) {
       // The response asked for help before the invocation was interrupted; route it again.
-      await observeTurn(root, plan, await readIdeaInput(root, plan.submission), help);
       return reported(
         taskKey,
         cycle,
@@ -676,11 +429,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const focused =
       task === 'respond-after-help' ? await focusedText(root, plan.submission, plan.cycle) : [];
     const guidance = await projectGuidanceText(root);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'idea-editor',
-    };
     const context = [
       ...(task === 'respond-after-help'
         ? [
@@ -718,13 +466,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
-      memory,
       publish: settings.publish,
-      memoryQuery: retrievalQuery(scope, [
-        ...capturedIdeaQueryMaterial(input),
-        `refined idea revision in force: ${JSON.stringify(revision.value)}`,
-        `Challenger result answered: ${JSON.stringify(discussion.report)}`,
-      ]),
     });
     if (!turnIsValid(task, turn)) {
       throw new Error(
@@ -777,10 +519,8 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     };
     const inputRecord = await readIdeaInput(root, submission);
     const taskKey = inputRecord.taskKey;
-    const turnPlan = { submission, cycle };
     if (turn.disposition === 'help-requested') {
       const file = await writeCycleArtifact(cycleRoot, editorHelpArtifact, stored);
-      await observeTurn(root, turnPlan, inputRecord, stored);
       return reported(taskKey, cycle, 'help-requested', null, file);
     }
 
@@ -804,7 +544,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       }
     }
     const file = await writeCycleArtifact(cycleRoot, editorResponseArtifact, stored);
-    await observeTurn(root, turnPlan, inputRecord, stored);
     const outcome =
       task === 'edit' ? editOutcome(turn.disposition) : responseOutcome(turn.disposition);
     return reported(

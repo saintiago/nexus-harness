@@ -38,6 +38,10 @@ provider's supported invocation settings. Deliver the complete prompt on the pro
 input by asking it to read instructions there (`codex exec` does so for a `-` prompt argument), so
 prompt size does not depend on the operating system's per-argument limit.
 
+Tool settings may also carry native configuration overrides: each names one dotted configuration
+path and the value the caller resolved, and the adapter passes it through the provider's own config
+setting. The provider, not the adapter, owns the meaning and validation of those settings.
+
 For a supplied outputSchema, write it to an invocation-local temporary file and pass that file through
 `codex exec --output-schema`. Keep the file available for the invocation and clean it up on success or
 failure. Concurrent invocations must not share this file. Return the complete final response without

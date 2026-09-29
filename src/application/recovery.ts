@@ -6,7 +6,6 @@ import type { AgentEvent, AgentResult } from '../agent-runtime/index.js';
 import type { NotificationAcceptance } from '../adapters/notifications.js';
 import { run } from '../adapters/processes.js';
 import type { NexusConfiguration, ProjectConfiguration } from '../configuration/index.js';
-import type { Observation } from '../memory/index.js';
 import { messageOf, type ArtifactRef, type Result } from '../result.js';
 import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
 import { completionArtifact } from '../task-engine/actions/complete-task/artifacts.js';
@@ -18,14 +17,6 @@ import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
 import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import { ideaRoundPlanDeclaration } from '../task-engine/actions/start-idea-round/artifacts.js';
-import {
-  observationEnvelope,
-  observationSourceKey,
-  recallForInvocation,
-  rememberObserved,
-  retrievalQuery,
-  type MemoryContext,
-} from '../task-engine/actions/memory.js';
 import { currentRoundDeclaration } from '../task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../task-engine/index.js';
@@ -200,8 +191,6 @@ export type RecoverySettings = {
   readonly activityDirectory: string;
   /** The environment the operational workspace preparation runs with. */
   readonly environment: Readonly<Record<string, string>>;
-  /** The memory capability, project identity and evidence directory of this execution. */
-  readonly memory: MemoryContext;
   readonly runtime: RecoveryRuntime;
   /** Publishes one progress or agent boundary event to Application's combined stream. */
   readonly publish: (event: EngineEvent) => void;
@@ -225,8 +214,6 @@ type RecoveryContextSettings = {
   readonly reports: readonly string[];
   readonly invocation: number;
   readonly stop: RecoveryStop;
-  /** The bounded supplemental block this invocation's recall supplied, or null. */
-  readonly memoryBlock: string | null;
 };
 
 /** One producer-owned declaration the recovery context states: its path and generated schema. */
@@ -387,7 +374,6 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `Successful terminal outcomes: ${workflow.successfulOutcomes.join(', ')}`,
     ].join('\n'),
     ['Current project configuration', JSON.stringify(project, null, 2)].join('\n'),
-    ...(settings.memoryBlock === null ? [] : [settings.memoryBlock]),
     [
       'Response format',
       'Return only one JSON object, without Markdown fences and without other text:',
@@ -399,64 +385,6 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
         'decision.',
     ].join('\n'),
   ].join('\n\n');
-}
-
-/** The characters of one reported failure a retrieval query and observation retain. */
-const recoveryFailureChars = 4000;
-
-/** One bounded diagnostic: the text, or its first characters with the omission marked. */
-function bounded(text: string, limit: number): string {
-  const collapsed = text.trim();
-  return collapsed.length <= limit
-    ? collapsed
-    : `${collapsed.slice(0, limit)}\n[omitted ${String(collapsed.length - limit)} characters]`;
-}
-
-/**
- * The deterministic observation one saved recovery report yields: the failure context, the
- * diagnosis and actions the recovery agent reported, and its resume/attention decision.
- */
-function recoveryObservation(settings: {
-  readonly memory: MemoryContext;
-  readonly workflowName: WorkflowName;
-  readonly task: string | null;
-  readonly invocation: number;
-  readonly failure: string;
-  readonly reportPath: string;
-  readonly report: RecoveryReport;
-}): Observation {
-  const selector = 'report';
-  const content = [
-    observationEnvelope({
-      subjectKind: 'Task',
-      key: settings.task ?? 'unknown task',
-      subject: null,
-      project: settings.memory.project,
-      role: 'recovery',
-      outcome: settings.report.decision.kind,
-      iteration: [`workflow ${settings.workflowName}`, `invocation ${String(settings.invocation)}`],
-    }),
-    `Failure context: ${bounded(settings.failure, recoveryFailureChars)}`,
-    `Diagnosis, actions and remaining uncertainty: ${settings.report.summary}`,
-    `Decision: ${settings.report.decision.kind}`,
-  ].join('\n');
-  return {
-    sourceKey: observationSourceKey({
-      artifact: settings.reportPath,
-      selector,
-      material: { artifact: settings.report, content },
-    }),
-    content,
-    provenance: {
-      project: settings.memory.project,
-      ...(settings.task === null ? {} : { issue: settings.task }),
-      workflow: settings.workflowName,
-      role: 'recovery',
-      artifact: settings.reportPath,
-      element: selector,
-      invocation: settings.invocation,
-    },
-  };
 }
 
 /** The subject and body Application publishes for one saved report. */
@@ -612,23 +540,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
           `The recovery operational workspace could not be prepared: ${messageOf(error)}`,
         );
       }
-      const scope = {
-        project: settings.memory.project,
-        workflow: settings.workflowName,
-        role: 'recovery',
-      };
-      const recall = await recallForInvocation({
-        memory: settings.memory.memory,
-        evidenceDirectory: settings.memory.evidenceDirectory,
-        publish: settings.publish,
-        source: 'recovery',
-        scope,
-        query: retrievalQuery(scope, [
-          ...(stop.selection === null ? [] : [`current task: ${stop.selection.task}`]),
-          `reported failure: ${bounded(stop.failure, 2000)}`,
-          `stopped workflow: ${settings.workflowName}`,
-        ]),
-      });
       const context = recoveryContextText({
         request: execution.request,
         project,
@@ -644,14 +555,12 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         reports: earlierReports(invocation),
         invocation,
         stop,
-        memoryBlock: recall.block,
       });
 
       publish({ source: 'application', type: 'recovering', data: { reason: stop.failure } });
       const agentInvocation = beginAgentInvocation({
         agentName: 'recovery',
         operation: 'Recovery',
-        invocationId: recall.invocationId,
         profile,
         task: stop.selection === null ? null : stop.selection.task,
         summary: stop.selection === null ? null : stop.selection.summary,
@@ -696,18 +605,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         return attention(`The recovery report could not be saved: ${messageOf(error)}`);
       }
       saved = reportRef;
-      await rememberObserved(
-        { memory: settings.memory.memory, publish: settings.publish, source: 'recovery' },
-        recoveryObservation({
-          memory: settings.memory,
-          workflowName: settings.workflowName,
-          task: stop.selection === null ? null : stop.selection.task,
-          invocation,
-          failure: stop.failure,
-          reportPath: reportRef.path,
-          report,
-        }),
-      );
       publish({
         source: 'application',
         type: 'recovered',

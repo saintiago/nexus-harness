@@ -14,7 +14,6 @@ import type {
   WorkflowName,
 } from '../configuration/index.js';
 import { messageOf } from '../result.js';
-import { disabledMemory, type Memory } from '../memory/index.js';
 import {
   beginAgentInvocation,
   type AgentActivityPublisher,
@@ -46,7 +45,6 @@ import { createSelectTask } from '../task-engine/actions/select-task/index.js';
 import { createStartIdeaRound } from '../task-engine/actions/start-idea-round/index.js';
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
-import type { MemoryContext } from '../task-engine/actions/memory.js';
 import {
   createAgentRuntimeSettings,
   workspaceRoot,
@@ -83,10 +81,6 @@ export type ActionBindingSettings = {
   readonly commandEnvironment: Readonly<Record<string, string>>;
   /** The execution's agent activity directory: every invocation's own log lives under it. */
   readonly activityDirectory: string;
-  /** The process's memory capability; omitted performs no recall or ingestion. */
-  readonly memory?: Memory;
-  /** The execution's memory evidence directory: one retrieval record per invocation. */
-  readonly memoryEvidenceDirectory?: string;
   /** Wait before the next poll or confirmation read, supplied so tests control time. */
   readonly wait: (milliseconds: number) => Promise<void>;
 };
@@ -102,16 +96,10 @@ export function createActionBinding(
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ) => Readonly<Record<string, BoundAction>> {
-  const memory: MemoryContext = {
-    memory: settings.memory ?? disabledMemory(),
-    evidenceDirectory: settings.memoryEvidenceDirectory ?? '',
-    project: settings.project.taskSource.project,
-    workflow: settings.workflow,
-  };
   return (publish, publishActivity) =>
     settings.workflow === 'idea-refinement'
-      ? ideaRefinementActions(settings, memory, publish, publishActivity)
-      : finiteDeliveryActions(settings, memory, publish, publishActivity);
+      ? ideaRefinementActions(settings, publish, publishActivity)
+      : finiteDeliveryActions(settings, publish, publishActivity);
 }
 
 /**
@@ -167,7 +155,6 @@ function agentRunnerFor(
 /** The finite delivery workflow's bound operations. */
 function finiteDeliveryActions(
   settings: ActionBindingSettings,
-  memory: MemoryContext,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ): Readonly<Record<string, BoundAction>> {
@@ -221,7 +208,6 @@ function finiteDeliveryActions(
       git: settings.git,
       jira: settings.jira,
       publish,
-      memory,
     }),
     Verify: selectedWorkspace((selection) =>
       createVerify({
@@ -231,7 +217,6 @@ function finiteDeliveryActions(
         git: settings.git,
         runCommand: settings.runCommand,
         publish,
-        memory,
       }),
     ),
     Review: createReview({
@@ -245,7 +230,6 @@ function finiteDeliveryActions(
       github: settings.github,
       jira: settings.jira,
       publish,
-      memory,
     }),
     Deliver: createDeliver({
       selectionFile,
@@ -292,7 +276,6 @@ function ideaProfiles(nexus: NexusConfiguration): Readonly<Record<IdeaRole, stri
  */
 function ideaRefinementActions(
   settings: ActionBindingSettings,
-  memory: MemoryContext,
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ): Readonly<Record<string, BoundAction>> {
@@ -350,16 +333,16 @@ function ideaRefinementActions(
       }),
     ),
     IdeaEditor: forSelection((workspace) =>
-      createIdeaEditor({ workspace, runner: editorRunner, publish, memory }),
+      createIdeaEditor({ workspace, runner: editorRunner, publish }),
     ),
     Researcher: forSelection((workspace) =>
-      createResearcher({ workspace, runner: researcherRunner, publish, memory }),
+      createResearcher({ workspace, runner: researcherRunner, publish }),
     ),
     ProjectGuide: forSelection((workspace) =>
-      createProjectGuide({ workspace, runner: projectGuideRunner, publish, memory }),
+      createProjectGuide({ workspace, runner: projectGuideRunner, publish }),
     ),
     Challenger: forSelection((workspace) =>
-      createChallenger({ workspace, runner: challengerRunner, publish, memory }),
+      createChallenger({ workspace, runner: challengerRunner, publish }),
     ),
     PublishDecision: withSelection((selection) =>
       createPublishDecision({

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
-import type { Observation } from '../../../memory/index.js';
 import { messageOf } from '../../../result.js';
 import {
   actionOutcomeEvent,
@@ -28,15 +27,6 @@ import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary, readComments, readIssue } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
-import {
-  issueQueryMaterial,
-  observationSourceKey,
-  recallForInvocation,
-  rememberObserved,
-  retrievalQuery,
-  memoryContextOf,
-  type MemoryContext,
-} from '../memory.js';
 import {
   devArtifact,
   developmentResponseSchema,
@@ -66,11 +56,6 @@ export type DevelopSettings = {
   readonly git: GitAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
-  /**
-   * The memory capability, project identity and evidence directory of this execution; Application
-   * supplies it, and an action without one performs no recall or ingestion.
-   */
-  readonly memory?: MemoryContext;
 };
 
 /** The earlier-round values of the artifacts this action reads as history. */
@@ -130,70 +115,6 @@ function parseResponse(output: string): DevelopmentResponse {
     );
   }
   return parsed.content;
-}
-
-/**
- * The deterministic observations one saved development result yields: one summary note and one
- * separate note per finding response, each carrying the complete finding it answers. Extraction
- * uses the artifact's own fields; the source key covers the artifact, the element selector and the
- * extracted content, so a rewritten artifact is a new observation and a reused one is the same.
- */
-function developmentObservations(settings: {
-  readonly root: string;
-  readonly memory: MemoryContext;
-  readonly taskKey: string;
-  readonly subject: string;
-  readonly round: number;
-  readonly output: DevelopmentOutput;
-  readonly findings: readonly Finding[];
-  /** The earlier review artifact the findings came from, when one was read. */
-  readonly findingArtifact: string | null;
-}): Observation[] {
-  const artifact = roundArtifactPath(
-    settings.root,
-    settings.round,
-    devArtifact.pathFromArtifactsRoot,
-  );
-  const envelope =
-    `Task ${settings.taskKey} "${settings.subject}" — project ${settings.memory.project}, ` +
-    `role developer, round ${String(settings.round)}, outcome ${settings.output.status}, ` +
-    `revision ${settings.output.headRevision}.`;
-  const observation = (selector: string, content: string): Observation => {
-    const text = `${envelope}\n${content}`;
-    return {
-      sourceKey: observationSourceKey({
-        artifact,
-        selector,
-        material: { artifact: settings.output, content: text },
-      }),
-      content: text,
-      provenance: {
-        project: settings.memory.project,
-        issue: settings.taskKey,
-        workflow: settings.memory.workflow,
-        role: 'developer',
-        artifact,
-        element: selector,
-        round: settings.round,
-        revision: settings.output.headRevision,
-        ...(settings.findingArtifact !== null && selector.startsWith('finding-response:')
-          ? { references: [settings.findingArtifact] }
-          : {}),
-      },
-    };
-  };
-  return [
-    observation('summary', `Development summary: ${settings.output.summary}`),
-    ...settings.output.findingResponses.map((response) => {
-      const finding = settings.findings.find((candidate) => candidate.id === response.findingId);
-      return observation(
-        `finding-response:${response.findingId}`,
-        `Finding response (${response.status}) to finding "${response.findingId}": ` +
-          `${response.response}\nOriginal finding: ` +
-          (finding === undefined ? 'not supplied' : JSON.stringify(finding, null, 2)),
-      );
-    }),
-  ];
 }
 
 /** Require exactly one response per supplied finding, with no unknown or repeated IDs. */
@@ -293,8 +214,6 @@ Include exactly one findingResponses entry for every supplied finding ID and no 
 
 /** Create Develop over the configured selection, profiles, developer runtime and adapters. */
 export function createDevelop(settings: DevelopSettings): BoundAction {
-  const memory = memoryContextOf(settings.memory);
-
   return async () => {
     const selection = await readRequiredRecord(
       settings.selectionFile,
@@ -341,29 +260,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       );
     }
 
-    /** Observe one saved development result, whether it was just produced or reused. */
-    async function observe(output: DevelopmentOutput): Promise<void> {
-      const observations = developmentObservations({
-        root,
-        memory,
-        taskKey: selection.taskKey,
-        subject: output.taskSubject ?? selection.taskKey,
-        round: round.number,
-        output,
-        findings: latestReview?.value.findings ?? [],
-        findingArtifact:
-          latestReview === null
-            ? null
-            : roundArtifactPath(root, latestReview.number, reviewArtifact.pathFromArtifactsRoot),
-      });
-      for (const observation of observations) {
-        await rememberObserved(
-          { memory: memory.memory, publish: settings.publish, source: 'develop' },
-          observation,
-        );
-      }
-    }
-
     // A repetition reuses a current-round report only while it still describes this task, profile,
     // comparison base and committed revision. Otherwise another invocation is needed.
     const before = await inspectRepository(settings.git, worktree);
@@ -375,9 +271,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       existing.headRevision === before.headRevision &&
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
-      // Reuse re-observes the same source keys; an accepted hand-off becomes a note even when the
-      // first attempt's ingestion did not complete.
-      await observe(existing);
       report(existing.status);
       return existing.status;
     }
@@ -394,26 +287,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
 
     const findings = latestReview?.value.findings ?? [];
     const evidence = checkEvidence(root, histories);
-    const scope = {
-      project: memory.project,
-      workflow: memory.workflow,
-      role: 'developer',
-    };
-    const latestVerification = latest(histories.verification);
-    const recall = await recallForInvocation({
-      memory: memory.memory,
-      evidenceDirectory: memory.evidenceDirectory,
-      publish: settings.publish,
-      source: 'develop',
-      scope,
-      query: retrievalQuery(scope, [
-        ...issueQueryMaterial(issue),
-        ...(findings.length === 0 ? [] : [`repair findings: ${JSON.stringify(findings)}`]),
-        ...(latestVerification?.value.status === 'failed' && evidence !== null
-          ? [`verification failure: ${evidence}`]
-          : []),
-      ]),
-    });
     const context = [
       `Task ${selection.taskKey} (Jira issue ${issue.key})`,
       JSON.stringify(issue, null, 2),
@@ -425,7 +298,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
           JSON.stringify(findings, null, 2),
       historySection(root, histories),
       ...(evidence === null ? [] : [evidence]),
-      ...(recall.block === null ? [] : [recall.block]),
       responseInstructions,
     ].join('\n\n');
 
@@ -435,7 +307,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       workspace: { root },
       context,
       outputSchema: z.toJSONSchema(developmentResponseSchema),
-      invocationId: recall.invocationId,
       task: selection.taskKey,
       summary: issueSummary(issue),
     });
@@ -481,7 +352,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       findingResponses: response.findingResponses,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
-    await observe(output);
     report(status);
     return status;
   };
