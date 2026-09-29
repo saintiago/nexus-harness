@@ -914,64 +914,100 @@ describe('experience analysis', () => {
     expect(analysis.observations).toEqual([]);
   });
 
-  it('analyzes a request recorded before retention in its own recorded workspace', async () => {
-    const root = await temporaryDirectory();
-    const directory = path.join(root, 'memory');
-    const workspace = path.join(root, 'workspaces', project, workId);
-    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
-    await mkdir(path.dirname(evidence), { recursive: true });
-    await writeFile(evidence, '{}\n', 'utf8');
-    const handoff: ExperienceHandoff = {
-      workId,
-      workflow: 'finite-delivery',
-      attemptId,
-      terminalId: 'complete-completed',
-      outcome: 'completed',
-      reason: null,
-      workspaceRoot: workspace,
-      artifacts: [{ path: evidence }],
-    };
-    const identity = experienceIdentity(handoff);
-    // The earlier store recorded the handoff before requests retained a copy of their evidence.
-    await mkdir(path.join(directory, 'requests'), { recursive: true });
-    await writeFile(
-      path.join(directory, 'requests', `${identity}.json`),
-      `${JSON.stringify(
-        {
-          identity,
-          project,
-          handoff,
-          migrated: null,
-          requestedAt: '2026-09-29T10:00:00.000Z',
+  it.each(['experience', 'legacy'] as const)(
+    'retains pending %s evidence before recovery replaces the workspace',
+    async (format) => {
+      const root = await temporaryDirectory();
+      const directory = path.join(root, 'memory');
+      const workspace = path.join(root, 'workspaces', project, workId);
+      const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+      await mkdir(path.dirname(evidence), { recursive: true });
+      await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
+      const handoff: ExperienceHandoff = {
+        workId,
+        workflow: 'finite-delivery',
+        attemptId,
+        terminalId: 'complete-completed',
+        outcome: 'completed',
+        reason: null,
+        workspaceRoot: workspace,
+        artifacts: [{ path: evidence }],
+      };
+      const identity =
+        format === 'experience' ? experienceIdentity(handoff) : 'NEX-7-0123456789abcdef';
+      // The earlier store recorded the handoff before requests retained a copy of their evidence.
+      await mkdir(path.join(directory, 'requests'), { recursive: true });
+      await writeFile(
+        path.join(directory, 'requests', `${identity}.json`),
+        `${JSON.stringify(
+          format === 'experience'
+            ? {
+                identity,
+                project,
+                handoff,
+                migrated: null,
+                requestedAt: '2026-09-29T10:00:00.000Z',
+              }
+            : {
+                taskKey: workId,
+                project,
+                completionRevision: mergeRevision,
+                workspaceRoot: workspace,
+                requestedAt: '2026-09-29T10:00:00.000Z',
+              },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      const service = await controlledService();
+      const unavailable = createAnalyzeExperience({
+        directory,
+        project,
+        profile,
+        memory: { url: service.url },
+        analyze: () => Promise.resolve(fault('The analyst is unavailable.')),
+      });
+      expect(await unavailable.processPending()).toEqual([
+        expect.stringContaining('The analyst is unavailable.'),
+      ]);
+      await rm(workspace, { recursive: true });
+      await mkdir(path.dirname(evidence), { recursive: true });
+      await writeFile(evidence, '{"replacement":true}');
+
+      const workspaces: string[] = [];
+      const owner = createAnalyzeExperience({
+        directory,
+        project,
+        profile,
+        memory: { url: service.url },
+        analyze: async (request) => {
+          workspaces.push(request.workspace.root);
+          const retained = path.join(request.workspace.root, 'artifacts', '1', 'completion.json');
+          expect(await readFile(retained, 'utf8')).toContain(mergeRevision);
+          expect(request.context).toContain('only these retained files are its evidence');
+          // Citations of original locations resolve against the retained copy.
+          return ok({ output: observationAt(evidence) });
         },
-        null,
-        2,
-      )}\n`,
-      'utf8',
-    );
-    const service = await controlledService();
-    const workspaces: string[] = [];
-    const owner = createAnalyzeExperience({
-      directory,
-      project,
-      profile,
-      memory: { url: service.url },
-      analyze: (request) => {
-        workspaces.push(request.workspace.root);
-        // The earlier request has no retained copy: its evidence stays at the recorded location.
-        return Promise.resolve(ok({ output: observationAt(evidence) }));
-      },
-    });
+      });
 
-    const problems = await owner.processPending();
+      const problems = await owner.processPending();
 
-    // The record's own workspace remains its scope, and the invocation still has a valid location.
-    expect(workspaces).toHaveLength(1);
-    expect((await stat(path.join(workspaces[0]!, 'worktree'))).isDirectory()).toBe(true);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
-    expect(service.observations.size).toBe(1);
-  });
+      // A new owner reuses the migrated request and its independent evidence.
+      expect(workspaces).toHaveLength(1);
+      expect((await stat(path.join(workspaces[0]!, 'worktree'))).isDirectory()).toBe(true);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
+      expect(service.observations.size).toBe(1);
+      expect(
+        JSON.parse(await readFile(experienceRequestFile(directory, identity), 'utf8')),
+      ).toMatchObject({
+        identity,
+        requestedAt: '2026-09-29T10:00:00.000Z',
+        evidenceRoot: workspaces[0],
+      });
+    },
+  );
 
   it('settles a pending completion request recorded by the earlier store', async () => {
     const root = await temporaryDirectory();
@@ -1032,6 +1068,8 @@ describe('experience analysis', () => {
       analyze: () => Promise.reject(new Error('The migrated output must be reused.')),
     });
 
+    // An accepted analysis needs no original files; migration must not block its submission.
+    await rm(workspace, { recursive: true });
     const problems = await owner.processPending();
 
     // The pending submission is retained under the migrated identity and submitted once.

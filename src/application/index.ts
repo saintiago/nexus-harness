@@ -289,15 +289,66 @@ export function createApplication(settings: ApplicationSettings): Application {
        * fault for whatever selection record a previous attempt retained.
        */
       const progress: {
-        owned: { readonly task: string; captured: boolean } | null;
+        owned: { readonly task: string } | null;
+        captured: boolean;
         selectionFailed: boolean;
-      } = { owned: null, selectionFailed: false };
+      } = { owned: null, captured: false, selectionFailed: false };
+      let continuation: RecoverySelection | null = null;
+      const resetAttemptProgress = (): void => {
+        progress.owned = null;
+        progress.captured = false;
+        progress.selectionFailed = false;
+      };
       /** Track one event's contribution to the attempt this invocation owns. */
       const recordAttemptProgress = (event: EngineEvent): void => {
+        if (event.source === 'execution-runner' && event.type === 'state') {
+          const value = (event.data as { readonly value?: unknown }).value;
+          const states =
+            typeof value === 'string'
+              ? [value]
+              : typeof value === 'object' && value !== null
+                ? Object.keys(value)
+                : [];
+          const active = states.map((name) => workflow.machine.root.states[name]);
+          if (
+            active.some((state) =>
+              state?.invoke.some(
+                (invoke) => invoke.src === 'SelectTask' || invoke.src === 'SelectIdea',
+              ),
+            )
+          ) {
+            // Starting source access invalidates the previous queue item's ownership, even if
+            // selection subsequently throws without publishing its failed outcome.
+            progress.owned = null;
+            progress.captured = false;
+            progress.selectionFailed = true;
+          } else if (
+            progress.owned === null &&
+            !progress.selectionFailed &&
+            continuation !== null &&
+            active.length > 0 &&
+            active.every((state) => state !== undefined && state.type !== 'final')
+          ) {
+            // A worker state in selected work establishes continuation; merely loading an old
+            // selection before launch does not. Initialization faults publish no such state.
+            progress.owned = { task: continuation.task };
+          }
+          return;
+        }
+        if (
+          event.source === 'analyze-experience' &&
+          (event.type === 'outcome' || event.type === 'unavailable')
+        ) {
+          // Restored capture may be the first action event, and discovery failures carry no
+          // task ID. Both still mark a terminal handoff, never a second operational fault.
+          progress.captured = true;
+          return;
+        }
         if (event.type === 'failed' || event.type === 'exhausted') {
           if (event.source === 'select-task' || event.source === 'select-idea') {
             // The invocation's own selection failed; any retained selection belongs to another one.
             progress.owned = null;
+            progress.captured = false;
             progress.selectionFailed = true;
           }
           return;
@@ -312,7 +363,8 @@ export function createApplication(settings: ApplicationSettings): Application {
         }
         if (event.source === 'select-task' || event.source === 'select-idea') {
           if (data.outcome === 'selected') {
-            progress.owned = { task, captured: false };
+            progress.owned = { task };
+            progress.captured = false;
             progress.selectionFailed = false;
           } else {
             // An empty queue selects nothing; no attempt belongs to this invocation.
@@ -320,15 +372,9 @@ export function createApplication(settings: ApplicationSettings): Application {
           }
           return;
         }
-        if (event.source === 'analyze-experience') {
-          if (progress.owned !== null) {
-            progress.owned = { task: progress.owned.task, captured: true };
-          }
-          return;
-        }
         if (progress.owned === null && !progress.selectionFailed) {
           // The invocation resumed an attempt in flight rather than selecting one itself.
-          progress.owned = { task, captured: false };
+          progress.owned = { task };
         }
       };
       /**
@@ -406,7 +452,7 @@ export function createApplication(settings: ApplicationSettings): Application {
        */
       const captureOperationalError = async (
         failure: string,
-        expectedTask: string | null,
+        expectedTask: string,
       ): Promise<void> => {
         let retained: Selection | IdeaSelection | null;
         try {
@@ -421,7 +467,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           // No selected work exists: an empty or failed selection is not an experience handoff.
           return;
         }
-        if (expectedTask !== null && retained.taskKey !== expectedTask) {
+        if (retained.taskKey !== expectedTask) {
           reportMemory(
             `the stopped invocation of "${expectedTask}" does not own the retained selection ` +
               `"${retained.taskKey}"; no operational handoff was recorded`,
@@ -483,6 +529,8 @@ export function createApplication(settings: ApplicationSettings): Application {
 
         // Work and recovery run sequentially: each invocation finishes before the next starts.
         for (;;) {
+          resetAttemptProgress();
+          continuation = await retainedSelection(paths.selectionFile, selection.declaration);
           emitLifecycle('running', null);
           const completion = completionOf(
             await settings.launchWorker(
@@ -516,15 +564,15 @@ export function createApplication(settings: ApplicationSettings): Application {
           // An execution fault of an established attempt is a terminal handoff: record it with the
           // attempt's retained evidence before recovery may discard or replace that attempt, then
           // settle the analysis. A declared blocked outcome and a failed selection record nothing
-          // here, and an attempt the workflow already captured is never recorded twice. An
-          // invocation that published no selection event of its own continued the retained
-          // workflow attempt, whose selection the handoff must still match.
+          // here, and an attempt the workflow already captured is never recorded twice.
+          // Ownership must come from this worker's events, including a resumed active state.
           if (
             completion.kind === 'fault' &&
             !progress.selectionFailed &&
-            (progress.owned === null || !progress.owned.captured)
+            progress.owned !== null &&
+            !progress.captured
           ) {
-            await captureOperationalError(completion.failure, progress.owned?.task ?? null);
+            await captureOperationalError(completion.failure, progress.owned.task);
           }
           await settleAnalysis();
           const outcome = await recovery.recover({

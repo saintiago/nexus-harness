@@ -184,32 +184,17 @@ function handoffLabel(handoff: ExperienceHandoff): string {
   );
 }
 
-/**
- * Where one request's evidence lives: the retained copy recorded with the request, or the original
- * work item workspace for a request recorded before retention. The analyst's invocation runs in
- * the evidence root, so a handoff without a prepared repository still has a valid location.
- */
+/** The independent evidence copy every pending analyst invocation reads. */
 type EvidenceScope = {
-  /** The directory holding the request's evidence; every citation resolves inside it. */
   readonly root: string;
-  /** Whether the root holds the request's retained copy of the handoff's evidence. */
-  readonly retained: boolean;
-  /**
-   * The analyst's own work area: the retained evidence root, or a staged directory for a request
-   * recorded before retention. The invocation's working directory is its worktree child.
-   */
-  readonly analysisRoot: string;
 };
 
-/** The evidence scope of one request: its retained copy, or the workspace it recorded. */
-function evidenceScopeOf(directory: string, request: ExperienceRequest): EvidenceScope {
-  return request.evidenceRoot === null
-    ? {
-        root: request.handoff.workspaceRoot,
-        retained: false,
-        analysisRoot: experienceEvidenceRoot(directory, request.identity),
-      }
-    : { root: request.evidenceRoot, retained: true, analysisRoot: request.evidenceRoot };
+/** Refuse analysis until the request has retained its evidence outside the disposable attempt. */
+function evidenceScopeOf(request: ExperienceRequest): EvidenceScope {
+  if (request.evidenceRoot === null) {
+    throw new Error('The experience request has not retained its evidence.');
+  }
+  return { root: request.evidenceRoot };
 }
 
 /**
@@ -228,9 +213,7 @@ function retainedEvidencePath(
   }
   const resolved = path.resolve(cited);
   if (inside(workspaceRoot, resolved)) {
-    return scope.retained
-      ? path.resolve(scope.root, path.relative(workspaceRoot, resolved))
-      : resolved;
+    return path.resolve(scope.root, path.relative(workspaceRoot, resolved));
   }
   return inside(scope.root, resolved) ? resolved : null;
 }
@@ -251,38 +234,22 @@ function experienceContextText(request: ExperienceRequest, scope: EvidenceScope)
         'that revision.';
   const evidenceLines =
     evidence.length === 0
-      ? ['No evidence files were selected for this handoff.']
+      ? [
+          request.migrated === null
+            ? 'No evidence files were selected for this handoff.'
+            : `The earlier completion request listed no files; read the retained reports under ${scope.root}/artifacts and ${scope.root}/state.`,
+        ]
       : evidence.map((file) =>
           file.path === file.recorded
             ? `- ${file.path}`
             : `- ${file.path} (recorded at ${file.recorded})`,
         );
-  const evidenceLocations = scope.retained
-    ? [
-        `Retained evidence root: ${scope.root} (this handoff's evidence is retained outside the ` +
-          'workflow attempt; the attempt that produced it may have been discarded or replaced ' +
-          'since capture, so only these retained files are its evidence)',
-        `Original work item workspace root: ${workspace} (recorded for provenance)`,
-      ]
-    : [
-        `Work item workspace root: ${workspace}`,
-        `Repository worktree: ${path.join(
-          workspace,
-          'worktree',
-        )} (when it exists; read the implementation diff with Git there, between the recorded ` +
-          'comparison base and the implemented revision)',
-        `Retained round artifacts: ${path.join(
-          workspace,
-          'artifacts',
-        )}/ (finite delivery keeps each round’s development, verification, delivery, review and ` +
-          'completion evidence; earlier rounds retain failed approaches and changed conclusions)',
-        `Retained submission artifacts: ${path.join(
-          workspace,
-          'artifacts',
-          'submissions',
-        )}/ (idea refinement keeps each submission’s captured input, conversation cycles and ` +
-          'decision)',
-      ];
+  const evidenceLocations = [
+    `Retained evidence root: ${scope.root} (this handoff's evidence is retained outside the ` +
+      'workflow attempt; the attempt that produced it may have been discarded or replaced ' +
+      'since capture, so only these retained files are its evidence)',
+    `Original work item workspace root: ${workspace} (recorded for provenance)`,
+  ];
   return [
     'Nexus terminal experience analysis',
     `Work item ${handoff.workId} of project ${request.project} reached the terminal handoff ` +
@@ -468,7 +435,7 @@ export function createAnalyzeExperience(
           workspaceRoot: migrated.content.workspaceRoot,
           artifacts: [],
         },
-        // The earlier request retained no copy of its evidence; its workspace stays its scope.
+        // Pending analysis retains the earlier request’s evidence before its next invocation.
         evidenceRoot: null,
         migrated: {
           taskKey: migrated.content.taskKey,
@@ -576,6 +543,71 @@ export function createAnalyzeExperience(
     }
     await mkdir(root, { recursive: true });
     return root;
+  }
+
+  /**
+   * Older completion requests have no artifact list. Retain their local reports and state without
+   * depending on producer implementations or following links outside the recorded workspace.
+   */
+  async function legacyEvidence(workspace: string): Promise<ArtifactRef[]> {
+    const artifacts: ArtifactRef[] = [];
+    const visit = async (directory: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return;
+        }
+        throw error;
+      }
+      for (const entry of entries) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          await visit(file);
+        } else {
+          artifacts.push({ path: file });
+        }
+      }
+    };
+    await visit(path.join(workspace, 'artifacts'));
+    await visit(path.join(workspace, 'state'));
+    return artifacts;
+  }
+
+  /**
+   * Upgrade unresolved requests before invoking an analyst: a failed turn must not leave their
+   * only evidence in an attempt recovery may replace. Keep identities, handoffs and timestamps;
+   * accepted outputs and submission payloads need no source files and are never rewritten.
+   */
+  async function retainPendingEvidence(
+    request: ExperienceRequest,
+    problems: string[],
+  ): Promise<ExperienceRequest> {
+    if (request.evidenceRoot !== null || (await readAnalysis(request.identity)) !== null) {
+      return request;
+    }
+    const candidates =
+      request.migrated === null
+        ? request.handoff.artifacts
+        : await legacyEvidence(request.handoff.workspaceRoot);
+    const artifacts: ArtifactRef[] = [];
+    for (const artifact of candidates) {
+      const problem = await handoffProblem({ ...request.handoff, artifacts: [artifact] });
+      if (problem === null) {
+        artifacts.push(artifact);
+      } else {
+        // Retain the available evidence even if another file is already lost. A later citation
+        // still fails validation for that missing file instead of accepting replacement content.
+        problems.push(
+          `the experience evidence of ${handoffLabel(request.handoff)} is incomplete: ${problem}`,
+        );
+      }
+    }
+    const evidenceRoot = await retainEvidence({ ...request.handoff, artifacts }, request.identity);
+    const retained = { ...request, evidenceRoot };
+    await writeDurableRecord(requestFile(request.identity), retained);
+    return retained;
   }
 
   /** The checked evidence of one terminal handoff, or the problem that makes it unusable. */
@@ -708,7 +740,7 @@ export function createAnalyzeExperience(
     const activityFileFor = activityFile(identity);
     let activityTail: Promise<void> = Promise.resolve();
     let activityProblem: string | null = null;
-    const scope = evidenceScopeOf(settings.directory, request);
+    const scope = evidenceScopeOf(request);
     const recordActivity = (activity: AgentEvent): void => {
       activityTail = activityTail.then(async () => {
         try {
@@ -722,10 +754,10 @@ export function createAnalyzeExperience(
     try {
       // The analyst runs in the evidence scope, whose worktree child is the invocation's working
       // directory. A handoff without a prepared repository therefore still has a valid location.
-      await mkdir(path.join(scope.analysisRoot, 'worktree'), { recursive: true });
+      await mkdir(path.join(scope.root, 'worktree'), { recursive: true });
       result = await analyze({
         context: experienceContextText(request, scope),
-        workspace: { root: scope.analysisRoot },
+        workspace: { root: scope.root },
         outputSchema: z.toJSONSchema(experienceAnalysisResponseSchema),
         onActivity: recordActivity,
       });
@@ -987,6 +1019,7 @@ export function createAnalyzeExperience(
           }
           let output: ExperienceAnalysisOutput | null;
           try {
+            request = await retainPendingEvidence(request, problems);
             output = await analyzeRequest(request, identity, problems);
           } catch (error) {
             problems.push(

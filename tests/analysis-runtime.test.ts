@@ -62,6 +62,9 @@ async function providerFixture(agentOutput: string): Promise<{
     executable,
     `#!${process.execPath}
 import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+// Enforce the real provider's working-directory prerequisite before accepting the invocation.
+execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd() });
 const prompt = readFileSync(0, 'utf8');
 const schemaFlag = process.argv.indexOf('--output-schema');
 const schemaPath = schemaFlag === -1 ? null : (process.argv[schemaFlag + 1] ?? null);
@@ -116,7 +119,6 @@ describe('analysis runtime', () => {
     };
     const configuration = parseNexusConfiguration(nexus, installationDirectory);
     const workspace = { root: await temporaryDirectory() };
-    await mkdir(path.join(workspace.root, 'worktree'));
     const activities: AgentEvent[] = [];
     const events: EngineEvent[] = [];
 

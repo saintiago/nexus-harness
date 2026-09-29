@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { createAgentRuntime, type AgentResult } from '../agent-runtime/index.js';
 import { createCodingRuntime } from '../adapters/coding-runtime.js';
 import type { NexusConfiguration } from '../configuration/index.js';
@@ -9,6 +10,7 @@ import {
   type EventPublisher,
 } from '../task-engine/index.js';
 import { createAgentRuntimeSettings } from './composition.js';
+import { prepareOperationalWorktree } from './operational-worktree.js';
 
 /**
  * Application's parent-side wiring of the AnalyzeExperience analyst: the configured analysis
@@ -67,6 +69,7 @@ export function createAnalysisRuntime(
     );
     let result: AgentResult;
     try {
+      await prepareOperationalWorktree(path.join(request.workspace.root, 'worktree'), environment);
       result = await runtime.run(
         memory.analysisProfile,
         request.workspace,

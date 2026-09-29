@@ -80,7 +80,12 @@ process cannot execute a transition: recovery resumes recording from the retaine
 attempt before replacing its artifacts. Do not invent a business verdict for an operational fault.
 Application records an operational error only for an execution fault of the attempt the stopped
 invocation's own events established, and never a second time for an attempt that already reached a
-terminal handoff. A declared blocked outcome is the workflow's own verdict: its selected-item routes
+terminal handoff, including when its capture event is the first event after restoration or reports
+unavailable without a task identity. Ownership
+resets for each worker launch and on entry to selection. A resumed active state beyond selection
+can establish continuation of its retained selected work; an initialization or selection fault
+cannot establish ownership merely because an old selection file exists. A declared blocked outcome
+is the workflow's own verdict: its selected-item routes
 already handed off, a failed selection and an empty queue hand off nothing, so neither invents an
 operational fault from whatever selection record an earlier attempt retained.
 
@@ -99,7 +104,9 @@ promises in an exiting worker. Retain source evidence until analysis is settled:
 selected evidence into the request's own area before recording it, and the analyst reads that copy,
 so recovery discarding or replacing the attempt can neither orphan an outstanding request nor make a
 retry read replacement artifacts. The analyst runs in the retained evidence area, so a handoff whose
-attempt never prepared a repository still has a valid invocation location.
+attempt never prepared a repository still has a valid invocation location. The analyst runtime
+initializes its separate worktree as a Git repository before invoking the coding provider, just as
+recovery does; it never initializes or changes the original attempt's workspace.
 
 The configured analyst reads the supplied artifacts and relevant history, searches existing memory
 for related lessons, and returns zero or more substantive observations with applicability,
@@ -119,6 +126,11 @@ payloads, provenance, timestamps and keys after interruption or configuration ch
 acceptance is distinct from stored/searchable memory; poll accepted receipts, including blocked
 receipts. Report outstanding work without changing the business result. Preserve existing memories
 and persisted pending requests during migration; do not delete, silently re-embed or backfill them.
+Before retrying analysis of a request recorded without retention, preserve its available declared
+artifacts independently of the source workspace. Earlier completion requests have no artifact list:
+retain their local artifacts and state directories. Keep request identities, immutable handoffs and
+capture times; already accepted outputs and exact submission payloads remain unchanged. Missing or
+unusable files are reported, and later retries never substitute replacement source files.
 
 ## Dependency enforcement and verification
 

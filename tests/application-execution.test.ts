@@ -141,6 +141,8 @@ type ControlledWorker = {
 async function harness(options: {
   /** The completions the worker launches report, in launch order; the last one repeats. */
   readonly completions: readonly WorkerCompletion[];
+  /** Use the shipped state definitions when testing ownership across restoration. */
+  readonly realWorkflows?: boolean;
   /** What the controlled worker reports: events, activity and its execution log directory. */
   readonly emit?: (worker: ControlledWorker) => void;
   readonly agent?: (request: RecoveryInvocationRequest) => Promise<AgentResult>;
@@ -164,6 +166,11 @@ async function harness(options: {
   const nexus = nexusConfiguration();
   nexus.workflow['finite-delivery'] = workflowModule;
   nexus.workflow['idea-refinement'] = ideaWorkflowModule;
+  if (options.realWorkflows) {
+    for (const name of ['finite-delivery', 'idea-refinement'] as const) {
+      nexus.workflow[name] = fileURLToPath(new URL(`../workflows/${name}.ts`, import.meta.url));
+    }
+  }
   nexus.storage.root = './state';
   nexus.executionPolicy.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1;
   if (options.memory === true) {
@@ -738,6 +745,141 @@ describe('Application execution', () => {
       code: 'ENOENT',
     });
   });
+
+  it.each(['finite-delivery', 'idea-refinement'] as const)(
+    'requires current worker evidence of ownership for %s faults',
+    async (workflow) => {
+      const idea = workflow === 'idea-refinement';
+      const selectionSource = idea ? 'select-idea' : 'select-task';
+      for (const scenario of [
+        'initialization',
+        'selection-throws',
+        'restored-capture',
+        'restored-unavailable',
+        'restored-active',
+        'after-recovery',
+      ] as const) {
+        const workspace = path.join(await temporaryDirectory(), 'NEX-1');
+        await mkdir(workspace, { recursive: true });
+        let launches = 0;
+        const faulted: WorkerCompletion = {
+          result: { ok: false, fault: { message: 'workflow persistence or source access failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        };
+        const executed = await harness({
+          realWorkflows: true,
+          completions: scenario === 'after-recovery' ? [stopped('blocked'), faulted] : [faulted],
+          maxRecoveryAttempts: scenario === 'after-recovery' ? 2 : 1,
+          memory: true,
+          analysis: () => Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) })),
+          agent: () =>
+            Promise.resolve(
+              ok({
+                output: report(
+                  'Recovered.',
+                  scenario === 'after-recovery' && launches === 1 ? 'resume' : 'needs-attention',
+                ),
+              }),
+            ),
+          emit: ({ event }) => {
+            launches += 1;
+            if (scenario === 'selection-throws') {
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: { value: idea ? 'selectIdea' : 'select' },
+              });
+              // Source access throws before SelectTask/SelectIdea can publish a failed outcome.
+            } else if (scenario === 'restored-capture') {
+              event({
+                source: 'analyze-experience',
+                type: 'outcome',
+                data: {
+                  task: 'NEX-1',
+                  outcome: 'recorded',
+                  round: null,
+                  detail: null,
+                  artifact: { path: '/memory/capture.json' },
+                },
+              });
+            } else if (scenario === 'restored-unavailable') {
+              event({
+                source: 'analyze-experience',
+                type: 'unavailable',
+                data: {
+                  terminal: 'complete-completed',
+                  reason: 'The selection could not be read.',
+                },
+              });
+            } else if (scenario === 'restored-active') {
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: { value: idea ? 'startSubmission' : 'prepare' },
+              });
+            } else if (scenario === 'after-recovery' && launches === 1) {
+              event({
+                source: selectionSource,
+                type: 'outcome',
+                data: {
+                  task: 'NEX-1',
+                  outcome: 'selected',
+                  round: null,
+                  detail: null,
+                  artifact: { path: '/execution/selection.json' },
+                },
+              });
+            }
+            if (scenario === 'restored-capture' || scenario === 'restored-unavailable') {
+              // A state observation can arrive after the restored action's own outcome.
+              event({
+                source: 'execution-runner',
+                type: 'state',
+                data: {
+                  value: idea ? 'analyzeApproved' : 'analyzeCompletion',
+                },
+              });
+            }
+          },
+        });
+        const directory = idea
+          ? path.join(executed.executionDirectory, 'idea-refinement')
+          : executed.executionDirectory;
+        await mkdir(directory, { recursive: true });
+        const issue = { id: '10518', key: 'NEX-1', fields: { summary: 'Retained work' } };
+        await writeFile(
+          path.join(directory, 'selection.json'),
+          JSON.stringify({
+            taskKey: 'NEX-1',
+            source: { kind: 'jira', issueId: '10518' },
+            conversation: [],
+            workspace: { root: workspace },
+            ...(idea
+              ? {
+                  issue,
+                  transitions: { toActive: null, fromActive: [] },
+                  claimed: true,
+                  retainedSubmissions: 0,
+                  issueWorkspace: { root: path.dirname(workspace) },
+                }
+              : { task: issue }),
+          }),
+        );
+        await executed.application.execute({
+          projectConfigPath: executed.projectConfigPath,
+          workflow,
+        });
+        const requests = path.join(directory, 'memory', 'requests');
+        if (scenario === 'restored-active') {
+          expect(await readdir(requests), scenario).toHaveLength(1);
+        } else {
+          await expect(stat(requests), scenario).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+      }
+    },
+  );
 
   it('records no operational handoff without a retained selection or when memory is disabled', async () => {
     const executed = await harness({
