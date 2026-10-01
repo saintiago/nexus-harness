@@ -43,7 +43,7 @@ type AgentProfile = {
 };
 
 type AgentEvent = {
-  type: 'message' | 'command' | 'result' | 'change';
+  type: 'message' | 'command' | 'result' | 'change' | 'diagnostic';
   text: string;
 };
 
@@ -133,6 +133,25 @@ AgentRuntime has no persistent storage. It streams activity and returns output t
 
 Wait for the invocation to finish before returning success. The runtime adds no repair turns,
 automatic profile escalation or reuse of an earlier result.
+
+## Inactivity observation
+
+For every provider invocation, observe the elapsed time since its start or most recent provider
+activity. After two minutes without activity, emit one diagnostic through that invocation's activity
+observer: `No agent activity for 2 minutes; the invocation is still running.` This also applies before
+the first response. Inactivity means no observed activity, not proof that the agent or provider has
+failed; model reasoning and a long-running tool can both be silent.
+
+Only provider activity resets the idle interval. Process liveness and the runtime's own diagnostics
+do not count as agent progress. When provider activity resumes after a warning, emit an activity-resumed
+diagnostic and start a fresh interval. Warn once per uninterrupted idle interval, without repeated
+warnings while it stays silent.
+
+Keep observation independent for concurrent invocations and apply it to every profile, including
+recovery and experience analysis. Release timers on every invocation exit, whether successful or
+failed. Diagnostics use the existing activity channel and do not change the final output, invocation
+result, workflow routing or configured overall time limit. Inactivity alone never kills or retries the
+invocation. The two-minute threshold is fixed; it adds no configuration setting or persistent state.
 
 ## Idea refinement roles
 

@@ -20,7 +20,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 | Shared round storage | Current-plan validation, numbered history, directory creation and plan persistence without role or route decisions | Finite and idea plan fixtures in temporary workspaces |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
 | CompleteTask | Completion only after merge with no failed required pre-merge check and successful configured checks for that merge | GitHub observations and source updates |
-| AgentRuntime | Profile resolution and complete context assembly | Coding-provider response |
+| AgentRuntime | Profile resolution, complete context assembly and per-invocation inactivity observation | Coding-provider response and controlled time |
 | OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
 | Workflow | Initial, repair and terminal transitions | Named action outcomes, using the real XState definition |
 
@@ -176,3 +176,11 @@ stays analyzable after its attempt was discarded or replaced, that a partially i
 submission is the interrupted one, that an analysis invocation without a prepared repository still
 runs, and that a capture-discovery failure reports unavailable without replacing the terminal
 outcome.
+
+## Agent inactivity observation
+
+Verify the [runtime inactivity contract](agent-runtime/architecture.md#inactivity-observation) with
+controlled time: silence before the first response and after activity warns at two minutes, continuing
+silence does not repeat the warning, resumed activity permits a later warning, concurrent invocations
+remain independent, and completion or failure releases observation. Diagnostics must remain
+attributable in live presentation and durable activity logs, including plain terminal output.
