@@ -938,7 +938,13 @@ describe('Application execution', () => {
     };
     const invocationId = 'inv-1';
     const startedAt = 1_767_325_445_000;
-    const entry = { type: 'message' as const, text: `exploring ${'the repository '.repeat(30)}` };
+    const entries = [
+      { type: 'message' as const, text: `exploring ${'the repository '.repeat(30)}` },
+      {
+        type: 'diagnostic' as const,
+        text: 'No agent activity for 2 minutes; the invocation is still running.',
+      },
+    ];
     let activityFile = '';
     const executed = await harness({
       completions: [successful],
@@ -963,7 +969,9 @@ describe('Application execution', () => {
           },
         });
         event(workerEvent);
-        activity({ invocationId, timestamp: new Date(startedAt).toISOString(), activity: entry });
+        for (const entry of entries) {
+          activity({ invocationId, timestamp: new Date(startedAt).toISOString(), activity: entry });
+        }
         event({
           source: 'develop',
           type: 'agent-finished',
@@ -984,9 +992,13 @@ describe('Application execution', () => {
     });
 
     // The live subscription carries the activity with its invocation identity.
-    expect(executed.activity).toEqual([
-      { invocationId, timestamp: new Date(startedAt).toISOString(), activity: entry },
-    ]);
+    expect(executed.activity).toEqual(
+      entries.map((entry) => ({
+        invocationId,
+        timestamp: new Date(startedAt).toISOString(),
+        activity: entry,
+      })),
+    );
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(1);
     // Every received event is saved in order with its receipt timestamp and complete payload.
@@ -996,11 +1008,13 @@ describe('Application execution', () => {
     }
     // The invocation's complete activity is in its own file, not in the main event stream.
     const savedActivity = (await readFile(activityFile, 'utf8')).trimEnd().split('\n');
-    expect(savedActivity).toHaveLength(1);
-    expect(JSON.parse(savedActivity[0]!)).toEqual({
-      timestamp: new Date(startedAt).toISOString(),
-      activity: entry,
-    });
+    expect(savedActivity).toHaveLength(2);
+    expect(savedActivity.map((line) => JSON.parse(line))).toEqual(
+      entries.map((entry) => ({
+        timestamp: new Date(startedAt).toISOString(),
+        activity: entry,
+      })),
+    );
     const mainLog = await readFile(logs[0]!.file, 'utf8');
     expect(mainLog).not.toContain('exploring');
     expect(mainLog).not.toContain('message');

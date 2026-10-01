@@ -277,7 +277,10 @@ function ideaTurn(
 /** One attributed activity entry, as the invocation's caller publishes it. */
 function activity(
   invocationId: string,
-  entry: { readonly type: 'message' | 'command' | 'result' | 'change'; readonly text: string },
+  entry: {
+    readonly type: 'message' | 'command' | 'result' | 'change' | 'diagnostic';
+    readonly text: string;
+  },
 ): AgentActivity {
   return { invocationId, timestamp: new Date().toISOString(), activity: entry };
 }
@@ -294,6 +297,11 @@ function work(
   invocationId = 'dev-1',
 ): AgentActivity {
   return activity(invocationId, { type: kind, text });
+}
+
+/** One runtime diagnostic as the invocation's caller reports it. */
+function diagnostic(text: string, invocationId = 'dev-1'): AgentActivity {
+  return activity(invocationId, { type: 'diagnostic', text });
 }
 
 beforeEach(() => {
@@ -430,6 +438,44 @@ describe('OperatorInterface progress presentation', () => {
 });
 
 describe('OperatorInterface activity pane', () => {
+  it('shows inactivity diagnostics in their named pane using terminal-default text', () => {
+    const harness = createHarness({ columns: 100 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(developerTurn());
+    at(6);
+    harness.emitActivity(
+      diagnostic('No agent activity for 2 minutes; the invocation is still running.'),
+    );
+    at(7);
+    harness.emitActivity(diagnostic('Agent activity resumed.'));
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
+      '03:04:06 diagnostic No agent activity for 2 minutes; the invocation is still running.',
+      '03:04:07 diagnostic Agent activity resumed.',
+    ]);
+    const raw = harness.writes.join('');
+    expect(raw).not.toContain('\u001b[90m03:04:06 diagnostic');
+    expect(raw).not.toContain('\u001b[37m03:04:06 diagnostic');
+  });
+
+  it('keeps inactivity diagnostics attributable in plain-line output', () => {
+    const harness = createHarness({ interactive: false, color: false });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(developerTurn());
+    at(6);
+    harness.emitActivity(
+      diagnostic('No agent activity for 2 minutes; the invocation is still running.'),
+    );
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
+      '03:04:06 developer diagnostic No agent activity for 2 minutes; the invocation is still running.',
+    ]);
+  });
+
   it('opens a developer pane that keeps the latest three work entries after each message', () => {
     const harness = createHarness();
     harness.operatorInterface.start();

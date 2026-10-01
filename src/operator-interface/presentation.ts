@@ -18,7 +18,7 @@ export type Style = 'default' | 'white' | 'grey' | 'blue' | 'yellow';
 export type AgentRole = 'developer' | 'reviewer' | 'recovery' | IdeaRole;
 
 /** The activity kinds the agent activity contract names. */
-type ActivityKind = 'message' | 'command' | 'result' | 'change';
+type ActivityKind = 'message' | 'command' | 'result' | 'change' | 'diagnostic';
 
 /** One supplied event, as the presentation renders it. */
 export type Interpretation =
@@ -70,6 +70,7 @@ function activityKind(value: string | null): ActivityKind | null {
     case 'command':
     case 'result':
     case 'change':
+    case 'diagnostic':
       return value;
     default:
       return null;

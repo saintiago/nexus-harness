@@ -182,10 +182,10 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
   }
 
   /** One work entry's pane row: a single row fitted to the terminal with an ellipsis when cut. */
-  function workRow(time: string, label: string, text: string): PaneRow {
+  function workRow(time: string, label: string, text: string, style: Style = 'grey'): PaneRow {
     const prefix = `${time} ${label} `;
     const width = terminal.size().columns - prefix.length;
-    return { text: `${prefix}${truncate(text.replaceAll('\n', ' '), width)}`, style: 'grey' };
+    return { text: `${prefix}${truncate(text.replaceAll('\n', ' '), width)}`, style };
   }
 
   /** The pane heading row at the terminal's current width. */
@@ -212,7 +212,12 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
   function presentActivity(activity: ActivityInterpretation): void {
     prepareRegion();
     const known = invocations.get(activity.invocationId);
-    const style: Style = activity.activity === 'message' ? roleStyle(known?.role ?? null) : 'grey';
+    const style: Style =
+      activity.activity === 'message'
+        ? roleStyle(known?.role ?? null)
+        : activity.activity === 'diagnostic'
+          ? 'default'
+          : 'grey';
     if (
       known !== undefined &&
       panesUsable() &&
@@ -222,7 +227,7 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
       if (activity.activity === 'message') {
         panes().message(activity.invocationId, messageRows(time, activity.text, style));
       } else {
-        panes().work(activity.invocationId, workRow(time, activity.activity, activity.text));
+        panes().work(activity.invocationId, workRow(time, activity.activity, activity.text, style));
       }
       drawnSize = terminal.size();
       return;
