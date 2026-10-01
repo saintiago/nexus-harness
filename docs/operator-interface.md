@@ -68,6 +68,11 @@ activity contract as several. Update panes independently by invocation ID.
   it without mixing one agent's activity into another's pane.
 - On resize, leave existing scrollback in place and use new dimensions for subsequent activity.
 
+Show [AgentRuntime inactivity diagnostics](agent-runtime/architecture.md#inactivity-observation) in
+the affected invocation's pane, identifying the agent and its task or idea. Present the two-minute
+warning and subsequent activity-resumed diagnostic as terminal-default diagnostic text, including
+in plain-line output. Do not present inactivity as a failed invocation or a completed task.
+
 Panes are compact live views. Complete activity belongs to each invocation's durable log.
 Closing presentation finalizes panes without declaring invocations successful or stopping logging.
 
