@@ -15,10 +15,10 @@ import { sanitize } from './text.js';
 export type Style = 'default' | 'white' | 'grey' | 'blue' | 'yellow';
 
 /** The agent roles the activity contract names. */
-export type AgentRole = 'developer' | 'reviewer' | 'recovery' | IdeaRole;
+export type AgentRole = 'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole;
 
 /** The activity kinds the agent activity contract names. */
-type ActivityKind = 'message' | 'command' | 'result' | 'change';
+type ActivityKind = 'message' | 'command' | 'result' | 'change' | 'diagnostic';
 
 /** One supplied event, as the presentation renders it. */
 export type Interpretation =
@@ -57,6 +57,7 @@ function agentRole(value: string | null): AgentRole | null {
     case 'developer':
     case 'reviewer':
     case 'recovery':
+    case 'analysis':
       return value;
     default:
       return ideaRoles.find((role) => role === value) ?? null;
@@ -70,6 +71,7 @@ function activityKind(value: string | null): ActivityKind | null {
     case 'command':
     case 'result':
     case 'change':
+    case 'diagnostic':
       return value;
     default:
       return null;

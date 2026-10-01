@@ -6,7 +6,7 @@
  */
 
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAgentRuntime,
   developmentRoleInstructions,
@@ -18,6 +18,7 @@ import {
 } from '../src/agent-runtime/index.js';
 import type {
   CodingRuntime,
+  CodingRuntimeActivity,
   CodingRuntimeRequest,
   CodingRuntimeResult,
 } from '../src/adapters/coding-runtime.js';
@@ -64,7 +65,7 @@ type Harness = {
 function harness(
   options: {
     readonly result?: CodingRuntimeResult;
-    readonly activity?: readonly AgentEvent[];
+    readonly activity?: readonly CodingRuntimeActivity[];
   } = {},
 ): Harness {
   const requests: CodingRuntimeRequest[] = [];
@@ -91,6 +92,36 @@ function harness(
 function occurrences(text: string, part: string): number {
   return text.split(part).length - 1;
 }
+
+/** One runtime whose provider invocations stay pending until their tests settle them. */
+function inactivityHarness(): {
+  readonly runtime: AgentRuntime;
+  readonly activity: Array<Parameters<CodingRuntime['execute']>[1]>;
+  readonly settle: Array<(result: CodingRuntimeResult) => void>;
+} {
+  const activity: Array<Parameters<CodingRuntime['execute']>[1]> = [];
+  const settle: Array<(result: CodingRuntimeResult) => void> = [];
+  const codingRuntime: CodingRuntime = {
+    execute(_request, onActivity) {
+      activity.push(onActivity);
+      return new Promise((resolve) => settle.push(resolve));
+    },
+  };
+  return {
+    runtime: createAgentRuntime({
+      codingRuntime,
+      baseInstructions: [],
+      profiles,
+      invocationLimitMinutes: 45,
+    }),
+    activity,
+    settle,
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('AgentRuntime', () => {
   it('runs the selected profile with its model, effort, tool settings, worktree and time limit', async () => {
@@ -247,7 +278,7 @@ describe('AgentRuntime', () => {
   });
 
   it("streams provider activity to the invocation's own observer", async () => {
-    const activity: readonly AgentEvent[] = [
+    const activity: readonly CodingRuntimeActivity[] = [
       { type: 'message', text: 'Working on the parser.' },
       { type: 'command', text: 'npm ci' },
       { type: 'result', text: 'exit 0' },
@@ -277,5 +308,104 @@ describe('AgentRuntime', () => {
     );
 
     expect(result).toEqual({ ok: true, value: { output: providerOutput } });
+  });
+
+  it('warns once per idle interval and reports provider activity resuming', async () => {
+    vi.useFakeTimers();
+    const fixture = inactivityHarness();
+    const events: AgentEvent[] = [];
+    const invocation = fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      (event) => events.push(event),
+    );
+
+    vi.advanceTimersByTime(119_999);
+    expect(events).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(events).toEqual([
+      {
+        type: 'diagnostic',
+        text: 'No agent activity for 2 minutes; the invocation is still running.',
+      },
+    ]);
+
+    vi.advanceTimersByTime(4 * 60_000);
+    expect(events).toHaveLength(1);
+    fixture.activity[0]?.({ type: 'message', text: 'Work continues.' });
+    expect(events.slice(1)).toEqual([
+      { type: 'diagnostic', text: 'Agent activity resumed.' },
+      { type: 'message', text: 'Work continues.' },
+    ]);
+
+    vi.advanceTimersByTime(2 * 60_000);
+    expect(events.at(-1)).toEqual({
+      type: 'diagnostic',
+      text: 'No agent activity for 2 minutes; the invocation is still running.',
+    });
+    fixture.settle[0]?.({ ok: true, value: { output: providerOutput } });
+    await invocation;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('observes concurrent invocations independently', async () => {
+    vi.useFakeTimers();
+    const fixture = inactivityHarness();
+    const first: AgentEvent[] = [];
+    const second: AgentEvent[] = [];
+    const invocations = [
+      fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'First.', (event) =>
+        first.push(event),
+      ),
+      fixture.runtime.run('nexus-astra', { root: workspaceRoot }, 'Second.', (event) =>
+        second.push(event),
+      ),
+    ];
+
+    vi.advanceTimersByTime(60_000);
+    fixture.activity[0]?.({ type: 'command', text: 'npm test' });
+    vi.advanceTimersByTime(60_000);
+    expect(first).toEqual([{ type: 'command', text: 'npm test' }]);
+    expect(second).toEqual([
+      {
+        type: 'diagnostic',
+        text: 'No agent activity for 2 minutes; the invocation is still running.',
+      },
+    ]);
+
+    vi.advanceTimersByTime(60_000);
+    expect(first.at(-1)).toEqual({
+      type: 'diagnostic',
+      text: 'No agent activity for 2 minutes; the invocation is still running.',
+    });
+    fixture.settle[0]?.({ ok: true, value: { output: providerOutput } });
+    fixture.settle[1]?.({ ok: true, value: { output: providerOutput } });
+    await Promise.all(invocations);
+  });
+
+  it.each([
+    { label: 'completion', result: { ok: true, value: { output: providerOutput } } as const },
+    {
+      label: 'failure',
+      result: { ok: false, fault: { message: 'provider failed' } } as const,
+    },
+  ])('releases inactivity observation on provider $label', async ({ result }) => {
+    vi.useFakeTimers();
+    const fixture = inactivityHarness();
+    const events: AgentEvent[] = [];
+    const invocation = fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      (event) => events.push(event),
+    );
+    expect(vi.getTimerCount()).toBe(1);
+
+    fixture.settle[0]?.(result);
+    await invocation;
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(2 * 60_000);
+    expect(events).toEqual([]);
   });
 });

@@ -105,6 +105,20 @@ describe('worker protocol messages', () => {
       kind: 'message',
       message: activity,
     });
+
+    const diagnostic = {
+      kind: 'agent-activity',
+      invocationId: 'inv-1',
+      timestamp: '2026-09-24T22:02:00.000Z',
+      activity: {
+        type: 'diagnostic',
+        text: 'No agent activity for 2 minutes; the invocation is still running.',
+      },
+    } as const;
+    expect(parseWorkerLine(encodeWorkerMessage(diagnostic).trimEnd())).toEqual({
+      kind: 'message',
+      message: diagnostic,
+    });
   });
 
   it('rejects lines that are not protocol messages', () => {

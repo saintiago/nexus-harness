@@ -24,7 +24,7 @@ export type AgentProfile = {
 };
 
 /** The activity kinds an invocation reports while it runs. */
-export const agentEventKinds = ['message', 'command', 'result', 'change'] as const;
+export const agentEventKinds = ['message', 'command', 'result', 'change', 'diagnostic'] as const;
 
 export type AgentEventKind = (typeof agentEventKinds)[number];
 
@@ -113,6 +113,11 @@ export type AgentRuntimeSettings = {
 /** The target repository working copy within a workspace root (Workspace design). */
 const worktreeDirectory = 'worktree';
 
+/** The fixed quiet period after which one still-running invocation reports inactivity. */
+const inactivityThresholdMs = 2 * 60_000;
+const inactivityWarning = 'No agent activity for 2 minutes; the invocation is still running.';
+const activityResumed = 'Agent activity resumed.';
+
 /**
  * The complete prompt for one invocation: runtime base instructions, the selected profile's
  * instructions, the caller-supplied context as given and the workspace location. The caller's
@@ -141,29 +146,65 @@ export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime
         return { ok: false, fault: { message: `Unknown agent profile "${profileId}".` } };
       }
       const worktree = path.join(workspaceRef.root, worktreeDirectory);
-      return settings.codingRuntime.execute(
-        {
-          prompt: assemblePrompt(
-            settings.baseInstructions,
-            profile.instructions,
-            additionalContext,
-            worktree,
-          ),
-          model: profile.model,
-          effort: profile.effort,
-          toolSettings: profile.toolSettings,
-          directory: worktree,
-          timeLimitMs: settings.invocationLimitMinutes * 60_000,
-          ...(outputSchema === undefined ? {} : { outputSchema }),
-        },
-        (activity) => {
-          try {
-            onActivity(activity);
-          } catch {
-            // Observer failures do not affect the invocation or its result.
-          }
-        },
-      );
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+      let warned = false;
+      let running = true;
+
+      /** Activity observers are supplemental: their failures never change provider execution. */
+      const observe = (activity: AgentEvent): void => {
+        try {
+          onActivity(activity);
+        } catch {
+          // Observer failures do not affect the invocation or its result.
+        }
+      };
+      const startInactivityInterval = (): void => {
+        if (inactivityTimer !== null) {
+          clearTimeout(inactivityTimer);
+        }
+        inactivityTimer = setTimeout(() => {
+          inactivityTimer = null;
+          warned = true;
+          observe({ type: 'diagnostic', text: inactivityWarning });
+        }, inactivityThresholdMs);
+      };
+
+      startInactivityInterval();
+      try {
+        return await settings.codingRuntime.execute(
+          {
+            prompt: assemblePrompt(
+              settings.baseInstructions,
+              profile.instructions,
+              additionalContext,
+              worktree,
+            ),
+            model: profile.model,
+            effort: profile.effort,
+            toolSettings: profile.toolSettings,
+            directory: worktree,
+            timeLimitMs: settings.invocationLimitMinutes * 60_000,
+            ...(outputSchema === undefined ? {} : { outputSchema }),
+          },
+          (activity) => {
+            if (!running) {
+              return;
+            }
+            const resumed = warned;
+            warned = false;
+            startInactivityInterval();
+            if (resumed) {
+              observe({ type: 'diagnostic', text: activityResumed });
+            }
+            observe(activity);
+          },
+        );
+      } finally {
+        running = false;
+        if (inactivityTimer !== null) {
+          clearTimeout(inactivityTimer);
+        }
+      }
     },
   };
 }
