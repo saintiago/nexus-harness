@@ -257,6 +257,17 @@ function developerTurn(task = 'NEX-7', invocationId = 'dev-1'): EngineEvent {
   });
 }
 
+/** The boundary event experience analysis publishes for one invocation. */
+function analysisTurn(invocationId = 'analysis-1'): EngineEvent {
+  return boundary({
+    agentName: 'analysis',
+    operation: 'AnalyzeExperience',
+    invocationId,
+    profile: 'nexus-astra',
+    source: 'application',
+  });
+}
+
 /** The boundary event an idea refinement action publishes for one invocation. */
 function ideaTurn(
   role: 'idea-editor' | 'researcher' | 'project-guide' | 'challenger',
@@ -442,16 +453,16 @@ describe('OperatorInterface activity pane', () => {
     const harness = createHarness({ columns: 100 });
     harness.operatorInterface.start();
     at(5);
-    harness.emit(developerTurn());
+    harness.emit(analysisTurn());
     at(6);
     harness.emitActivity(
-      diagnostic('No agent activity for 2 minutes; the invocation is still running.'),
+      diagnostic('No agent activity for 2 minutes; the invocation is still running.', 'analysis-1'),
     );
     at(7);
-    harness.emitActivity(diagnostic('Agent activity resumed.'));
+    harness.emitActivity(diagnostic('Agent activity resumed.', 'analysis-1'));
 
     expect(harness.rows()).toEqual([
-      '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
+      '03:04:05 analysis AnalyzeExperience · profile nexus-astra',
       '03:04:06 diagnostic No agent activity for 2 minutes; the invocation is still running.',
       '03:04:07 diagnostic Agent activity resumed.',
     ]);
@@ -464,15 +475,18 @@ describe('OperatorInterface activity pane', () => {
     const harness = createHarness({ interactive: false, color: false });
     harness.operatorInterface.start();
     at(5);
-    harness.emit(developerTurn());
+    harness.emit(analysisTurn());
     at(6);
     harness.emitActivity(
-      diagnostic('No agent activity for 2 minutes; the invocation is still running.'),
+      diagnostic('No agent activity for 2 minutes; the invocation is still running.', 'analysis-1'),
     );
+    at(7);
+    harness.emitActivity(diagnostic('Agent activity resumed.', 'analysis-1'));
 
     expect(harness.rows()).toEqual([
-      '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
-      '03:04:06 developer diagnostic No agent activity for 2 minutes; the invocation is still running.',
+      '03:04:05 analysis AnalyzeExperience · profile nexus-astra',
+      '03:04:06 analysis diagnostic No agent activity for 2 minutes; the invocation is still running.',
+      '03:04:07 analysis diagnostic Agent activity resumed.',
     ]);
   });
 
