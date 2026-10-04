@@ -26,7 +26,6 @@ import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import type { VerificationOutput } from '../src/task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
-import { scriptedJira } from './support/jira.js';
 
 /** Git and check commands run with a supplied environment; host Git configuration is disabled. */
 const environment = {
@@ -94,8 +93,9 @@ beforeEach(async () => {
       {
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: { id: '1', key: 'NEX-1', fields: { summary: 'Implement the feature' } },
+        task: taskIssue,
         conversation: [],
+        stage: 'delivery',
         workspace: { root: workspaceRoot },
       },
       null,
@@ -191,10 +191,6 @@ function actions(runtime: AgentRuntime): {
   readonly develop: ReturnType<typeof createDevelop>;
   readonly verify: ReturnType<typeof createVerify>;
 } {
-  const { jira } = scriptedJira({
-    readIssue: () => ok(taskIssue),
-    readComments: () => ok([{ id: 'c1', body: 'Original request.' }]),
-  });
   return {
     startRound: createStartRound({
       taskKey: 'NEX-1',
@@ -209,7 +205,6 @@ function actions(runtime: AgentRuntime): {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     }),
     verify: createVerify({

@@ -260,6 +260,14 @@ export type TaskEngine = {
  */
 export type TaskEngineSettings = {
   readonly workflow: AnyStateMachine;
+  /**
+   * The invoked child machine definitions, registered under the names the parent's states invoke.
+   * The runner binds the same promise operations into each child and persists the composed
+   * parent/child snapshot; a child is not a separate runner, state file or process.
+   */
+  readonly children?: Readonly<Record<string, AnyStateMachine>>;
+  /** The initial input of a freshly started workflow; supplied for invoked child definitions. */
+  readonly input?: unknown;
   readonly stateFile: string;
   readonly bindActions: (
     publish: EventPublisher,
@@ -292,6 +300,8 @@ export function createTaskEngine(settings: TaskEngineSettings): TaskEngine {
   const runner = createExecutionRunner({
     workflow: settings.workflow,
     actions: settings.bindActions(publish, publishActivity),
+    ...(settings.children === undefined ? {} : { children: settings.children }),
+    ...(settings.input === undefined ? {} : { input: settings.input }),
     stateFile: settings.stateFile,
     publish,
   });

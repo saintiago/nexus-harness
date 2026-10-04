@@ -19,7 +19,7 @@ import { createActionBinding } from './action-bindings.js';
 import { createJiraSettings, executionPaths, toolEnvironment } from './composition.js';
 import { installationConfigSetting } from './installation.js';
 import { createWorkerProtocol, type OutputSink } from './protocol.js';
-import { loadWorkflow } from './workflow.js';
+import { loadProjectWorkflow } from './workflow.js';
 
 /**
  * The internal worker entry: one work invocation of the configured workflow. It loads project and
@@ -54,8 +54,8 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
   try {
     const nexus = await loadNexusConfiguration(settings.installationConfigPath);
     const project = await loadProjectConfiguration(settings.projectConfigPath);
-    const workflow = await loadWorkflow(nexus.workflow[settings.workflow]);
-    const paths = executionPaths(nexus, project, settings.workflow);
+    const workflow = await loadProjectWorkflow(nexus.workflow);
+    const paths = executionPaths(nexus, project);
     await mkdir(paths.directory, { recursive: true });
 
     // Commands, Git, the operator's gh CLI and the coding provider run without the credential
@@ -77,9 +77,9 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
 
     engine = createTaskEngine({
       workflow: workflow.machine,
+      children: workflow.children,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
-        workflow: settings.workflow,
         project,
         nexus,
         paths,

@@ -152,11 +152,15 @@ describe('Nexus configuration', () => {
   it('resolves the workflow path and storage root against the configuration directory', () => {
     const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
 
-    expect(configuration.workflow['finite-delivery']).toBe(
+    expect(configuration.workflow.project).toBe('/etc/nexus/installation/workflows/project.ts');
+    expect(configuration.workflow.children['finite-delivery']).toBe(
       '/etc/nexus/installation/workflows/finite-delivery.ts',
     );
-    expect(configuration.workflow['idea-refinement']).toBe(
+    expect(configuration.workflow.children['idea-refinement']).toBe(
       '/etc/nexus/installation/workflows/idea-refinement.ts',
+    );
+    expect(configuration.workflow.children.preparation).toBe(
+      '/etc/nexus/installation/workflows/preparation.ts',
     );
     expect(configuration.storage.root).toBe('/etc/nexus/installation/state');
   });

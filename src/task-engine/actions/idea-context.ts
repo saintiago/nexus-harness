@@ -1,10 +1,9 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { IdeaRole } from '../../agent-runtime/index.js';
-import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
 import { challengerArtifact } from './challenger/artifacts.js';
-import { describeIssues, parseDocument, readDocumentText } from './documents.js';
+import { readDocumentText } from './documents.js';
 import {
   framingArtifact,
   editorHelpArtifact,
@@ -289,35 +288,9 @@ export async function projectGuidanceText(root: string): Promise<string | null> 
   ].join('\n');
 }
 
-/** The response-format instruction for one role's declared output schema. */
-export function responseFormatText(schema: z.ZodType): string {
-  return [
-    'Return only one JSON object, without Markdown fences and without other text, matching:',
-    JSON.stringify(z.toJSONSchema(schema), null, 2),
-  ].join('\n');
-}
+import { parseAgentReport } from './agent-reports.js';
 
-/** Parse one role's returned report against its declared response schema. */
-export function parseAgentReport<Schema extends z.ZodType>(
-  output: string,
-  schema: Schema,
-  role: string,
-): z.output<Schema> {
-  const parsed = parseDocument(output, schema);
-  if (parsed.kind === 'invalid-json') {
-    throw new Error(`The ${role} returned unusable output: ${messageOf(parsed.error)}`, {
-      cause: parsed.error,
-    });
-  }
-  if (parsed.kind === 'invalid-content') {
-    throw new Error(
-      `The ${role}'s report does not match the response format: ` +
-        describeIssues(parsed.error, '<report>'),
-      { cause: parsed.error },
-    );
-  }
-  return parsed.content as z.output<Schema>;
-}
+export { parseAgentReport, responseFormatText } from './agent-reports.js';
 
 /** What one idea role invocation needs: its plan, context and declared response schema. */
 export type IdeaInvocationSettings<Schema extends z.ZodType> = {

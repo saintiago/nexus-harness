@@ -27,6 +27,17 @@ export type BoundAction = (input?: unknown) => Promise<string>;
 export type ExecutionRunnerSettings = {
   readonly workflow: AnyStateMachine;
   readonly actions: Readonly<Record<string, BoundAction>>;
+  /**
+   * The invoked child machine definitions, registered under the names the parent's states invoke.
+   * The runner binds the same promise operations into each child, so nested invocations share the
+   * operation instrumentation and the composed snapshot persists them without a child state file.
+   */
+  readonly children?: Readonly<Record<string, AnyStateMachine>>;
+  /**
+   * The initial input of a freshly started workflow. A restored snapshot keeps the input it was
+   * started with; the composed project parent supplies its children's input through invocation.
+   */
+  readonly input?: unknown;
   readonly stateFile: string;
   readonly publish: EventPublisher;
 };
@@ -163,19 +174,26 @@ export function createExecutionRunner(settings: ExecutionRunnerSettings): Execut
 
 async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowResult> {
   const started = new Set<Promise<unknown>>();
+  const operations = promiseActors(settings.actions, started);
+  const children = Object.fromEntries(
+    Object.entries(settings.children ?? {}).map(([name, machine]) => [
+      name,
+      machine.provide({ actors: operations }),
+    ]),
+  );
   let workflow: AnyStateMachine;
   try {
-    workflow = settings.workflow.provide({ actors: promiseActors(settings.actions, started) });
+    workflow = settings.workflow.provide({ actors: { ...operations, ...children } });
   } catch (error) {
     return fault(`Cannot bind the workflow to its actions: ${messageOf(error)}`);
   }
 
   const missing = invokedOperations(workflow).filter(
-    (operation) => settings.actions[operation] === undefined,
+    (operation) => settings.actions[operation] === undefined && children[operation] === undefined,
   );
   if (missing.length > 0) {
     return fault(
-      `No bound action for workflow operation${missing.length === 1 ? '' : 's'} ` +
+      `No bound operation or child for workflow operation${missing.length === 1 ? '' : 's'} ` +
         `${missing.map((operation) => `"${operation}"`).join(', ')}.`,
     );
   }
@@ -187,7 +205,11 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
 
   const actor = createActor(
     workflow,
-    loaded.kind === 'restore' ? { snapshot: loaded.snapshot as Snapshot<unknown> } : {},
+    loaded.kind === 'restore'
+      ? { snapshot: loaded.snapshot as Snapshot<unknown> }
+      : settings.input === undefined
+        ? {}
+        : { input: settings.input },
   );
 
   // Saves are chained so they run in notification order; XState never waits for them.

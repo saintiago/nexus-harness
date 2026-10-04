@@ -1,11 +1,5 @@
 import path from 'node:path';
-import type {
-  JiraAdapter,
-  JiraComment,
-  JiraDocument,
-  JiraTransition,
-} from '../../../adapters/jira.js';
-import { fault, ok, type Result } from '../../../result.js';
+import type { JiraAdapter, JiraDocument } from '../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
 import {
@@ -21,16 +15,23 @@ import {
   ideaSubmissionInputFile,
   latestRefinedIdea,
   readCycleArtifact,
-  readIdeaInput,
   readIdeaPlan,
   readSubmissionArtifact,
   writeSubmissionArtifact,
 } from '../idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
+import { readRequiredRecord, writeRecord } from '../records.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
-import { writeRecord } from '../records.js';
-import type { IdeaInput, IdeaSelection } from '../select-idea/artifacts.js';
-import { capturedTransition, publishDocument } from '../source.js';
+import type { IdeaInput } from '../select-idea/artifacts.js';
+import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
+import {
+  applyTransition,
+  publishDocument,
+  readComments,
+  readIssue,
+  statusNameOf,
+  transitionInto,
+} from '../source.js';
 import {
   decisionArtifact,
   ideaDecisions,
@@ -41,24 +42,27 @@ import {
 } from './artifacts.js';
 
 /**
- * PublishDecision applies one terminal route to the source and records it. An approval publishes
- * the approved refined idea with the cycles used and the cumulative change summary, moves the item
- * to its configured approved state and leaves one handoff artifact referencing the shared issue
- * workspace and the retained artifacts it rests on. The three returns publish concise
- * human-facing feedback with the latest idea, the cycles used and the plain reason — unsuitable,
- * an essential author decision or exhausted attempts — and move the item to its configured
- * waiting-for-feedback state. Internal conversation stays in the cycle's artifacts. Publication
- * uses the captured selection snapshot without reading the issue or its conversation again.
- * Every human-facing comment reports the cycles used and what refinement changed, including a
- * return that stopped before a refined idea revision existed.
+ * RecordIdeaDecision composes and records the child's terminal decision without any source
+ * capability: the approval or return, the exact refined idea revision and editor turn it observed,
+ * the human-facing comment text and the handoff an approval leaves. PublishDecision is the
+ * parent-owned publication that reads the recorded decision and applies it to the source.
  */
 
+export type RecordIdeaDecisionSettings = {
+  /** The absolute selection-file path beside the queue's workflow-state file. */
+  readonly selectionFile: string;
+  /** The configured submitted status a returned idea names in its next step. */
+  readonly submittedStatus: string;
+  readonly publish: EventPublisher;
+};
+
 export type PublishDecisionSettings = {
-  /** The retained selection: the captured issue, transitions and shared workspace references. */
-  readonly selection: IdeaSelection;
-  /** The configured statuses the terminal routes move the item into and name back to. */
+  /** The retained selection identity the parent publishes for. */
+  readonly selection: Selection;
+  /** The refinement area holding the recorded decision. */
+  readonly refinementRoot: string;
+  /** The configured statuses the terminal routes move the item into. */
   readonly statuses: {
-    readonly submitted: string;
     readonly approved: string;
     readonly waitingForFeedback: string;
   };
@@ -222,28 +226,6 @@ function returnedComment(settings: {
   ].join('\n');
 }
 
-/** The permitted captured transition moving the item into the named status. */
-function transitionInto(selection: IdeaSelection, status: string): Result<JiraTransition> {
-  for (const value of selection.transitions.fromActive) {
-    const transition = capturedTransition(value);
-    if (transition !== null && transition.to.name === status) {
-      return ok(transition);
-    }
-  }
-  return fault(
-    `The selection captured for ${selection.taskKey} holds no transition into "${status}".`,
-  );
-}
-
-/** The captured conversation as provider comments. */
-function capturedComments(selection: IdeaSelection): JiraComment[] {
-  return selection.conversation.flatMap((value) =>
-    typeof value === 'object' && value !== null && typeof (value as JiraComment).id === 'string'
-      ? [value as JiraComment]
-      : [],
-  );
-}
-
 /** True when one Challenger result assessed exactly the supplied revision and editor response. */
 function binds(
   report: ChallengerReport,
@@ -293,56 +275,25 @@ async function handoffReferences(
   return { editorResponses, contributions, challengerResults };
 }
 
-/** Create PublishDecision over the retained selection and source it updates. */
-export function createPublishDecision(settings: PublishDecisionSettings): BoundAction {
-  const { selection, jira, publish } = settings;
-  const root = selection.workspace.root;
-
+/** Create RecordIdeaDecision over the parent selection and the refinement area it records. */
+export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): BoundAction {
   return async (input?: unknown) => {
     const decision = decisionOf(input);
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
+    const root = path.join(selection.workspace.root, 'refinement');
+    const inputRecord: IdeaInput = {
+      taskKey: selection.taskKey,
+      source: selection.source,
+      issue: selection.task,
+      conversation: [...selection.conversation],
+    };
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const terminal: IdeaTerminal = decision === 'approved' ? 'approved' : 'waiting-for-feedback';
     const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
-
-    /** Publish the outcome of the decision and its saved record. */
-    function reported(record: IdeaDecisionRecord, file: string): IdeaTerminal {
-      publishIdeaOutcome({
-        publish,
-        source: 'publish-decision',
-        taskKey: selection.taskKey,
-        cycle: plan.cycle,
-        outcome: terminal,
-        detail: record.decision,
-        artifact: file,
-      });
-      return terminal;
-    }
-
-    /** Write the approval's handoff for the reviewed revision. */
-    async function writeHandoff(revision: { readonly path: string }): Promise<void> {
-      const references = await handoffReferences(root, plan.submission, plan.cycle);
-      const framing = await readCycleArtifact(
-        ideaCycleDirectory(root, plan.submission, 1),
-        framingArtifact,
-      );
-      const handoff: IdeaHandoff = {
-        issue: { id: selection.source.issueId, key: selection.taskKey },
-        issueWorkspace: selection.issueWorkspace.root,
-        capturedInput: ideaSubmissionInputFile(root, plan.submission),
-        framing:
-          framing === null
-            ? null
-            : path.join(
-                ideaCycleDirectory(root, plan.submission, 1),
-                framingArtifact.pathFromArtifactsRoot,
-              ),
-        refinedIdea: revision.path,
-        ...references,
-        decision: decisionFile,
-      };
-      await writeRecord(path.join(root, ideaHandoffFile), handoff);
-    }
 
     const existing = await readSubmissionArtifact(root, plan.submission, decisionArtifact);
     if (existing !== null) {
@@ -352,15 +303,9 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
             `decision; it cannot also record "${decision}".`,
         );
       }
-      // The route's source updates are already saved; a repeated invocation completes any
-      // outstanding required output and reuses the record.
-      if (decision === 'approved' && existing.refinedIdea !== null) {
-        await writeHandoff({ path: existing.refinedIdea });
-      }
-      return reported(existing, decisionFile);
+      return reported(settings, existing, selection.taskKey, plan.cycle, decisionFile);
     }
 
-    const inputRecord = await readIdeaInput(root, plan.submission);
     const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
     const turn = await readCycleArtifact(cycleRoot, editorResponseArtifact);
     const turnFile =
@@ -445,8 +390,6 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
       throw new Error(`The "${decision}" return needs the plain reason it states.`);
     }
 
-    const targetStatus =
-      decision === 'approved' ? settings.statuses.approved : settings.statuses.waitingForFeedback;
     const text =
       decision === 'approved'
         ? approvedComment(revision!.value, plan.cycle)
@@ -457,24 +400,8 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
             decision,
             cycles: plan.cycle,
             reason: reason ?? '',
-            submittedStatus: settings.statuses.submitted,
+            submittedStatus: settings.submittedStatus,
           });
-    const comment = await publishDocument(
-      jira,
-      selection.source.issueId,
-      capturedComments(selection),
-      documentOf(text),
-    );
-
-    const transition = transitionInto(selection, targetStatus);
-    if (!transition.ok) {
-      throw new Error(transition.fault.message);
-    }
-    const applied = await jira.transitionIssue(selection.source.issueId, transition.value.id);
-    if (!applied.ok) {
-      throw new Error(applied.fault.message);
-    }
-
     const record: IdeaDecisionRecord = {
       decision,
       refinedIdea: revision?.path ?? null,
@@ -484,16 +411,123 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
         challenger === null ? null : path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot),
       reason,
       comment: text,
-      source: {
-        transition: { id: transition.value.id, to: targetStatus },
-        status: targetStatus,
-        commentId: typeof comment.id === 'string' ? comment.id : null,
-      },
+      // The parent-owned publication fills in the applied transition and comment identity.
+      source: null,
     };
     const file = await writeSubmissionArtifact(root, plan.submission, decisionArtifact, record);
     if (decision === 'approved' && revision !== null) {
-      await writeHandoff(revision);
+      await writeHandoff(selection, root, plan.submission, plan.cycle, revision.path, decisionFile);
     }
-    return reported(record, file);
+    return reported(settings, record, selection.taskKey, plan.cycle, file);
+  };
+}
+
+/** Publish the recorded decision's outcome and its saved record. */
+function reported(
+  settings: { readonly publish: EventPublisher },
+  record: IdeaDecisionRecord,
+  taskKey: string,
+  cycle: number,
+  file: string,
+): 'recorded' {
+  publishIdeaOutcome({
+    publish: settings.publish,
+    source: 'record-idea-decision',
+    taskKey,
+    cycle,
+    outcome: 'recorded',
+    detail: record.decision,
+    artifact: file,
+  });
+  return 'recorded';
+}
+
+/** Write the approval's handoff for the reviewed revision. */
+async function writeHandoff(
+  selection: Selection,
+  root: string,
+  submission: number,
+  cycle: number,
+  refinedIdea: string,
+  decisionFile: string,
+): Promise<void> {
+  const references = await handoffReferences(root, submission, cycle);
+  const framing = await readCycleArtifact(ideaCycleDirectory(root, submission, 1), framingArtifact);
+  const handoff: IdeaHandoff = {
+    issue: { id: selection.source.issueId, key: selection.taskKey },
+    issueWorkspace: selection.workspace.root,
+    capturedInput: ideaSubmissionInputFile(root, submission),
+    framing:
+      framing === null
+        ? null
+        : path.join(ideaCycleDirectory(root, submission, 1), framingArtifact.pathFromArtifactsRoot),
+    refinedIdea,
+    ...references,
+    decision: decisionFile,
+  };
+  await writeRecord(path.join(root, ideaHandoffFile), handoff);
+}
+
+/**
+ * Create the parent-owned idea publication: it reads the child's recorded decision, publishes the
+ * human-facing comment and the configured status transition, and stores the applied identities in
+ * the record. A repeated publication reuses the retained comment body and an already-applied
+ * status instead of duplicating either.
+ */
+export function createPublishDecision(settings: PublishDecisionSettings): BoundAction {
+  const { jira, publish } = settings;
+  return async () => {
+    const root = settings.refinementRoot;
+    const plan = await readIdeaPlan(root);
+    const record = await readSubmissionArtifact(root, plan.submission, decisionArtifact);
+    if (record === null) {
+      throw new Error(`Submission ${String(plan.submission)} has no recorded decision to publish.`);
+    }
+    const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
+    const target =
+      record.decision === 'approved'
+        ? settings.statuses.approved
+        : settings.statuses.waitingForFeedback;
+
+    const issue = await readIssue(jira, settings.selection.source.issueId);
+    const status = statusNameOf(issue);
+    let transitionId: string | null = null;
+    if (status !== target) {
+      const found = await transitionInto(jira, issue, target);
+      if (found.kind === 'blocked') {
+        publish({ source: 'publish-decision', type: 'failed', data: { reason: found.reason } });
+        return 'failed';
+      }
+      transitionId = found.transition.id;
+      await applyTransition(jira, issue.id, found.transition);
+    }
+    const comments = await readComments(jira, settings.selection.source.issueId);
+    const comment = await publishDocument(
+      jira,
+      settings.selection.source.issueId,
+      comments,
+      documentOf(record.comment),
+    );
+    const published: IdeaDecisionRecord = {
+      ...record,
+      source: {
+        transition: { id: transitionId ?? record.source?.transition.id ?? 'none', to: target },
+        status: target,
+        commentId: typeof comment.id === 'string' ? comment.id : null,
+      },
+    };
+    await writeSubmissionArtifact(root, plan.submission, decisionArtifact, published);
+    const terminal: IdeaTerminal =
+      record.decision === 'approved' ? 'approved' : 'waiting-for-feedback';
+    publishIdeaOutcome({
+      publish,
+      source: 'publish-decision',
+      taskKey: settings.selection.taskKey,
+      cycle: plan.cycle,
+      outcome: terminal,
+      detail: record.decision,
+      artifact: decisionFile,
+    });
+    return terminal;
   };
 }

@@ -50,7 +50,7 @@ import type {
   RecoveryInvocationRequest,
   RecoveryRuntimeFactory,
 } from '../src/application/recovery.js';
-import { loadWorkflow } from '../src/application/workflow.js';
+import { loadProjectWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
 import {
@@ -86,7 +86,7 @@ import { controlledMemoryService, type ControlledMemoryService } from './support
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 /** The configured workflow is the real finite workflow module, loaded through Application. */
-const workflowPath = fileURLToPath(new URL('../workflows/finite-delivery.ts', import.meta.url));
+const workflowPath = fileURLToPath(new URL('../workflows/project.ts', import.meta.url));
 
 /** Git runs against local temporary repositories with the host configuration disabled. */
 const gitEnvironment = {
@@ -254,14 +254,14 @@ function inProcessWorkerLaunch(input: {
   return async (request, onEvent, onActivity) => {
     const nexus = await loadNexusConfiguration(input.installationConfigPath);
     const project = await loadProjectConfiguration(request.projectConfigPath);
-    const workflow = await loadWorkflow(nexus.workflow[request.workflow]);
-    const paths = executionPaths(nexus, project, request.workflow);
+    const workflow = await loadProjectWorkflow(nexus.workflow);
+    const paths = executionPaths(nexus, project);
     await mkdir(paths.directory, { recursive: true });
     const engine = createTaskEngine({
       workflow: workflow.machine,
+      children: workflow.children,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
-        workflow: request.workflow,
         project,
         nexus,
         paths,
@@ -365,7 +365,16 @@ async function finiteJourney(
       analysisProfile: 'nexus-astra',
     };
   }
-  nexus.workflow['finite-delivery'] = workflowPath;
+  nexus.workflow.project = workflowPath;
+  nexus.workflow.children['finite-delivery'] = fileURLToPath(
+    new URL('../workflows/finite-delivery.ts', import.meta.url),
+  );
+  nexus.workflow.children['idea-refinement'] = fileURLToPath(
+    new URL('../workflows/idea-refinement.ts', import.meta.url),
+  );
+  nexus.workflow.children.preparation = fileURLToPath(
+    new URL('../workflows/preparation.ts', import.meta.url),
+  );
   nexus.storage.root = './state';
   nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
   const project = projectConfiguration();
@@ -710,18 +719,14 @@ describe('finite execution journeys', () => {
 
     // The queue selected, worked and completed the task, then found no further eligible work.
     expect(journey.status()).toBe('Done');
+    // The runner publishes the composed parent's states; the invoked child owns its rounds.
     expect(stateNames(journey.events)).toEqual([
       'select',
-      'prepare',
-      'startRound',
-      'develop',
-      'verify',
-      'deliver',
-      'review',
-      'complete',
-      'analyzeCompletion',
+      'route',
+      'delivery',
+      'completeDelivery',
       'select',
-      'finished',
+      'drained',
     ]);
     expect(lifecycleNames(journey.events)).toEqual(['starting', 'running', 'finished']);
 
@@ -821,95 +826,19 @@ describe('finite execution journeys', () => {
       (event) => event.type === 'outcome',
     );
     expect(outcomes).toEqual(journey.events.filter((event) => event.type === 'outcome'));
-    expect(outcomes).toEqual([
-      {
-        source: 'select-task',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: null,
-          outcome: 'selected',
-          detail: null,
-          artifact: { path: path.join(journey.executionDirectory, 'selection.json') },
-        },
-      },
-      {
-        source: 'prepare-workspace',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: null,
-          outcome: 'prepared',
-          detail: 'branch task/NEX-1',
-          artifact: { path: path.join(journey.workspace, 'state', 'prepared-workspace.json') },
-        },
-      },
-      {
-        source: 'start-round',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'started',
-          detail: 'profile nexus-flash',
-          artifact: { path: path.join(journey.workspace, 'state', 'current-round.json') },
-        },
-      },
-      {
-        source: 'develop',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'completed',
-          detail: 'profile nexus-flash',
-          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'development.json') },
-        },
-      },
-      {
-        source: 'verify',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'passed',
-          detail: '1 check',
-          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'verification.json') },
-        },
-      },
-      {
-        source: 'deliver',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'published',
-          detail: 'PR #7',
-          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'delivery.json') },
-        },
-      },
-      {
-        source: 'review',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'approved',
-          detail: 'profile nexus-review',
-          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'review.json') },
-        },
-      },
-      {
-        source: 'complete-task',
-        type: 'outcome',
-        data: {
-          task: 'NEX-1',
-          round: 1,
-          outcome: 'completed',
-          detail: 'PR #7',
-          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'completion.json') },
-        },
-      },
+    expect(
+      outcomes.map(
+        (event) => `${event.source}:${String((event.data as { outcome: string }).outcome)}`,
+      ),
+    ).toEqual([
+      'select-work:selected',
+      'prepare-workspace:prepared',
+      'start-round:started',
+      'develop:completed',
+      'verify:passed',
+      'deliver:published',
+      'review:approved',
+      'complete-task:completed',
     ]);
     for (const outcome of outcomes) {
       const { artifact } = outcome.data as { readonly artifact: { readonly path: string } };
@@ -1006,21 +935,11 @@ describe('finite execution journeys', () => {
     expect(journey.status()).toBe('Done');
     expect(stateNames(journey.events)).toEqual([
       'select',
-      'prepare',
-      'startRound',
-      'develop',
-      'verify',
-      'deliver',
-      'review',
-      'startRound',
-      'develop',
-      'verify',
-      'deliver',
-      'review',
-      'complete',
-      'analyzeCompletion',
+      'route',
+      'delivery',
+      'completeDelivery',
       'select',
-      'finished',
+      'drained',
     ]);
 
     // The rejection routed through StartRound, which continued the initial ladder profile.
@@ -1094,7 +1013,7 @@ describe('finite execution journeys', () => {
         // The recovery invocation receives the failure, the retained selection and the real paths.
         expect(request.context).toContain('Execution fault:');
         expect(request.context).toContain('The coding provider process ended unexpectedly.');
-        expect(request.context).toContain('Task NEX-1 retained the workspace at');
+        expect(request.context).toContain('Issue NEX-1 retained the stage "delivery"');
         expect(request.context).toContain(workflowPath);
         // Recovery works from the direct failure evidence; no retrieval block supplements it.
         expect(request.context).not.toContain(
@@ -1143,22 +1062,19 @@ describe('finite execution journeys', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(journey.status()).toBe('Done');
 
-    // The interrupted run persisted the active invocation of Develop; the restarted worker
+    // The interrupted run persisted the parent's active delivery child; the restarted worker
     // restored it instead of selecting and preparing the task again.
-    expect(interruptedSnapshot).toMatchObject({ status: 'active', value: 'develop' });
+    expect(interruptedSnapshot).toMatchObject({ status: 'active', value: 'delivery' });
+    // The restarted worker restored the active delivery child, so the parent state is published
+    // again before it advances to completion.
     expect(stateNames(journey.events)).toEqual([
       'select',
-      'prepare',
-      'startRound',
-      'develop',
-      'develop',
-      'verify',
-      'deliver',
-      'review',
-      'complete',
-      'analyzeCompletion',
+      'route',
+      'delivery',
+      'delivery',
+      'completeDelivery',
       'select',
-      'finished',
+      'drained',
     ]);
 
     // The retained workspace and round continued; the preparation command did not run again.

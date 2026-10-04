@@ -8,10 +8,6 @@ import { messageOf, type ArtifactRef, type Observer } from '../result.js';
 import { createAnalyzeExperience } from '../task-engine/actions/analyze-experience/index.js';
 import { readRecord } from '../task-engine/actions/records.js';
 import {
-  ideaSelectionDeclaration,
-  type IdeaSelection,
-} from '../task-engine/actions/select-idea/artifacts.js';
-import {
   selectionDeclaration,
   type Selection,
 } from '../task-engine/actions/select-task/artifacts.js';
@@ -232,21 +228,17 @@ export function createApplication(settings: ApplicationSettings): Application {
   };
 
   /** The retained selection's issue and workspace, or null when the record is not readable. */
-  async function retainedSelection(
-    selectionFile: string,
-    declaration: typeof selectionDeclaration | typeof ideaSelectionDeclaration,
-  ): Promise<RecoverySelection | null> {
+  async function retainedSelection(selectionFile: string): Promise<RecoverySelection | null> {
     try {
-      const selection = await readRecord(selectionFile, declaration);
+      const selection = await readRecord(selectionFile, selectionDeclaration);
       return selection === null
         ? null
         : {
             task: selection.taskKey,
             // The retained issue carries the Summary the recovery invocation's boundary shows.
-            summary: issueSummary('issue' in selection ? selection.issue : selection.task),
+            summary: issueSummary(selection.task),
             workspace: selection.workspace,
-            // Idea refinement retains the shared issue root its refinement area belongs to.
-            ...('issueWorkspace' in selection ? { issueWorkspace: selection.issueWorkspace } : {}),
+            stage: selection.stage,
           };
     } catch {
       return null;
@@ -264,11 +256,8 @@ export function createApplication(settings: ApplicationSettings): Application {
       const project = await loadProjectConfiguration(request.projectConfigPath);
       const workflowPath = nexus.workflow[request.workflow];
       const workflow = await loadWorkflow(workflowPath);
-      const paths = executionPaths(nexus, project, request.workflow);
-      const selection = {
-        declaration:
-          request.workflow === 'idea-refinement' ? ideaSelectionDeclaration : selectionDeclaration,
-      };
+      const paths = executionPaths(nexus, project);
+      const selection = { declaration: selectionDeclaration };
       // Open the log before the starting event and close it after finished on every exit path.
       const logDirectory = executionLogDirectory(paths.directory);
       const logFile = executionLogFile(logDirectory);
@@ -310,13 +299,7 @@ export function createApplication(settings: ApplicationSettings): Application {
                 ? Object.keys(value)
                 : [];
           const active = states.map((name) => workflow.machine.root.states[name]);
-          if (
-            active.some((state) =>
-              state?.invoke.some(
-                (invoke) => invoke.src === 'SelectTask' || invoke.src === 'SelectIdea',
-              ),
-            )
-          ) {
+          if (active.some((state) => state?.invoke.some((invoke) => invoke.src === 'SelectWork'))) {
             // Starting source access invalidates the previous queue item's ownership, even if
             // selection subsequently throws without publishing its failed outcome.
             progress.owned = null;
@@ -345,7 +328,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           return;
         }
         if (event.type === 'failed' || event.type === 'exhausted') {
-          if (event.source === 'select-task' || event.source === 'select-idea') {
+          if (event.source === 'select-work') {
             // The invocation's own selection failed; any retained selection belongs to another one.
             progress.owned = null;
             progress.captured = false;
@@ -361,7 +344,7 @@ export function createApplication(settings: ApplicationSettings): Application {
         if (task === null) {
           return;
         }
-        if (event.source === 'select-task' || event.source === 'select-idea') {
+        if (event.source === 'select-work') {
           if (data.outcome === 'selected') {
             progress.owned = { task };
             progress.captured = false;
@@ -454,7 +437,7 @@ export function createApplication(settings: ApplicationSettings): Application {
         failure: string,
         expectedTask: string,
       ): Promise<void> => {
-        let retained: Selection | IdeaSelection | null;
+        let retained: Selection | null;
         try {
           retained = await readRecord(paths.selectionFile, selection.declaration);
         } catch (error) {
@@ -475,11 +458,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           return;
         }
         try {
-          const handoff = await operationalErrorHandoff({
-            workflow: request.workflow,
-            selection: retained,
-            failure,
-          });
+          const handoff = await operationalErrorHandoff({ selection: retained, failure });
           const captured = await analysis.capture(handoff);
           if (captured.outcome === 'unavailable') {
             reportMemory(
@@ -530,7 +509,7 @@ export function createApplication(settings: ApplicationSettings): Application {
         // Work and recovery run sequentially: each invocation finishes before the next starts.
         for (;;) {
           resetAttemptProgress();
-          continuation = await retainedSelection(paths.selectionFile, selection.declaration);
+          continuation = await retainedSelection(paths.selectionFile);
           emitLifecycle('running', null);
           const completion = completionOf(
             await settings.launchWorker(
@@ -578,7 +557,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           const outcome = await recovery.recover({
             failure: completion.failure,
             output: completion.diagnostics,
-            selection: await retainedSelection(paths.selectionFile, selection.declaration),
+            selection: await retainedSelection(paths.selectionFile),
           });
           if (outcome.kind === 'resume') {
             continue;

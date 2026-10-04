@@ -10,7 +10,6 @@ import {
   type GitHubReview,
   type PullRequestConversation,
 } from '../../../adapters/github.js';
-import type { JiraAdapter, JiraComment } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
 import {
   actionOutcomeEvent,
@@ -30,9 +29,9 @@ import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
-import { readRequiredRecord, writeRecord } from '../records.js';
+import { readRequiredRecord } from '../records.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
-import { issueSummary, publishComment, readComments, readIssue } from '../source.js';
+import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
@@ -105,7 +104,6 @@ export type ReviewSettings = {
   readonly runner: AgentRoleRunner;
   readonly git: GitAdapter;
   readonly github: GitHubAdapter;
-  readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
 
@@ -287,16 +285,6 @@ function validateResponse(response: ReviewResponse, priorFindings: readonly Find
   }
 }
 
-/** The ticket comment: the profile, the verdict, what was missed and what to improve. */
-function reviewComment(review: ReviewOutput): string {
-  return [
-    `profile: ${review.profile}`,
-    `Review verdict: ${review.verdict}.`,
-    review.summary,
-    ...review.findings.map((finding) => `- ${finding.title}: ${finding.repairGuidance}`),
-  ].join('\n');
-}
-
 /** The report shape, finding definitions and identity, disposition and verdict rules. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
 {"verdict":"approved"|"changesRequested"|"inconclusive","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"id":"<task-stable finding ID>","title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}],"priorFindings":[{"findingId":"<eligible prior finding ID>","disposition":"resolved"|"open"|"withdrawn","reason":"<the current implementation and developer response that support the disposition>"}]}
@@ -333,7 +321,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       deliveryArtifact,
     );
     const [recorded] = await helpers.readOptionalInputArtifacts(reviewArtifact);
-    const issueId = selection.source.issueId;
     const roundFile = path.join(root, currentRoundFile);
     const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
 
@@ -360,11 +347,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
      * the check by the Nexus Lens producer, the configured name, a completed status and the
      * verdict's conclusion. Only the missing part of the publication is written.
      */
-    async function publishReport(
-      review: ReviewOutput,
-      conversation: PullRequestConversation,
-      comments: readonly JiraComment[],
-    ) {
+    async function publishReport(review: ReviewOutput, conversation: PullRequestConversation) {
       const checks = await readChecks(settings.github, settings.repository, review.headRevision);
       const reviewPublished = conversation.reviews.some((candidate) =>
         isPublishedReview(candidate, review, settings.nexusLens.login),
@@ -393,7 +376,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
           throw new Error(publishedCheck.fault.message);
         }
       }
-      await publishComment(settings.jira, issueId, comments, reviewComment(review));
+      // Ticket feedback is published by the parent-owned boundary actor, not this child.
     }
 
     /** Report the outcome referencing the current round's saved review report. */
@@ -415,7 +398,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
     // publication for that exact head instead of reviewing again. A report for another revision
     // is not evidence for this one.
     if (recorded !== null && recorded.headRevision === reviewedHead) {
-      const comments = await readComments(settings.jira, issueId);
       const conversation = await settings.github.readConversation(
         settings.repository,
         delivery.pullRequestNumber,
@@ -423,7 +405,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       if (!conversation.ok) {
         throw new Error(conversation.fault.message);
       }
-      await publishReport(recorded, conversation.value, comments);
+      await publishReport(recorded, conversation.value);
       report(recorded);
       return recorded.verdict;
     }
@@ -441,16 +423,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
           `${reviewedHead}.`,
       );
     }
-
-    const issue = await readIssue(settings.jira, issueId);
-    const comments = await readComments(settings.jira, issueId);
-    // The selection owns the task and conversation; refresh them in place, preserving the selected
-    // identity and the retained workspace reference.
-    await writeRecord(settings.selectionFile, {
-      ...selection,
-      task: issue,
-      conversation: comments,
-    });
 
     const conversation = await settings.github.readConversation(
       settings.repository,
@@ -477,10 +449,10 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const priorFindings = priorReview?.value.findings ?? [];
 
     const context = [
-      `Task ${selection.taskKey} (Jira issue ${issue.id}):`,
-      JSON.stringify(issue, null, 2),
+      `Task ${selection.taskKey}:`,
+      JSON.stringify(selection.task, null, 2),
       `Complete task conversation (saved in the local selection record ${settings.selectionFile}):\n${JSON.stringify(
-        comments,
+        selection.conversation,
         null,
         2,
       )}`,
@@ -505,7 +477,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       context,
       outputSchema: z.toJSONSchema(reviewResponseSchema),
       task: selection.taskKey,
-      summary: issueSummary(issue),
+      summary: issueSummary(selection.task),
     });
     if (!result.ok) {
       throw new Error(result.fault.message);
@@ -531,7 +503,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     const review: ReviewOutput = {
-      taskSubject: issueSummary(issue) ?? selection.taskKey,
+      taskSubject: issueSummary(selection.task) ?? selection.taskKey,
       profile: settings.reviewerProfile,
       headRevision: reviewedHead,
       ...response,
@@ -540,7 +512,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       findings: response.findings.map(toFinding),
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
-    await publishReport(review, conversation.value, comments);
+    await publishReport(review, conversation.value);
     report(review);
     return review.verdict;
   };

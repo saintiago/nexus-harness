@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { createAgentRuntime, type AgentResult, type IdeaRole } from '../agent-runtime/index.js';
 import type { CodingRuntime } from '../adapters/coding-runtime.js';
 import type { GitAdapter } from '../adapters/git.js';
@@ -8,10 +9,11 @@ import type {
   ProcessOutputObserver,
   ProcessResult,
 } from '../adapters/processes.js';
-import type {
-  NexusConfiguration,
-  ProjectConfiguration,
-  WorkflowName,
+import {
+  preparationStages,
+  type NexusConfiguration,
+  type PreparationStage,
+  type ProjectConfiguration,
 } from '../configuration/index.js';
 import { messageOf } from '../result.js';
 import {
@@ -30,22 +32,38 @@ import { createCompleteTask } from '../task-engine/actions/complete-task/index.j
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
 import { createDevelop } from '../task-engine/actions/develop/index.js';
 import { createIdeaEditor } from '../task-engine/actions/idea-editor/index.js';
+import {
+  createPrepareArea,
+  type PreparationArea,
+} from '../task-engine/actions/preparation/prepare-stage/index.js';
+import { createRecordStageReturn } from '../task-engine/actions/preparation/record-stage-return/index.js';
+import { createStageAuthor } from '../task-engine/actions/preparation/stage-author/index.js';
+import { createStageEvaluator } from '../task-engine/actions/preparation/stage-evaluator/index.js';
+import { createStageResult } from '../task-engine/actions/preparation/stage-result/index.js';
+import { createStartStageRound } from '../task-engine/actions/preparation/start-stage-round/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
 import { createProjectGuide } from '../task-engine/actions/project-guide/index.js';
-import { createPublishDecision } from '../task-engine/actions/publish-decision/index.js';
+import { createCompleteDelivery } from '../task-engine/actions/project/complete-delivery/index.js';
+import { createImplementationHandoff } from '../task-engine/actions/project/implementation-handoff/index.js';
+import { createPublishPreparation } from '../task-engine/actions/project/publish-preparation/index.js';
+import { createRouteSelection } from '../task-engine/actions/project/route-selection/index.js';
+import {
+  createPublishDeliveryReport,
+  createPublishReviewFeedback,
+  createRefreshTaskInput,
+} from '../task-engine/actions/project/source-boundaries/index.js';
+import {
+  createPublishDecision,
+  createRecordIdeaDecision,
+} from '../task-engine/actions/publish-decision/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { createResearcher } from '../task-engine/actions/researcher/index.js';
 import { createReview } from '../task-engine/actions/review/index.js';
-import { createSelectIdea } from '../task-engine/actions/select-idea/index.js';
-import {
-  ideaSelectionDeclaration,
-  type IdeaSelection,
-} from '../task-engine/actions/select-idea/artifacts.js';
+import { createSelectWork } from '../task-engine/actions/select-work/index.js';
 import {
   selectionDeclaration,
   type Selection,
 } from '../task-engine/actions/select-task/artifacts.js';
-import { createSelectTask } from '../task-engine/actions/select-task/index.js';
 import { createStartIdeaRound } from '../task-engine/actions/start-idea-round/index.js';
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
@@ -59,15 +77,15 @@ import {
 import {
   finiteDeliveryHandoff,
   finiteTerminalOf,
-  ideaRefinementHandoff,
-  ideaTerminalOf,
+  ideaPublicationHandoff,
+  ideaPublicationTerminals,
 } from './analysis-handoff.js';
 
 /**
- * The worker's action binding: Application assembles the implementations the workflow invokes from
- * resolved configuration and the worker's components. Workspace-scoped actions resolve the task
- * workspace of the current selection when they run, because one worker execution processes several
- * tasks and each selection retains its own workspace.
+ * The worker's action binding: Application assembles every operation the project parent and its
+ * invoked children use from resolved configuration and the worker's components. Workspace-scoped
+ * operations resolve the selected issue's workspace when they run; one worker execution processes
+ * several issues and each selection retains its own workspace.
  */
 
 /** The Processes adapter capability the actions run configured commands with. */
@@ -78,8 +96,6 @@ export type CommandExecution = (
 
 /** What the worker supplies the action binding: resolved settings, components and paths. */
 export type ActionBindingSettings = {
-  /** The workflow this binding assembles the actions for. */
-  readonly workflow: WorkflowName;
   readonly project: ProjectConfiguration;
   readonly nexus: NexusConfiguration;
   readonly paths: ExecutionPaths;
@@ -97,9 +113,9 @@ export type ActionBindingSettings = {
 };
 
 /**
- * Bind the selected workflow's operations to their action implementations. Each agent-backed
- * action receives its role's agent runner, which carries the invocation's identity and its
- * attributable activity on the engine's separate activity channel.
+ * Bind the project parent's operations and its children's operations to their implementations.
+ * Each agent-backed action receives its role's runner, which carries the invocation's identity and
+ * its attributable activity on the engine's separate activity channel.
  */
 export function createActionBinding(
   settings: ActionBindingSettings,
@@ -107,10 +123,435 @@ export function createActionBinding(
   publish: EventPublisher,
   publishActivity: AgentActivityPublisher,
 ) => Readonly<Record<string, BoundAction>> {
-  return (publish, publishActivity) =>
-    settings.workflow === 'idea-refinement'
-      ? ideaRefinementActions(settings, publish, publishActivity)
-      : finiteDeliveryActions(settings, publish, publishActivity);
+  return (publish, publishActivity) => {
+    const { project, nexus, paths } = settings;
+    const { taskSource } = project;
+    const { selectionFile } = paths;
+
+    /** The parent's retained selection, resolved when an action runs. */
+    const selected = async (): Promise<Selection> =>
+      readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
+
+    /** An action constructed with the retained selection when it is invoked. */
+    const withSelection = (create: (selection: Selection) => BoundAction): BoundAction => {
+      return async (input?: unknown) => create(await selected())(input);
+    };
+
+    // One runner per role: a profile selected for several roles carries only the invoked role's
+    // constant instructions.
+    const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
+    const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
+    const editorRunner = agentRunnerFor(settings, publish, publishActivity, 'idea-editor');
+    const researcherRunner = agentRunnerFor(settings, publish, publishActivity, 'researcher');
+    const projectGuideRunner = agentRunnerFor(settings, publish, publishActivity, 'project-guide');
+    const challengerRunner = agentRunnerFor(settings, publish, publishActivity, 'challenger');
+
+    // The four evaluated preparation stages each carry their own author and evaluator roles.
+    const stageAuthors = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        agentRunnerFor(settings, publish, publishActivity, stageAuthorRole(stage)),
+      ]),
+    ) as Record<PreparationStage, AgentRoleRunner>;
+    const stageEvaluators = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        agentRunnerFor(settings, publish, publishActivity, stageEvaluatorRole(stage)),
+      ]),
+    ) as Record<PreparationStage, AgentRoleRunner>;
+
+    /** The operation's stage input, or an execution error naming the unknown value. */
+    function stageOfInput(input: unknown): PreparationStage {
+      const stage =
+        typeof input === 'object' && input !== null
+          ? (input as { readonly stage?: unknown }).stage
+          : undefined;
+      const found = preparationStages.find((candidate) => candidate === stage);
+      if (found === undefined) {
+        throw new Error(
+          `The preparation workflow supplied the unknown stage ${JSON.stringify(stage)}.`,
+        );
+      }
+      return found;
+    }
+
+    /** Dispatch one stage operation to the area action of the stage the workflow supplied. */
+    const forStage = (actions: Readonly<Record<PreparationStage, BoundAction>>): BoundAction => {
+      return async (input?: unknown) => actions[stageOfInput(input)](input);
+    };
+
+    const prepareAreas: Readonly<Record<PreparationArea, BoundAction>> = {
+      requirements: createPrepareArea({
+        selectionFile,
+        area: 'requirements',
+        repository: project.repository,
+        git: settings.git,
+        publish,
+      }),
+      ux: createPrepareArea({
+        selectionFile,
+        area: 'ux',
+        repository: project.repository,
+        git: settings.git,
+        publish,
+      }),
+      prototype: createPrepareArea({
+        selectionFile,
+        area: 'prototype',
+        repository: project.repository,
+        git: settings.git,
+        publish,
+      }),
+      architecture: createPrepareArea({
+        selectionFile,
+        area: 'architecture',
+        repository: project.repository,
+        git: settings.git,
+        publish,
+      }),
+      refinement: createPrepareArea({
+        selectionFile,
+        area: 'refinement',
+        repository: project.repository,
+        git: settings.git,
+        publish,
+      }),
+    };
+
+    const stageRounds = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createStartStageRound({
+          selectionFile,
+          stage,
+          profiles: {
+            author: nexus.preparation.profiles[stage].author,
+            evaluator: nexus.preparation.profiles[stage].evaluator,
+          },
+          maxRounds: nexus.preparation.maxRounds,
+          publish,
+        }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+
+    const stageAuthorActions = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createStageAuthor({ selectionFile, stage, runner: stageAuthors[stage], publish }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+
+    const stageEvaluatorActions = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createStageEvaluator({ selectionFile, stage, runner: stageEvaluators[stage], publish }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+
+    const stageReturnActions = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createRecordStageReturn({
+          selectionFile,
+          stage,
+          maxUpstreamReturns: nexus.preparation.maxUpstreamReturns,
+          publish,
+        }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+
+    const stageResultActions = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createStageResult({ selectionFile, stage, publish }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+
+    // The worker records terminal handoffs; Application supervises the action's analysis, memory
+    // calls and submission, so this instance never contacts the service or a provider.
+    const analyzeExperience = createAnalyzeExperienceAction({
+      owner: createAnalyzeExperience(experienceCaptureSettings(nexus, paths, taskSource.project)),
+      publish,
+    });
+
+    /**
+     * AnalyzeExperience's binding: resolve the selected issue and the producer-owned evidence of
+     * the terminal handoff the workflow state supplied, then record it once. Idea terminals record
+     * the parent's publication; finite terminals record the child's completion evidence.
+     */
+    const experienceAction: BoundAction = async (input?: unknown) => {
+      if (!analysisEnabled(nexus)) {
+        return 'skipped';
+      }
+      const terminal =
+        typeof input === 'object' && input !== null
+          ? (input as { readonly terminal?: unknown }).terminal
+          : undefined;
+      try {
+        const selection = await selected();
+        if (
+          typeof terminal === 'string' &&
+          ideaPublicationTerminals.some((candidate) => candidate === terminal)
+        ) {
+          const handoff = await ideaPublicationHandoff({
+            selection,
+            terminal: terminal as (typeof ideaPublicationTerminals)[number],
+          });
+          return await analyzeExperience(handoff);
+        }
+        return await analyzeExperience(
+          await finiteDeliveryHandoff({ selection, terminal: finiteTerminalOf(input) }),
+        );
+      } catch (error) {
+        return captureUnavailable(publish, terminal, error);
+      }
+    };
+
+    const implementation = taskSource.implementation;
+    const handoffAction: BoundAction = async () => {
+      if (implementation === undefined) {
+        throw new Error(
+          'The Architecture handoff requires the project implementation-ticket settings.',
+        );
+      }
+      return createImplementationHandoff({
+        selectionFile,
+        repository: project.delivery.repository,
+        baseBranch: project.delivery.baseBranch,
+        implementation: {
+          issueType: implementation.issueType,
+          labels: implementation.labels,
+          status: implementation.status,
+          linkType: implementation.linkType,
+        },
+        doneStatus: taskSource.statuses.done,
+        completion: project.delivery.completion,
+        git: settings.git,
+        github: settings.github,
+        jira: settings.jira,
+        publish,
+        wait: settings.wait,
+      })();
+    };
+
+    return {
+      // ---- parent-owned source operations ----
+      SelectWork: createSelectWork({
+        selectionFile,
+        workspaceRoot: workspaceRoot(nexus),
+        project: taskSource.project,
+        selection: taskSource.selection,
+        ideas: taskSource.ideas.selection,
+        statuses: taskSource.statuses,
+        preparation: taskSource.preparation,
+        ideaStatuses: taskSource.ideas.statuses,
+        workspacePointerField: taskSource.fields.workspacePointer,
+        jira: settings.jira,
+        publish,
+      }),
+      RouteSelection: createRouteSelection({ selectionFile }),
+      PublishIdeaResult: withSelection((selection) =>
+        createPublishDecision({
+          selection,
+          refinementRoot: path.join(selection.workspace.root, 'refinement'),
+          statuses: {
+            approved: taskSource.ideas.statuses.approved,
+            waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
+          },
+          jira: settings.jira,
+          publish,
+        }),
+      ),
+      PublishPreparationResult: createPublishPreparation({
+        selectionFile,
+        statuses: taskSource.preparation?.statuses,
+        waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
+        ideaSubmitted: taskSource.ideas.statuses.submitted,
+        jira: settings.jira,
+        publish,
+      }),
+      HandoffImplementation: handoffAction,
+      CompleteDelivery: createCompleteDelivery({
+        selectionFile,
+        doneStatus: taskSource.statuses.done,
+        jira: settings.jira,
+        publish,
+      }),
+      // ---- parent-owned finite-delivery boundary actors ----
+      RefreshTaskInput: createRefreshTaskInput({
+        selectionFile,
+        jira: settings.jira,
+        publish,
+      }),
+      PublishDeliveryReport: createPublishDeliveryReport({
+        selectionFile,
+        pullRequestField: taskSource.fields.pullRequest,
+        reviewStatus: taskSource.statuses.review,
+        jira: settings.jira,
+        publish,
+      }),
+      PublishReviewFeedback: createPublishReviewFeedback({
+        selectionFile,
+        jira: settings.jira,
+        publish,
+      }),
+      // ---- idea refinement child ----
+      PrepareIdeaWorkspace: prepareAreas.refinement,
+      StartIdeaRound: withSelection((selection) =>
+        createStartIdeaRound({
+          workspace: { root: path.join(selection.workspace.root, 'refinement') },
+          input: {
+            taskKey: selection.taskKey,
+            source: selection.source,
+            issue: selection.task,
+            conversation: [...selection.conversation],
+          },
+          profiles: ideaProfiles(nexus),
+          maxCycles: nexus.ideaRefinement.maxCycles,
+          publish,
+        }),
+      ),
+      IdeaEditor: withSelection((selection) =>
+        createIdeaEditor({
+          workspace: { root: path.join(selection.workspace.root, 'refinement') },
+          runner: editorRunner,
+          publish,
+        }),
+      ),
+      Researcher: withSelection((selection) =>
+        createResearcher({
+          workspace: { root: path.join(selection.workspace.root, 'refinement') },
+          runner: researcherRunner,
+          publish,
+        }),
+      ),
+      ProjectGuide: withSelection((selection) =>
+        createProjectGuide({
+          workspace: { root: path.join(selection.workspace.root, 'refinement') },
+          runner: projectGuideRunner,
+          publish,
+        }),
+      ),
+      Challenger: withSelection((selection) =>
+        createChallenger({
+          workspace: { root: path.join(selection.workspace.root, 'refinement') },
+          runner: challengerRunner,
+          publish,
+        }),
+      ),
+      RecordIdeaDecision: createRecordIdeaDecision({
+        selectionFile,
+        submittedStatus: taskSource.ideas.statuses.submitted,
+        publish,
+      }),
+      // ---- evaluated preparation child ----
+      PrepareStage: forStage(
+        Object.fromEntries(
+          preparationStages.map((stage) => [stage, prepareAreas[stage]]),
+        ) as Record<PreparationStage, BoundAction>,
+      ),
+      StartStageRound: forStage(stageRounds),
+      StageAuthor: forStage(stageAuthorActions),
+      StageEvaluator: forStage(stageEvaluatorActions),
+      RecordStageReturn: forStage(stageReturnActions),
+      StageResult: forStage(stageResultActions),
+      // ---- finite delivery child ----
+      PrepareWorkspace: createPrepareWorkspace({
+        selectionFile,
+        repository: project.repository,
+        preparation: project.preparation,
+        environment: settings.commandEnvironment,
+        git: settings.git,
+        runCommand: settings.runCommand,
+        publish,
+      }),
+      StartRound: withSelection((selection) =>
+        createStartRound({
+          taskKey: selection.taskKey,
+          workspace: selection.workspace,
+          developerLadder: nexus.executionPolicy.developerLadder,
+          publish,
+        }),
+      ),
+      Develop: createDevelop({
+        selectionFile,
+        runner: developerRunner,
+        git: settings.git,
+        publish,
+      }),
+      Verify: withSelection((selection) =>
+        createVerify({
+          workspace: selection.workspace,
+          checks: project.checks,
+          environment: settings.commandEnvironment,
+          git: settings.git,
+          runCommand: settings.runCommand,
+          publish,
+        }),
+      ),
+      Review: createReview({
+        selectionFile,
+        repository: project.delivery.repository,
+        reviewCheck: project.delivery.reviewCheck,
+        nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
+        reviewerProfile: nexus.executionPolicy.reviewerProfile,
+        runner: reviewerRunner,
+        git: settings.git,
+        github: settings.github,
+        publish,
+      }),
+      Deliver: createDeliver({
+        selectionFile,
+        repository: project.delivery.repository,
+        baseBranch: project.delivery.baseBranch,
+        git: settings.git,
+        github: settings.github,
+        publish,
+        wait: settings.wait,
+      }),
+      CompleteTask: createCompleteTask({
+        selectionFile,
+        repository: project.delivery.repository,
+        reviewCheck: project.delivery.reviewCheck,
+        nexusLens: { appId: nexus.nexusLens.appId },
+        postMergeChecks: project.delivery.postMergeChecks,
+        completion: project.delivery.completion,
+        github: settings.github,
+        publish,
+        wait: settings.wait,
+      }),
+      // ---- shared terminal handoff ----
+      AnalyzeExperience: experienceAction,
+    };
+  };
+}
+
+/** The agent role profile name one stage author uses. */
+function stageAuthorRole(stage: PreparationStage): ProfileRole {
+  switch (stage) {
+    case 'requirements':
+      return 'requirements-author';
+    case 'ux':
+      return 'ux-author';
+    case 'prototype':
+      return 'prototype-author';
+    case 'architecture':
+      return 'architecture-author';
+  }
+}
+
+/** The agent role profile name one stage evaluator uses. */
+function stageEvaluatorRole(stage: PreparationStage): ProfileRole {
+  switch (stage) {
+    case 'requirements':
+      return 'requirements-evaluator';
+    case 'ux':
+      return 'ux-evaluator';
+    case 'prototype':
+      return 'prototype-evaluator';
+    case 'architecture':
+      return 'architecture-evaluator';
+  }
 }
 
 /**
@@ -163,142 +604,6 @@ function agentRunnerFor(
   };
 }
 
-/** The finite delivery workflow's bound operations. */
-function finiteDeliveryActions(
-  settings: ActionBindingSettings,
-  publish: EventPublisher,
-  publishActivity: AgentActivityPublisher,
-): Readonly<Record<string, BoundAction>> {
-  const { project, nexus, paths } = settings;
-  const { selectionFile } = paths;
-  // One runner per role: a profile selected for several roles carries only the invoked role's
-  // constant instructions.
-  const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
-  const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
-  // The worker records terminal handoffs; Application supervises the action's analysis, memory
-  // calls and submission, so this instance never contacts the service or a provider.
-  const analyzeExperience = createAnalyzeExperienceAction({
-    owner: createAnalyzeExperience(
-      experienceCaptureSettings(nexus, paths, project.taskSource.project),
-    ),
-    publish,
-  });
-
-  /**
-   * AnalyzeExperience's binding: resolve the selected work item and the producer-owned evidence of
-   * the terminal handoff the workflow state supplied, then record it once.
-   */
-  const experienceAction: BoundAction = async (input?: unknown) => {
-    const terminal = finiteTerminalOf(input);
-    if (!analysisEnabled(nexus)) {
-      // Disabled memory discovers nothing and records nothing.
-      return 'skipped';
-    }
-    try {
-      const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
-      return await analyzeExperience(await finiteDeliveryHandoff({ selection, terminal }));
-    } catch (error) {
-      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
-      // terminal outcome the workflow preserves.
-      return captureUnavailable(publish, terminal, error);
-    }
-  };
-
-  /** An action constructed with the selection the workflow currently retains. */
-  const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
-    return async () => {
-      const selection = await readRequiredRecord(selectionFile, selectionDeclaration, 'Selection');
-      return create(selection)();
-    };
-  };
-
-  const { taskSource, repository, checks, preparation, delivery } = project;
-  return {
-    SelectTask: createSelectTask({
-      selectionFile,
-      workspaceRoot: workspaceRoot(nexus),
-      project: taskSource.project,
-      selection: taskSource.selection,
-      statuses: taskSource.statuses,
-      workspacePointerField: taskSource.fields.workspacePointer,
-      jira: settings.jira,
-      publish,
-    }),
-    PrepareWorkspace: createPrepareWorkspace({
-      selectionFile,
-      repository,
-      preparation,
-      environment: settings.commandEnvironment,
-      git: settings.git,
-      runCommand: settings.runCommand,
-      publish,
-    }),
-    StartRound: selectedWorkspace((selection) =>
-      createStartRound({
-        taskKey: selection.taskKey,
-        workspace: selection.workspace,
-        developerLadder: nexus.executionPolicy.developerLadder,
-        publish,
-      }),
-    ),
-    Develop: createDevelop({
-      selectionFile,
-      runner: developerRunner,
-      git: settings.git,
-      jira: settings.jira,
-      publish,
-    }),
-    Verify: selectedWorkspace((selection) =>
-      createVerify({
-        workspace: selection.workspace,
-        checks,
-        environment: settings.commandEnvironment,
-        git: settings.git,
-        runCommand: settings.runCommand,
-        publish,
-      }),
-    ),
-    Review: createReview({
-      selectionFile,
-      repository: delivery.repository,
-      reviewCheck: delivery.reviewCheck,
-      nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
-      reviewerProfile: nexus.executionPolicy.reviewerProfile,
-      runner: reviewerRunner,
-      git: settings.git,
-      github: settings.github,
-      jira: settings.jira,
-      publish,
-    }),
-    Deliver: createDeliver({
-      selectionFile,
-      repository: delivery.repository,
-      baseBranch: delivery.baseBranch,
-      pullRequestField: taskSource.fields.pullRequest,
-      reviewStatus: taskSource.statuses.review,
-      git: settings.git,
-      github: settings.github,
-      jira: settings.jira,
-      publish,
-      wait: settings.wait,
-    }),
-    CompleteTask: createCompleteTask({
-      selectionFile,
-      repository: delivery.repository,
-      reviewCheck: delivery.reviewCheck,
-      nexusLens: { appId: nexus.nexusLens.appId },
-      postMergeChecks: delivery.postMergeChecks,
-      completion: delivery.completion,
-      doneStatus: taskSource.statuses.done,
-      github: settings.github,
-      jira: settings.jira,
-      publish,
-      wait: settings.wait,
-    }),
-    AnalyzeExperience: experienceAction,
-  };
-}
-
 /** Whether the configured memory integration records and analyzes terminal handoffs at all. */
 function analysisEnabled(nexus: NexusConfiguration): boolean {
   const memory = nexus.memory;
@@ -312,7 +617,7 @@ function analysisEnabled(nexus: NexusConfiguration): boolean {
  */
 function captureUnavailable(
   publish: EventPublisher,
-  terminal: string,
+  terminal: unknown,
   error: unknown,
 ): 'unavailable' {
   try {
@@ -355,116 +660,5 @@ function ideaProfiles(nexus: NexusConfiguration): Readonly<Record<IdeaRole, stri
     researcher,
     'project-guide': projectGuide,
     challenger,
-  };
-}
-
-/**
- * The idea refinement workflow's bound operations. Every workspace-scoped operation resolves the
- * retained idea selection when it runs, so one worker run keeps working on the same captured issue.
- */
-function ideaRefinementActions(
-  settings: ActionBindingSettings,
-  publish: EventPublisher,
-  publishActivity: AgentActivityPublisher,
-): Readonly<Record<string, BoundAction>> {
-  const { project, nexus, paths } = settings;
-  const { selectionFile } = paths;
-  const { taskSource } = project;
-
-  /** The idea selection the workflow currently retains. */
-  const selectedIdea = async (): Promise<IdeaSelection> =>
-    readRequiredRecord(selectionFile, ideaSelectionDeclaration, 'Selection');
-
-  /** An action constructed with the retained idea selection when it is invoked. */
-  const withSelection = (create: (selection: IdeaSelection) => BoundAction): BoundAction => {
-    return async (input?: unknown) => create(await selectedIdea())(input);
-  };
-
-  /** An idea role action bound to the refinement area of the retained selection. */
-  const forSelection = (create: (workspace: { readonly root: string }) => BoundAction) =>
-    withSelection((selection) => create(selection.workspace));
-
-  // One runner per idea role: the profile selected for the role carries its constant instructions.
-  const editorRunner = agentRunnerFor(settings, publish, publishActivity, 'idea-editor');
-  const researcherRunner = agentRunnerFor(settings, publish, publishActivity, 'researcher');
-  const projectGuideRunner = agentRunnerFor(settings, publish, publishActivity, 'project-guide');
-  const challengerRunner = agentRunnerFor(settings, publish, publishActivity, 'challenger');
-
-  /** Record one idea-refinement terminal handoff once, as the finite delivery binding does. */
-  const analyzeExperience = createAnalyzeExperienceAction({
-    owner: createAnalyzeExperience(experienceCaptureSettings(nexus, paths, taskSource.project)),
-    publish,
-  });
-  const experienceAction: BoundAction = async (input?: unknown) => {
-    const terminal = ideaTerminalOf(input);
-    if (!analysisEnabled(nexus)) {
-      // Disabled memory discovers nothing and records nothing.
-      return 'skipped';
-    }
-    try {
-      const selection = await selectedIdea();
-      return await analyzeExperience(await ideaRefinementHandoff({ selection, terminal }));
-    } catch (error) {
-      // Recording is supplemental: a selection or evidence-discovery failure cannot replace the
-      // terminal outcome the workflow preserves.
-      return captureUnavailable(publish, terminal, error);
-    }
-  };
-
-  return {
-    SelectIdea: createSelectIdea({
-      selectionFile,
-      workspaceRoot: workspaceRoot(nexus),
-      project: taskSource.project,
-      selection: taskSource.ideas.selection,
-      statuses: {
-        submitted: taskSource.ideas.statuses.submitted,
-        active: taskSource.ideas.statuses.active,
-      },
-      workspacePointerField: taskSource.fields.workspacePointer,
-      repository: project.repository,
-      git: settings.git,
-      jira: settings.jira,
-      publish,
-    }),
-    StartIdeaRound: withSelection((selection) =>
-      createStartIdeaRound({
-        workspace: selection.workspace,
-        input: {
-          taskKey: selection.taskKey,
-          source: selection.source,
-          issue: selection.issue,
-          conversation: selection.conversation,
-        },
-        profiles: ideaProfiles(nexus),
-        maxCycles: nexus.ideaRefinement.maxCycles,
-        publish,
-      }),
-    ),
-    IdeaEditor: forSelection((workspace) =>
-      createIdeaEditor({ workspace, runner: editorRunner, publish }),
-    ),
-    Researcher: forSelection((workspace) =>
-      createResearcher({ workspace, runner: researcherRunner, publish }),
-    ),
-    ProjectGuide: forSelection((workspace) =>
-      createProjectGuide({ workspace, runner: projectGuideRunner, publish }),
-    ),
-    Challenger: forSelection((workspace) =>
-      createChallenger({ workspace, runner: challengerRunner, publish }),
-    ),
-    PublishDecision: withSelection((selection) =>
-      createPublishDecision({
-        selection,
-        statuses: {
-          submitted: taskSource.ideas.statuses.submitted,
-          approved: taskSource.ideas.statuses.approved,
-          waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
-        },
-        jira: settings.jira,
-        publish,
-      }),
-    ),
-    AnalyzeExperience: experienceAction,
   };
 }

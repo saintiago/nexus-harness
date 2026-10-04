@@ -15,7 +15,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 | Subject | Behavior to verify | Supplied dependencies |
 | --- | --- | --- |
 | Application | Commands, configuration paths, exit codes, recovery invocation and resume/attention decisions within the allowance | Arguments, configuration, work/recovery results and notification responses |
-| SelectTask | Source ordering, eligibility and continuation decisions | Issue data and retained selection |
+| SelectWork | Source ordering, eligibility, stage mapping and continuation decisions | Issue data and retained selection |
 | StartDevRound | Initial profile, repair triggers, executed-turn counting, changes-requested promotion, no downgrade, planned-round reuse and exhaustion | Round history, developer ladder and current-round record |
 | Shared round storage | Current-plan validation, numbered history, directory creation and plan persistence without role or route decisions | Finite and idea plan fixtures in temporary workspaces |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |

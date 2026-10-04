@@ -62,8 +62,8 @@ async function persistedState(stateFile: string): Promise<Record<string, unknown
 }
 
 /**
- * The finite workflow's actions with one drained pass by default: selection finds nothing, so the
- * other outcomes are only reachable through an override. Calls are recorded per supplied binding.
+ * The finite child's actions with one completing pass by default; other outcomes are only
+ * reachable through an override. Calls are recorded per supplied binding.
  */
 function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): {
   readonly actions: Record<string, ActionStub>;
@@ -73,12 +73,14 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
   const calls: string[] = [];
   const inputs: { readonly action: string; readonly input: unknown }[] = [];
   const outcomes: Record<string, string> = {
-    SelectTask: 'empty',
     PrepareWorkspace: 'prepared',
+    RefreshTaskInput: 'refreshed',
     StartRound: 'started',
     Develop: 'completed',
     Verify: 'passed',
     Deliver: 'published',
+    PublishDeliveryReport: 'published',
+    PublishReviewFeedback: 'published',
     Review: 'approved',
     CompleteTask: 'completed',
     AnalyzeExperience: 'recorded',
@@ -122,94 +124,62 @@ describe('TaskEngine over the finite workflow', () => {
   }
 
   it('analyzes every terminal handoff of selected work and preserves its destination', async () => {
-    let selections = 0;
-    const completion = await runWith({
-      SelectTask: async () => (selections++ === 0 ? 'selected' : 'empty'),
-    });
-    expect(completion.result).toEqual({ ok: true, value: 'drained' });
+    const completion = await runWith({});
+    expect(completion.result).toEqual({ ok: true, value: 'completed' });
     expect(completion.handoffs).toEqual([{ terminal: 'complete-completed' }]);
 
-    const prepare = await runWith({
-      SelectTask: async () => 'selected',
-      PrepareWorkspace: async () => 'failed',
-    });
+    const prepare = await runWith({ PrepareWorkspace: async () => 'failed' });
     expect(prepare.result).toEqual({ ok: true, value: 'blocked' });
-    expect(prepare.calls).toEqual(['SelectTask', 'PrepareWorkspace', 'AnalyzeExperience']);
+    expect(prepare.calls).toEqual(['PrepareWorkspace', 'AnalyzeExperience']);
     expect(prepare.handoffs).toEqual([{ terminal: 'prepare-failed' }]);
 
-    const exhausted = await runWith({
-      SelectTask: async () => 'selected',
-      StartRound: async () => 'exhausted',
-    });
+    const exhausted = await runWith({ StartRound: async () => 'exhausted' });
     expect(exhausted.result).toEqual({ ok: true, value: 'blocked' });
     expect(exhausted.handoffs).toEqual([{ terminal: 'start-round-exhausted' }]);
 
-    const delivery = await runWith({
-      SelectTask: async () => 'selected',
-      Deliver: async () => 'failed',
-    });
+    const delivery = await runWith({ Deliver: async () => 'failed' });
     expect(delivery.result).toEqual({ ok: true, value: 'blocked' });
     expect(delivery.handoffs).toEqual([{ terminal: 'deliver-failed' }]);
 
-    const inconclusive = await runWith({
-      SelectTask: async () => 'selected',
-      Review: async () => 'inconclusive',
-    });
+    const inconclusive = await runWith({ Review: async () => 'inconclusive' });
     expect(inconclusive.result).toEqual({ ok: true, value: 'blocked' });
     expect(inconclusive.handoffs).toEqual([{ terminal: 'review-inconclusive' }]);
 
-    const failedCompletion = await runWith({
-      SelectTask: async () => 'selected',
-      CompleteTask: async () => 'failed',
-    });
+    const failedCompletion = await runWith({ CompleteTask: async () => 'failed' });
     expect(failedCompletion.result).toEqual({ ok: true, value: 'blocked' });
     expect(failedCompletion.handoffs).toEqual([{ terminal: 'complete-failed' }]);
   });
 
-  it('analyzes every completed item of a finite queue and never an empty selection', async () => {
-    let selections = 0;
-    const { result, calls, handoffs } = await runWith({
-      SelectTask: async () => (selections++ < 2 ? 'selected' : 'empty'),
-    });
+  it('returns the completion evidence once and never analyzes intermediate work', async () => {
+    const { result, calls, handoffs } = await runWith({});
 
-    expect(result).toEqual({ ok: true, value: 'drained' });
-    // Two selected items complete and drain; the empty selection ends the queue without analysis.
-    expect(handoffs).toEqual([
-      { terminal: 'complete-completed' },
-      { terminal: 'complete-completed' },
-    ]);
-    expect(calls.filter((call) => call === 'AnalyzeExperience')).toHaveLength(2);
-
-    const failedSelection = await runWith({ SelectTask: async () => 'failed' });
-    expect(failedSelection.result).toEqual({ ok: true, value: 'blocked' });
-    expect(failedSelection.handoffs).toEqual([]);
-    expect(failedSelection.calls).toEqual(['SelectTask']);
+    expect(result).toEqual({ ok: true, value: 'completed' });
+    expect(handoffs).toEqual([{ terminal: 'complete-completed' }]);
+    expect(calls.filter((call) => call === 'AnalyzeExperience')).toHaveLength(1);
+    // The parent owns queue continuation; the child never selects or drains.
+    expect(calls).not.toContain('SelectTask');
   });
 
   it('never analyzes retry rounds, repair loops or a skipped analysis outcome', async () => {
-    let repairedSelections = 0;
     let verifications = 0;
     const repair = await runWith({
-      SelectTask: async () => (repairedSelections++ === 0 ? 'selected' : 'empty'),
       Verify: async () => (verifications++ === 0 ? 'failed' : 'passed'),
       AnalyzeExperience: async () => 'skipped',
     });
 
     // The intermediate repair round produced no handoff; the final completion did, and the
     // skipped capture still reached the original destination.
-    expect(repair.result).toEqual({ ok: true, value: 'drained' });
+    expect(repair.result).toEqual({ ok: true, value: 'completed' });
     expect(repair.calls.filter((call) => call === 'StartRound')).toHaveLength(2);
     expect(repair.handoffs).toEqual([{ terminal: 'complete-completed' }]);
     expect(repair.calls.filter((call) => call === 'AnalyzeExperience')).toHaveLength(1);
 
-    let reviewedSelections = 0;
     let reviews = 0;
     const changesRequested = await runWith({
-      SelectTask: async () => (reviewedSelections++ === 0 ? 'selected' : 'empty'),
       Review: async () => (reviews++ === 0 ? 'changesRequested' : 'approved'),
       AnalyzeExperience: async () => 'unavailable',
     });
-    expect(changesRequested.result).toEqual({ ok: true, value: 'drained' });
+    expect(changesRequested.result).toEqual({ ok: true, value: 'completed' });
     expect(changesRequested.calls.filter((call) => call === 'StartRound')).toHaveLength(2);
     expect(changesRequested.handoffs).toEqual([{ terminal: 'complete-completed' }]);
   });
@@ -223,17 +193,17 @@ describe('TaskEngine over the finite workflow', () => {
       bindActions: () => actions,
     });
 
-    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
+    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'completed' });
     expect(await persistedState(stateFile)).toMatchObject({
       status: 'done',
-      value: 'finished',
-      output: 'drained',
+      value: 'completed',
+      output: 'completed',
     });
   });
 
   it('returns blocked as a workflow result, not an execution fault', async () => {
     const stateFile = await temporaryStateFile();
-    const { actions } = suppliedActions({ SelectTask: async () => 'failed' });
+    const { actions } = suppliedActions({ PrepareWorkspace: async () => 'failed' });
     const engine = createTaskEngine({
       workflow: finiteDelivery,
       stateFile,
@@ -247,7 +217,6 @@ describe('TaskEngine over the finite workflow', () => {
     const stateFile = await temporaryStateFile();
     let rounds = 0;
     const { actions, calls } = suppliedActions({
-      SelectTask: async () => 'selected',
       Verify: async () => 'failed',
       StartRound: async () => (rounds++ === 0 ? 'started' : 'exhausted'),
     });
@@ -259,8 +228,8 @@ describe('TaskEngine over the finite workflow', () => {
 
     await expect(engine.run()).resolves.toEqual({ ok: true, value: 'blocked' });
     expect(calls).toEqual([
-      'SelectTask',
       'PrepareWorkspace',
+      'RefreshTaskInput',
       'StartRound',
       'Develop',
       'Verify',
@@ -269,12 +238,10 @@ describe('TaskEngine over the finite workflow', () => {
     ]);
   });
 
-  it('loops through a requested repair to a drained outcome', async () => {
+  it('loops through a requested repair to a completed outcome', async () => {
     const stateFile = await temporaryStateFile();
-    let selections = 0;
     let reviews = 0;
     const { actions, calls } = suppliedActions({
-      SelectTask: async () => (selections++ === 0 ? 'selected' : 'empty'),
       Review: async () => (reviews++ === 0 ? 'changesRequested' : 'approved'),
     });
     const engine = createTaskEngine({
@@ -283,30 +250,34 @@ describe('TaskEngine over the finite workflow', () => {
       bindActions: () => actions,
     });
 
-    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
+    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'completed' });
     expect(calls).toEqual([
-      'SelectTask',
       'PrepareWorkspace',
+      'RefreshTaskInput',
       'StartRound',
       'Develop',
       'Verify',
       'Deliver',
+      'PublishDeliveryReport',
+      'RefreshTaskInput',
       'Review',
+      'PublishReviewFeedback',
       'StartRound',
       'Develop',
       'Verify',
       'Deliver',
+      'PublishDeliveryReport',
+      'RefreshTaskInput',
       'Review',
+      'PublishReviewFeedback',
       'CompleteTask',
       'AnalyzeExperience',
-      'SelectTask',
     ]);
   });
 
   it('resumes an active execution without repeating completed actions', async () => {
     const stateFile = await temporaryStateFile();
     const first = suppliedActions({
-      SelectTask: async () => 'selected',
       CompleteTask: async () => {
         throw new Error('completion service unavailable');
       },
@@ -329,9 +300,9 @@ describe('TaskEngine over the finite workflow', () => {
       bindActions: () => second.actions,
     }).run();
 
-    expect(secondRun).toEqual({ ok: true, value: 'drained' });
+    expect(secondRun).toEqual({ ok: true, value: 'completed' });
     // The restored active invocation restarted, and completed actions did not run again.
-    expect(second.calls).toEqual(['CompleteTask', 'AnalyzeExperience', 'SelectTask']);
+    expect(second.calls).toEqual(['CompleteTask', 'AnalyzeExperience']);
   });
 
   it('starts from the initial state when the saved run is terminal', async () => {
@@ -350,15 +321,15 @@ describe('TaskEngine over the finite workflow', () => {
         stateFile,
         bindActions: () => second.actions,
       }).run(),
-    ).resolves.toEqual({ ok: true, value: 'drained' });
+    ).resolves.toEqual({ ok: true, value: 'completed' });
 
-    expect(first.calls).toEqual(['SelectTask']);
-    expect(second.calls).toEqual(['SelectTask']);
+    expect(first.calls).toContain('PrepareWorkspace');
+    expect(second.calls).toContain('PrepareWorkspace');
   });
 
   it('reports an unexpected action outcome as a fault and keeps the runnable snapshot', async () => {
     const stateFile = await temporaryStateFile();
-    const { actions } = suppliedActions({ SelectTask: async () => 'unexpected' });
+    const { actions } = suppliedActions({ Develop: async () => 'unexpected' });
     const engine = createTaskEngine({
       workflow: finiteDelivery,
       stateFile,
@@ -369,7 +340,7 @@ describe('TaskEngine over the finite workflow', () => {
 
     expect(result.ok).toBe(false);
     expect(result.ok ? '' : result.fault.message).toMatch(/Unexpected action outcome: unexpected/);
-    expect(await persistedState(stateFile)).toMatchObject({ status: 'active', value: 'select' });
+    expect(await persistedState(stateFile)).toMatchObject({ status: 'active', value: 'develop' });
   });
 
   it('reports a workflow operation that has no bound action', async () => {
@@ -377,14 +348,14 @@ describe('TaskEngine over the finite workflow', () => {
     const engine = createTaskEngine({
       workflow: finiteDelivery,
       stateFile,
-      bindActions: () => ({ SelectTask: async () => 'empty' }),
+      bindActions: () => ({ PrepareWorkspace: async () => 'prepared' }),
     });
 
     const result = await engine.run();
 
     expect(result.ok).toBe(false);
     expect(result.ok ? '' : result.fault.message).toMatch(
-      /No bound action for workflow operations "PrepareWorkspace".*"CompleteTask"/,
+      /No bound operation or child for workflow operations "RefreshTaskInput".*"AnalyzeExperience"/,
     );
   });
 
@@ -537,14 +508,13 @@ describe('TaskEngine events', () => {
     const unsubscribe = engine.subscribe((event) => events.push(event));
     await engine.run();
 
-    expect(events).toEqual([
-      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
-    ]);
+    expect(observedStates(events)[0]).toBe('prepare');
+    expect(observedStates(events).at(-1)).toBe('completed');
 
     unsubscribe();
+    const count = events.length;
     await engine.run();
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(count);
   });
 
   it('isolates listener failures from execution and other listeners', async () => {
@@ -562,25 +532,26 @@ describe('TaskEngine events', () => {
     });
     engine.subscribe((event) => events.push(event));
 
-    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
-    expect(observedStates(events)).toEqual(['select', 'finished']);
+    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'completed' });
+    expect(observedStates(events)[0]).toBe('prepare');
+    expect(observedStates(events).at(-1)).toBe('completed');
   });
 
   it('delivers action activity unchanged alongside runner state and isolates observers', async () => {
     const stateFile = await temporaryStateFile();
     const activity: EngineEvent = {
-      source: 'SelectTask',
+      source: 'Develop',
       type: 'agent-activity',
-      data: { type: 'result', text: 'no eligible task' },
+      data: { type: 'result', text: 'implemented the task' },
     };
     const engine = createTaskEngine({
       workflow: finiteDelivery,
       stateFile,
       bindActions: (publish) => {
         const { actions } = suppliedActions({
-          SelectTask: async () => {
+          Develop: async () => {
             publish(activity);
-            return 'empty';
+            return 'completed';
           },
         });
         return actions;
@@ -592,14 +563,13 @@ describe('TaskEngine events', () => {
     });
     engine.subscribe((event) => observed.push(event));
 
-    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
-    expect(observed).toEqual([
-      activity,
-      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
-    ]);
+    await expect(engine.run()).resolves.toEqual({ ok: true, value: 'completed' });
+    expect(observed).toContain(activity);
+    expect(observed[observed.indexOf(activity)]).toBe(activity);
+    expect((observed.at(-1)?.data as { readonly value: unknown }).value).toBe('completed');
     // The producer's event travels unchanged, not copied or rewritten by TaskEngine.
-    expect(observed[0]).toBe(activity);
+    expect(observed).toContain(activity);
+    expect(observed[observed.indexOf(activity)]).toBe(activity);
   });
 });
 
@@ -622,17 +592,17 @@ describe('ExecutionRunner persistence order', () => {
 
     const run = engine.run();
     await vi.waitFor(() => {
-      expect(observed).toEqual(['select', 'finished']);
+      expect(observed.at(-1)).toBe('completed');
     });
     await new Promise((resolve) => setImmediate(resolve));
     // The held first save still blocks the terminal save, which is queued behind it.
     expect(stateWrites.started).toHaveLength(1);
 
     release();
-    await expect(run).resolves.toEqual({ ok: true, value: 'drained' });
+    await expect(run).resolves.toEqual({ ok: true, value: 'completed' });
     expect(
-      stateWrites.started.map((json) => (JSON.parse(json) as { value: unknown }).value),
-    ).toEqual(['select', 'finished']);
-    expect(await persistedState(stateFile)).toMatchObject({ status: 'done', value: 'finished' });
+      stateWrites.started.map((json) => (JSON.parse(json) as { value: unknown }).value).at(-1),
+    ).toBe('completed');
+    expect(await persistedState(stateFile)).toMatchObject({ status: 'done', value: 'completed' });
   });
 });

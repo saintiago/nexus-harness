@@ -136,9 +136,17 @@ async function workspace(
       {
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: { id: '1', key: 'NEX-1', fields: { summary: 'stale selection copy' } },
-        conversation: [{ id: 'old', body: 'stale conversation copy' }],
+        task: {
+          id: '1',
+          key: 'NEX-1',
+          fields: {
+            summary: 'Implement the retry guard',
+            description: { type: 'doc', content: [] },
+          },
+        },
+        conversation: [{ id: 'c1', body: 'Original request.' }],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -217,14 +225,6 @@ function dispositionInputSection(context: string): string {
   }
   const end = context.indexOf('\n\nDeveloper responses to those findings', start);
   return context.slice(start, end < 0 ? context.length : end);
-}
-
-/** The single paragraph's text of one Nexus comment document. */
-function commentText(document: JiraDocument): string {
-  const content = document['content'] as readonly { readonly content?: unknown }[];
-  const paragraph = content[0]?.content as readonly { readonly text?: unknown }[] | undefined;
-  const text = paragraph?.[0]?.text;
-  return typeof text === 'string' ? text : '';
 }
 
 const taskIssue = {
@@ -319,7 +319,7 @@ function reviewAction(options: {
   readonly runner: AgentRoleRunner;
   readonly git: ReturnType<typeof scriptedGit>['git'];
   readonly github: ReturnType<typeof scriptedGitHub>['github'];
-  readonly jira: ReturnType<typeof scriptedJira>['jira'];
+  readonly jira?: ReturnType<typeof scriptedJira>['jira'];
 }): ReturnType<typeof createReview> {
   return createReview({
     selectionFile: options.selectionFile,
@@ -330,7 +330,6 @@ function reviewAction(options: {
     runner: options.runner,
     git: options.git,
     github: options.github,
-    jira: options.jira,
     publish: (event) => events.push(event),
   });
 }
@@ -361,18 +360,14 @@ describe('Review', () => {
       publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
       publishReviewCheck: () => ok({ id: 12 }),
     });
-    let comment: JiraDocument | null = null;
-    const { jira, calls: jiraCalls } = scriptedJira({
+    const { jira } = scriptedJira({
       readIssue: () => ok(taskIssue),
       readComments: () =>
         ok([
           { id: 'c1', body: 'Original request.' },
           { id: 'c2', body: 'Human clarification.' },
         ]),
-      addComment: (_issueId, body) => {
-        comment = body;
-        return ok({ id: 'c9', body });
-      },
+      addComment: (_issueId, body) => ok({ id: 'c9', body }),
     });
     const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
 
@@ -429,22 +424,19 @@ describe('Review', () => {
       `publishReview:7@${headRevision}:approved`,
       `publishCheck:${headRevision}:${reviewCheck}:success`,
     ]);
-    expect(jiraCalls).toEqual(['read:1', 'comments:1', 'addComment:1']);
-    expect(commentText(comment ?? {})).toBe(
-      'profile: nexus-review\nReview verdict: approved.\n' +
-        'The change matches the task and the check covers it.',
-    );
-    // The refreshed task and complete conversation are saved in the selection record, and the
-    // complete pull-request conversation is saved in the round's local artifacts.
+    // The parent-owned boundary refreshed the selection; the action leaves the retained record
+    // and saves the complete pull-request conversation in the round's local artifacts.
     expect(JSON.parse(await readFile(selectionFile, 'utf8'))).toEqual({
       taskKey: 'NEX-1',
       source: { kind: 'jira', issueId: '1' },
-      task: taskIssue,
-      conversation: [
-        { id: 'c1', body: 'Original request.' },
-        { id: 'c2', body: 'Human clarification.' },
-      ],
+      task: {
+        id: '1',
+        key: 'NEX-1',
+        fields: { summary: 'Implement the retry guard', description: { type: 'doc', content: [] } },
+      },
+      conversation: [{ id: 'c1', body: 'Original request.' }],
       workspace: { root: workspaceRoot },
+      stage: 'delivery',
     });
     expect(await readRoundArtifact(workspaceRoot, round, 'pr-conversation.json')).toEqual({
       comments: [{ id: 1, body: 'Human pull-request discussion.' }],
@@ -971,7 +963,7 @@ describe('Review', () => {
       })(),
     ).resolves.toBe('approved');
     expect(finishedHub.calls).toEqual(['conversation:7', `readChecks:${headRevision}`]);
-    expect(finishedJiraCalls).toEqual(['comments:1']);
+    expect(finishedJiraCalls).toEqual([]);
     // The reused report is the saved output the outcome event references.
     expect(events).toEqual([
       {
@@ -1019,7 +1011,7 @@ describe('Review', () => {
       `readChecks:${headRevision}`,
       `publishCheck:${headRevision}:${reviewCheck}:success`,
     ]);
-    expect(unfinishedJira.calls).toEqual(['comments:1', 'addComment:1']);
+    expect(unfinishedJira.calls).toEqual([]);
 
     // An earlier report for the same head and conclusion published the Lens check and a different
     // review: the saved report's review is published and the matching check is left alone.
@@ -1056,7 +1048,7 @@ describe('Review', () => {
       `readChecks:${headRevision}`,
       `publishReview:7@${headRevision}:approved`,
     ]);
-    expect(differentJira.calls).toEqual(['comments:1', 'addComment:1']);
+    expect(differentJira.calls).toEqual([]);
   });
 
   it('does not treat a same-name check or another author as the Nexus Lens publication', async () => {
@@ -1083,7 +1075,7 @@ describe('Review', () => {
       publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
       publishReviewCheck: () => ok({ id: 12 }),
     });
-    const { jira } = scriptedJira({
+    scriptedJira({
       readComments: () => ok([]),
       addComment: (_issueId, body) => ok({ id: 'c9', body }),
     });
@@ -1094,7 +1086,6 @@ describe('Review', () => {
         runner: runnerOf(unusedRuntime()),
         git: scriptedGit([]).git,
         github,
-        jira,
       })(),
     ).resolves.toBe('approved');
 

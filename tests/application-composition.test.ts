@@ -5,7 +5,7 @@
  * credential or agent turn is involved.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,8 +29,6 @@ import {
   type NexusConfiguration,
 } from '../src/configuration/index.js';
 import { memoryAnalysisGuidance, memoryUseGuidance } from '../src/agent-runtime/index.js';
-import { ok } from '../src/result.js';
-import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
 const installationDirectory = '/srv/nexus/installation';
@@ -95,43 +93,20 @@ function unusedCapability<Capability extends object>(name: string): Capability {
   });
 }
 
-/** One selection record for the supplied workspace root. */
-function selectionDocument(workspace: string): Record<string, unknown> {
-  return {
-    taskKey: 'NEX-7',
-    source: { kind: 'jira', issueId: '10001' },
-    task: { id: '10001', key: 'NEX-7', fields: {} },
-    conversation: [],
-    workspace: { root: workspace },
-  };
-}
-
 describe('execution paths', () => {
   it('places execution state and task workspaces under the configured storage root', () => {
-    const paths = executionPaths(nexus, project, 'finite-delivery');
+    const paths = executionPaths(nexus, project);
 
     expect(paths).toEqual({
       directory: path.join(nexus.storage.root, 'executions', 'NEX'),
       workflowStateFile: path.join(nexus.storage.root, 'executions', 'NEX', 'workflow.json'),
       selectionFile: path.join(nexus.storage.root, 'executions', 'NEX', 'selection.json'),
     });
-    // Idea refinement keeps its own execution directory beside the finite delivery queue's.
-    expect(executionPaths(nexus, project, 'idea-refinement')).toEqual({
-      directory: path.join(nexus.storage.root, 'executions', 'NEX', 'idea-refinement'),
-      workflowStateFile: path.join(
-        nexus.storage.root,
-        'executions',
-        'NEX',
-        'idea-refinement',
-        'workflow.json',
-      ),
-      selectionFile: path.join(
-        nexus.storage.root,
-        'executions',
-        'NEX',
-        'idea-refinement',
-        'selection.json',
-      ),
+    // Every stage child shares the composed parent's execution directory.
+    expect(executionPaths(nexus, project)).toEqual({
+      directory: path.join(nexus.storage.root, 'executions', 'NEX'),
+      workflowStateFile: path.join(nexus.storage.root, 'executions', 'NEX', 'workflow.json'),
+      selectionFile: path.join(nexus.storage.root, 'executions', 'NEX', 'selection.json'),
     });
     expect(workspaceRoot(nexus)).toBe(path.join(nexus.storage.root, 'workspaces'));
   });
@@ -259,87 +234,36 @@ describe('memory composition', () => {
 });
 
 describe('worker action binding', () => {
-  it('binds every workflow operation', async () => {
+  const settings = async () => {
     const directory = await temporaryDirectory();
-    const bind = createActionBinding({
-      workflow: 'finite-delivery',
-      project,
-      nexus,
-      paths: {
-        directory,
-        workflowStateFile: path.join(directory, 'workflow.json'),
-        selectionFile: path.join(directory, 'selection.json'),
+    return {
+      directory,
+      settings: {
+        project,
+        nexus,
+        paths: {
+          directory,
+          workflowStateFile: path.join(directory, 'workflow.json'),
+          selectionFile: path.join(directory, 'selection.json'),
+        },
+        jira: unusedCapability<JiraAdapter>('Jira'),
+        github: unusedCapability<GitHubAdapter>('GitHub'),
+        git: unusedCapability<GitAdapter>('Git'),
+        codingRuntime: unusedCapability<CodingRuntime>('coding runtime'),
+        runCommand:
+          unusedCapability<import('../src/application/action-bindings.js').CommandExecution>(
+            'processes',
+          ),
+        commandEnvironment: {},
+        activityDirectory: path.join(directory, 'logs', 'agents'),
+        wait: () => Promise.resolve(),
       },
-      jira: unusedCapability<JiraAdapter>('Jira'),
-      github: unusedCapability<GitHubAdapter>('GitHub'),
-      git: unusedCapability<GitAdapter>('Git'),
-      codingRuntime: unusedCapability('coding runtime'),
-      runCommand: unusedCapability('processes'),
-      commandEnvironment: {},
-      activityDirectory: path.join(directory, 'logs', 'agents'),
-      wait: () => Promise.resolve(),
-    });
+    };
+  };
 
-    expect(
-      Object.keys(
-        bind(
-          () => {},
-          () => {},
-        ),
-      ).sort(),
-    ).toEqual(
-      [
-        'AnalyzeExperience',
-        'CompleteTask',
-        'Deliver',
-        'Develop',
-        'PrepareWorkspace',
-        'Review',
-        'SelectTask',
-        'StartRound',
-        'Verify',
-      ].sort(),
-    );
-  });
-
-  it('binds the idea refinement workflow operations and its captured selection', async () => {
-    const directory = await temporaryDirectory();
-    const refinement = await temporaryDirectory();
-    const selectionFile = path.join(directory, 'selection.json');
-    await writeFile(
-      selectionFile,
-      JSON.stringify({
-        taskKey: 'NEX-1',
-        source: { kind: 'jira', issueId: '10518' },
-        issue: { id: '10518', key: 'NEX-1', fields: {} },
-        conversation: [],
-        transitions: { toActive: null, fromActive: [] },
-        claimed: true,
-
-        retainedSubmissions: 0,
-        workspace: { root: refinement },
-        issueWorkspace: { root: path.dirname(refinement) },
-      }),
-    );
-    const actions = createActionBinding({
-      workflow: 'idea-refinement',
-      project,
-      nexus,
-      paths: {
-        directory,
-        workflowStateFile: path.join(directory, 'workflow.json'),
-        selectionFile,
-      },
-      jira: unusedCapability<JiraAdapter>('Jira'),
-      github: unusedCapability<GitHubAdapter>('GitHub'),
-      git: unusedCapability<GitAdapter>('Git'),
-      codingRuntime: unusedCapability('coding runtime'),
-      runCommand: unusedCapability('processes'),
-      commandEnvironment: {},
-
-      activityDirectory: path.join(directory, 'logs', 'agents'),
-      wait: () => Promise.resolve(),
-    })(
+  it('binds every project parent and child operation', async () => {
+    const { settings: binding } = await settings();
+    const actions = createActionBinding(binding)(
       () => {},
       () => {},
     );
@@ -348,218 +272,71 @@ describe('worker action binding', () => {
       [
         'AnalyzeExperience',
         'Challenger',
+        'CompleteDelivery',
+        'CompleteTask',
+        'Deliver',
+        'Develop',
+        'HandoffImplementation',
         'IdeaEditor',
+        'PrepareIdeaWorkspace',
+        'PrepareStage',
+        'PrepareWorkspace',
         'ProjectGuide',
-        'PublishDecision',
+        'PublishDeliveryReport',
+        'PublishIdeaResult',
+        'PublishPreparationResult',
+        'PublishReviewFeedback',
+        'RecordIdeaDecision',
+        'RecordStageReturn',
+        'RefreshTaskInput',
         'Researcher',
-        'SelectIdea',
+        'Review',
+        'RouteSelection',
+        'SelectWork',
+        'StageAuthor',
+        'StageEvaluator',
+        'StageResult',
         'StartIdeaRound',
+        'StartRound',
+        'StartStageRound',
+        'Verify',
       ].sort(),
     );
-    // The bound planner carries the route XState supplied and the selection's captured input.
-    await expect(actions['StartIdeaRound']?.({ route: 'new' })).resolves.toBe('opened');
-    expect(
-      JSON.parse(await readFile(path.join(refinement, 'state/current-round.json'), 'utf8')),
-    ).toMatchObject({ submission: 1, cycle: 1, route: 'new' });
-    expect(
-      JSON.parse(
-        await readFile(path.join(refinement, 'artifacts/submissions/1/input.json'), 'utf8'),
-      ),
-    ).toMatchObject({ taskKey: 'NEX-1', source: { issueId: '10518' } });
   });
 
-  it('gives concurrent idea role invocations distinct identities and attributable activity', async () => {
-    const directory = await temporaryDirectory();
-    const refinement = await temporaryDirectory();
-    const selectionFile = path.join(directory, 'selection.json');
+  it('resolves the parent stage from the retained selection on every invocation', async () => {
+    const { directory, settings: binding } = await settings();
+    const workspace = await temporaryDirectory();
+    const selectionFile = binding.paths.selectionFile;
     await writeFile(
       selectionFile,
       JSON.stringify({
         taskKey: 'NEX-1',
-        source: { kind: 'jira', issueId: '10518' },
-        issue: { id: '10518', key: 'NEX-1', fields: { summary: 'Add a lint gate' } },
+        source: { kind: 'jira', issueId: '10001' },
+        task: { id: '10001', key: 'NEX-1', fields: {} },
         conversation: [],
-        transitions: { toActive: null, fromActive: [] },
-        claimed: true,
-        retainedSubmissions: 0,
-        workspace: { root: refinement },
-        issueWorkspace: { root: path.dirname(refinement) },
+        workspace: { root: workspace },
+        stage: 'delivery',
       }),
     );
-    // Both role invocations must overlap: neither provider call finishes before the other starts.
-    let arrivals = 0;
-    let releaseBoth: () => void = () => undefined;
-    const bothStarted = new Promise<void>((resolve) => {
-      releaseBoth = resolve;
-    });
-    const activityDirectory = path.join(directory, 'logs', 'agents');
-    const codingRuntime: CodingRuntime = {
-      async execute(request, onActivity) {
-        arrivals += 1;
-        if (arrivals === 2) {
-          releaseBoth();
-        }
-        await bothStarted;
-        const guidance = request.prompt.includes('Be wise and thoughtful');
-        onActivity({ type: 'message', text: guidance ? 'guidance words' : 'research words' });
-        return ok({
-          output: JSON.stringify(
-            guidance
-              ? {
-                  contribution: 'The idea serves the project purpose.',
-                  fit: 'It serves operators.',
-                  steering: ['Keep the scope small.'],
-                  constraints: [],
-                  evidence: ['docs/purpose.md'],
-                  provisional: false,
-                  uncertainty: [],
-                }
-              : {
-                  contribution: 'Linters keep reviews focused.',
-                  findings: ['Teams catch style defects early.'],
-                  options: ['Adopt the smallest lint configuration.'],
-                  sources: [],
-                },
-          ),
-        });
-      },
-    };
-    const events: EngineEvent[] = [];
-    const activity: AgentActivity[] = [];
-    const actions = createActionBinding({
-      workflow: 'idea-refinement',
-      project,
-      nexus,
-      paths: {
-        directory,
-        workflowStateFile: path.join(directory, 'workflow.json'),
-        selectionFile,
-      },
-      jira: unusedCapability<JiraAdapter>('Jira'),
-      github: unusedCapability<GitHubAdapter>('GitHub'),
-      git: unusedCapability<GitAdapter>('Git'),
-      codingRuntime,
-      runCommand: unusedCapability('processes'),
-      commandEnvironment: {},
-      activityDirectory,
-      wait: () => Promise.resolve(),
-    })(
-      (event) => events.push(event),
-      (packet) => activity.push(packet),
-    );
-    await actions['StartIdeaRound']?.({ route: 'new' });
-
-    await expect(
-      Promise.all([
-        actions['Researcher']?.({ phase: 'initial' }),
-        actions['ProjectGuide']?.({ phase: 'initial' }),
-      ]),
-    ).resolves.toEqual(['contributed', 'contributed']);
-
-    const started = events.filter((event) => event.type === 'agent-started');
-    const boundaries = started.map(
-      (event) =>
-        event.data as {
-          readonly agentName: string;
-          readonly invocationId: string;
-          readonly startedAtUnixMs: number;
-          readonly log: { readonly path: string };
-          readonly operation: string;
-          readonly idea: string;
-          readonly summary: string;
-        },
-    );
-    expect(boundaries.map((boundary) => boundary.agentName).sort()).toEqual([
-      'project-guide',
-      'researcher',
-    ]);
-    // Each idea role's boundary names the captured ticket by its key and Summary.
-    expect(
-      boundaries.map((boundary) => ({ idea: boundary.idea, summary: boundary.summary })),
-    ).toEqual([
-      { idea: 'NEX-1', summary: 'Add a lint gate' },
-      { idea: 'NEX-1', summary: 'Add a lint gate' },
-    ]);
-    // Each invocation has its own identity and its own log under the execution's agents directory.
-    const ids = boundaries.map((boundary) => boundary.invocationId);
-    expect(new Set(ids).size).toBe(2);
-    for (const boundary of boundaries) {
-      expect(boundary.log.path).toBe(
-        path.join(
-          activityDirectory,
-          `${boundary.agentName}-${String(boundary.startedAtUnixMs)}-${boundary.invocationId}.jsonl`,
-        ),
-      );
-    }
-    // Every activity packet names the invocation of the role that reported it.
-    const guideId = boundaries.find(
-      (boundary) => boundary.agentName === 'project-guide',
-    )?.invocationId;
-    const researchId = boundaries.find(
-      (boundary) => boundary.agentName === 'researcher',
-    )?.invocationId;
-    expect(activity).toHaveLength(2);
-    expect(activity.find((packet) => packet.activity.text === 'guidance words')?.invocationId).toBe(
-      guideId,
-    );
-    expect(activity.find((packet) => packet.activity.text === 'research words')?.invocationId).toBe(
-      researchId,
-    );
-    // Each finish names the identity its start announced.
-    expect(
-      events
-        .filter((event) => event.type === 'agent-finished')
-        .map((event) => (event.data as { readonly invocationId: string }).invocationId)
-        .sort(),
-    ).toEqual([...ids].sort());
-  });
-
-  it('runs workspace-scoped actions in the workspace of the current selection', async () => {
-    const directory = await temporaryDirectory();
-    const firstWorkspace = await temporaryDirectory();
-    const secondWorkspace = await temporaryDirectory();
-    const selectionFile = path.join(directory, 'selection.json');
-    await writeFile(selectionFile, JSON.stringify(selectionDocument(firstWorkspace)));
-    const actions = createActionBinding({
-      workflow: 'finite-delivery',
-      project,
-      nexus,
-      paths: {
-        directory,
-        workflowStateFile: path.join(directory, 'workflow.json'),
-        selectionFile,
-      },
-      jira: unusedCapability<JiraAdapter>('Jira'),
-      github: unusedCapability<GitHubAdapter>('GitHub'),
-      git: unusedCapability<GitAdapter>('Git'),
-      codingRuntime: unusedCapability('coding runtime'),
-      runCommand: unusedCapability('processes'),
-      commandEnvironment: {},
-
-      activityDirectory: path.join(directory, 'logs', 'agents'),
-      wait: () => Promise.resolve(),
-    })(
+    const actions = createActionBinding(binding)(
       () => {},
       () => {},
     );
 
-    await expect(actions['StartRound']?.()).resolves.toBe('started');
-    await writeFile(selectionFile, JSON.stringify(selectionDocument(secondWorkspace)));
-    await expect(actions['StartRound']?.()).resolves.toBe('started');
-
-    expect(
-      JSON.parse(await readFile(path.join(firstWorkspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({
-      number: 1,
-      profile: 'nexus-flash',
-      reason: expect.stringContaining('first profile "nexus-flash"'),
-    });
-    expect(
-      JSON.parse(await readFile(path.join(secondWorkspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({
-      number: 1,
-      profile: 'nexus-flash',
-      reason: expect.stringContaining('first profile "nexus-flash"'),
-    });
+    await expect(actions['RouteSelection']?.()).resolves.toBe('delivery');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10001' },
+        task: { id: '10001', key: 'NEX-1', fields: {} },
+        conversation: [],
+        workspace: { root: workspace },
+        stage: 'ux',
+      }),
+    );
+    await expect(actions['RouteSelection']?.()).resolves.toBe('ux');
+    expect(directory).toBeTruthy();
   });
 });

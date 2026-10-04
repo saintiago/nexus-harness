@@ -100,7 +100,7 @@ async function harness(analyze: Skill): Promise<Harness> {
   await writeFile(evidence, `${JSON.stringify({ taskKey: workId, mergeRevision })}\n`, 'utf8');
   const handoff: ExperienceHandoff = {
     workId,
-    workflow: 'finite-delivery',
+    workflow: 'project',
     attemptId,
     terminalId: 'complete-completed',
     outcome: 'completed',
@@ -222,7 +222,7 @@ describe('experience capture', () => {
     await writeFile(evidence, '{}\n', 'utf8');
     const handoff: ExperienceHandoff = {
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'complete-completed',
       outcome: 'completed',
@@ -276,7 +276,7 @@ describe('experience capture', () => {
     });
     const handoff: ExperienceHandoff = {
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'complete-completed',
       outcome: 'completed',
@@ -300,7 +300,7 @@ describe('experience capture', () => {
     const workspace = path.join(root, 'workspaces', project, workId);
     const handoff: ExperienceHandoff = {
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'complete-completed',
       outcome: 'completed',
@@ -361,7 +361,7 @@ describe('experience capture', () => {
 
     const captured = await owner.capture({
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'deliver-failed',
       outcome: 'failed',
@@ -399,7 +399,7 @@ describe('experience capture', () => {
     });
     const handoff: ExperienceHandoff = {
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'prepare-failed',
       outcome: 'failed',
@@ -417,7 +417,7 @@ describe('experience capture', () => {
           task: workId,
           round: null,
           outcome: 'recorded',
-          detail: `NEX-7 finite-delivery/task/NEX-7/prepare-failed ("failed")`,
+          detail: `NEX-7 project/task/NEX-7/prepare-failed ("failed")`,
           artifact: { path: experienceCaptureFile(directory, experienceIdentity(handoff)) },
         },
       },
@@ -463,7 +463,7 @@ describe('experience analysis', () => {
     expect(submitted.provenance).toMatchObject({
       project,
       work: workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attempt: attemptId,
       terminal: 'complete-completed',
       outcome: 'completed',
@@ -476,7 +476,7 @@ describe('experience analysis', () => {
     expect(output).toMatchObject({
       workId,
       project,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'complete-completed',
       profile,
@@ -876,7 +876,7 @@ describe('experience analysis', () => {
     await mkdir(workspace, { recursive: true });
     const handoff: ExperienceHandoff = {
       workId,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       attemptId,
       terminalId: 'prepare-failed',
       outcome: 'failed',
@@ -925,7 +925,7 @@ describe('experience analysis', () => {
       await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
       const handoff: ExperienceHandoff = {
         workId,
-        workflow: 'finite-delivery',
+        workflow: 'project',
         attemptId,
         terminalId: 'complete-completed',
         outcome: 'completed',

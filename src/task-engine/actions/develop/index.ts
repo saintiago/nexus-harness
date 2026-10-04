@@ -2,7 +2,6 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
-import type { JiraAdapter } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
 import {
   actionOutcomeEvent,
@@ -21,10 +20,10 @@ import {
   preparedWorkspaceFile,
   type PreparedWorkspace,
 } from '../prepare-workspace/artifacts.js';
-import { readRequiredRecord, writeRecord } from '../records.js';
+import { readRequiredRecord } from '../records.js';
 import { reviewArtifact, type Finding, type ReviewOutput } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
-import { issueSummary, readComments, readIssue } from '../source.js';
+import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import {
@@ -54,7 +53,6 @@ export type DevelopSettings = {
   /** The developer role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
   readonly git: GitAdapter;
-  readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
 
@@ -275,21 +273,13 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       return existing.status;
     }
 
-    const issue = await readIssue(settings.jira, selection.source.issueId);
-    const conversation = await readComments(settings.jira, selection.source.issueId);
-    // The selection owns the task and conversation; refresh them in place, preserving the selected
-    // identity and the retained workspace reference.
-    await writeRecord(settings.selectionFile, {
-      ...selection,
-      task: issue,
-      conversation,
-    });
-
     const findings = latestReview?.value.findings ?? [];
     const evidence = checkEvidence(root, histories);
     const context = [
-      `Task ${selection.taskKey} (Jira issue ${issue.key})`,
-      JSON.stringify(issue, null, 2),
+      `Task ${selection.taskKey}`,
+      // The parent-owned input boundary refreshed the selection before this invocation; the saved
+      // task and complete attributed conversation are the authoritative source input.
+      JSON.stringify(selection.task, null, 2),
       `Prepared branch: ${prepared.branch} (comparison base ${prepared.baseRevision})`,
       `Local selection record (refreshed task and complete conversation): ${settings.selectionFile}`,
       latestReview === null
@@ -308,7 +298,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       context,
       outputSchema: z.toJSONSchema(developmentResponseSchema),
       task: selection.taskKey,
-      summary: issueSummary(issue),
+      summary: issueSummary(selection.task),
     });
     if (!result.ok) {
       throw new Error(result.fault.message);
@@ -342,7 +332,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     }
 
     const output: DevelopmentOutput = {
-      taskSubject: issueSummary(issue) ?? selection.taskKey,
+      taskSubject: issueSummary(selection.task) ?? selection.taskKey,
       taskKey: selection.taskKey,
       profile,
       status,

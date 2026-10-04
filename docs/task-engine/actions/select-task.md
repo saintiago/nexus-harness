@@ -1,4 +1,4 @@
-# SelectTask
+# SelectWork
 
 ## Responsibility
 
@@ -23,6 +23,8 @@ type Selection = {
   task: unknown;
   conversation: unknown[];
   workspace: WorkspaceRef;
+  /** The stage the parent routes to; the parent's publications update it. */
+  stage: 'idea' | 'requirements' | 'ux' | 'prototype' | 'architecture' | 'delivery';
 };
 ```
 
@@ -31,6 +33,9 @@ acceptance-criteria section or prescribed description template is required. conv
 complete source conversation separately, saved locally for both development and review. Prior agent
 exchanges remain in the round artifacts. These records do not introduce another issue/comment schema.
 The source connection is supplied configuration. Workspace paths distinguish projects as well as tasks.
+The configured status mappings select the stage; a candidate whose status has no configured stage
+requests attention instead of being silently skipped, and the parent's own publications advance or
+return the stage and update the record.
 
 ### Outcomes
 

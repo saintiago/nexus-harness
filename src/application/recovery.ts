@@ -13,8 +13,14 @@ import { devArtifact } from '../task-engine/actions/develop/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
-import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
+import {
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
+  stageResultArtifact,
+  stageRoundPlanDeclaration,
+} from '../task-engine/actions/preparation/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
+import { parentHandoffDeclaration } from '../task-engine/actions/select-work/artifacts.js';
 import { ideaRoundPlanDeclaration } from '../task-engine/actions/start-idea-round/artifacts.js';
 import { currentRoundDeclaration } from '../task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
@@ -112,8 +118,8 @@ export type RecoverySelection = {
   /** The selected ticket's Summary field, when the record carried one. */
   readonly summary: string | null;
   readonly workspace: TaskWorkspaceRef;
-  /** The shared issue workspace root, when the selected workflow retains one. */
-  readonly issueWorkspace?: TaskWorkspaceRef;
+  /** The parent stage the interrupted selection entered. */
+  readonly stage: string;
 };
 
 /** What one recovery agent invocation receives. */
@@ -204,7 +210,6 @@ type RecoveryContextSettings = {
   readonly project: ProjectConfiguration;
   readonly nexus: NexusConfiguration;
   readonly workflow: Workflow;
-  readonly workflowName: WorkflowName;
   readonly workflowPath: string;
   readonly paths: ExecutionPaths;
   readonly logFile: string;
@@ -244,32 +249,22 @@ function roundArtifact(title: string, declaration: ArtifactDeclaration): Recover
 
 /** The producer-owned records and round artifacts recovery reconciles, with their declared paths. */
 function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclaration[] {
-  const { paths, recoveryDirectory, workflowName } = settings;
+  const { paths, recoveryDirectory } = settings;
   const execution: RecoveryDeclaration = {
     title: 'Recovery execution record (Application)',
     path: path.join(recoveryDirectory, recoveryExecutionDeclaration.file),
     schema: recoveryExecutionSchema,
   };
-  if (workflowName === 'idea-refinement') {
-    return [
-      {
-        title: 'Idea selection record (SelectIdea)',
-        path: paths.selectionFile,
-        schema: ideaSelectionDeclaration.schema,
-      },
-      {
-        title: 'Idea round plan (StartIdeaRound)',
-        path: ideaRoundPlanDeclaration.file,
-        schema: ideaRoundPlanDeclaration.schema,
-      },
-      execution,
-    ];
-  }
   return [
     {
-      title: 'Task selection record (SelectTask)',
+      title: 'Project selection record (SelectWork)',
       path: paths.selectionFile,
       schema: selectionDeclaration.schema,
+    },
+    {
+      title: 'Parent handoff record',
+      path: parentHandoffDeclaration.file,
+      schema: parentHandoffDeclaration.schema,
     },
     {
       title: 'Prepared workspace record (PrepareWorkspace)',
@@ -277,15 +272,28 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
       schema: preparedWorkspaceDeclaration.schema,
     },
     {
-      title: 'Current round record (StartRound)',
+      title: 'Finite-delivery current round record (StartRound)',
       path: currentRoundDeclaration.file,
       schema: currentRoundDeclaration.schema,
+    },
+    {
+      title: 'Idea refinement round plan (StartIdeaRound)',
+      path: path.join('refinement', ideaRoundPlanDeclaration.file),
+      schema: ideaRoundPlanDeclaration.schema,
+    },
+    {
+      title: 'Preparation stage round plan (StartStageRound)',
+      path: path.join('<stage>', stageRoundPlanDeclaration.file),
+      schema: stageRoundPlanDeclaration.schema,
     },
     roundArtifact('Development output (Develop)', devArtifact),
     roundArtifact('Verification output (Verify)', verificationArtifact),
     roundArtifact('Delivery output (Deliver)', deliveryArtifact),
     roundArtifact('Review output (Review)', reviewArtifact),
     roundArtifact('Completion output (CompleteTask)', completionArtifact),
+    roundArtifact('Preparation author output (StageAuthor)', stageAuthorArtifact),
+    roundArtifact('Preparation evaluation output (StageEvaluator)', stageEvaluationArtifact),
+    roundArtifact('Preparation result (StageResult)', stageResultArtifact),
     execution,
   ];
 }
@@ -317,9 +325,8 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `Workflow state file: ${paths.workflowStateFile} (the ExecutionRunner's persisted XState ` +
         'snapshot: JSON whose status is "active" or "done", whose value names the active state ' +
         'nodes and whose children map holds the invoked operations)',
-      `Selection file: ${paths.selectionFile} (` +
-        `${settings.workflowName === 'idea-refinement' ? 'SelectIdea' : 'SelectTask'}'s record, ` +
-        'JSON matching the selection schema below)',
+      `Selection file: ${paths.selectionFile} (SelectWork's record, JSON matching the selection ` +
+        'schema below)',
       `Execution event log: ${logFile} (newline-delimited JSON, one object per received event, ` +
         'each holding its ISO receipt timestamp and the event)',
       `Agent activity logs: ${activityDirectory} (one JSONL file per invocation, named with the ` +
@@ -332,41 +339,28 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
     ].join('\n'),
     [
       'Producer-owned record and artifact declarations',
-      settings.workflowName === 'idea-refinement'
-        ? 'Paths are relative to the refinement area of the shared issue workspace unless ' +
-          'absolute: the idea round plan sits in its state/ directory and cycle artifacts resolve ' +
-          'within artifacts/submissions/<submission>/cycles/<cycle>/ for the plan it records.'
-        : 'Paths are relative to the retained task workspace root unless absolute. Round ' +
-          'artifacts resolve within the current round directory artifacts/<roundNumber>/: the ' +
-          'current-round record selects the number, and earlier rounds remain as history.',
+      'Paths are relative to the shared issue workspace root unless absolute. Finite delivery ' +
+        'uses the root worktree/, artifacts/<roundNumber>/ and state/. Idea refinement uses the ' +
+        'refinement/ area with artifacts/submissions/<submission>/cycles/<cycle>/. The evaluated ' +
+        'preparation stages use requirements/, ux/, prototype/ and architecture/, each with ' +
+        'worktree/, state/ and artifacts/<roundNumber>/. The parent/ area keeps the handoff record.',
       ...recoveryDeclarations(settings).map(declarationText),
     ].join('\n\n'),
     [
-      settings.workflowName === 'idea-refinement'
-        ? 'Retained issue workspace'
-        : 'Retained task workspace',
+      'Retained issue workspace',
       selection === null
         ? 'The selection record was absent or unreadable, so no retained workspace is known.'
-        : (settings.workflowName === 'idea-refinement'
-            ? `Issue ${selection.task} retained the workflow area at ${selection.workspace.root}.`
-            : `Task ${selection.task} retained the workspace at ${selection.workspace.root}.`) +
-          (selection.issueWorkspace === undefined
-            ? ''
-            : ` Its shared issue workspace root is ${selection.issueWorkspace.root}.`),
-      settings.workflowName === 'idea-refinement'
-        ? `Issue workspaces live under ${taskWorkspaceRoot}/<issue>/ with the fixed layout ` +
-          'worktree/, artifacts/<roundNumber>/ and state/ for finite delivery and refinement/ ' +
-          '(worktree/, artifacts/submissions/, state/current-round.json) for idea refinement. ' +
-          'Confirm that a target you delete belongs to the interrupted issue under this root.'
-        : `Task workspaces live under ${taskWorkspaceRoot}/<task>/ with the fixed layout worktree/, ` +
-          'artifacts/<roundNumber>/ and state/ (prepared-workspace.json, preparation/, ' +
-          'current-round.json). Its refinement/ area retains idea refinement artifacts and is ' +
-          'preserved; confirm that a target you delete belongs to the interrupted task under ' +
-          'this root.',
+        : `Issue ${selection.task} retained the stage "${selection.stage}" at ` +
+          `${selection.workspace.root}.`,
+      `Issue workspaces live under ${taskWorkspaceRoot}/<issue>/ with the fixed layout of the ` +
+        'current workflow areas: root worktree/, artifacts/<roundNumber>/ and state/ for finite ' +
+        'delivery, refinement/ for idea refinement, the four preparation areas, and parent/ for ' +
+        'the source handoff. Confirm that a target you delete belongs to the interrupted issue ' +
+        'under this root.',
     ].join('\n'),
     [
       'Selected workflow',
-      `Name: ${settings.workflowName}`,
+      'Name: project',
       `Module: ${settings.workflowPath}`,
       'Definition (the loaded XState configuration; guard and action functions are code in the ' +
         'module above and are absent from this JSON):',
@@ -513,7 +507,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         project,
         nexus,
         workflow,
-        workflowName: settings.workflowName,
         workflowPath: settings.workflowPath,
         paths,
         logFile: settings.logFile,

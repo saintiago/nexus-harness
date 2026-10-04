@@ -34,6 +34,7 @@ export type JiraOperations = {
   addComment?(issueId: string, body: JiraDocument): Result<JiraComment>;
   editComment?(issueId: string, commentId: string, body: JiraDocument): Result<JiraComment>;
   createIssue?(fields: Readonly<Record<string, unknown>>): Result<JiraIssueIdentity>;
+  linkIssues?(fromIssueId: string, toIssueId: string, linkType: string): Result<void>;
   rankIssue?(issueId: string, target: JiraRankTarget): Result<void>;
 };
 
@@ -96,6 +97,12 @@ export function scriptedJira(operations: JiraOperations): {
     async createIssue(fields) {
       calls.push('createIssue');
       return operations.createIssue ? operations.createIssue(fields) : unexpected('createIssue');
+    },
+    async linkIssues(fromIssueId, toIssueId, linkType) {
+      calls.push(`linkIssues:${fromIssueId}:${toIssueId}:${linkType}`);
+      return operations.linkIssues
+        ? operations.linkIssues(fromIssueId, toIssueId, linkType)
+        : unexpected('linkIssues');
     },
     async rankIssue(issueId, target) {
       calls.push(`rankIssue:${issueId}`);

@@ -134,7 +134,7 @@ saved.
 
 ## Inputs before a round exists
 
-[SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.
+[SelectWork](select-task.md#output) owns selection.json beside the queue's workflow-state file.
 [PrepareWorkspace](prepare-workspace.md#output) owns state/prepared-workspace.json in the selected
 ticket's workspace. Consumers import these record declarations and read them directly; they are not
 resolved through the current-round helper. [StartDevRound](start-dev-round.md#output) owns the current-round

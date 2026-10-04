@@ -17,7 +17,12 @@ and a workflow-state filepath.
 TaskEngine
 ├── ExecutionRunner
 └── Actions
-    ├── SelectTask
+    ├── Parent source and handoff actions
+    │   ├── SelectWork
+    │   ├── RouteSelection
+    │   ├── PublishPreparationResult
+    │   ├── ImplementationHandoff
+    │   └── CompleteDelivery
     ├── PrepareWorkspace
     ├── StartDevRound
     ├── Develop
@@ -26,6 +31,12 @@ TaskEngine
     ├── Deliver
     ├── CompleteTask
     ├── AnalyzeExperience
+    ├── Evaluated preparation stage actions
+    │   ├── PrepareStage
+    │   ├── StartStageRound
+    │   ├── StageAuthor
+    │   ├── StageEvaluator
+    │   └── StageResult
     └── Idea refinement actions (see specification)
         └── StartIdeaRound
 ```
@@ -204,10 +215,13 @@ It invokes StartIdeaRound for each conversation cycle using an idea-specific rol
 history. XState routes approval, discussion, focused contributions and returns to the author.
 Operations retain their artifact and source-update responsibilities.
 
-The finite workflow routes the initial prepared workspace and failed Develop, failed Verify
-and changesRequested Review to StartDevRound. StartDevRound returns started for another round or exhausted
-for the blocked terminal state. Approved Review still routes to CompleteTask; inconclusive Review
-routes directly to blocked, and operational errors remain execution errors rather than repairs. The
+The finite delivery child starts from the parent's selected workspace; it never selects. It invokes
+the parent-owned input boundary before Develop and before Review, and the parent-owned delivery and
+review publication actors at those milestones. Failed Develop, failed Verify and changesRequested
+Review route to StartDevRound; StartDevRound returns started for another round or exhausted for the
+blocked terminal state. Approved Review routes to CompleteTask; inconclusive Review routes directly
+to blocked, and operational errors remain execution errors rather than repairs. A completed child
+returns its completion evidence to the parent, which marks the ticket Done only afterward. The
 reviewer profile is selected by Review and is separate from the developer profile selected by
 StartDevRound.
 

@@ -1,0 +1,63 @@
+import { z } from 'zod';
+import type { RecordDeclaration } from '../records.js';
+
+/**
+ * SelectWork's source-side declaration files: the parent handoff record retained under the issue
+ * workspace's `parent/` area and the stage feedback entry it carries. The record keeps the current
+ * stage, the feedback destination and publication identities the parent reuses when a run repeats.
+ */
+
+/** The parent handoff area's directory under an issue workspace root. */
+export const parentAreaDirectory = 'parent';
+
+/** The parent handoff record's file name under the parent area. */
+export const handoffFile = 'handoff.json';
+
+/** Publication identities the parent retained so a repeated write finishes only what is missing. */
+export const parentPublicationSchema = z.object({
+  kind: z.string().min(1),
+  id: z.string().min(1),
+});
+
+/** One created implementation ticket and the link that connects it to the original issue. */
+export const handoffTicketSchema = z.object({
+  key: z.string().min(1),
+  issueId: z.string().min(1),
+  summary: z.string().min(1),
+});
+
+/**
+ * The parent-owned handoff record: the current stage, the retained upstream-return count, the
+ * feedback destination a Waiting for Feedback publication retains, the created implementation
+ * tickets and the publication identities the parent already finished.
+ */
+export const parentHandoffSchema = z.object({
+  /** The stage the selected issue currently runs; the parent's route input on restore. */
+  stage: z.enum(['idea', 'requirements', 'ux', 'prototype', 'architecture', 'delivery']),
+  /** Upstream-return allowances consumed by the selected issue, counted across restarts. */
+  upstreamReturns: z.number().int().nonnegative(),
+  /** The stage and specific question retained when the issue waits for human feedback. */
+  feedback: z
+    .object({
+      stage: z.enum(['idea', 'requirements', 'ux', 'prototype', 'architecture']),
+      question: z.string().min(1),
+    })
+    .nullable(),
+  /** Implementation tickets the Architecture handoff created for this issue. */
+  tickets: z.array(handoffTicketSchema),
+  /** Publication identities the parent observed, such as a comment or documentation pull request. */
+  publications: z.array(parentPublicationSchema),
+});
+
+export type ParentHandoff = z.infer<typeof parentHandoffSchema>;
+
+/** The record declaration the parent actions import instead of restating the file or shape. */
+export const parentHandoffDeclaration = {
+  file: handoffFile,
+  schema: parentHandoffSchema,
+} satisfies RecordDeclaration<typeof parentHandoffSchema>;
+
+/** The record's initial value for a freshly selected issue. */
+export function initialHandoff(stage: ParentHandoff['stage']): ParentHandoff {
+  return { stage, upstreamReturns: 0, feedback: null, tickets: [], publications: [] };
+}

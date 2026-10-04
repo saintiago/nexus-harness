@@ -40,6 +40,7 @@ export type GitOperations = {
     branch: string,
     expectedHead: string,
   ): Result<BranchHead> | Promise<Result<BranchHead>>;
+  commitAll?(repository: string, message: string): Result<BranchHead> | Promise<Result<BranchHead>>;
   readRemoteBranchHead?(
     remote: string,
     branch: string,
@@ -86,6 +87,12 @@ export function scriptedGit(
       },
       async fetchRevision() {
         return unexpected('fetchRevision');
+      },
+      async commitAll(repository, message) {
+        calls.push(`commit:${repository}:${message}`);
+        return operations.commitAll
+          ? await operations.commitAll(repository, message)
+          : unexpected('commitAll');
       },
       async pullBranch(repository, remote, branch) {
         calls.push(`pull:${repository}:${remote}:${branch}`);

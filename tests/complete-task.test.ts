@@ -21,6 +21,7 @@ import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.j
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { scriptedGitHub } from './support/github.js';
+import { createCompleteDelivery } from '../src/task-engine/actions/project/complete-delivery/index.js';
 import { scriptedJira } from './support/jira.js';
 
 const headRevision = '2'.repeat(40);
@@ -70,6 +71,7 @@ async function workspace(
         task: { id: '1', key: 'NEX-1', fields: { summary: 'Implement the retry guard' } },
         conversation: [],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -194,6 +196,19 @@ function completionOutcome(workspaceRoot: string, outcome: 'completed' | 'failed
 }
 
 /** The action under test, bound to the configured post-merge checks and controlled adapters. */
+/** The parent-owned completion over the same selection and controlled source. */
+function completeDeliveryAction(options: {
+  readonly selectionFile: string;
+  readonly jira: ReturnType<typeof scriptedJira>['jira'];
+}): ReturnType<typeof createCompleteDelivery> {
+  return createCompleteDelivery({
+    selectionFile: options.selectionFile,
+    doneStatus: 'Done',
+    jira: options.jira,
+    publish: (event) => events.push(event),
+  });
+}
+
 function completeTaskAction(options: {
   readonly selectionFile: string;
   readonly github: ReturnType<typeof scriptedGitHub>['github'];
@@ -211,9 +226,7 @@ function completeTaskAction(options: {
       pollIntervalSeconds: 5,
       waitLimitSeconds: options.waitLimitSeconds ?? 1800,
     },
-    doneStatus: 'Done',
     github: options.github,
-    jira: options.jira,
     publish: (event) => events.push(event),
     wait: options.wait,
   });
@@ -246,6 +259,8 @@ describe('CompleteTask', () => {
     const completeTask = completeTaskAction({ selectionFile, github, jira, wait });
 
     await expect(completeTask()).resolves.toBe('completed');
+    // The child returns its evidence; the parent marks the ticket Done.
+    await expect(completeDeliveryAction({ selectionFile, jira })()).resolves.toBe('completed');
 
     const completion = (await readRoundArtifact(
       workspaceRoot,
@@ -267,10 +282,11 @@ describe('CompleteTask', () => {
     ]);
     expect(jiraCalls).toEqual(['read:1', 'transitions:1', 'transition:1:41']);
     expect(waitCalls).toEqual([]);
-    // The checks are confirmed before the ticket is marked Done.
+    // The checks are confirmed before the parent marks the ticket Done.
     expect(order).toEqual(['checks', 'workflow', 'done']);
-    // The saved evidence is what the completed outcome event references.
-    expect(events).toEqual([completionOutcome(workspaceRoot, 'completed')]);
+    // The saved evidence is what the child's completed outcome event references; the parent's
+    // completion event follows it.
+    expect(events[0]).toEqual(completionOutcome(workspaceRoot, 'completed'));
   });
 
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {
@@ -550,6 +566,9 @@ describe('CompleteTask', () => {
     await expect(
       completeTaskAction({ selectionFile: settled.selectionFile, github, jira, wait })(),
     ).resolves.toBe('completed');
+    await expect(
+      completeDeliveryAction({ selectionFile: settled.selectionFile, jira })(),
+    ).resolves.toBe('completed');
 
     expect(waitCalls).toEqual([5000, 5000]);
     expect(jiraCalls).toContain('transition:1:41');
@@ -668,6 +687,9 @@ describe('CompleteTask', () => {
 
     expect(requiredReads).toBe(2);
     expect(pendingWaitCalls).toEqual([5000, 5000]);
+    await expect(
+      completeDeliveryAction({ selectionFile: pending.selectionFile, jira: pendingJira })(),
+    ).resolves.toBe('completed');
     expect(pendingJiraCalls).toContain('transition:1:41');
 
     // A required check that fails while the merge is pending is reported on that observation.
@@ -819,10 +841,13 @@ describe('CompleteTask', () => {
 
     // The confirmed evidence is reused: no review check and no workflow run is read again.
     expect(githubCalls).toEqual(['read:7']);
+    expect(jiraCalls).toEqual([]);
+    await expect(completeDeliveryAction({ selectionFile, jira })()).resolves.toBe('completed');
     expect(jiraCalls).toEqual(['read:1', 'transitions:1', 'transition:1:41']);
     expect(await readRoundArtifact(workspaceRoot, 'completion.json')).toEqual(completion);
-    // The reused evidence stays the saved file the outcome event references.
-    expect(events).toEqual([completionOutcome(workspaceRoot, 'completed')]);
+    // The reused evidence stays the saved file the child's outcome event references; the parent's
+    // completion event follows it.
+    expect(events[0]).toEqual(completionOutcome(workspaceRoot, 'completed'));
 
     // An already-completed ticket needs no further transition.
     events = [];
@@ -847,6 +872,11 @@ describe('CompleteTask', () => {
         jira: doneJira,
         wait: scriptedWait().wait,
       })(),
+    ).resolves.toBe('completed');
+    expect(doneJiraCalls).toEqual([]);
+    // The parent sees the ticket is already Done and performs no further transition.
+    await expect(
+      completeDeliveryAction({ selectionFile: alreadyDone.selectionFile, jira: doneJira })(),
     ).resolves.toBe('completed');
     expect(doneJiraCalls).toEqual(['read:1']);
     expect(doneHub.calls).toEqual(['read:7']);

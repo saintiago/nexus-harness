@@ -1,7 +1,6 @@
 import type { Dirent } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { WorkflowName } from '../configuration/index.js';
 import type { ExperienceHandoff } from '../task-engine/actions/analyze-experience/artifacts.js';
 import { roundArtifactPath } from '../task-engine/actions/artifacts.js';
 import { completionFailureArtifact } from '../task-engine/actions/complete-task/artifacts.js';
@@ -15,17 +14,13 @@ import {
   preparedWorkspaceFile,
 } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
-import type { IdeaSelection } from '../task-engine/actions/select-idea/artifacts.js';
 import type { Selection } from '../task-engine/actions/select-task/artifacts.js';
 import {
   currentRoundDeclaration,
   currentRoundFile,
   roundExhaustionDeclaration,
 } from '../task-engine/actions/start-round/artifacts.js';
-import {
-  ideaRoundPlanDeclaration,
-  submissionExhaustionDeclaration,
-} from '../task-engine/actions/start-idea-round/artifacts.js';
+import { ideaRoundPlanDeclaration } from '../task-engine/actions/start-idea-round/artifacts.js';
 import { terminalReasonSchema } from '../task-engine/actions/terminal-reason.js';
 
 /**
@@ -90,42 +85,18 @@ export const finiteDeliveryTerminals = {
 
 export type FiniteDeliveryTerminal = keyof typeof finiteDeliveryTerminals;
 
-/** One idea-refinement terminal: its preserved outcome and the producer that stated it. */
-export const ideaRefinementTerminals = {
-  'publish-approved': {
-    outcome: 'approved',
-    producer: 'publish-decision',
-  },
-  'publish-unsuitable': {
-    outcome: 'waiting-for-feedback',
-    producer: 'publish-decision',
-  },
-  'publish-author-decision': {
-    outcome: 'waiting-for-feedback',
-    producer: 'publish-decision',
-  },
-  'publish-attempts-exhausted': {
-    outcome: 'waiting-for-feedback',
-    producer: 'publish-decision',
-  },
-  'start-submission-exhausted': {
-    outcome: 'exhausted',
-    producer: 'start-idea-round',
-    reason: {
-      kind: 'state',
-      declaration: submissionExhaustionDeclaration,
-    } satisfies TerminalReasonRecord,
-  },
-} as const satisfies Record<
-  string,
-  {
-    readonly outcome: string;
-    readonly producer: string;
-    readonly reason?: TerminalReasonRecord;
-  }
->;
+/**
+ * The parent's idea-publication terminals: the business decision the parent published. Analysis
+ * preserves the destination; the decision record carries the child's reason.
+ */
+export const ideaPublicationTerminals = ['idea-approved', 'idea-feedback'] as const;
 
-export type IdeaRefinementTerminal = keyof typeof ideaRefinementTerminals;
+export type IdeaPublicationTerminal = (typeof ideaPublicationTerminals)[number];
+
+const ideaPublicationOutcomes: Record<IdeaPublicationTerminal, string> = {
+  'idea-approved': 'approved',
+  'idea-feedback': 'waiting-for-feedback',
+};
 
 /** The operation terminal one workflow state supplies with its AnalyzeExperience invocation. */
 type TerminalInput = { readonly terminal?: unknown };
@@ -152,9 +123,9 @@ export function finiteTerminalOf(input: unknown): FiniteDeliveryTerminal {
   return terminalOf(input, finiteDeliveryTerminals, 'finite delivery');
 }
 
-/** The idea-refinement terminal one workflow state supplied. */
-export function ideaTerminalOf(input: unknown): IdeaRefinementTerminal {
-  return terminalOf(input, ideaRefinementTerminals, 'idea refinement');
+/** The parent idea-publication terminal one parent state supplied. */
+export function ideaPublicationTerminalOf(input: unknown): IdeaPublicationTerminal {
+  return terminalOf(input, { 'idea-approved': true, 'idea-feedback': true }, 'idea publication');
 }
 
 /** Whether one path currently exists as a file. */
@@ -297,23 +268,22 @@ async function retainedTerminalReason(file: string | null): Promise<string | nul
  * selection names the submission it opens, and a partial initialization is that interrupted
  * submission, never the previous plan's submission.
  */
-async function ideaSubmission(root: string, expected: number): Promise<number | null> {
+async function ideaSubmission(root: string): Promise<number | null> {
   const plan = await readRecord(
     path.join(root, ideaRoundPlanDeclaration.file),
     ideaRoundPlanDeclaration,
   );
   const retained = (await listIdeaSubmissions(root)).at(-1) ?? 0;
-  const submission = Math.max(plan?.submission ?? 0, retained, expected);
+  const submission = Math.max(plan?.submission ?? 0, retained);
   return submission === 0 ? null : submission;
 }
 
-/** One idea submission's identity and retained artifacts. */
-async function ideaAttempt(selection: IdeaSelection): Promise<{
+/** One idea submission's identity and retained artifacts under the refinement area. */
+async function ideaAttempt(root: string): Promise<{
   readonly attemptId: string;
   readonly files: string[];
 }> {
-  const root = selection.workspace.root;
-  const submission = await ideaSubmission(root, selection.retainedSubmissions + 1);
+  const submission = await ideaSubmission(root);
   if (submission === null) {
     return { attemptId: 'unprepared', files: [] };
   }
@@ -353,25 +323,23 @@ export async function finiteDeliveryHandoff(options: {
   };
 }
 
-/** Build the terminal handoff of one idea-refinement terminal for the selected submission. */
-export async function ideaRefinementHandoff(options: {
-  readonly selection: IdeaSelection;
-  readonly terminal: IdeaRefinementTerminal;
+/**
+ * Build the terminal handoff of one parent idea publication for the selected submission: the
+ * refinement area's retained artifacts after the parent published the decision.
+ */
+export async function ideaPublicationHandoff(options: {
+  readonly selection: Selection;
+  readonly terminal: IdeaPublicationTerminal;
 }): Promise<ExperienceHandoff> {
-  const root = options.selection.workspace.root;
-  const terminal = ideaRefinementTerminals[options.terminal];
-  const attempt = await ideaAttempt(options.selection);
-  const reasonFile = terminalReasonFile(root, terminalReasonRecordOf(terminal), null);
-  if (reasonFile !== null && !attempt.files.includes(reasonFile) && (await isFile(reasonFile))) {
-    attempt.files.push(reasonFile);
-  }
+  const root = path.join(options.selection.workspace.root, 'refinement');
+  const attempt = await ideaAttempt(root);
   return {
     workId: options.selection.taskKey,
     workflow: 'idea-refinement',
     attemptId: attempt.attemptId,
     terminalId: options.terminal,
-    outcome: terminal.outcome,
-    reason: await retainedTerminalReason(reasonFile),
+    outcome: ideaPublicationOutcomes[options.terminal],
+    reason: null,
     workspaceRoot: root,
     artifacts: evidence(attempt),
   };
@@ -383,26 +351,49 @@ export async function ideaRefinementHandoff(options: {
  * replace that attempt.
  */
 export async function operationalErrorHandoff(options: {
-  readonly workflow: WorkflowName;
-  readonly selection: Selection | IdeaSelection;
+  readonly selection: Selection;
   readonly failure: string;
 }): Promise<ExperienceHandoff> {
-  if (options.workflow === 'idea-refinement') {
-    const selection = options.selection as IdeaSelection;
-    const attempt = await ideaAttempt(selection);
+  const selection = options.selection;
+  const root = selection.workspace.root;
+  if (selection.stage === 'idea') {
+    const refinement = path.join(root, 'refinement');
+    const attempt = await ideaAttempt(refinement);
     return {
       workId: selection.taskKey,
-      workflow: options.workflow,
+      workflow: 'idea-refinement',
       attemptId: attempt.attemptId,
       terminalId: 'operational-error',
       outcome: 'error',
       reason: options.failure,
-      workspaceRoot: selection.workspace.root,
+      workspaceRoot: refinement,
       artifacts: evidence(attempt),
     };
   }
-  const selection = options.selection as Selection;
-  const root = selection.workspace.root;
+  if (selection.stage !== 'delivery') {
+    // A preparation stage's attempt retains its rounds and state under its own area.
+    const area = path.join(root, selection.stage === 'ux' ? 'ux' : selection.stage);
+    const submission = await readRecord(path.join(area, currentRoundFile), {
+      file: currentRoundFile,
+      schema: currentRoundDeclaration.schema,
+    });
+    const files = [
+      ...(await retainedFiles(area, 'state')),
+      ...(submission === null
+        ? []
+        : await retainedFiles(area, path.join('artifacts', String(submission.number)))),
+    ];
+    return {
+      workId: selection.taskKey,
+      workflow: selection.stage,
+      attemptId: submission === null ? 'unprepared' : `round-${String(submission.number)}`,
+      terminalId: 'operational-error',
+      outcome: 'error',
+      reason: options.failure,
+      workspaceRoot: area,
+      artifacts: evidence({ files }),
+    };
+  }
   const attempt = await finiteAttemptState(root);
   const files = await finiteEvidence(
     root,
@@ -411,7 +402,7 @@ export async function operationalErrorHandoff(options: {
   );
   return {
     workId: selection.taskKey,
-    workflow: options.workflow,
+    workflow: 'finite-delivery',
     attemptId: attempt.attemptId,
     terminalId: 'operational-error',
     outcome: 'error',

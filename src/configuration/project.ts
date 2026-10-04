@@ -51,6 +51,27 @@ const projectConfigurationSchema = z.strictObject({
       review: identifier,
       done: identifier,
     }),
+    // Preparation mappings are optional so a delivery-only project can bootstrap the parent with
+    // its existing ready mapping. When configured, the parent selects the mapped stages too.
+    preparation: z
+      .strictObject({
+        statuses: z.strictObject({
+          requirements: identifier,
+          uxProposal: identifier,
+          storybookRefinement: identifier,
+          architecture: identifier,
+        }),
+      })
+      .optional(),
+    // Implementation-ticket creation settings the parent applies after an Architecture handoff.
+    implementation: z
+      .strictObject({
+        issueType: identifier,
+        labels: z.array(identifier),
+        status: identifier,
+        linkType: identifier,
+      })
+      .optional(),
     // The idea refinement selection and status mappings are separate from the delivery queue's,
     // so submitted ideas never enter the To Do queue.
     ideas: z.strictObject({

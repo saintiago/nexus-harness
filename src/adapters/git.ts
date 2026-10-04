@@ -39,6 +39,7 @@ export type GitAdapter = {
     branch: string,
     startRevision: string,
   ): Promise<Result<BranchHead>>;
+  commitAll(repository: string, message: string): Promise<Result<BranchHead>>;
   readDiff(repository: string, baseRevision: string, headRevision: string): Promise<Result<string>>;
   pushBranch(repository: string, branch: string, expectedHead: string): Promise<Result<BranchHead>>;
   readRemoteBranchHead(remote: string, branch: string): Promise<Result<string | null>>;
@@ -215,6 +216,31 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
       const checkout = await required(['checkout', '-b', branch, startRevision], repository);
       if (!checkout.ok) {
         return checkout;
+      }
+      return readBranchHead(repository);
+    },
+
+    async commitAll(repository, message) {
+      // Stage every tracked and untracked change so a prepared worktree's complete document set is
+      // committed as one revision; the caller decides when that is appropriate.
+      const staged = await required(['add', '--all'], repository);
+      if (!staged.ok) {
+        return staged;
+      }
+      const commit = await required(
+        [
+          '-c',
+          'user.name=Nexus',
+          '-c',
+          'user.email=nexus@localhost',
+          'commit',
+          '--message',
+          message,
+        ],
+        repository,
+      );
+      if (!commit.ok) {
+        return commit;
       }
       return readBranchHead(repository);
     },

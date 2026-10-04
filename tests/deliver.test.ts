@@ -15,6 +15,7 @@ import { fault, ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { createDeliver } from '../src/task-engine/actions/deliver/index.js';
+import { createPublishDeliveryReport } from '../src/task-engine/actions/project/source-boundaries/index.js';
 import {
   devArtifact,
   type DevelopmentOutput,
@@ -70,17 +71,14 @@ function deliverAction(options: {
   readonly selectionFile: string;
   readonly git: GitAdapter;
   readonly github: GitHubAdapter;
-  readonly jira: JiraAdapter;
+  readonly jira?: JiraAdapter;
 }): ReturnType<typeof createDeliver> {
   return createDeliver({
     selectionFile: options.selectionFile,
     repository,
     baseBranch: 'main',
-    pullRequestField: 'customfield_10002',
-    reviewStatus: 'In Review',
     git: options.git,
     github: options.github,
-    jira: options.jira,
     publish: (event) => events.push(event),
     wait,
   });
@@ -141,6 +139,7 @@ async function workspace(name = 'workspace'): Promise<{
         task: { id: '1', key: 'NEX-1', fields: { summary: 'Implement the retry guard' } },
         conversation: [],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -205,6 +204,20 @@ async function readRoundArtifact(
   return JSON.parse(
     await readFile(path.join(workspaceRoot, 'artifacts', String(round), name), 'utf8'),
   ) as unknown;
+}
+
+/** The parent-owned publication over the same selection and controlled source. */
+function publishReport(
+  selectionFile: string,
+  jira: JiraAdapter,
+): ReturnType<typeof createPublishDeliveryReport> {
+  return createPublishDeliveryReport({
+    selectionFile,
+    pullRequestField: 'customfield_10002',
+    reviewStatus: 'In Review',
+    jira,
+    publish: () => undefined,
+  });
 }
 
 /** The single paragraph's text of one Nexus comment document. */
@@ -281,16 +294,21 @@ describe('Deliver', () => {
       `create:${taskBranch}->main`,
       `autoMerge:7@${headRevision}`,
     ]);
+    // The child has no Jira capability; the parent-owned boundary actor publishes the report.
+    expect(jiraCalls).toEqual([]);
+    await expect(publishReport(selectionFile, jira)()).resolves.toBe('published');
     expect(jiraCalls).toEqual([
       'read:1',
       'comments:1',
-      'transitions:1',
       `update:1:${JSON.stringify({ pullRequest: pullRequestUrl })}`,
+      'transitions:1',
       'transition:1:31',
       'addComment:1',
     ]);
     expect(comment).not.toBeNull();
-    expect(commentText(comment ?? {})).toBe('profile: dev-a\nImplemented the retry guard.');
+    expect(commentText(comment ?? {})).toBe(
+      'profile: dev-a\nImplemented the retry guard.\nPull request: ' + pullRequestUrl,
+    );
     // The saved delivery record is what the published outcome event references.
     expect(events).toEqual([
       {
@@ -756,8 +774,8 @@ describe('Deliver', () => {
     ]);
     // The recorded pull request is updated, and auto-merge is not requested again.
     expect(githubCalls).toEqual(['read:7', 'update:7']);
-    // The ticket already holds the pull request and review status, and the comment is not repeated.
-    expect(jiraCalls).toEqual(['read:1', 'comments:1']);
+    // The child performs no source writes of its own.
+    expect(jiraCalls).toEqual([]);
     expect(await readRoundArtifact(workspaceRoot, 1, 'delivery.json')).toEqual({
       repository,
       pullRequestNumber: 7,
@@ -1434,10 +1452,12 @@ describe('Deliver', () => {
     const deliver = deliverAction({ selectionFile, git, github, jira });
 
     await expect(deliver()).resolves.toBe('published');
+    await expect(publishReport(selectionFile, jira)()).resolves.toBe('published');
 
     expect(commentText(comment ?? {})).toBe(
       'profile: dev-b\nImplemented the retry guard.\n' +
-        'Repairs used: 2, escalated from "dev-a" to "dev-b".',
+        'Repairs used: 2, escalated from "dev-a" to "dev-b".\n' +
+        `Pull request: ${pullRequestUrl}`,
     );
   });
 });
