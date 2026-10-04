@@ -157,8 +157,11 @@ If existing documents already suffice, reference their accepted revision and ski
 create an empty PR. Existing repository gates remain;
 there is no additional approval gate beyond essential author decisions. The existing repository
 reviewer assesses the exact assembled documentation revision within the Architecture child; the
-deterministic parent publishes that saved assessment's actual Lens review/check verdict. Retained negative evidence is preserved and requests repairs, never replaced
-with deterministic approval. Validate the entire publication diff against accepted document paths.
+deterministic parent publishes that saved assessment's actual Lens review/check verdict under the
+[Review contract](task-engine/actions/review.md#output). Reviewer invocation faults and unusable child
+assessments follow existing execution-error recovery and cannot authorize merge or implementation-ticket creation.
+Retained negative evidence is preserved and requests repairs, never replaced with deterministic
+approval. Validate the entire publication diff against accepted document paths.
 
 The parent creates concise implementation tickets linked to merged documents, source issue and any
 retained prototype references. Validate the dependency graph before applying handoff effects and
