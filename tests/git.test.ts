@@ -19,7 +19,7 @@ import {
   prepareDocumentationPublication,
   readAcceptedDocuments,
 } from '../src/task-engine/actions/preparation/publication.js';
-import { ok } from '../src/result.js';
+import { fault, ok } from '../src/result.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 
@@ -982,6 +982,76 @@ describe('Git adapter', () => {
       }
     },
   );
+
+  it('rejects a preparation reviewer invocation fault before saving or publishing', async () => {
+    const { origin, revision } = await repositoryWithOrigin();
+    const directory = await temporaryDirectory();
+    const root = path.join(directory, 'NEX-1');
+    const area = path.join(root, 'architecture');
+    const worktree = path.join(area, 'worktree');
+    await mkdir(path.join(area, 'state'), { recursive: true });
+    await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
+    await git.cloneRepository(origin, worktree);
+    await git.createBranch(worktree, 'task/NEX-1-architecture', revision);
+    await commitFile(worktree, 'readme.md', 'accepted content\n');
+    const accepted = await headOf(worktree);
+    await writeFile(
+      path.join(area, 'state/current-round.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'a', evaluator: 'e' },
+      }),
+    );
+    await writeFile(
+      path.join(area, 'artifacts/1/result.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        outcome: 'accepted',
+        authoredRevision: 1,
+        documents: [{ path: path.join(worktree, 'readme.md'), revision: accepted }],
+        outputs: [],
+        evaluation: { path: path.join(area, 'artifacts/1/evaluation.json') },
+        reason: 'Accepted.',
+        returnStage: null,
+        returnFinding: null,
+        prototype: null,
+      }),
+    );
+    const selectionFile = path.join(directory, 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: {},
+        conversation: [],
+        workspace: { root },
+        stage: 'architecture',
+      }),
+    );
+    const events: string[] = [];
+    const review = createReviewPreparationPublication({
+      selectionFile,
+      baseBranch: 'main',
+      git,
+      reviewerProfile: 'e',
+      publish: (event) => {
+        events.push(event.type);
+      },
+      reviewer: { run: async () => fault('the reviewer service is unavailable') },
+    });
+
+    // An invocation fault is an execution error, not a repository condition the parent captures
+    // as a preparation failure: it rejects without a failure publication or a saved report the
+    // parent could publish a review or check from.
+    await expect(review()).rejects.toThrow('the reviewer service is unavailable');
+    expect(events).toEqual([]);
+    await expect(
+      readFile(path.join(root, 'parent/documentation-reviews', `${accepted}.json`), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 
   it('includes both sides of a rename when checking the complete publication path set', async () => {
     const { origin, revision } = await repositoryWithOrigin();
