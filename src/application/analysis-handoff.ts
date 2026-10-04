@@ -7,6 +7,21 @@ import { completionFailureArtifact } from '../task-engine/actions/complete-task/
 import { deliveryFailureArtifact } from '../task-engine/actions/deliver/artifacts.js';
 import { listIdeaSubmissions } from '../task-engine/actions/idea-storage.js';
 import {
+  parentAreaDirectory,
+  handoffFile,
+  parentHandoffDeclaration,
+} from '../task-engine/actions/select-work/artifacts.js';
+import {
+  stageResultArtifact,
+  stageRoundPlanDeclaration,
+  type PreparationStage,
+} from '../task-engine/actions/preparation/artifacts.js';
+import {
+  readStageArtifact,
+  readStagePlan,
+  stageRoot,
+} from '../task-engine/actions/preparation/storage.js';
+import {
   attemptDeclaration,
   attemptFile,
   preparationFailureDeclaration,
@@ -73,6 +88,11 @@ export const finiteDeliveryTerminals = {
     reason: { kind: 'round', pathFromArtifactsRoot: deliveryFailureArtifact.pathFromArtifactsRoot },
   },
   'review-inconclusive': { outcome: 'inconclusive', producer: 'review', evidence: 'round' },
+  'review-publication-failed': {
+    outcome: 'failed',
+    producer: 'review-publication',
+    evidence: 'round',
+  },
 } as const satisfies Record<
   string,
   {
@@ -92,6 +112,29 @@ export type FiniteDeliveryTerminal = keyof typeof finiteDeliveryTerminals;
 export const ideaPublicationTerminals = ['idea-approved', 'idea-feedback'] as const;
 
 export type IdeaPublicationTerminal = (typeof ideaPublicationTerminals)[number];
+
+/**
+ * The parent's preparation-terminal handoffs: the evaluated stage the parent published, the
+ * business destination the analysis preserves and the producer that stated the reason. A skip and
+ * an exhaustion are published outcomes too; a blocked preparation never reaches the parent.
+ */
+export const preparationTerminalEntries = {
+  'preparation-advanced': { outcome: 'advanced', destination: 'route' },
+  'preparation-handoff': { outcome: 'handoff', destination: 'handoff' },
+  'preparation-waiting': { outcome: 'needs-input', destination: 'select' },
+  'preparation-exhausted': { outcome: 'exhausted', destination: 'select' },
+  'selection-failed': { outcome: 'failed', destination: 'blocked' },
+} as const satisfies Record<
+  string,
+  { readonly outcome: string; readonly destination: 'route' | 'handoff' | 'select' | 'blocked' }
+>;
+
+export type PreparationTerminal = keyof typeof preparationTerminalEntries;
+
+/** Whether one value names a parent preparation terminal. */
+export function isPreparationTerminal(value: unknown): value is PreparationTerminal {
+  return typeof value === 'string' && Object.hasOwn(preparationTerminalEntries, value);
+}
 
 const ideaPublicationOutcomes: Record<IdeaPublicationTerminal, string> = {
   'idea-approved': 'approved',
@@ -346,6 +389,72 @@ export async function ideaPublicationHandoff(options: {
 }
 
 /**
+ * Build the terminal handoff of one published preparation result: the stage area's own retained
+ * state and rounds, read through the preparation stage's producer-owned plan declaration. The
+ * attempt identity names the round the result closed, so repeated capture is identical.
+ */
+export async function preparationHandoff(options: {
+  readonly selection: Selection;
+  readonly terminal: PreparationTerminal;
+  /** The evaluated stage the parent published; the selection may already name its destination. */
+  readonly stage: PreparationStage;
+}): Promise<ExperienceHandoff> {
+  const stage = options.stage;
+  const root = stageRoot(options.selection.workspace.root, stage);
+  const plan = await readRecord(
+    path.join(root, stageRoundPlanDeclaration.file),
+    stageRoundPlanDeclaration,
+  );
+  const round = plan?.round ?? null;
+  const files = [
+    ...(await retainedFiles(root, 'state')),
+    ...(round === null ? [] : await retainedFiles(root, path.join('artifacts', String(round)))),
+  ];
+  const result = round === null ? null : await readStageArtifact(root, round, stageResultArtifact);
+  return {
+    workId: options.selection.taskKey,
+    workflow: 'preparation',
+    attemptId: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
+    terminalId: options.terminal,
+    outcome: preparationTerminalEntries[options.terminal].outcome,
+    reason: result?.reason ?? null,
+    workspaceRoot: root,
+    artifacts: evidence({ files }),
+  };
+}
+
+/**
+ * Build the terminal handoff of one selected-work failure: no stage ran, so the parent area holds
+ * the only retained evidence. An empty queue never reaches this builder.
+ */
+export async function selectionFailureHandoff(options: {
+  readonly selection: Selection;
+  readonly reason: string;
+}): Promise<ExperienceHandoff> {
+  const root = options.selection.workspace.root;
+  const handoff = await readRecord(
+    path.join(root, parentAreaDirectory, handoffFile),
+    parentHandoffDeclaration,
+  );
+  const area =
+    handoff === null || handoff.stage === 'idea' || handoff.stage === 'delivery'
+      ? null
+      : handoff.stage;
+  const stageRootDirectory = area === null ? null : stageRoot(root, area);
+  const files = stageRootDirectory === null ? [] : await retainedFiles(stageRootDirectory, 'state');
+  return {
+    workId: options.selection.taskKey,
+    workflow: 'selection',
+    attemptId: area === null ? 'unprepared' : `${area}-selection`,
+    terminalId: 'selection-failed',
+    outcome: 'failed',
+    reason: options.reason,
+    workspaceRoot: root,
+    artifacts: evidence({ files }),
+  };
+}
+
+/**
  * Build the handoff of an operational error Application observed after the worker settled: the
  * original fault and the interrupted attempt's retained evidence, recorded before recovery can
  * replace that attempt.
@@ -371,22 +480,20 @@ export async function operationalErrorHandoff(options: {
     };
   }
   if (selection.stage !== 'delivery') {
-    // A preparation stage's attempt retains its rounds and state under its own area.
-    const area = path.join(root, selection.stage === 'ux' ? 'ux' : selection.stage);
-    const submission = await readRecord(path.join(area, currentRoundFile), {
-      file: currentRoundFile,
-      schema: currentRoundDeclaration.schema,
-    });
+    // A preparation stage's attempt retains its rounds and state under its own area; its round is
+    // read through the preparation stage's own plan declaration, not the finite-delivery schema.
+    const area = stageRoot(root, selection.stage);
+    const plan = await readStagePlan(area);
     const files = [
       ...(await retainedFiles(area, 'state')),
-      ...(submission === null
+      ...(plan === null
         ? []
-        : await retainedFiles(area, path.join('artifacts', String(submission.number)))),
+        : await retainedFiles(area, path.join('artifacts', String(plan.round)))),
     ];
     return {
       workId: selection.taskKey,
       workflow: selection.stage,
-      attemptId: submission === null ? 'unprepared' : `round-${String(submission.number)}`,
+      attemptId: plan === null ? 'unprepared' : `round-${String(plan.round)}`,
       terminalId: 'operational-error',
       outcome: 'error',
       reason: options.failure,

@@ -61,6 +61,13 @@ export type PublishDecisionSettings = {
   readonly selection: Selection;
   /** The refinement area holding the recorded decision. */
   readonly refinementRoot: string;
+  /**
+   * The source statuses this publication may write from: the status the child's selection left
+   * behind and the target a repeated publication already applied. Any other status is an
+   * unexpected human change the publication preserves instead of overwriting. Absent leaves the
+   * transition unvalidated for callers that supply no expected source state.
+   */
+  readonly expected?: readonly string[];
   /** The configured statuses the terminal routes move the item into. */
   readonly statuses: {
     readonly approved: string;
@@ -493,6 +500,23 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const status = statusNameOf(issue);
     let transitionId: string | null = null;
     if (status !== target) {
+      if (
+        settings.expected !== undefined &&
+        (status === null || !settings.expected.includes(status))
+      ) {
+        publish({
+          source: 'publish-decision',
+          type: 'failed',
+          data: {
+            reason:
+              `Issue ${settings.selection.taskKey} is in status "${status ?? 'unknown'}" while ` +
+              `the idea publication expected one of ` +
+              `${settings.expected.map((value) => `"${value}"`).join(', ')}; an unexpected human ` +
+              'change is preserved instead of overwritten.',
+          },
+        });
+        return 'failed';
+      }
       const found = await transitionInto(jira, issue, target);
       if (found.kind === 'blocked') {
         publish({ source: 'publish-decision', type: 'failed', data: { reason: found.reason } });

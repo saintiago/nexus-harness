@@ -1,4 +1,4 @@
-import { createMachine } from 'xstate';
+import { assign, createMachine } from 'xstate';
 
 /**
  * The project parent: it selects one eligible issue in source rank order, invokes the child
@@ -13,6 +13,17 @@ import { createMachine } from 'xstate';
 export const project = createMachine(
   {
     id: 'project',
+    types: {} as {
+      readonly context: {
+        /**
+         * The preparation stage whose published result the current analysis terminal captures. A
+         * published advance has already moved the selection to its destination, so the completed
+         * stage is retained here until its analysis runs.
+         */
+        readonly publishedStage: 'requirements' | 'ux' | 'prototype' | 'architecture' | null;
+      };
+    },
+    context: { publishedStage: null },
     initial: 'select',
     output: ({ event }) => event.output,
     states: {
@@ -22,7 +33,18 @@ export const project = createMachine(
           onDone: [
             { guard: ({ event }) => event.output === 'selected', target: 'route' },
             { guard: ({ event }) => event.output === 'empty', target: 'drained' },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            // A selection failure is a selected-work outcome: capture it before recovery.
+            { guard: ({ event }) => event.output === 'failed', target: 'analyzeSelectionFailed' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeSelectionFailed: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'selection-failed' },
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -146,12 +168,23 @@ export const project = createMachine(
         },
       },
       publishRequirements: {
+        entry: assign({ publishedStage: 'requirements' }),
         invoke: {
           src: 'PublishPreparationResult',
           input: { stage: 'requirements' },
           onDone: [
-            { guard: ({ event }) => event.output === 'advanced', target: 'route' },
-            { guard: ({ event }) => event.output === 'waiting', target: 'select' },
+            {
+              guard: ({ event }) => event.output === 'advanced',
+              target: 'analyzePreparationAdvanced',
+            },
+            {
+              guard: ({ event }) => event.output === 'waiting',
+              target: 'analyzePreparationWaiting',
+            },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'analyzePreparationExhausted',
+            },
             { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -168,12 +201,23 @@ export const project = createMachine(
         },
       },
       publishUx: {
+        entry: assign({ publishedStage: 'ux' }),
         invoke: {
           src: 'PublishPreparationResult',
           input: { stage: 'ux' },
           onDone: [
-            { guard: ({ event }) => event.output === 'advanced', target: 'route' },
-            { guard: ({ event }) => event.output === 'waiting', target: 'select' },
+            {
+              guard: ({ event }) => event.output === 'advanced',
+              target: 'analyzePreparationAdvanced',
+            },
+            {
+              guard: ({ event }) => event.output === 'waiting',
+              target: 'analyzePreparationWaiting',
+            },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'analyzePreparationExhausted',
+            },
             { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -190,12 +234,23 @@ export const project = createMachine(
         },
       },
       publishPrototype: {
+        entry: assign({ publishedStage: 'prototype' }),
         invoke: {
           src: 'PublishPreparationResult',
           input: { stage: 'prototype' },
           onDone: [
-            { guard: ({ event }) => event.output === 'advanced', target: 'route' },
-            { guard: ({ event }) => event.output === 'waiting', target: 'select' },
+            {
+              guard: ({ event }) => event.output === 'advanced',
+              target: 'analyzePreparationAdvanced',
+            },
+            {
+              guard: ({ event }) => event.output === 'waiting',
+              target: 'analyzePreparationWaiting',
+            },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'analyzePreparationExhausted',
+            },
             { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -212,14 +267,82 @@ export const project = createMachine(
         },
       },
       publishArchitecture: {
+        entry: assign({ publishedStage: 'architecture' }),
         invoke: {
           src: 'PublishPreparationResult',
           input: { stage: 'architecture' },
           onDone: [
-            { guard: ({ event }) => event.output === 'handoff', target: 'handoff' },
-            { guard: ({ event }) => event.output === 'advanced', target: 'route' },
-            { guard: ({ event }) => event.output === 'waiting', target: 'select' },
+            {
+              guard: ({ event }) => event.output === 'handoff',
+              target: 'analyzePreparationHandoff',
+            },
+            {
+              guard: ({ event }) => event.output === 'advanced',
+              target: 'analyzePreparationAdvanced',
+            },
+            {
+              guard: ({ event }) => event.output === 'waiting',
+              target: 'analyzePreparationWaiting',
+            },
+            {
+              guard: ({ event }) => event.output === 'exhausted',
+              target: 'analyzePreparationExhausted',
+            },
             { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // Every published preparation outcome is captured before the parent selects again, starts
+      // the handoff or blocks. Each analysis preserves the destination its terminal reached.
+      analyzePreparationAdvanced: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-advanced',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'route' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzePreparationHandoff: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-handoff',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'handoff' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzePreparationWaiting: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-waiting',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'select' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzePreparationExhausted: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-exhausted',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'select' },
             { actions: 'unexpectedOutcome' },
           ],
         },

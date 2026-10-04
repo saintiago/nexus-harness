@@ -1236,6 +1236,7 @@ describe('decision publication', () => {
     area: Awaited<ReturnType<typeof refinementArea>>,
     jira: ReturnType<typeof source>,
     selectionFile: string,
+    expected?: readonly string[],
   ) {
     const record = createRecordIdeaDecision({
       selectionFile,
@@ -1252,6 +1253,7 @@ describe('decision publication', () => {
         stage: 'idea',
       },
       refinementRoot: area.root,
+      ...(expected === undefined ? {} : { expected }),
       statuses: { approved: 'Draft', waitingForFeedback: 'Waiting for Feedback' },
       jira: jira.jira,
       publish: (event) => area.events.push(event),
@@ -1298,6 +1300,35 @@ describe('decision publication', () => {
     await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
     expect(jira.transitions).toEqual(['21']);
     expect(jira.comments).toHaveLength(1);
+  });
+
+  it('preserves an unexpected human status change instead of overwriting it', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
+    );
+    // A human paused the item while the child was refining; the publication may only write from
+    // the status its own selection left behind (or the target a repeat already applied).
+    const jira = source('Blocked');
+    const decide = publication(area, jira, selectionFile, [
+      'Idea Refinement',
+      'Draft',
+      'Waiting for Feedback',
+    ]);
+
+    await expect(decide({ decision: 'approved' })).resolves.toBe('failed');
+    expect(jira.transitions).toEqual([]);
+    expect(jira.comments).toHaveLength(0);
   });
 
   it.each(['unsuitable', 'author-decision-needed', 'attempts-exhausted'] as const)(

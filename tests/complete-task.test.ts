@@ -204,6 +204,7 @@ function completeDeliveryAction(options: {
   return createCompleteDelivery({
     selectionFile: options.selectionFile,
     doneStatus: 'Done',
+    reviewStatus: 'In Review',
     jira: options.jira,
     publish: (event) => events.push(event),
   });

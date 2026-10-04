@@ -15,13 +15,14 @@ import {
   type ArtifactHistoryValue,
 } from '../artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
+import { requireFindingResponses } from '../finding-responses.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
   type PreparedWorkspace,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
-import { reviewArtifact, type Finding, type ReviewOutput } from '../review/artifacts.js';
+import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
@@ -31,7 +32,6 @@ import {
   developmentResponseSchema,
   type DevelopmentOutput,
   type DevelopmentResponse,
-  type FindingResponse,
 } from './artifacts.js';
 
 /**
@@ -113,35 +113,6 @@ function parseResponse(output: string): DevelopmentResponse {
     );
   }
   return parsed.content;
-}
-
-/** Require exactly one response per supplied finding, with no unknown or repeated IDs. */
-function requireFindingResponses(
-  responses: readonly FindingResponse[],
-  findings: readonly Finding[],
-): void {
-  const supplied = new Set(findings.map((finding) => finding.id));
-  const answered = new Set<string>();
-  for (const response of responses) {
-    if (!supplied.has(response.findingId)) {
-      throw new Error(
-        `The development agent responded to unknown finding "${response.findingId}".`,
-      );
-    }
-    if (answered.has(response.findingId)) {
-      throw new Error(
-        `The development agent responded more than once to finding "${response.findingId}".`,
-      );
-    }
-    answered.add(response.findingId);
-  }
-  const missing = findings.map((finding) => finding.id).filter((id) => !answered.has(id));
-  if (missing.length > 0) {
-    throw new Error(
-      `The development agent did not respond to finding${missing.length === 1 ? '' : 's'} ` +
-        `${missing.map((id) => `"${id}"`).join(', ')}.`,
-    );
-  }
 }
 
 /** One earlier round's artifact path, relative to the workspace root. */
@@ -305,7 +276,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     }
 
     const response = parseResponse(result.value.output);
-    requireFindingResponses(response.findingResponses, findings);
+    requireFindingResponses(response.findingResponses, findings, 'development agent');
 
     const after = await inspectRepository(settings.git, worktree);
     if (after.headRevision === null) {

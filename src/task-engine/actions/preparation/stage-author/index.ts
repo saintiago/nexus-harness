@@ -9,18 +9,20 @@ import {
   type EventPublisher,
 } from '../../../index.js';
 import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
+import { requireFindingResponses } from '../../finding-responses.js';
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   stageAuthorArtifact,
   stageAuthorResponseSchema,
-  stageEvaluationArtifact,
   type PreparationStage,
   type StageAuthorOutput,
   type StageAuthorResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
+  precedingStageWork,
+  priorStageFindings,
   readStageArtifact,
   readStagePlan,
   stageRoot,
@@ -131,21 +133,24 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       );
     }
     const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-    const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
-    if (task === 'respond' && author === null) {
+    // A response round revises the preceding authored revision in answer to the preceding
+    // evaluation; the new round's own directory holds only the response it produces.
+    const preceding = await precedingStageWork(root, plan.round);
+    if (task === 'respond' && author === null && preceding === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
-          'revise.',
+          'revise and no earlier round retains one.',
       );
     }
+    const findings = await priorStageFindings(root, plan);
 
     const context = await stageContextText({
       selection,
       plan,
       stageRoot: root,
       worktree,
-      author,
-      evaluation,
+      author: task === 'respond' ? (preceding?.author ?? author) : author,
+      evaluation: task === 'respond' ? (preceding?.evaluation ?? null) : null,
     });
     const result = await settings.runner.run({
       operation: 'stage-author',
@@ -156,6 +161,12 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         task === 'propose'
           ? 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to every current finding, or rebut with reasons.',
+        findings.length === 0
+          ? 'No prior findings are supplied for this round; return an empty findingResponses array.'
+          : `Eligible prior finding IDs: ${findings
+              .map((finding) => `"${finding.id}"`)
+              .join(', ')}. Return exactly one findingResponses entry for each and none for any ` +
+            'other ID, stating what you changed, disagree with or could not resolve.',
         responseFormatText(stageAuthorResponseSchema),
       ].join('\n\n'),
       outputSchema: z.toJSONSchema(stageAuthorResponseSchema),
@@ -173,8 +184,11 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     if (problem !== null) {
       throw new Error(`The ${settings.stage} author report is unusable: ${problem}.`);
     }
+    requireFindingResponses(report.findingResponses, findings, `${settings.stage} author`);
 
-    const revision = (author?.revision ?? 0) + 1;
+    // The retained response keeps its revision on a replay; a new revision continues the stage's
+    // cumulative authored revisions.
+    const revision = author?.revision ?? (preceding?.author.revision ?? 0) + 1;
     const output: StageAuthorOutput = {
       stage: settings.stage,
       revision,

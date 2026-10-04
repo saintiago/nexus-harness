@@ -117,6 +117,8 @@ async function roundEvidence(root: string): Promise<{
 export function createPublishDeliveryReport(settings: {
   readonly selectionFile: string;
   readonly pullRequestField: string;
+  /** The configured status the selection claim left the task in. */
+  readonly inProgressStatus: string;
   readonly reviewStatus: string;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
@@ -145,6 +147,14 @@ export function createPublishDeliveryReport(settings: {
 
     const issue = await readIssue(settings.jira, selection.source.issueId);
     const comments = await readComments(settings.jira, selection.source.issueId);
+    const status = statusNameOf(issue);
+    if (status !== settings.inProgressStatus && status !== settings.reviewStatus) {
+      return failed(
+        `Issue ${selection.taskKey} is in status "${status ?? 'unknown'}" while the delivery ` +
+          `report expected "${settings.inProgressStatus}" or "${settings.reviewStatus}"; an ` +
+          'unexpected human change is preserved instead of overwritten.',
+      );
+    }
     if (issue.fields[settings.pullRequestField] !== evidence.delivery.pullRequestUrl) {
       await updateIssueFields(settings.jira, issue.id, {
         pullRequest: evidence.delivery.pullRequestUrl,

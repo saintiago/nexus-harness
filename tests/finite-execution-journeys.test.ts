@@ -782,7 +782,8 @@ describe('finite execution journeys', () => {
     // The source was queried for eligible work and the claim and completion used the configured
     // transitions; the operator presentation observed the same combined event stream.
     expect(journey.jiraCalls).toContain(
-      'search:project = NEX AND status = "To Do" order by Rank ASC',
+      'search:(project = NEX AND status = "To Do") OR (project = NEX AND status = "Idea") ' +
+        'order by Rank ASC',
     );
     expect(journey.jiraCalls).toContain('transition:10001:11');
     expect(journey.jiraCalls).toContain('transition:10001:41');

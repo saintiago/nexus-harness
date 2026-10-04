@@ -30,7 +30,7 @@ export function projectConfiguration(): ProjectConfiguration {
       },
       preparation: {
         statuses: {
-          requirements: 'Draft',
+          requirements: 'Requirements',
           uxProposal: 'UX Proposal',
           storybookRefinement: 'Storybook Refinement',
           architecture: 'Architecture',
@@ -135,7 +135,7 @@ export function nexusConfiguration(): NexusConfiguration {
       profiles: {
         requirements: { author: 'nexus-astra', evaluator: 'nexus-astra' },
         ux: { author: 'nexus-astra', evaluator: 'nexus-astra' },
-        prototype: { author: 'nexus-flash', evaluator: 'nexus-astra' },
+        prototype: { authors: ['nexus-flash', 'nexus-astra'], evaluator: 'nexus-astra' },
         architecture: { author: 'nexus-astra', evaluator: 'nexus-review' },
       },
     },

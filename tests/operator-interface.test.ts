@@ -344,6 +344,46 @@ describe('OperatorInterface progress presentation', () => {
     expect(raw).toContain('\u001b[34m03:04:06');
   });
 
+  it('names an evaluated preparation role on its boundary and colors its pane', () => {
+    // A wider terminal keeps both boundary lines readable for the assertion.
+    const harness = createHarness({ columns: 120 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(
+      boundary({
+        agentName: 'requirements-author',
+        operation: 'stage-author',
+        invocationId: 'requirements-author-1',
+        profile: 'nexus-sol',
+        task: 'NEX-1',
+        source: 'stage-author',
+      }),
+    );
+    at(6);
+    harness.emit(
+      boundary({
+        agentName: 'architecture-evaluator',
+        operation: 'stage-evaluator',
+        invocationId: 'architecture-evaluator-1',
+        profile: 'nexus-astra',
+        task: 'NEX-1',
+        source: 'stage-evaluator',
+      }),
+    );
+    at(7);
+    harness.emit(finished('architecture-evaluator-1', 'architecture-evaluator'));
+
+    // Both preparation roles are attributed, so each opens its own named pane instead of falling
+    // back to a generic progress line; authors share the developer color, evaluators the reviewer.
+    expect(harness.rows()).toEqual([
+      '03:04:05 requirements-author stage-author · task NEX-1 · profile nexus-sol',
+      '03:04:06 architecture-evaluator stage-evaluator · task NEX-1 · profile nexus-astra',
+    ]);
+    const raw = harness.writes.join('');
+    expect(raw).toContain('\u001b[33m03:04:05');
+    expect(raw).toContain('\u001b[34m03:04:06');
+  });
+
   it('renders one chronological timeline with the receipt time of each entry', () => {
     const harness = createHarness();
     harness.operatorInterface.start();

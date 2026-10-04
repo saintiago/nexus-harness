@@ -330,6 +330,7 @@ describe('delivery cycle', () => {
     const publishDelivery = createPublishDeliveryReport({
       selectionFile,
       pullRequestField: 'customfield_10002',
+      inProgressStatus: 'In Progress',
       reviewStatus: 'In Review',
       jira: jiraSource.jira,
       publish: (event) => events.push(event),
@@ -342,6 +343,7 @@ describe('delivery cycle', () => {
     const completeDelivery = createCompleteDelivery({
       selectionFile,
       doneStatus: 'Done',
+      reviewStatus: 'In Review',
       jira: jiraSource.jira,
       publish: (event) => events.push(event),
     });

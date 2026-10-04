@@ -35,12 +35,26 @@ export type GitOperations = {
     remote: string,
     branch: string,
   ): Result<BranchHead> | Promise<Result<BranchHead>>;
+  fetchRevision?(
+    repository: string,
+    remote: string,
+    ref: string,
+  ): Result<string> | Promise<Result<string>>;
+  createBranch?(
+    repository: string,
+    branch: string,
+    startRevision: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
   pushBranch?(
     repository: string,
     branch: string,
     expectedHead: string,
   ): Result<BranchHead> | Promise<Result<BranchHead>>;
-  commitAll?(repository: string, message: string): Result<BranchHead> | Promise<Result<BranchHead>>;
+  commitPaths?(
+    repository: string,
+    paths: readonly string[],
+    message: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
   readRemoteBranchHead?(
     remote: string,
     branch: string,
@@ -85,14 +99,17 @@ export function scriptedGit(
           ? await operations.cloneRepository(source, destination)
           : unexpected('cloneRepository');
       },
-      async fetchRevision() {
-        return unexpected('fetchRevision');
+      async fetchRevision(repository, remote, ref) {
+        calls.push(`fetch:${repository}:${remote}:${ref}`);
+        return operations.fetchRevision
+          ? await operations.fetchRevision(repository, remote, ref)
+          : unexpected('fetchRevision');
       },
-      async commitAll(repository, message) {
-        calls.push(`commit:${repository}:${message}`);
-        return operations.commitAll
-          ? await operations.commitAll(repository, message)
-          : unexpected('commitAll');
+      async commitPaths(repository, paths, message) {
+        calls.push(`commit:${repository}:${paths.join(',')}:${message}`);
+        return operations.commitPaths
+          ? await operations.commitPaths(repository, paths, message)
+          : unexpected('commitPaths');
       },
       async pullBranch(repository, remote, branch) {
         calls.push(`pull:${repository}:${remote}:${branch}`);
@@ -100,8 +117,11 @@ export function scriptedGit(
           ? await operations.pullBranch(repository, remote, branch)
           : unexpected('pullBranch');
       },
-      async createBranch() {
-        return unexpected('createBranch');
+      async createBranch(repository, branch, startRevision) {
+        calls.push(`create:${repository}:${branch}@${startRevision}`);
+        return operations.createBranch
+          ? await operations.createBranch(repository, branch, startRevision)
+          : unexpected('createBranch');
       },
       async pushBranch(repository, branch, expectedHead) {
         calls.push(`push:${branch}@${expectedHead}`);

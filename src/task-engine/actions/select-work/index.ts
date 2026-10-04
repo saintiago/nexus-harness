@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { attemptDeclaration, attemptFile } from '../prepare-workspace/artifacts.js';
 import { readRecord, writeRecord } from '../records.js';
 import {
   applyTransition,
@@ -28,9 +29,10 @@ import {
 /**
  * SelectWork selects one eligible project issue in configured source rank order, retains its
  * complete source input, its stage and its stable issue workspace, and claims it before any child
- * runs. Ideas and implementation/preparation work use separate configured queries, so an idea
- * cannot enter finite delivery directly; the mapped source status selects the stage. A missing
- * mapping for an observed candidate requests attention instead of silently skipping the stage.
+ * runs. The parent reads one combined sequence over the separate configured idea and delivery
+ * queries, so Jira's whole rank order decides which candidate runs first and an idea cannot enter
+ * finite delivery directly; the mapped source status selects the stage. A missing mapping for an
+ * observed candidate requests attention instead of silently skipping the stage.
  *
  * Source access failures are execution errors. An observed condition that prevents selection is a
  * failed outcome whose reason is published for recovery.
@@ -146,11 +148,15 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
    */
   function stageOf(status: string): Result<WorkflowStage | null> {
     const preparation = settings.preparation?.statuses;
-    if (status === settings.ideaStatuses.submitted) {
+    // A submitted idea starts refinement; an active idea is the retained refinement the parent
+    // continues, so both route to the idea child.
+    if (status === settings.ideaStatuses.submitted || status === settings.ideaStatuses.active) {
       return ok('idea');
     }
     if (preparation !== undefined) {
-      if (status === preparation.requirements) {
+      // Draft (the configured idea-approval status) is the admission boundary: an approved idea
+      // enters Requirements, which keeps the distinct Draft and Requirements mappings working.
+      if (status === settings.ideaStatuses.approved || status === preparation.requirements) {
         return ok('requirements');
       }
       if (status === preparation.uxProposal) {
@@ -183,6 +189,38 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       `Issue status "${status}" has no configured project stage mapping; selection does not skip ` +
         'an unmapped stage. Configure the mapping or remove the issue from the eligible query.',
     );
+  }
+
+  /**
+   * The reason an active implementation status cannot be admitted, or null when its retained work
+   * exists. PrepareWorkspace writes the attempt identity before it touches the repository, so an
+   * active item without that record is not a delivery attempt Nexus can continue.
+   */
+  async function activeDeliveryProblem(issue: JiraIssue): Promise<string | null> {
+    const status = statusNameOf(issue) ?? 'unknown';
+    const recorded = issue.fields[settings.workspacePointerField];
+    if (typeof recorded !== 'string' || recorded.trim() === '' || !path.isAbsolute(recorded)) {
+      return (
+        `Issue ${issue.key} is in the active status "${status}" without a retained workspace ` +
+        'pointer; Nexus does not start a new delivery attempt for active work.'
+      );
+    }
+    if (!(await isDirectory(recorded))) {
+      return (
+        `Issue ${issue.key} is in the active status "${status}" while its retained workspace ` +
+        `"${recorded}" no longer exists; Nexus does not start a new delivery attempt for active ` +
+        'work.'
+      );
+    }
+    const attempt = await readRecord(path.join(recorded, attemptFile), attemptDeclaration);
+    if (attempt === null) {
+      return (
+        `Issue ${issue.key} is in the active status "${status}" while its retained workspace ` +
+        `"${recorded}" records no retained finite-delivery attempt; Nexus does not start a new ` +
+        'delivery attempt for active work.'
+      );
+    }
+    return null;
   }
 
   /**
@@ -233,7 +271,9 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
 
   /**
    * Claim the issue after its selection was saved: retain the workspace reference and move it into
-   * the stage's active status. A missing permitted transition is reported.
+   * the stage's active status. An active status the issue already holds is a continuation, not a
+   * claim: In Progress and In Review stay where they are, so resumed review work is not moved
+   * backwards. A missing permitted transition is reported.
    */
   async function claim(
     issue: JiraIssue,
@@ -245,7 +285,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     const target =
       stage === 'idea'
         ? settings.ideaStatuses.active
-        : stage === 'delivery'
+        : stage === 'delivery' && status === settings.statuses.ready
           ? settings.statuses.inProgress
           : null;
     if (target === null || status === target) {
@@ -290,32 +330,28 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     return selected(saved.taskKey, saved.stage);
   }
 
-  /** Select one fresh eligible candidate from the configured ranked queues. */
+  /** Select one fresh eligible candidate from the combined configured ranked queue. */
   async function selectFresh(): Promise<string> {
-    const ideaCandidates = await jira.searchIssues(settings.ideas);
-    if (!ideaCandidates.ok) {
-      throw new Error(ideaCandidates.fault.message);
+    // One combined source-ranked sequence: Jira ranks the union of both configured eligibility
+    // queries, so the first eligible candidate is the first in the source's whole rank order and a
+    // lower-ranked idea cannot take precedence over higher-ranked implementation work.
+    const orderBy = settings.selection.orderBy;
+    if (settings.ideas.orderBy !== orderBy) {
+      throw new Error(
+        'The configured idea and delivery queries must share one source order to form the ' +
+          `single ranked queue the parent selects from; they order by "${settings.ideas.orderBy}" ` +
+          `and "${orderBy}".`,
+      );
     }
-    const workCandidates = await jira.searchIssues(settings.selection);
-    if (!workCandidates.ok) {
-      throw new Error(workCandidates.fault.message);
-    }
-    // Both configured queues keep their own rank order; the parent walks them in step so neither
-    // queue can starve the other.
-    const candidates: { readonly id: string }[] = [];
-    const longest = Math.max(ideaCandidates.value.length, workCandidates.value.length);
-    for (let index = 0; index < longest; index += 1) {
-      const idea = ideaCandidates.value[index];
-      if (idea !== undefined) {
-        candidates.push(idea);
-      }
-      const work = workCandidates.value[index];
-      if (work !== undefined) {
-        candidates.push(work);
-      }
+    const candidates = await jira.searchIssues({
+      query: `(${settings.selection.query}) OR (${settings.ideas.query})`,
+      orderBy,
+    });
+    if (!candidates.ok) {
+      throw new Error(candidates.fault.message);
     }
 
-    for (const candidate of candidates) {
+    for (const candidate of candidates.value) {
       const first = await readIssue(jira, candidate.id);
       if (!isEligible(first)) {
         continue;
@@ -340,6 +376,14 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       }
       if (currentStage.value === null) {
         continue;
+      }
+      if (currentStage.value === 'delivery' && statusNameOf(current) !== settings.statuses.ready) {
+        // An active implementation status continues retained work; it never admits a fresh
+        // delivery attempt.
+        const problem = await activeDeliveryProblem(current);
+        if (problem !== null) {
+          return fail(problem);
+        }
       }
 
       const workspace = await workspaceFor(current);

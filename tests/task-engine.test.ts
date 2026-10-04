@@ -227,12 +227,14 @@ describe('TaskEngine over the finite workflow', () => {
     });
 
     await expect(engine.run()).resolves.toEqual({ ok: true, value: 'blocked' });
+    // The failed check routes through the parent-owned refresh boundary before the next round.
     expect(calls).toEqual([
       'PrepareWorkspace',
       'RefreshTaskInput',
       'StartRound',
       'Develop',
       'Verify',
+      'RefreshTaskInput',
       'StartRound',
       'AnalyzeExperience',
     ]);
@@ -262,6 +264,7 @@ describe('TaskEngine over the finite workflow', () => {
       'RefreshTaskInput',
       'Review',
       'PublishReviewFeedback',
+      'RefreshTaskInput',
       'StartRound',
       'Develop',
       'Verify',
@@ -604,5 +607,68 @@ describe('ExecutionRunner persistence order', () => {
       stateWrites.started.map((json) => (JSON.parse(json) as { value: unknown }).value).at(-1),
     ).toBe('completed');
     expect(await persistedState(stateFile)).toMatchObject({ status: 'done', value: 'completed' });
+  });
+});
+
+describe('ExecutionRunner composed child persistence', () => {
+  /** A child whose two invoked operations run in sequence and report one terminal output. */
+  const stepChild = createMachine({
+    id: 'step-child',
+    initial: 'first',
+    output: ({ event }) => event.output,
+    states: {
+      first: { invoke: { src: 'FirstStep', onDone: 'second' } },
+      second: { invoke: { src: 'SecondStep', onDone: 'finished' } },
+      finished: { type: 'final', output: 'child-done' },
+    },
+  });
+
+  const stepParent = createMachine({
+    id: 'step-parent',
+    initial: 'run',
+    output: ({ event }) => event.output,
+    states: {
+      run: { invoke: { src: 'StepChild', onDone: 'finished' } },
+      finished: { type: 'final', output: 'parent-done' },
+    },
+  });
+
+  it('persists child progress and resumes without repeating completed operations', async () => {
+    const stateFile = await temporaryStateFile();
+    const calls: string[] = [];
+    const engine = (failSecond: boolean) =>
+      createTaskEngine({
+        workflow: stepParent,
+        children: { StepChild: stepChild },
+        stateFile,
+        bindActions: () => ({
+          FirstStep: async () => {
+            calls.push('FirstStep');
+            return 'first';
+          },
+          SecondStep: async () => {
+            calls.push('SecondStep');
+            if (failSecond) {
+              throw new Error('the second step was interrupted');
+            }
+            return 'second';
+          },
+        }),
+      });
+
+    const interrupted = await engine(true).run();
+    expect(interrupted.ok).toBe(false);
+    // The composed snapshot named the child's second operation, not the first.
+    expect(await persistedState(stateFile)).toMatchObject({
+      children: {
+        '0.step-parent.run': {
+          snapshot: expect.objectContaining({ value: 'second' }) as unknown,
+        },
+      },
+    });
+
+    await expect(engine(false).run()).resolves.toEqual({ ok: true, value: 'parent-done' });
+    // Restoring continued the child's current operation instead of replaying the completed one.
+    expect(calls).toEqual(['FirstStep', 'SecondStep', 'SecondStep']);
   });
 });

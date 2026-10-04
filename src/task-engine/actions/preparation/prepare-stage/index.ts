@@ -70,18 +70,56 @@ export function createPrepareArea(settings: PrepareAreaSettings): BoundAction {
       return 'failed';
     }
 
+    /**
+     * Create the area branch from one exact base revision, skipping branch names the configured
+     * repository already publishes. The remote-head probe uses the configured source: the Nexus
+     * process directory is not necessarily a checkout of this repository, so a bare remote name
+     * would probe the wrong origin.
+     */
+    async function createAreaBranch(baseRevision: string): Promise<string> {
+      const branchBase = `task/${selection.taskKey}-${settings.area}`;
+      for (let suffix = 1; ; suffix += 1) {
+        const branch = suffix === 1 ? branchBase : `${branchBase}-${suffix}`;
+        const existing = await settings.git.readRemoteBranchHead(
+          settings.repository.source,
+          branch,
+        );
+        if (!existing.ok) {
+          return fail(existing.fault.message);
+        }
+        if (existing.value !== null) {
+          continue;
+        }
+        const created = await settings.git.createBranch(worktree, branch, baseRevision);
+        return created.ok ? 'prepared' : fail(created.fault.message);
+      }
+    }
+
     await mkdir(root, { recursive: true });
     if (!(await isDirectory(worktree))) {
       const cloned = await settings.git.cloneRepository(settings.repository.source, worktree);
       if (!cloned.ok) {
         return fail(cloned.fault.message);
       }
-      return cloned.value.remoteUrl === settings.repository.source
-        ? 'prepared'
-        : fail(
-            `The prepared worktree belongs to "${cloned.value.remoteUrl ?? 'no remote'}", not to ` +
-              `"${settings.repository.source}".`,
-          );
+      if (cloned.value.remoteUrl !== settings.repository.source) {
+        return fail(
+          `The prepared worktree belongs to "${cloned.value.remoteUrl ?? 'no remote'}", not to ` +
+            `"${settings.repository.source}".`,
+        );
+      }
+      if (cloned.value.branch !== settings.repository.mainBranch) {
+        return fail(
+          `The cloned worktree at "${worktree}" is on branch ` +
+            `"${cloned.value.branch ?? 'no branch'}", not the configured base ` +
+            `"${settings.repository.mainBranch}".`,
+        );
+      }
+      if (cloned.value.headRevision === null) {
+        return fail(`The cloned worktree at "${worktree}" has no revision to branch from.`);
+      }
+      // A fresh clone is the configured base already; the area branch is created on it exactly as
+      // on a refreshed checkout, so preparation never publishes from the base branch.
+      return await createAreaBranch(cloned.value.headRevision);
     }
 
     const inspection = await settings.git.inspectRepository(worktree);
@@ -115,18 +153,6 @@ export function createPrepareArea(settings: PrepareAreaSettings): BoundAction {
     }
     // Document work happens on a stage branch so the parent can publish a documentation-only pull
     // request without touching the configured main branch.
-    const branchBase = `task/${selection.taskKey}-${settings.area}`;
-    for (let suffix = 1; ; suffix += 1) {
-      const branch = suffix === 1 ? branchBase : `${branchBase}-${suffix}`;
-      const existing = await settings.git.readRemoteBranchHead('origin', branch);
-      if (!existing.ok) {
-        return fail(existing.fault.message);
-      }
-      if (existing.value !== null) {
-        continue;
-      }
-      const created = await settings.git.createBranch(worktree, branch, pulled.value.headRevision);
-      return created.ok ? 'prepared' : fail(created.fault.message);
-    }
+    return await createAreaBranch(pulled.value.headRevision);
   };
 }

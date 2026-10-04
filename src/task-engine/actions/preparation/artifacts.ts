@@ -3,7 +3,7 @@ import { preparationStages, type PreparationStage } from '../../../configuration
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 import { findingResponseSchema } from '../develop/artifacts.js';
-import { findingSchema } from '../review/artifacts.js';
+import { findingDispositionSchema, findingSchema } from '../review/artifacts.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
@@ -139,24 +139,30 @@ export const stageAuthorArtifact = {
 
 /**
  * The evaluator's report: the exact revision it assessed, its verdict, its findings and any
- * upstream request. A skip may only be accepted when the author proposed one.
+ * upstream request, plus its disposition of every finding the response round inherited. A skip may
+ * only be accepted when the author proposed one.
  */
 export const stageEvaluationResponseSchema = z.object({
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
   findings: z.array(reportedFindingSchema),
+  priorFindings: z.array(findingDispositionSchema),
   upstream: upstreamRequestSchema.nullable(),
 });
 
 export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSchema>;
 
-/** The saved evaluation artifact: reported findings with their absent lines normalized away. */
+/**
+ * The saved evaluation artifact: reported findings with their absent lines normalized away, and
+ * one disposition for every finding the assessed revision inherited.
+ */
 export const stageEvaluationOutputSchema = z.object({
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
   findings: z.array(findingSchema),
+  priorFindings: z.array(findingDispositionSchema),
   upstream: upstreamRequestSchema.nullable(),
 });
 
@@ -172,10 +178,32 @@ export const preparationResultSchema = z.object({
   stage: z.enum(preparationStages),
   outcome: z.enum(['accepted', 'skipped', 'returnUpstream', 'needsInput', 'exhausted']),
   authoredRevision: z.number().int().positive(),
+  /**
+   * The changed authoritative documents of this result, with the stage worktree revision that
+   * produced them when one was observed. The parent's documentation handoff publishes exactly this
+   * set; the broader output references below stay available to consumers that need every artifact.
+   */
+  documents: z.array(
+    z.object({
+      path: z.string().min(1),
+      revision: z.string().min(1).nullable(),
+    }),
+  ),
   outputs: z.array(z.object({ path: z.string().min(1) })),
   evaluation: z.object({ path: z.string().min(1) }),
   reason: z.string().nullable(),
   returnStage: z.enum(upstreamStages).nullable(),
+  /** The concrete upstream problem, consequence and needed correction a return carries. */
+  returnFinding: upstreamRequestSchema.nullable(),
+  /**
+   * The retained prototype the Storybook Refinement stage built, when it produced one: the
+   * worktree branch and revision implementation tickets reference for reuse. Prototype code is not
+   * an authoritative document and never enters the documentation publication.
+   */
+  prototype: z
+    .object({ branch: z.string().min(1), revision: z.string().min(1) })
+    .nullable()
+    .default(null),
 });
 
 export type PreparationResult = z.infer<typeof preparationResultSchema>;

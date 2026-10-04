@@ -3,6 +3,7 @@ import {
   createActor,
   fromPromise,
   type AnyActorLogic,
+  type AnyActorRef,
   type AnyStateMachine,
   type Snapshot,
 } from 'xstate';
@@ -235,6 +236,47 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
   let restoring = loaded.kind === 'restore';
 
   return new Promise<WorkflowResult>((resolve) => {
+    /**
+     * The invoked children whose snapshot updates the runner has already subscribed to. The
+     * parent's own notifications do not report a child's internal transitions, so each live child
+     * is observed directly; a save then carries the composed snapshot the parent currently holds.
+     */
+    const observed = new Set<AnyActorRef>();
+    /** Subscribe to one live child and to the children it invokes in turn. */
+    const observe = (ref: AnyActorRef): void => {
+      if (observed.has(ref)) {
+        return;
+      }
+      observed.add(ref);
+      ref.subscribe({
+        next: () => {
+          // A child's own transition is the checkpoint that matters: the parent's notifications
+          // do not report it, and the composed snapshot read here carries the child's new state.
+          try {
+            save(actor.getPersistedSnapshot());
+          } catch {
+            // A composed snapshot that cannot be read is reported through the parent's own
+            // subscription; observation never controls execution.
+          }
+          observeChildren();
+        },
+        // A failed child is reported to the parent actor and faults the workflow through the
+        // runner's own subscription; this observer only persists progress and never rethrows.
+        error: () => undefined,
+      });
+    };
+    /** Observe every child actor the parent's current snapshot holds. */
+    const observeChildren = (): void => {
+      const snapshot = actor.getSnapshot() as unknown as {
+        readonly children?: Readonly<Record<string, AnyActorRef | undefined>>;
+      };
+      for (const child of Object.values(snapshot.children ?? {})) {
+        if (child !== undefined && !observed.has(child)) {
+          observe(child);
+        }
+      }
+    };
+
     let settled = false;
     const finish = (outcome: WorkflowResult): void => {
       if (settled) {
@@ -261,6 +303,7 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
       next: (snapshot) => {
         restoring = false;
         publishState(settings.publish, snapshot.value);
+        observeChildren();
         if (snapshot.status === 'active' || snapshot.status === 'done') {
           save(actor.getPersistedSnapshot());
         }

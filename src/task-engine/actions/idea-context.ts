@@ -245,6 +245,26 @@ export async function capturedIdeaText(
     'Artifact',
   );
   const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+  const parentInput = input.parentInput;
+  const correction =
+    parentInput === undefined ||
+    (parentInput.question === null && parentInput.returnFinding === null)
+      ? null
+      : [
+          'Retained parent correction for this selection (it governs what this refinement must ' +
+            'address):',
+          ...(parentInput.returnFinding === null
+            ? []
+            : [
+                `The ${parentInput.returnFinding.from} stage returned this idea for correction: ` +
+                  parentInput.returnFinding.problem,
+                `Consequence: ${parentInput.returnFinding.consequence}`,
+                `Required correction: ${parentInput.returnFinding.correction}`,
+              ]),
+          ...(parentInput.question === null
+            ? []
+            : [`The retained human question is: ${parentInput.question}`]),
+        ].join('\n');
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',
@@ -258,6 +278,7 @@ export async function capturedIdeaText(
             `${String(revision.value.revision)}):\n${JSON.stringify(revision.value, null, 2)}`,
         ]),
     `Captured input artifact: ${ideaSubmissionInputFile(root, plan.submission)}`,
+    ...(correction === null ? [] : [correction]),
     `Connected project worktree: ${path.join(root, worktreeDirectory)}`,
   ].join('\n');
 }

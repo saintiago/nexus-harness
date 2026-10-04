@@ -4,6 +4,7 @@ import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import {
+  stageAuthorArtifact,
   stageRoundExhaustionFile,
   stageRoundPlanDeclaration,
   type PreparationStage,
@@ -13,26 +14,32 @@ import {
   ensureStageRound,
   readStageArtifact,
   readStagePlan,
+  readStageResult,
   stageRoot,
   writeStagePlan,
 } from '../storage.js';
-import { stageEvaluationArtifact } from '../artifacts.js';
 
 /**
  * StartStageRound plans and opens one evaluated preparation round. The "new" route opens round 1
  * where the author proposes work or a skip; the "next" route opens the following round after the
- * evaluator requested changes. The configured allowance bounds the rounds: a route that would
- * exceed it returns exhausted without opening a round, and the retained reason lets the terminal
- * handoff state it after a restart. Repeating a route that opened the current round reuses it.
+ * evaluator requested changes. Rounds are cumulative across restarts and across a stage's later
+ * visits: a completed round is never reused or overwritten, and a route that would exceed the
+ * configured allowance returns exhausted without opening a round. The retained reason lets the
+ * terminal handoff state exhaustion after a restart. An unfinished opening is reused, so a replay
+ * continues the round it already opened.
  */
 
 export type StartStageRoundSettings = {
   /** The absolute selection-file path beside the queue's workflow-state file. */
   readonly selectionFile: string;
   readonly stage: PreparationStage;
-  /** The configured author and evaluator profiles of this stage. */
+  /**
+   * The configured author ladder and evaluator profile of this stage. The first round selects the
+   * first author; a later round selects the next, which escalates the prototype author from Flash
+   * to Sol and never downgrades.
+   */
   readonly profiles: {
-    readonly author: string;
+    readonly authors: readonly string[];
     readonly evaluator: string;
   };
   /** The configured maximum number of rounds this stage may open. */
@@ -56,6 +63,16 @@ function routeOf(input: unknown): StageRoundPlan['route'] {
 
 /** Create StartStageRound over the stage area it plans. */
 export function createStartStageRound(settings: StartStageRoundSettings): BoundAction {
+  if (settings.profiles.authors.length === 0) {
+    throw new Error(`The ${settings.stage} stage configures no author profile.`);
+  }
+
+  /** The author profile of one round: the ladder advances with each round and never downgrades. */
+  function authorOf(round: number): string {
+    const index = Math.min(round, settings.profiles.authors.length) - 1;
+    return settings.profiles.authors[index] as string;
+  }
+
   return async (input?: unknown) => {
     const route = routeOf(input);
     const selection = await readRequiredRecord(
@@ -98,8 +115,8 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
       return 'exhausted';
     }
 
-    /** The retained plan this route can reuse, or null. */
-    async function reusablePlan(): Promise<StageRoundPlan | null> {
+    /** The retained plan, or null when none exists or it cannot be read. */
+    async function retainedPlan(): Promise<StageRoundPlan | null> {
       try {
         return await readStagePlan(root);
       } catch {
@@ -108,19 +125,28 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
     }
 
     if (route === 'new') {
-      const current = await reusablePlan();
-      if (current !== null && current.route === 'new' && current.stage === settings.stage) {
+      const current = await retainedPlan();
+      if (
+        current !== null &&
+        current.stage === settings.stage &&
+        (await readStageResult(root, current.round)) === null
+      ) {
+        // This stage visit already opened its round and has not finished it; the replay continues
+        // that round instead of allocating another one.
         await ensureStageRound(root, current.round);
         return opened(current);
       }
-      if (settings.maxRounds < 1) {
-        return exhausted(null);
+      // The stage's rounds are cumulative across its visits: a later visit continues after the
+      // completed rounds instead of overwriting them with round 1.
+      const round = (current?.round ?? 0) + 1;
+      if (round > settings.maxRounds) {
+        return exhausted(current);
       }
       const plan: StageRoundPlan = {
         stage: settings.stage,
-        round: 1,
+        round,
         route: 'new',
-        profiles: { ...settings.profiles },
+        profiles: { author: authorOf(round), evaluator: settings.profiles.evaluator },
       };
       await ensureStageRound(root, plan.round);
       await writeStagePlan(root, plan);
@@ -134,11 +160,8 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
           'opened round.',
       );
     }
-    if (
-      current.route === 'next' &&
-      (await readStageArtifact(root, current.round, stageEvaluationArtifact)) === null
-    ) {
-      // This route opened the round but the evaluator has not reported yet; reuse it.
+    if ((await readStageArtifact(root, current.round, stageAuthorArtifact)) === null) {
+      // This route opened the round but the author has not responded yet; the replay reuses it.
       return opened(current);
     }
     const round = current.round + 1;
@@ -149,7 +172,7 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
       stage: settings.stage,
       round,
       route: 'next',
-      profiles: { ...settings.profiles },
+      profiles: { author: authorOf(round), evaluator: settings.profiles.evaluator },
     };
     await ensureStageRound(root, plan.round);
     await writeStagePlan(root, plan);

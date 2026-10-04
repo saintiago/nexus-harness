@@ -15,9 +15,16 @@ import {
   statusNameOf,
   transitionInto,
 } from '../../source.js';
-import type { WorkflowStage } from '../../select-task/artifacts.js';
+import type { Selection, WorkflowStage } from '../../select-task/artifacts.js';
+import type { StageReturn } from '../../select-work/artifacts.js';
 import { applyTransition } from '../../source.js';
-import { advanceStage, readHandoff, readSelection, writeHandoff } from '../state.js';
+import {
+  advanceStage,
+  readHandoff,
+  readSelection,
+  writeHandoff,
+  writeSelection,
+} from '../state.js';
 
 /**
  * PublishPreparationResult validates one evaluated preparation result against the parent route,
@@ -45,6 +52,10 @@ export type PublishPreparationSettings = {
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
+
+/** The publication outcomes the project parent routes: a published terminal or a failed write. */
+export type PreparationPublicationOutcome =
+  'advanced' | 'waiting' | 'exhausted' | 'handoff' | 'failed';
 
 /** The stage the parent supplied with this invocation. */
 function stageOf(input: unknown): PreparationStage {
@@ -82,6 +93,11 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     if (result === null) {
       throw new Error(`No ${stage} result exists under "${root}" to publish.`);
     }
+    // Read the source state this publication writes from once: the human-facing comment, the
+    // expected-status validation and the refreshed capture the routed child receives all rest on
+    // the same observation.
+    const issue = await readIssue(settings.jira, selection.source.issueId);
+    const comments = await readComments(settings.jira, selection.source.issueId);
 
     /** Report a source condition that prevents publication. */
     function failed(reason: string): 'failed' {
@@ -109,11 +125,23 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       }
     }
 
-    /** Move the issue to the target status when it is not already there. */
-    async function moveTo(status: string): Promise<string | null> {
-      const issue = await readIssue(settings.jira, selection.source.issueId);
-      if (statusNameOf(issue) === status) {
+    /**
+     * Move the issue to the target status when it is not already there. A target the issue already
+     * holds is a repeated publication; any other current status must be one the child's own
+     * selection left behind, so an unexpected human pause or reroute is preserved and reported
+     * rather than overwritten.
+     */
+    async function moveTo(status: string, allowed: readonly string[]): Promise<string | null> {
+      const current = statusNameOf(issue);
+      if (current === status) {
         return null;
+      }
+      if (current === null || !allowed.includes(current)) {
+        return (
+          `Issue ${selection.taskKey} is in status "${current}" while the ${stage} publication ` +
+          `expected one of ${allowed.map((value) => `"${value}"`).join(', ')}; an ` +
+          'unexpected human change is preserved instead of overwritten.'
+        );
       }
       const transition = await transitionInto(settings.jira, issue, status);
       if (transition.kind === 'blocked') {
@@ -125,12 +153,32 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
 
     /** Publish the human-facing comment for this outcome. */
     async function comment(text: string): Promise<void> {
-      const comments = await readComments(settings.jira, selection.source.issueId);
       await publishComment(settings.jira, selection.source.issueId, comments, text);
     }
 
-    /** Publish one advance to a forward or upstream stage. */
-    async function advanceTo(target: PreparationStage | 'idea'): Promise<'advanced' | 'failed'> {
+    /**
+     * Refresh the retained capture after the publication: the destination child reads the human
+     * conversation this publication observed, so a later route never works from a stale snapshot.
+     */
+    async function refreshCapture(retained: Selection): Promise<void> {
+      await writeSelection(settings.selectionFile, {
+        ...retained,
+        task: issue,
+        conversation: [...comments],
+      });
+    }
+
+    /**
+     * Publish one advance to a forward or upstream stage. A return supplies the concrete finding
+     * the destination stage must correct; a forward advance clears any consumed return. The status
+     * move is validated before the comment is published, so an unexpected human state preserves
+     * both the status and the conversation.
+     */
+    async function advanceTo(
+      target: PreparationStage | 'idea',
+      returnFinding: StageReturn | null,
+      text: string,
+    ): Promise<'advanced' | 'failed'> {
       const status = statusOf(target);
       if (status === null) {
         return failed(
@@ -138,17 +186,29 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
             'cannot advance to it.',
         );
       }
-      const problem = await moveTo(status);
+      const stageStatus = statusOf(stage);
+      const problem = await moveTo(status, stageStatus === null ? [status] : [stageStatus, status]);
       if (problem !== null) {
         return failed(problem);
       }
-      await advanceStage(selection, settings.selectionFile, target as WorkflowStage);
+      await comment(text);
+      const updated = await advanceStage(
+        selection,
+        settings.selectionFile,
+        target as WorkflowStage,
+        returnFinding,
+      );
+      await refreshCapture(updated);
       return 'advanced';
     }
 
     /** Publish a return, a retained question or exhaustion as Waiting for Feedback. */
     async function wait(question: string, text: string): Promise<'waiting' | 'failed'> {
-      const problem = await moveTo(settings.waitingForFeedback);
+      const stageStatus = statusOf(stage);
+      const problem = await moveTo(settings.waitingForFeedback, [
+        ...(stageStatus === null ? [] : [stageStatus]),
+        settings.waitingForFeedback,
+      ]);
       if (problem !== null) {
         return failed(problem);
       }
@@ -158,9 +218,11 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         stage: handoff?.stage ?? stage,
         upstreamReturns: handoff?.upstreamReturns ?? 0,
         feedback: { stage, question },
+        return: handoff?.return ?? null,
         tickets: handoff?.tickets ?? [],
         publications: handoff?.publications ?? [],
       });
+      await refreshCapture(selection);
       return 'waiting';
     }
 
@@ -174,10 +236,11 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       if (next === null) {
         return failed(`The ${stage} stage has no forward stage to advance to.`);
       }
-      await comment(
+      return advanceTo(
+        next,
+        null,
         `Preparation ${stage} ${outcome}: ${result.reason ?? 'the stage criteria are met.'}`,
       );
-      return advanceTo(next);
     }
     if (outcome === 'returnUpstream') {
       const target: UpstreamStage | null = result.returnStage;
@@ -192,12 +255,23 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           `The ${stage} result returns to "${target}", which is not an earlier stage of the route.`,
         );
       }
-      await comment(
+      const finding = result.returnFinding;
+      return advanceTo(
+        target,
+        {
+          from: stage,
+          to: target,
+          problem: finding?.problem ?? result.reason ?? `the ${stage} stage reported a problem`,
+          consequence:
+            finding?.consequence ??
+            `The ${stage} stage cannot produce a viable result until the ${target} input is corrected.`,
+          correction:
+            finding?.correction ?? 'Correct the named input and return it for reassessment.',
+        },
         `Returning to ${target} for correction: ${
           result.reason ?? 'an upstream input needs ' + 'correction.'
         }`,
       );
-      return advanceTo(target);
     }
     if (outcome === 'needsInput') {
       const question = result.reason ?? 'the stage needs an author decision';
@@ -208,11 +282,12 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       );
     }
     const reason = result.reason ?? 'the configured stage allowance was reached';
-    return wait(
+    const published = await wait(
       reason,
       `Preparation ${stage} exhausted: ${reason}\n\nThe retained findings are in the stage ` +
         'artifacts. Please reply in a Jira comment and move the item back to the stage status to ' +
         'resume.',
     );
+    return published === 'waiting' ? 'exhausted' : published;
   };
 }

@@ -47,6 +47,7 @@ import { createCompleteDelivery } from '../task-engine/actions/project/complete-
 import { createImplementationHandoff } from '../task-engine/actions/project/implementation-handoff/index.js';
 import { createPublishPreparation } from '../task-engine/actions/project/publish-preparation/index.js';
 import { createRouteSelection } from '../task-engine/actions/project/route-selection/index.js';
+import { readHandoff } from '../task-engine/actions/project/state.js';
 import {
   createPublishDeliveryReport,
   createPublishReviewFeedback,
@@ -57,6 +58,7 @@ import {
   createRecordIdeaDecision,
 } from '../task-engine/actions/publish-decision/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
+import { readIssue, statusNameOf } from '../task-engine/actions/source.js';
 import { createResearcher } from '../task-engine/actions/researcher/index.js';
 import { createReview } from '../task-engine/actions/review/index.js';
 import { createSelectWork } from '../task-engine/actions/select-work/index.js';
@@ -79,6 +81,10 @@ import {
   finiteTerminalOf,
   ideaPublicationHandoff,
   ideaPublicationTerminals,
+  isPreparationTerminal,
+  preparationHandoff,
+  selectionFailureHandoff,
+  type PreparationTerminal,
 } from './analysis-handoff.js';
 
 /**
@@ -219,19 +225,23 @@ export function createActionBinding(
     };
 
     const stageRounds = Object.fromEntries(
-      preparationStages.map((stage) => [
-        stage,
-        createStartStageRound({
-          selectionFile,
+      preparationStages.map((stage) => {
+        const profiles = nexus.preparation.profiles[stage];
+        return [
           stage,
-          profiles: {
-            author: nexus.preparation.profiles[stage].author,
-            evaluator: nexus.preparation.profiles[stage].evaluator,
-          },
-          maxRounds: nexus.preparation.maxRounds,
-          publish,
-        }),
-      ]),
+          createStartStageRound({
+            selectionFile,
+            stage,
+            profiles: {
+              // The prototype stage configures an ordered author ladder; the others one author.
+              authors: 'authors' in profiles ? profiles.authors : [profiles.author],
+              evaluator: profiles.evaluator,
+            },
+            maxRounds: nexus.preparation.maxRounds,
+            publish,
+          }),
+        ];
+      }),
     ) as Record<PreparationStage, BoundAction>;
 
     const stageAuthorActions = Object.fromEntries(
@@ -263,7 +273,7 @@ export function createActionBinding(
     const stageResultActions = Object.fromEntries(
       preparationStages.map((stage) => [
         stage,
-        createStageResult({ selectionFile, stage, publish }),
+        createStageResult({ selectionFile, stage, git: settings.git, publish }),
       ]),
     ) as Record<PreparationStage, BoundAction>;
 
@@ -299,6 +309,43 @@ export function createActionBinding(
           });
           return await analyzeExperience(handoff);
         }
+        if (terminal === 'selection-failed') {
+          const issue = await readIssue(settings.jira, selection.source.issueId);
+          const status = statusNameOf(issue);
+          return await analyzeExperience(
+            await selectionFailureHandoff({
+              selection,
+              reason:
+                `Selection of ${selection.taskKey} failed${status === null ? '' : ` in status "${status}"`}; ` +
+                'the issue needs attention before the parent can continue.',
+            }),
+          );
+        }
+        if (isPreparationTerminal(terminal)) {
+          // The published stage is supplied with the terminal: an advance has already moved the
+          // retained selection to its destination, so its stage no longer names the evidence.
+          const publishedStage =
+            preparationStages.find(
+              (candidate) =>
+                candidate ===
+                (typeof input === 'object' && input !== null
+                  ? (input as { readonly stage?: unknown }).stage
+                  : undefined),
+            ) ?? preparationStages.find((candidate) => candidate === selection.stage);
+          if (publishedStage === undefined) {
+            throw new Error(
+              `The "${terminal}" preparation terminal names no preparation stage; its evidence ` +
+                'cannot be selected.',
+            );
+          }
+          return await analyzeExperience(
+            await preparationHandoff({
+              selection,
+              terminal: terminal as PreparationTerminal,
+              stage: publishedStage,
+            }),
+          );
+        }
         return await analyzeExperience(
           await finiteDeliveryHandoff({ selection, terminal: finiteTerminalOf(input) }),
         );
@@ -316,8 +363,13 @@ export function createActionBinding(
       }
       return createImplementationHandoff({
         selectionFile,
+        project: taskSource.project,
         repository: project.delivery.repository,
         baseBranch: project.delivery.baseBranch,
+        reviewCheck: project.delivery.reviewCheck,
+        nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
+        postMergeChecks: project.delivery.postMergeChecks,
+        architectureStatus: taskSource.preparation?.statuses.architecture ?? null,
         implementation: {
           issueType: implementation.issueType,
           labels: implementation.labels,
@@ -354,6 +406,11 @@ export function createActionBinding(
         createPublishDecision({
           selection,
           refinementRoot: path.join(selection.workspace.root, 'refinement'),
+          expected: [
+            taskSource.ideas.statuses.active,
+            taskSource.ideas.statuses.approved,
+            taskSource.ideas.statuses.waitingForFeedback,
+          ],
           statuses: {
             approved: taskSource.ideas.statuses.approved,
             waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
@@ -374,6 +431,7 @@ export function createActionBinding(
       CompleteDelivery: createCompleteDelivery({
         selectionFile,
         doneStatus: taskSource.statuses.done,
+        reviewStatus: taskSource.statuses.review,
         jira: settings.jira,
         publish,
       }),
@@ -386,6 +444,7 @@ export function createActionBinding(
       PublishDeliveryReport: createPublishDeliveryReport({
         selectionFile,
         pullRequestField: taskSource.fields.pullRequest,
+        inProgressStatus: taskSource.statuses.inProgress,
         reviewStatus: taskSource.statuses.review,
         jira: settings.jira,
         publish,
@@ -397,20 +456,36 @@ export function createActionBinding(
       }),
       // ---- idea refinement child ----
       PrepareIdeaWorkspace: prepareAreas.refinement,
-      StartIdeaRound: withSelection((selection) =>
-        createStartIdeaRound({
+      StartIdeaRound: async (input?: unknown) => {
+        const selection = await selected();
+        // The parent's retained correction reaches the refinement: a specific question the item
+        // waited on, or a later stage's concrete return under the idea destination.
+        const handoff = await readHandoff(selection.workspace.root);
+        return createStartIdeaRound({
           workspace: { root: path.join(selection.workspace.root, 'refinement') },
           input: {
             taskKey: selection.taskKey,
             source: selection.source,
             issue: selection.task,
             conversation: [...selection.conversation],
+            parentInput: {
+              question: handoff?.feedback?.stage === 'idea' ? handoff.feedback.question : null,
+              returnFinding:
+                handoff?.return?.to === 'idea'
+                  ? {
+                      from: handoff.return.from,
+                      problem: handoff.return.problem,
+                      consequence: handoff.return.consequence,
+                      correction: handoff.return.correction,
+                    }
+                  : null,
+            },
           },
           profiles: ideaProfiles(nexus),
           maxCycles: nexus.ideaRefinement.maxCycles,
           publish,
-        }),
-      ),
+        })(input);
+      },
       IdeaEditor: withSelection((selection) =>
         createIdeaEditor({
           workspace: { root: path.join(selection.workspace.root, 'refinement') },

@@ -8,14 +8,20 @@
  */
 
 import { actionOutcomeType, type AgentActivity, type EngineEvent } from '../task-engine/index.js';
-import { ideaRoles, type IdeaRole } from '../agent-runtime/index.js';
+import {
+  ideaRoles,
+  preparationRoles,
+  type IdeaRole,
+  type PreparationRole,
+} from '../agent-runtime/index.js';
 import { sanitize } from './text.js';
 
 /** A content color from the OperatorInterface design: the terminal default, or one of its colors. */
 export type Style = 'default' | 'white' | 'grey' | 'blue' | 'yellow';
 
-/** The agent roles the activity contract names. */
-export type AgentRole = 'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole;
+/** The agent roles the activity contract names, including every evaluated preparation role. */
+export type AgentRole =
+  'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole | PreparationRole;
 
 /** The activity kinds the agent activity contract names. */
 type ActivityKind = 'message' | 'command' | 'result' | 'change' | 'diagnostic';
@@ -60,7 +66,11 @@ function agentRole(value: string | null): AgentRole | null {
     case 'analysis':
       return value;
     default:
-      return ideaRoles.find((role) => role === value) ?? null;
+      return (
+        ideaRoles.find((role) => role === value) ??
+        preparationRoles.find((role) => role === value) ??
+        null
+      );
   }
 }
 
@@ -86,8 +96,19 @@ export function roleStyle(role: AgentRole | null): Style {
     case 'researcher':
     case 'project-guide':
       return 'yellow';
+    // Preparation authors propose and revise work; their evaluators assess it, matching the
+    // delivery developer/reviewer color assignment.
+    case 'requirements-author':
+    case 'ux-author':
+    case 'prototype-author':
+    case 'architecture-author':
+      return 'yellow';
     case 'reviewer':
     case 'challenger':
+    case 'requirements-evaluator':
+    case 'ux-evaluator':
+    case 'prototype-evaluator':
+    case 'architecture-evaluator':
       return 'blue';
     case 'recovery':
       return 'default';

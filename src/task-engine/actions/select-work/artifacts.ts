@@ -19,17 +19,41 @@ export const parentPublicationSchema = z.object({
   id: z.string().min(1),
 });
 
-/** One created implementation ticket and the link that connects it to the original issue. */
+/**
+ * One created implementation ticket and the effects the parent already finished for it: the link
+ * to the original and the rank relative to its prerequisite. An effect recorded as not yet
+ * finished is completed on the next handoff invocation before the ticket counts as handed off.
+ */
 export const handoffTicketSchema = z.object({
   key: z.string().min(1),
   issueId: z.string().min(1),
   summary: z.string().min(1),
+  linked: z.boolean().optional(),
+  ranked: z.boolean().optional(),
 });
+
+export type HandoffTicket = z.infer<typeof handoffTicketSchema>;
+
+/**
+ * One upstream return the parent published: the stage that returned the work, the earlier stage
+ * that must correct the named input and the concrete problem, consequence and needed correction.
+ * The destination stage reads it as a required input until its own publication clears it.
+ */
+export const stageReturnSchema = z.object({
+  from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
+  to: z.enum(['idea', 'requirements', 'ux', 'prototype']),
+  problem: z.string().min(1),
+  consequence: z.string().min(1),
+  correction: z.string().min(1),
+});
+
+export type StageReturn = z.infer<typeof stageReturnSchema>;
 
 /**
  * The parent-owned handoff record: the current stage, the retained upstream-return count, the
- * feedback destination a Waiting for Feedback publication retains, the created implementation
- * tickets and the publication identities the parent already finished.
+ * feedback destination a Waiting for Feedback publication retains, the return finding the
+ * destination stage must correct, the created implementation tickets and the publication
+ * identities the parent already finished.
  */
 export const parentHandoffSchema = z.object({
   /** The stage the selected issue currently runs; the parent's route input on restore. */
@@ -43,6 +67,8 @@ export const parentHandoffSchema = z.object({
       question: z.string().min(1),
     })
     .nullable(),
+  /** The upstream return the parent published; the destination stage reads it, its own clears it. */
+  return: stageReturnSchema.nullable(),
   /** Implementation tickets the Architecture handoff created for this issue. */
   tickets: z.array(handoffTicketSchema),
   /** Publication identities the parent observed, such as a comment or documentation pull request. */
@@ -59,5 +85,12 @@ export const parentHandoffDeclaration = {
 
 /** The record's initial value for a freshly selected issue. */
 export function initialHandoff(stage: ParentHandoff['stage']): ParentHandoff {
-  return { stage, upstreamReturns: 0, feedback: null, tickets: [], publications: [] };
+  return {
+    stage,
+    upstreamReturns: 0,
+    feedback: null,
+    return: null,
+    tickets: [],
+    publications: [],
+  };
 }

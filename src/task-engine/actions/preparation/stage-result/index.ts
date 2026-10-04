@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
 import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
@@ -32,6 +33,8 @@ export type StageResultSettings = {
   /** The absolute selection-file path beside the queue's workflow-state file. */
   readonly selectionFile: string;
   readonly stage: PreparationStage;
+  /** The Git capability that observes the stage worktree revision the documents carry. */
+  readonly git: GitAdapter;
   readonly publish: EventPublisher;
 };
 
@@ -102,20 +105,41 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               ? ((await readExhaustionReason(root)) ?? evaluation?.reason ?? author.summary)
               : (evaluation?.reason ?? author.summary);
 
-    const outputs: PreparationResult['outputs'] = author.documents.map((document) => ({
-      path: path.resolve(worktree, document.path),
-    }));
     if (author.plan.length > 0) {
+      // The implementation plan stays a stage artifact consumed through its own declaration; it
+      // is not a changed authoritative document and never triggers documentation publication.
       await writeStageArtifact(root, plan.round, stagePlanArtifact, author.plan);
-      outputs.push({
-        path: path.join(
-          root,
-          'artifacts',
-          String(plan.round),
-          stagePlanArtifact.pathFromArtifactsRoot,
-        ),
-      });
     }
+    // The stage worktree observation behind the result: the revision the changed documents carry
+    // and, for built Storybook work, the retained prototype implementation tickets reuse.
+    const inspectWorktree =
+      settings.stage === 'prototype' ? author.outcome === 'authored' : author.documents.length > 0;
+    let revision: string | null = null;
+    let prototype: PreparationResult['prototype'] = null;
+    if (inspectWorktree) {
+      const inspection = await settings.git.inspectRepository(worktree);
+      if (!inspection.ok) {
+        throw new Error(inspection.fault.message);
+      }
+      revision = inspection.value.headRevision;
+      if (settings.stage === 'prototype') {
+        const { branch, headRevision } = inspection.value;
+        if (branch === null || headRevision === null) {
+          throw new Error(
+            `The prototype worktree at "${worktree}" retains no branch and revision for ` +
+              'implementation reuse.',
+          );
+        }
+        prototype = { branch, revision: headRevision };
+      }
+    }
+    const documents: PreparationResult['documents'] = author.documents.map((document) => ({
+      path: path.resolve(worktree, document.path),
+      revision,
+    }));
+    const outputs: PreparationResult['outputs'] = documents.map((document) => ({
+      path: document.path,
+    }));
     const evaluationRef = path.join(
       root,
       'artifacts',
@@ -128,10 +152,13 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       stage: settings.stage,
       outcome,
       authoredRevision: author.revision,
+      documents,
       outputs,
       evaluation: { path: evaluationRef },
       reason,
       returnStage: outcome === 'returnUpstream' ? (upstream?.stage ?? null) : null,
+      returnFinding: outcome === 'returnUpstream' ? upstream : null,
+      prototype,
     };
     if (result.outcome === 'returnUpstream' && result.returnStage === null) {
       throw new Error(

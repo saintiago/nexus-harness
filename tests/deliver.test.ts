@@ -214,6 +214,7 @@ function publishReport(
   return createPublishDeliveryReport({
     selectionFile,
     pullRequestField: 'customfield_10002',
+    inProgressStatus: 'In Progress',
     reviewStatus: 'In Review',
     jira,
     publish: () => undefined,

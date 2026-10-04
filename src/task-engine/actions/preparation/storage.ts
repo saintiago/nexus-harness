@@ -10,9 +10,15 @@ import {
 } from '../round-storage.js';
 import {
   stageAreas,
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
+  stageResultArtifact,
   stageRoundPlanDeclaration,
   type PreparationStage,
+  type StageAuthorOutput,
+  type StageEvaluationOutput,
   type StageRoundPlan,
+  type PreparationResult,
 } from './artifacts.js';
 
 /**
@@ -77,10 +83,74 @@ export async function writeStageArtifact<Declaration extends ArtifactDeclaration
   await writeRecord(roundArtifactPath(root, round, declaration.pathFromArtifactsRoot), content);
 }
 
+/** Read one stage round's terminal result, or null when that round has none yet. */
+export async function readStageResult(
+  root: string,
+  round: number,
+): Promise<PreparationResult | null> {
+  return await readStageArtifact(root, round, stageResultArtifact);
+}
+
+/** The authored revision and evaluation one round builds on. */
+export type PrecedingStageWork = {
+  /** The round that retained the preceding authored revision. */
+  readonly round: number;
+  /** The authored revision the next round revises or answers. */
+  readonly author: StageAuthorOutput;
+  /** The evaluation of that revision, when the round retained one. */
+  readonly evaluation: StageEvaluationOutput | null;
+};
+
+/**
+ * The most recent authored revision retained before one round, with the evaluation of it. A
+ * response or later-stage-visit round reads the work it revises from history instead of expecting
+ * the new round's own directory to carry it.
+ */
+export async function precedingStageWork(
+  root: string,
+  round: number,
+): Promise<PrecedingStageWork | null> {
+  for (let earlier = round - 1; earlier >= 1; earlier -= 1) {
+    const author = await readStageArtifact(root, earlier, stageAuthorArtifact);
+    if (author !== null) {
+      return {
+        round: earlier,
+        author,
+        evaluation: await readStageArtifact(root, earlier, stageEvaluationArtifact),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * The prior findings one round must answer and dispose of: the findings of the evaluation the
+ * current response round revises. A "new" route opens a fresh stage visit whose input is the
+ * parent's retained correction rather than an earlier round's findings, so it supplies none.
+ */
+export async function priorStageFindings(
+  root: string,
+  plan: StageRoundPlan,
+): Promise<StageEvaluationOutput['findings']> {
+  if (plan.route !== 'next') {
+    return [];
+  }
+  const preceding = await precedingStageWork(root, plan.round);
+  return preceding?.evaluation?.findings ?? [];
+}
+
 /** The upstream-return allowance file: how many returns the stage has stated so far. */
 export const returnCountFile = 'state/returns.json';
 
-export const returnCountSchema = z.object({ count: z.number().int().nonnegative() });
+/**
+ * The retained return count and the round that stated the most recent return. The round binds the
+ * record to its originating result, so replaying one interrupted return reuses the recorded
+ * outcome instead of consuming another allowance.
+ */
+export const returnCountSchema = z.object({
+  count: z.number().int().nonnegative(),
+  round: z.number().int().positive().nullable(),
+});
 
 export const returnCountDeclaration = {
   file: returnCountFile,
@@ -88,12 +158,18 @@ export const returnCountDeclaration = {
 } satisfies RecordDeclaration<typeof returnCountSchema>;
 
 /** The upstream returns this stage has stated, counted across restarts. */
-export async function readReturnCount(root: string): Promise<number> {
+export async function readReturnCount(
+  root: string,
+): Promise<{ readonly count: number; readonly round: number | null }> {
   const record = await readRecord(path.join(root, returnCountFile), returnCountDeclaration);
-  return record?.count ?? 0;
+  return record ?? { count: 0, round: null };
 }
 
-/** Persist the updated upstream-return count. */
-export async function writeReturnCount(root: string, count: number): Promise<void> {
-  await writeRecord(path.join(root, returnCountFile), { count });
+/** Persist the updated upstream-return count and the round that stated the return. */
+export async function writeReturnCount(
+  root: string,
+  count: number,
+  round: number | null,
+): Promise<void> {
+  await writeRecord(path.join(root, returnCountFile), { count, round });
 }

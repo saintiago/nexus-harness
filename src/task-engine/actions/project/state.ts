@@ -5,6 +5,7 @@ import {
   parentAreaDirectory,
   handoffFile,
   parentHandoffDeclaration,
+  type StageReturn,
   type ParentHandoff,
 } from '../select-work/artifacts.js';
 import {
@@ -49,11 +50,16 @@ export async function writeHandoff(
   await writeRecord(handoffPath(issueWorkspaceRoot), handoff);
 }
 
-/** Move the retained selection and handoff to the stage the parent now routes to. */
+/**
+ * Move the retained selection and handoff to the stage the parent now routes to. An upstream
+ * return supplies the concrete finding the destination stage must correct; every other advance
+ * clears a consumed return so a later stage never reads a stale correction.
+ */
 export async function advanceStage(
   selection: Selection,
   selectionFile: string,
   stage: WorkflowStage,
+  returnFinding: StageReturn | null = null,
 ): Promise<Selection> {
   const updated: Selection = { ...selection, stage };
   await writeSelection(selectionFile, updated);
@@ -62,6 +68,7 @@ export async function advanceStage(
     stage,
     upstreamReturns: handoff?.upstreamReturns ?? 0,
     feedback: null,
+    return: returnFinding,
     tickets: handoff?.tickets ?? [],
     publications: handoff?.publications ?? [],
   });

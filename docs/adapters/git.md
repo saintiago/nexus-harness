@@ -23,7 +23,7 @@ The adapter does not combine these decisions into a prepare operation.
 | Fetch and resolve revision | Repository, remote and branch/ref → commit revision | PrepareWorkspace |
 | Pull branch | Repository and remote branch → fast-forwarded branch/head | PrepareWorkspace |
 | Create/check out branch | Repository, branch and explicit starting revision → resulting branch/head | PrepareWorkspace |
-| Commit all changes | Repository and message → resulting branch/head | Parent preparation handoff |
+| Commit named changes | Repository, paths and message → resulting branch/head | Parent preparation handoff |
 | Read diff | Repository and base/head revisions → diff data | Review |
 | Push branch | Repository, branch and expected local head → push result | Deliver |
 | Read remote branch head | Remote and branch → revision or absence | Deliver |

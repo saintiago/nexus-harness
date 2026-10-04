@@ -8,6 +8,7 @@ import {
   parentHandoffDeclaration,
   type ParentHandoff,
 } from '../select-work/artifacts.js';
+import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import { readRecord } from '../records.js';
 import {
   preparationStages,
@@ -18,7 +19,7 @@ import {
   type StageEvaluationOutput,
   type StageRoundPlan,
 } from './artifacts.js';
-import { stageRoot, readStagePlan } from './storage.js';
+import { readStageArtifact, readStagePlan, stageRoot } from './storage.js';
 
 /**
  * The context every evaluated preparation role receives: the shared preparation instructions, the
@@ -76,12 +77,28 @@ async function projectGuidanceText(worktree: string): Promise<string | null> {
   ].join('\n');
 }
 
+/** The refinement area under the issue workspace root (Workspace design). */
+const refinementArea = 'refinement';
+
 /** One earlier stage's retained result and author references that a later stage may read. */
 export async function upstreamReferences(
   issueRoot: string,
   stage: PreparationStage,
-): Promise<{ readonly stage: PreparationStage; readonly lines: string[] }[]> {
-  const references: { readonly stage: PreparationStage; readonly lines: string[] }[] = [];
+): Promise<{ readonly stage: string; readonly lines: string[] }[]> {
+  const references: { readonly stage: string; readonly lines: string[] }[] = [];
+  // An approved idea's refinement handoff is an upstream producer-owned reference too: it names
+  // the approved revision and the retained artifacts a preparation stage builds on.
+  const ideaHandoff = path.join(issueRoot, refinementArea, ideaHandoffFile);
+  const approvedIdea = await readRecord(ideaHandoff, {
+    file: ideaHandoffFile,
+    schema: handoffSchema,
+  });
+  if (approvedIdea !== null) {
+    references.push({
+      stage: 'idea',
+      lines: [`idea refinement approved handoff: ${ideaHandoff}`],
+    });
+  }
   for (const earlier of preparationStages) {
     if (earlier === stage) {
       break;
@@ -92,21 +109,22 @@ export async function upstreamReferences(
       continue;
     }
     const lines: string[] = [];
-    const result = await readStageArtifactFile(
-      root,
-      plan.round,
-      stageResultArtifact.pathFromArtifactsRoot,
-    );
+    // Read each retained result through its producer declaration: its outcome says whether the
+    // stage accepted, skipped, returned or exhausted the work, so a consumer is never directed to
+    // a result presented as accepted when it was not.
+    const result = await readStageArtifact(root, plan.round, stageResultArtifact);
     if (result !== null) {
-      lines.push(`${earlier} accepted result: ${result}`);
+      lines.push(
+        `${earlier} stage result (${result.outcome}): ` +
+          roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
+      );
     }
-    const author = await readStageArtifactFile(
-      root,
-      plan.round,
-      stageAuthorArtifact.pathFromArtifactsRoot,
-    );
+    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
     if (author !== null) {
-      lines.push(`${earlier} author revision: ${author}`);
+      lines.push(
+        `${earlier} retained authored revision ${String(author.revision)}: ` +
+          roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+      );
     }
     if (lines.length > 0) {
       references.push({ stage: earlier, lines });
@@ -115,14 +133,9 @@ export async function upstreamReferences(
   return references;
 }
 
-/** One stage artifact's filepath when it exists, or null. */
-async function readStageArtifactFile(
-  root: string,
-  round: number,
-  relative: string,
-): Promise<string | null> {
-  const file = path.join(root, 'artifacts', String(round), relative);
-  return (await readDocumentText(file, 'Artifact')) === null ? null : file;
+/** One stage round artifact's filepath. */
+function roundArtifactFile(root: string, round: number, relative: string): string {
+  return path.join(root, 'artifacts', String(round), relative);
 }
 
 /** What one stage role invocation needs to assemble its context. */
@@ -153,6 +166,21 @@ export async function stageContextText(settings: StageContextSettings): Promise<
           'Treat the author\u2019s clarification as governing intent when it resolves the question.',
         ].join('\n')
       : null;
+  const returned =
+    handoff?.return !== null &&
+    handoff?.return !== undefined &&
+    handoff.return.to === settings.plan.stage
+      ? [
+          `Retained upstream return from the ${handoff.return.from} stage: the work cannot proceed ` +
+            'until this concrete correction is made.',
+          `Problem: ${handoff.return.problem}`,
+          `Consequence: ${handoff.return.consequence}`,
+          `Required correction: ${handoff.return.correction}`,
+          `The returning stage's retained evidence is under ` +
+            `${stageRoot(issueWorkspaceRootOf(settings.selection), handoff.return.from)}; read its result ` +
+            'and evaluation for the observation behind the correction.',
+        ].join('\n')
+      : null;
   const previousEvaluation =
     settings.evaluation === null
       ? []
@@ -179,6 +207,7 @@ export async function stageContextText(settings: StageContextSettings): Promise<
       2,
     ),
     ...(feedback === null ? [] : [feedback]),
+    ...(returned === null ? [] : [returned]),
     `Connected project worktree: ${settings.worktree}`,
     ...(guidance === null ? [] : [guidance]),
     upstream.length === 0

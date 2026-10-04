@@ -160,7 +160,13 @@ function profilesForRole(
   const preparation = preparationRoles.find((candidate) => candidate === role);
   if (preparation !== undefined) {
     const selected = preparationRoleSettings[preparation];
-    return new Set([configuration.preparation.profiles[selected.stage][selected.part]]);
+    const profiles = configuration.preparation.profiles[selected.stage];
+    if (selected.part === 'author') {
+      // Every profile of the prototype author ladder may be selected for the role, so each one
+      // carries the role's instructions and tools.
+      return new Set('authors' in profiles ? profiles.authors : [profiles.author]);
+    }
+    return new Set([profiles.evaluator]);
   }
   switch (role) {
     case 'developer':

@@ -56,7 +56,9 @@ export const finiteDelivery = createMachine(
           src: 'Develop',
           onDone: [
             { guard: ({ event }) => event.output === 'completed', target: 'verify' },
-            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
+            // A failed synthesis or verification is a repair turn: refresh the captured source
+            // input before the next coding round reads it.
+            { guard: ({ event }) => event.output === 'failed', target: 'refreshRoundInput' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -66,7 +68,7 @@ export const finiteDelivery = createMachine(
           src: 'Verify',
           onDone: [
             { guard: ({ event }) => event.output === 'passed', target: 'deliver' },
-            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
+            { guard: ({ event }) => event.output === 'failed', target: 'refreshRoundInput' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -140,7 +142,7 @@ export const finiteDelivery = createMachine(
         invoke: {
           src: 'PublishReviewFeedback',
           onDone: [
-            { guard: ({ event }) => event.output === 'published', target: 'startRound' },
+            { guard: ({ event }) => event.output === 'published', target: 'refreshRoundInput' },
             {
               guard: ({ event }) => event.output === 'failed',
               target: 'analyzeReviewPublicationFailure',

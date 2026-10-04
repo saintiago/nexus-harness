@@ -51,6 +51,15 @@ const stageProfilesSchema = z.strictObject({
   evaluator: identifier,
 });
 
+/**
+ * The prototype stage's author ladder: its ordered profiles escalate as repair rounds open and
+ * never downgrade. A single profile is a ladder that never promotes.
+ */
+const prototypeProfilesSchema = z.strictObject({
+  authors: z.array(identifier).min(1),
+  evaluator: identifier,
+});
+
 /** The four evaluated preparation stages and the finite round/upstream-return allowances. */
 const preparationSchema = z.strictObject({
   maxRounds: z.number().int().positive(),
@@ -58,7 +67,7 @@ const preparationSchema = z.strictObject({
   profiles: z.strictObject({
     requirements: stageProfilesSchema,
     ux: stageProfilesSchema,
-    prototype: stageProfilesSchema,
+    prototype: prototypeProfilesSchema,
     architecture: stageProfilesSchema,
   }),
 });
@@ -277,12 +286,23 @@ const nexusConfigurationSchema = z
       }
     }
 
-    for (const [stage, profiles] of Object.entries(configuration.preparation.profiles)) {
-      for (const [part, profile] of Object.entries(profiles)) {
+    const stageProfiles: [string, readonly string[]][] = [];
+    for (const stage of ['requirements', 'ux', 'architecture'] as const) {
+      const profiles = configuration.preparation.profiles[stage];
+      stageProfiles.push([`${stage}.author`, [profiles.author]]);
+      stageProfiles.push([`${stage}.evaluator`, [profiles.evaluator]]);
+    }
+    const prototype = configuration.preparation.profiles.prototype;
+    prototype.authors.forEach((profile, index) => {
+      stageProfiles.push([`prototype.authors.${String(index)}`, [profile]]);
+    });
+    stageProfiles.push(['prototype.evaluator', [prototype.evaluator]]);
+    for (const [part, profiles] of stageProfiles) {
+      for (const profile of profiles) {
         if (!profileIds.has(profile)) {
           context.addIssue({
             code: 'custom',
-            path: ['preparation', 'profiles', stage, part],
+            path: ['preparation', 'profiles', ...part.split('.')],
             message: `Unknown profile "${profile}"`,
           });
         }
