@@ -180,3 +180,15 @@ recovery. The action receives a generic handoff and producer-owned evidence; it 
 API. Preserve the original outcome and destination even when learning is skipped or unavailable.
 Intermediate retries and empty selection are not experience handoffs. The action contract owns
 background durability and the exclusive automatic Memory dependency; agents retain explicit MCP.
+
+## Parent and child source boundary
+
+The [project workflow](../../project-workflow.md) owns Jira access and stage handoffs. Selection is
+parent-owned. Stage/finite business actions receive captured source input, not Jira adapters.
+Parent-owned input/publication actors can be supplied at explicit child boundaries; they own source
+effects and return data/acknowledgement. Internal revision/repair decisions stay with children.
+Consumers import producer-owned output declarations and schemas.
+
+Preparation areas retain applicability decisions, round history and accepted output references.
+Skips are evaluated and saved. The parent consumes current results for publication/routing.
+Original preparation completion and implementation completion require their distinct evidence.

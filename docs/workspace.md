@@ -8,7 +8,9 @@ that issue workspace; each workflow writes only its own state and artifacts.
 ## Layout and reference
 
 The issue workspace retains the existing finite delivery layout at its root. Idea refinement
-uses the `refinement/` area. A later workflow adds its own area when its layout is defined.
+uses the `refinement/` area. Preparation stages use requirements/, ux/, prototype/ and architecture/ areas, each with
+worktree/, state/ and numbered artifacts/ rounds. Parent source handoffs live under parent/ and
+retain stage, feedback destination, return count and publication identities.
 
 ```text
 <issue workspace root>/
@@ -65,3 +67,11 @@ delivery's developer ladder or writable delivery worktree. The same WorkspaceRef
 the refinement area. Nexus owns artifact writes; agents use the prepared project worktree
 and supplied context. A fresh finite delivery attempt may replace its root-level `worktree/`,
 `artifacts/` and `state/` without removing `refinement/` or other retained workflow areas.
+
+## Parent preparation storage
+
+The [project workflow](project-workflow.md) owns source handoffs under parent/ in the stable issue
+root. Each stage owns its round plan, applicability/evaluation outputs and accepted references in
+its own area. Later stages read producer-owned artifacts/revisions by reference; mutable worktrees
+are not accepted evidence. The project execution directory owns one composed parent/child snapshot.
+Implementation issues retain references to accepted artifacts in the original issue's workspace.

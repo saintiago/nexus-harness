@@ -16,21 +16,12 @@ desired task status belong to the calling action.
 
 ### Required capabilities
 
-| Operation | Inputs and result | Consumers |
-| --- | --- | --- |
-| Search issues | Configured query and ordering → complete ordered issue identities | [SelectTask](../task-engine/actions/select-task.md#interface) |
-| Read issue | Issue identity → current issue fields and status | SelectTask, Develop, Review, Deliver, CompleteTask |
-| Read comments | Issue identity → complete attributed provider-native comments | SelectTask, Develop, Review; publication inspection |
-| Read available transitions | Issue identity → permitted transition identities and destinations | Actions changing source status |
-| Update fields | Issue identity and requested fields → provider result | SelectTask for workspace pointer; Deliver for PR field |
-| Transition issue | Issue identity and explicit transition → provider result | SelectTask, Deliver, CompleteTask |
-| Add or edit comment | Issue identity, content and existing comment ID for edits → comment identity | Deliver and Review |
-| Create issue | Requested issue fields → created issue identity | Authorized recovery tools |
-| Rank issue | Issue identity and before/after target → provider result | Authorized recovery tools |
-
-Read results retain the Jira document structure and comment metadata; consumers use those provider
-types rather than a second shared issue schema. Publication consumers retain any returned IDs they
-need and decide whether a further write is necessary.
+Expose ranked issue search, issue/comment reads, available transitions, field updates, status changes,
+comment publication, issue creation, issue links and ranking. Parent-owned selection, input-refresh,
+publication and handoff actions consume these capabilities. Child business actions receive no Jira
+adapter. Authorized project-scoped recovery tools can use the same operations. Preserve provider-native
+issue/comment shapes and attribution. Actions own eligibility, claiming, reuse and desired statuses.
+Creation returns issue identity; linking receives explicit source/target identities and link type.
 
 ## Behavior
 
@@ -45,16 +36,11 @@ structure rather than flattening it into a shared cross-provider document format
 Request English provider labels with `Accept-Language: en-US` so status names match the configured
 English workflow mappings independently of the HTTP client default locale.
 
-## Idea refinement use
+## Parent workflow use
 
-The [idea refinement workflow](../idea-refinement/spec.md) uses the same Jira adapter for
-configured `Idea` selection, issue revision/author/comment reads, status transitions and
-author-facing Jira comments. In HARN, selection moves an idea to `Idea Refinement`; approval moves
-it to `Draft`; a returned idea receives a human-facing comment and moves to
-`Waiting for Feedback`. The author replies in a Jira comment and moves it back to `Idea`.
-Internal agent feedback stays in artifacts and logs. The shared Task workflow permits these
-transitions. Idea and finite-delivery selectors are separate even when they use the same Jira
-project. Actions own eligibility, verdicts and desired statuses. The adapter returns the
-issue and relevant comments for one capture at selection; the run uses that snapshot for all
-agent work and publication. It does not re-read the issue, comments or available transitions
-later in the run.
+The [project workflow](../project-workflow.md) owns every Jira effect. Idea approval maps to Draft;
+feedback maps to Waiting for Feedback. Preparation handoffs publish a result and advance or return
+upstream. Architecture creates linked implementation tickets before completing the original.
+Finite delivery publication updates reports, PR fields and status using saved child evidence.
+The parent captures source input and supplies it to children. Refreshing that input at later explicit
+boundaries remains parent-owned. The adapter owns no routing, dispatcher or universal ensure operation.

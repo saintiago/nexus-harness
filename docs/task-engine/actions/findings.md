@@ -4,7 +4,9 @@
 
 [Review](review.md#output) owns and exports Finding and FindingDisposition with its artifact declarations.
 [Develop](develop.md#output) owns and exports FindingResponse with its artifact declaration.
-Consumers import these definitions. Define each with one Zod schema and derive its TypeScript type;
+Consumers, including preparation-stage authors/evaluators, import these definitions. Preparation
+evaluation owns its own verdict and revision contract; shared findings do not create a shared
+workflow coordinator. Define each with one Zod schema and derive its TypeScript type;
 the following shapes specify the data, not additional copies of those schemas.
 
 ```ts

@@ -3,7 +3,7 @@
 Repository templates:
 
 - [nexus-flash](../../profiles/codex/nexus-flash.config.toml): DeepSeek Flash, maximum effort.
-- [nexus-sol](../../profiles/codex/nexus-sol.config.toml): GPT-5.6 Sol, high effort.
+- [nexus-sol](../../profiles/codex/nexus-sol.config.toml): GPT-6.1 Sol, high effort.
 - [nexus-astra](../../profiles/codex/nexus-astra.config.toml): Astra, high effort.
 - [nexus-recovery](../../profiles/codex/nexus-recovery.config.toml): Astra, high effort, selected for recovery.
 
@@ -47,3 +47,7 @@ the templates do not install it, and an invocation without memory carries no mem
 
 Verify connectivity to each research service and provider authentication on the execution host.
 Keep credentials and machine-specific settings out of the repository.
+
+Preparation and delivery assignments follow the [project workflow](../project-workflow.md#profiles).
+Prototype evaluation requires browser and image-inspection tools. Jira credentials and source
+publication tools are not supplied to stage roles.

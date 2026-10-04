@@ -18,11 +18,15 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 | Credential references | Names of the credentials required by project integrations, resolved through the Nexus Credentials settings |
 
 Project configuration contains no harness workflow definitions, workspace layout overrides, agent
-profiles or recovery/escalation policies. Task-source workflow mappings refer to external issue
+profiles or recovery/escalation policies. Source mappings name eligible Jira stages/queries for the
+parent; preparation mappings are optional for delivery-only projects. When configured, map
+Requirements, UX Proposal, Storybook Refinement and Architecture in addition to idea, feedback and
+implementation states. Task-source workflow mappings refer to external issue
 statuses and transitions; they do not define the harness's executable workflow.
 
 The project uses its Jira task-source connection for both finite delivery and idea refinement.
-Their selection queries and status mappings are separate so ideas do not enter the To Do queue.
+Their eligibility queries and stage mappings are distinct inputs to the parent selector, so
+ideas cannot enter finite delivery directly.
 The Jira connection is the API base used verbatim, so a cloud connection's gateway prefix
 such as `https://api.atlassian.com/ex/jira/<cloudId>` is preserved; the credential reference names the operator's API token.
 
@@ -33,7 +37,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 
 | Settings | Definition |
 | --- | --- |
-| Workflow | Definition paths for the explicitly selected finite delivery or idea refinement workflow |
+| Workflow | Parent project definition and invoked child definition paths |
 | Storage | Root for queue execution state, recovery and shared issue workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
@@ -100,7 +104,8 @@ definition, profile references for Idea editor, Researcher, Project guide and Ch
 maximum cycle count. The specification defines [how cycles are counted](idea-refinement/spec.md#conversation-and-cycles).
 StartIdeaRound records the role profiles for each cycle. Use the existing profile catalogue
 and storage root. Artifact paths belong to the workflow, not project configuration.
-The operator command selects the workflow explicitly.
+The project parent invokes idea refinement for selected idea-stage work. Parent source operations
+own publication; the child receives captured input and returns its decision.
 
 ## Memory settings
 
@@ -113,3 +118,17 @@ submits its output. Other enabled agent profiles retain explicit AMEM search/sav
 AMEM owns collection, encoder, model and durable ingestion settings. Nexus does not configure direct
 Qdrant access, encoder caches, memory-generation credentials or writer locks. Invalid settings fail
 configuration; service unavailability degrades only learning. Disabled configurations remain valid.
+
+## Project workflow settings
+
+The [project workflow](project-workflow.md) owns parent/child routing and role responsibilities.
+Nexus configures parent/child definition paths, stage author/evaluator profiles, positive stage-round
+and upstream-return allowances, and the existing finite developer ladder. Validate referenced
+profiles and workflows. Project settings own eligibility, status mappings and implementation issue
+creation/link/label settings. No artifact-path override or workflow graph belongs in project settings.
+Reuse existing source workspace/PR fields; preparation needs no additional Jira custom field.
+
+KAN maps ready delivery work to Implementation. HARN can retain To Do during bootstrap. The parent
+selects mapped preparation and implementation work in one ranked queue. Waiting for Feedback and
+Done are not automatically selected. Persist feedback return destinations in the issue source
+handoff record. Role assignments and the Flash/Sol/Astra models follow the workflow's Profiles section.

@@ -3,11 +3,12 @@
 ## Responsibility
 
 Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
-the actions, and persistent artifacts carry data between actions. Finite delivery uses sequential
-states; idea refinement uses independent parallel regions.
+the actions, and persistent artifacts carry data between actions. The project parent invokes child machines; finite delivery uses sequential states and idea
+refinement uses parallel regions. The [project workflow](../project-workflow.md) owns stage routing,
+source publication and preparation behavior.
 
-The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, an action
-binding that receives the engine's EventPublisher and produces the bound action implementations,
+The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, an actor
+binding that receives the engine's EventPublisher and produces bound operations and child machines,
 and a workflow-state filepath.
 
 ## Composition
@@ -140,8 +141,8 @@ The workflow, bound actions and workflow-state filepath are supplied before run.
 Source and remote repository settings are supplied to the actions that use them, together with the
 workspace reference and other required capabilities. They are not repeated in a run request.
 
-For queue execution, actions read the current selection from a shared selection-file location bound
-at startup. That record supplies the current ticket's workspace. The runner state filepath remains
+For project execution, parent-owned selection and Jira boundary actions read the current selection
+from a shared location bound at startup. Children consume its captured data without a source client. That record supplies the current ticket's workspace. The runner state filepath remains
 fixed for the queue; switching tickets does not make the runner interpret task data or change files.
 Workflow state belongs to the queue execution directory, outside individual task workspaces.
 Bootstrap record ownership and round/history reads follow the general action contract.
@@ -154,13 +155,14 @@ storage, then calls run again.
 | Port | Provider contract | Use |
 | --- | --- | --- |
 | Agent execution | [AgentRuntime.run](../agent-runtime/architecture.md#provided-interface) | Profile ID, WorkspaceRef, context text and AgentResult |
-| Task source | [Jira](../adapters/jira.md#interface) | Select and read tickets or ideas; publish feedback and update their state |
+| Parent task source only | [Jira](../adapters/jira.md#interface) | Select and read tickets or ideas; publish feedback and update their state |
 | Repository | [Git](../adapters/git.md#interface) | Read repository state and perform Git operations selected by actions |
 | Delivery | [GitHub](../adapters/github.md#interface) | Publish and observe pull requests, review, checks and integration |
 | Commands | [Processes](../adapters/processes.md#interface) | Run configured setup/check commands and return exit codes and output |
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
-Actions read task details and locally saved conversation, construct role inputs
+Parent actions read source details and conversation. Children read supplied task data and saved
+conversation, construct role inputs
 and verify role claims against observed evidence. No presentation or Application dependency is required.
 An agent-backed action calls run(profile, workspaceRef, additionalContext). The action reads the
 artifacts it needs and supplies invocation instructions/context directly. The runtime does not read

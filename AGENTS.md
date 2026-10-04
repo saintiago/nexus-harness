@@ -61,10 +61,13 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Memory integration](docs/memory/integration.md): agent MCP use and shared terminal experience analysis.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
 - [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
+- [Project workflow](docs/project-workflow.md): parent selection, child workflows, evaluation, Jira handoffs and implementation ticket creation.
 - [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
 - [ExecutionRunner design](docs/task-engine/execution-runner.md): XState binding, persisted execution state and progress events.
 - [Finite workflow](workflows/finite-delivery.ts): XState definition for finite delivery and Stately visualization.
 - [Idea refinement specification](docs/idea-refinement/spec.md): Nexus design and behavior for the cross-project idea refinement workflow: purpose, four-role conversation, routing, artifacts and XState pseudocode; authoritative for implementing Nexus and relevant evidence for ideas about this workflow, not per-run role instructions.
+- [Preparation stage actions](docs/task-engine/actions/preparation-stage.md): applicability, round artifacts, evaluation and preparation results.
+- [Preparation roles](docs/agent-runtime/preparation-roles.md): requirements, UX, prototype and architecture author/evaluator instructions.
 - [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [SelectTask design](docs/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
 - [PrepareWorkspace design](docs/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
