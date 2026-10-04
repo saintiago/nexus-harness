@@ -222,6 +222,67 @@ describe('project parent composition', () => {
     expect(waiting.result).toEqual({ ok: true, value: 'drained' });
     expect(waiting.states).toContain('select');
   });
+
+  it('restores an interrupted child from the composed snapshot and keeps its stage input', async () => {
+    const directory = await temporaryDirectory();
+    const stateFile = path.join(directory, 'workflow.json');
+    const stageInputs: unknown[] = [];
+    const failures = { evaluations: 0 };
+    let selections = 0;
+    const actions = (): Record<string, ActionStub> => ({
+      SelectWork: async () => (selections++ === 0 ? 'selected' : 'empty'),
+      RouteSelection: async () => 'requirements',
+      PublishPreparationResult: async () => 'waiting',
+      PublishIdeaResult: async () => 'approved',
+      HandoffImplementation: async () => 'handed-off',
+      CompleteDelivery: async () => 'completed',
+      AnalyzeExperience: async () => 'recorded',
+      PrepareStage: async () => 'prepared',
+      StartStageRound: async (input) => {
+        stageInputs.push(input);
+        return 'opened';
+      },
+      StageAuthor: async (input) => {
+        stageInputs.push(input);
+        return 'authored';
+      },
+      StageEvaluator: async (input) => {
+        stageInputs.push(input);
+        failures.evaluations += 1;
+        if (failures.evaluations === 1) {
+          throw new Error('the evaluation service is unavailable');
+        }
+        return 'accepted';
+      },
+      RecordStageReturn: async () => 'return',
+      StageResult: async (input) => {
+        stageInputs.push(input);
+        return 'saved';
+      },
+    });
+    const first = await createTaskEngine({
+      workflow: project,
+      children: { IdeaRefinement: project, FiniteDelivery: project, Preparation: preparation },
+      stateFile,
+      bindActions: () => actions(),
+    }).run();
+    expect(first.ok).toBe(false);
+    expect(first.ok ? '' : first.fault.message).toContain('evaluation service is unavailable');
+
+    const second = await createTaskEngine({
+      workflow: project,
+      children: { IdeaRefinement: project, FiniteDelivery: project, Preparation: preparation },
+      stateFile,
+      bindActions: () => actions(),
+    }).run();
+
+    expect(second).toEqual({ ok: true, value: 'drained' });
+    // The restored child continued with the stage its invocation carried.
+    expect(
+      stageInputs.filter((input) => (input as { stage?: unknown }).stage !== 'requirements'),
+    ).toEqual([]);
+    expect(stageInputs.length).toBeGreaterThan(0);
+  });
 });
 
 /** The real preparation child over supplied stage operations. */
