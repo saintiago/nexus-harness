@@ -13,6 +13,10 @@ installation credentials. Consumers supply target identities, revisions and requ
 Expose pull-request, review, check and workflow operations as required by consumers. Read metadata,
 conversations and checks independently when requested.
 
+The review-publication contract accepts `ReviewVerdict = 'approved' | 'changesRequested'`.
+It receives a completed assessment, its exact reviewed head and publication content; it has no
+verdict for an unfinished assessment.
+
 The calling action decides whether to find, create or update a pull request. The adapter performs
 that operation; it does not combine the decision into ensurePullRequest.
 
@@ -51,6 +55,9 @@ out of agent context, artifacts and logs. Token renewal does not change the oper
 
 Publish the supplied review result for the exact reviewed commit. The caller owns the approval
 decision; the adapter supplies the Nexus Lens identity and GitHub publication.
+Encode approved as GitHub APPROVE/APPROVED and changesRequested as
+REQUEST_CHANGES/CHANGES_REQUESTED. Other observed GitHub review states remain provider observations,
+not additional Nexus verdicts.
 
 Report actual merge state and merge revision. Acceptance of an auto-merge request is not a completed
 merge. Required-gate decisions belong to the caller; provider branch rules remain in force.

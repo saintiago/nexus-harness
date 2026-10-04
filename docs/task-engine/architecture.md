@@ -219,9 +219,10 @@ The finite delivery child starts from the parent's selected workspace; it never 
 the parent-owned input boundary before Develop and before Review, and the parent-owned delivery and
 review publication actors at those milestones. Failed Develop, failed Verify and changesRequested
 Review route to StartDevRound; StartDevRound returns started for another round or exhausted for the
-blocked terminal state. Approved Review routes to CompleteTask; inconclusive Review routes directly
-to blocked, and operational errors remain execution errors rather than repairs. A completed child
-returns its completion evidence to the parent, which marks the ticket Done only afterward. The
+blocked terminal state. Approved Review routes to CompleteTask. A review that cannot finish follows
+the existing execution-error and recovery path rather than a review verdict or repair round.
+Operational errors remain execution errors rather than repairs. A completed child returns its
+completion evidence to the parent, which marks the ticket Done only afterward. The
 reviewer profile is selected by Review and is separate from the developer profile selected by
 StartDevRound.
 

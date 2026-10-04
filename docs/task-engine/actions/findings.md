@@ -71,7 +71,10 @@ shown to recur may return in findings under its stable ID without adding an out-
 - approved: sufficient evidence and no current blocking findings. Non-blocking observations do not
   require another repair round.
 - changesRequested: at least one current blocking finding with a concrete basis, evidence and impact.
-- inconclusive: material evidence is unavailable; the summary explains what is missing.
+
+These are the only review verdicts. If material evidence is unavailable and the assessment cannot
+finish, use the existing execution-error and recovery path. Missing evidence alone is not a blocking
+finding and must not be converted into approval or a changesRequested verdict.
 
 Actions validate response shapes, referenced IDs and consistency with these verdict rules. The reviewer
 judges the substance of evidence; the harness does not attempt to prove prose claims deterministically.

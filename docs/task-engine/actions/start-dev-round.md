@@ -72,7 +72,7 @@ execution error, not a new round or an exhausted policy.
    - the verification result failed for the development result's headRevision; or
    - the review result requested changes for the development result's headRevision.
 
-   An approval, an inconclusive review, a result for another revision or a missing result is not a
+   An approval, a result for another revision or a missing result is not a
    repair trigger. The workflow must not invoke StartDevRound for those cases; if it does, fail rather
    than opening a repair round.
 4. Count executed repair turns from the retained development reports in rounds after the first. Group
@@ -82,7 +82,7 @@ execution error, not a new round or an exhausted policy.
 5. Derive the changes-requested streak from the retained review results in round order, counting each
    reviewed head once within this task/PR lifecycle: a repeated publication or a duplicate review of
    the same head is not a new rejection. A changesRequested verdict increases the streak; an approved
-   verdict resets it to zero; an inconclusive review, a round without a review, a failed check and a
+   verdict resets it to zero; a round without a review, a failed check and a
    status change leave it unchanged.
 6. Determine the next profile. Start from the strongest profile already used for an executed repair,
    or the initial ladder profile when no repair has run. If a stronger entry exists and the current

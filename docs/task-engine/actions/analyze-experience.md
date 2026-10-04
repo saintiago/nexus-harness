@@ -65,7 +65,7 @@ outcomes belong to the workflow, not this action. Ordinary retry rounds and inte
 do not trigger it. Each item in a finite queue produces its own request; queue drain produces none.
 
 Finite delivery inserts it after successful CompleteTask and on selected-item routes to blocked:
-PrepareWorkspace failure, StartRound exhaustion, Deliver failure, inconclusive Review and failed
+PrepareWorkspace failure, StartRound exhaustion, Deliver failure and failed
 CompleteTask. Selection failure and an empty queue skip analysis. Develop/Verify failures and
 changesRequested reviews that return to StartRound are intermediate work.
 

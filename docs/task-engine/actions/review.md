@@ -3,6 +3,9 @@
 ## Responsibility
 
 Evaluate the delivered change against the task and produce an actionable review of that revision.
+Review of delivered implementation and assembled preparation documentation uses the same verdict
+rules. Completed assessments proceed to publication and either repair or gated completion;
+unfinished assessments proceed to recovery.
 
 ## Interface
 
@@ -28,7 +31,7 @@ type ReviewOutput = {
   taskSubject?: string;
   profile: string;
   headRevision: string;
-  verdict: 'approved' | 'changesRequested' | 'inconclusive';
+  verdict: 'approved' | 'changesRequested';
   summary: string;
   findings: Finding[];
   priorFindings: FindingDisposition[];
@@ -44,13 +47,19 @@ Request one JSON object conforming to ReviewResponse as the agent's final output
 its finding definitions, identity/disposition rules and verdict rules in the context. Parse and validate the response, then add
 the configured profile and observed reviewed head to create ReviewOutput. They are not agent claims.
 
+Review owns one artifact schema and derives its response schema and TypeScript types from it.
+Both permit only the two declared verdicts; there is no report-shaped failure result.
+
 ### Outcomes
 
-Return the recorded verdict: approved, changesRequested or inconclusive.
+Return the recorded verdict: approved or changesRequested.
 Each outcome writes reviewArtifact before publication and publishes the
 [action outcome event](architecture.md#action-outcome-events) referencing it with the profile used.
 An invocation that reuses the saved report for the delivered head publishes the same reference.
 Unusable agent output is an execution error.
+An assessment that cannot finish supplies no usable verdict and follows the existing
+[execution-error and recovery path](../../application.md#execution-and-recovery). Do not add a
+review-specific retry mechanism or open a repair round merely because review could not finish.
 
 ## Behavior
 
@@ -79,9 +88,13 @@ returns a verdict. Validate finding IDs, prior dispositions and the verdict unde
 Bind the report to the revision actually reviewed. Missing required responses or inconsistent verdicts
 are unusable output, not approval or a newly invented coding finding.
 
+An invocation fault or unusable response fails the action before saving a new reviewArtifact or
+publishing a review/check. Retain the failure explanation through ordinary execution diagnostics;
+do not manufacture a review report for an unfinished assessment.
+
 Save the complete report. Publish its review and configured review check for that exact head through
 the Nexus Lens publication capability. Only approved produces a successful review check;
-changesRequested and inconclusive cannot authorize merge. The complete agent conversation stays
+changesRequested cannot authorize merge. The complete agent conversation stays
 in local artifacts; the published review summarizes the result.
 Recognize an already-published review by the configured Nexus Lens author, the reviewed commit, the
 verdict and the report body, and the check by the configured name, the Nexus Lens producer identity,
@@ -92,4 +105,18 @@ beginning with the profile and explaining what was missed and what to improve. A
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
 
+Validate current and historical retained reports with the same artifact schema. Reuse valid reports
+for their recorded head; an existing invalid report is an action failure under the action contract,
+not an absent report or a verdict to translate. Do not rewrite history or add a compatibility verdict.
+
 Review has no Jira capability. GitHub Nexus Lens review/check publication remains Review-owned.
+
+## Acceptance examples
+
+| Given | Observable result |
+| --- | --- |
+| Sufficient evidence and no current blocking findings, with or without non-blocking observations | The review is approved for the inspected head and its Lens review check succeeds. |
+| At least one current blocking finding with concrete basis, evidence and impact | The review requests changes, its Lens review check does not authorize merge, and finite delivery returns to the existing repair flow. |
+| Material evidence is unavailable and the assessment cannot finish | Execution fails through the existing recovery path; no usable review verdict, invented blocking finding or additional review retry mechanism is produced. |
+| A reviewer returns the removed inconclusive verdict | The report is unusable output and is handled as an execution error. |
+| Approval applies to a different head, a required pre-merge check fails, or merge and successful required post-merge checks are unconfirmed | The task cannot complete; the existing revision and pre/post-merge gates still apply. |
