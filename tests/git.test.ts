@@ -942,6 +942,10 @@ describe('Git adapter', () => {
         reviewer: {
           run: async (request) => {
             reviews += 1;
+            // The reviewer's workspace is the architecture area root whose existing worktree/
+            // child AgentRuntime resolves once.
+            expect(request.workspace.root).toBe(area);
+            expect(path.join(request.workspace.root, 'worktree')).toBe(worktree);
             expect(request.context).toContain('+accepted content');
             expect(request.context).not.toContain('diff --git a/unrelated.txt');
             return ok({

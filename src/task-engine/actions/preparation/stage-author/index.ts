@@ -155,7 +155,8 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     const result = await settings.runner.run({
       operation: 'stage-author',
       profile: plan.profiles.author,
-      workspace: { root: worktree },
+      // The invocation's workspace is the stage area root; AgentRuntime resolves its worktree/.
+      workspace: { root },
       context: [
         context,
         task === 'propose'

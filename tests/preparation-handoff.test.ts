@@ -5,7 +5,7 @@
  * controlled report source. No live provider or source service is involved.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -105,14 +105,18 @@ async function stageWithEvaluation(): Promise<{
 function runnerOf(reports: readonly unknown[]): {
   readonly runner: AgentRoleRunner;
   readonly contexts: string[];
+  readonly roots: string[];
 } {
   const contexts: string[] = [];
+  const roots: string[] = [];
   const queued = [...reports];
   return {
     contexts,
+    roots,
     runner: {
       async run(request) {
         contexts.push(request.context);
+        roots.push(request.workspace.root);
         const report = queued.shift();
         if (report === undefined) {
           throw new Error('No controlled report remains for this invocation.');
@@ -146,7 +150,7 @@ describe('preparation repair rounds', () => {
   it('supplies the preceding revision and findings to the author response', async () => {
     const { selectionFile, root } = await stageWithEvaluation();
     await openNextRound(selectionFile, root);
-    const { runner, contexts } = runnerOf([
+    const { runner, contexts, roots } = runnerOf([
       {
         outcome: 'authored',
         summary: 'The journey now follows the requirement.',
@@ -169,6 +173,10 @@ describe('preparation repair rounds', () => {
 
     await expect(author({ stage: 'ux', task: 'respond' })).resolves.toBe('authored');
 
+    // The invocation's workspace is the stage area root; AgentRuntime resolves its existing
+    // worktree/ child exactly once.
+    expect(roots[0]).toBe(root);
+    expect((await stat(path.join(roots[0]!, 'worktree'))).isDirectory()).toBe(true);
     // The response round reads the preceding revision and evaluation from history.
     expect(contexts[0]).toContain('The journey contradicts the requirement');
     expect(contexts[0]).toContain('The current authored revision is 1');
@@ -226,7 +234,7 @@ describe('preparation repair rounds', () => {
         ],
       }),
     );
-    const { runner, contexts } = runnerOf([
+    const { runner, contexts, roots } = runnerOf([
       {
         assessedRevision: 2,
         verdict: 'accepted',
@@ -275,6 +283,9 @@ describe('preparation repair rounds', () => {
     );
     // A complete report resolves the finding and records its disposition.
     await expect(evaluator({ stage: 'ux' })).resolves.toBe('accepted');
+    // Every evaluator invocation receives the stage area root, not its checkout.
+    expect(roots).toEqual([root, root, root]);
+    expect((await stat(path.join(roots[0]!, 'worktree'))).isDirectory()).toBe(true);
     expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
     await expect(artifact(root, 2, 'evaluation.json')).resolves.toMatchObject({
       priorFindings: [{ findingId: 'F1', disposition: 'resolved' }],
