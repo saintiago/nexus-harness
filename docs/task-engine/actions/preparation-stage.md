@@ -40,8 +40,16 @@ contains its outcome and result reference; detailed values stay in the saved res
 
 Each stage area has state/current-round.json and artifacts/<round>/ with author.json, evaluation.json
 and result.json. The round plan records the selected role profiles, the authored revision and the
-reason for opening the round. Earlier rounds remain history. Accepted output references name actual
-saved files and repository revisions. Parent source handoffs are stored outside stage-owned rounds.
+reason for opening the round. Earlier rounds remain history. StageResult retains the latest terminal
+invocation in state/result.json; re-entry exhaustion updates this record without replacing a
+completed round result. Parent publication reads that terminal, while history consumers read rounds.
+Accepted document changes are committed by named paths; accepted prototype work is committed on its
+retained stage branch. References name revisions containing the accepted content. Evaluated skips
+retain their input references and the saved revisions of existing authoritative documents. Parent
+source handoffs are stored outside stage-owned rounds. Before returning an accepted Architecture
+handoff, ReviewPreparationPublication assembles the immutable accepted documents, validates the
+whole diff and saves the repository reviewer's assessment for that exact revision. The parent
+reconciles publication from this report; an absent or negative assessment cannot authorize merge.
 
 The author owns its proposed artifacts, applicability reason and finding responses. The evaluator
 owns findings, prior dispositions and acceptance of the current revision. Import the existing

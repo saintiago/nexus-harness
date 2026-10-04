@@ -36,6 +36,7 @@ import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifa
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
   reviewArtifact,
+  validateReviewResponse,
   reviewResponseSchema,
   toFinding,
   type Finding,
@@ -221,68 +222,6 @@ function parseResponse(output: string): ReviewResponse {
     );
   }
   return parsed.content;
-}
-
-/**
- * Require a report consistent with the shared findings contract: unique current findings, one
- * disposition per supplied prior finding, open findings present in the current list, resolved and
- * withdrawn findings absent from it, and a verdict supported by the current blocking findings.
- */
-function validateResponse(response: ReviewResponse, priorFindings: readonly Finding[]): void {
-  const current = new Set<string>();
-  for (const finding of response.findings) {
-    if (current.has(finding.id)) {
-      throw new Error(`The reviewer reported finding "${finding.id}" more than once.`);
-    }
-    current.add(finding.id);
-  }
-
-  const supplied = new Set(priorFindings.map((finding) => finding.id));
-  const answered = new Set<string>();
-  for (const disposition of response.priorFindings) {
-    if (!supplied.has(disposition.findingId)) {
-      throw new Error(`The reviewer disposed of unknown prior finding "${disposition.findingId}".`);
-    }
-    if (answered.has(disposition.findingId)) {
-      throw new Error(
-        `The reviewer disposed of prior finding "${disposition.findingId}" more than once.`,
-      );
-    }
-    answered.add(disposition.findingId);
-    const present = current.has(disposition.findingId);
-    if (disposition.disposition === 'open' && !present) {
-      throw new Error(
-        `The reviewer left prior finding "${disposition.findingId}" open without reporting it ` +
-          'in findings.',
-      );
-    }
-    if (disposition.disposition !== 'open' && present) {
-      throw new Error(
-        `The reviewer reported prior finding "${disposition.findingId}" as ` +
-          `"${disposition.disposition}" while it is still in findings.`,
-      );
-    }
-  }
-  const missing = priorFindings
-    .filter((finding) => !answered.has(finding.id))
-    .map((finding) => finding.id);
-  if (missing.length > 0) {
-    throw new Error(
-      `The reviewer did not dispose of prior finding${missing.length === 1 ? '' : 's'} ` +
-        `${missing.map((id) => `"${id}"`).join(', ')}.`,
-    );
-  }
-
-  const blocking = response.findings.filter((finding) => finding.severity === 'blocking');
-  if (response.verdict === 'approved' && blocking.length > 0) {
-    throw new Error(
-      `The reviewer approved the revision while reporting blocking finding` +
-        `${blocking.length === 1 ? '' : 's'} ${blocking.map((finding) => `"${finding.id}"`).join(', ')}.`,
-    );
-  }
-  if (response.verdict === 'changesRequested' && blocking.length === 0) {
-    throw new Error('The reviewer requested changes without a current blocking finding.');
-  }
 }
 
 /** The report shape, finding definitions and identity, disposition and verdict rules. */
@@ -484,7 +423,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     const response = parseResponse(result.value.output);
-    validateResponse(response, priorFindings);
+    validateReviewResponse(response, priorFindings);
 
     // The implementation being reviewed must survive the turn; caches, logs and other untracked
     // verification output do not invalidate the review.

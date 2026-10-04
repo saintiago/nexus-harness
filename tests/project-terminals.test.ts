@@ -59,6 +59,8 @@ async function runParent(options: {
   readonly selection: string;
   readonly publication: string;
   readonly route?: string;
+  readonly child?: string;
+  readonly handoff?: string;
 }): Promise<{
   readonly result: Awaited<ReturnType<ReturnType<typeof createTaskEngine>['run']>>;
   readonly handoffs: unknown[];
@@ -81,7 +83,7 @@ async function runParent(options: {
     },
     PublishPreparationResult: async () => options.publication,
     PublishIdeaResult: async () => 'approved',
-    HandoffImplementation: async () => 'handed-off',
+    HandoffImplementation: async () => options.handoff ?? 'handed-off',
     CompleteDelivery: async () => 'completed',
     PrepareStage: async () => 'prepared',
     StartStageRound: async () => 'opened',
@@ -89,7 +91,7 @@ async function runParent(options: {
     StageEvaluator: async () => 'accepted',
     RecordStageReturn: async () => 'return',
     StageResult: async () => 'saved',
-    PreparationStub: async () => 'accepted',
+    PreparationStub: async () => options.child ?? 'accepted',
     IdeaStub: async () => 'approved',
     DeliveryStub: async () => 'completed',
   };
@@ -103,7 +105,7 @@ async function runParent(options: {
     children: {
       IdeaRefinement: childMachine('IdeaStub', 'approved'),
       FiniteDelivery: childMachine('DeliveryStub', 'completed'),
-      Preparation: childMachine('PreparationStub', 'accepted'),
+      Preparation: childMachine('PreparationStub', options.child ?? 'accepted'),
     },
     stateFile,
     bindActions: () => actions,
@@ -130,6 +132,19 @@ describe('project parent terminal capture', () => {
       expect(result).toEqual({ ok: true, value: expected });
       // The capture names the stage whose publication it records, not the advanced destination.
       expect(handoffs).toEqual([{ terminal, stage }]);
+    },
+  );
+
+  it.each([
+    { child: 'blocked', publication: 'advanced', terminal: 'preparation-failed' },
+    { child: 'accepted', publication: 'failed', terminal: 'preparation-publication-failed' },
+    { child: 'accepted', publication: 'handoff', handoff: 'failed', terminal: 'handoff-failed' },
+  ])(
+    'captures $terminal after the selected operation while preserving blocked',
+    async (options) => {
+      const result = await runParent({ ...options, route: 'architecture', selection: 'selected' });
+      expect(result.result).toEqual({ ok: true, value: 'blocked' });
+      expect(result.handoffs).toEqual([{ terminal: options.terminal, stage: 'architecture' }]);
     },
   );
 
@@ -212,6 +227,31 @@ describe('preparation terminal handoffs', () => {
     const files = handoff.artifacts.map((artifact) => artifact.path);
     expect(files).toContain(path.join(stage, 'artifacts/2/result.json'));
     expect(files).toContain(path.join(stage, 'state/returns.json'));
+  });
+
+  it('includes actual handoff publication and ticket evidence captured after the operation', async () => {
+    const root = await temporaryDirectory();
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/handoff-result.json'),
+      JSON.stringify({ outcome: 'handed-off', tickets: ['NEX-2'], mergeRevision: 'merged' }),
+    );
+    const result = await preparationHandoff({
+      selection: {
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: {},
+        conversation: [],
+        workspace: { root },
+        stage: 'architecture',
+      },
+      terminal: 'preparation-handoff',
+      stage: 'architecture',
+    });
+    expect(result.outcome).toBe('handed-off');
+    expect(result.artifacts.map((artifact) => artifact.path)).toContain(
+      path.join(root, 'parent/handoff-result.json'),
+    );
   });
 
   it('captures a selected-work failure from the retained parent area', async () => {

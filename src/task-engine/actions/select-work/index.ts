@@ -3,7 +3,15 @@ import path from 'node:path';
 import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
-import { attemptDeclaration, attemptFile } from '../prepare-workspace/artifacts.js';
+import {
+  preparedWorkspaceDeclaration,
+  preparedWorkspaceFile,
+} from '../prepare-workspace/artifacts.js';
+import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
+import { devArtifact } from '../develop/artifacts.js';
+import { deliveryArtifact } from '../deliver/artifacts.js';
+import { verificationArtifact } from '../verify/artifacts.js';
+import { roundArtifactPath } from '../artifacts.js';
 import { readRecord, writeRecord } from '../records.js';
 import {
   applyTransition,
@@ -193,10 +201,14 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
 
   /**
    * The reason an active implementation status cannot be admitted, or null when its retained work
-   * exists. PrepareWorkspace writes the attempt identity before it touches the repository, so an
-   * active item without that record is not a delivery attempt Nexus can continue.
+   * exists. Prepared work establishes an In Progress continuation; In Review additionally needs
+   * published delivery and matching verification. Only a saved ready selection can finish an
+   * interrupted initial In Progress claim without prepared work.
    */
-  async function activeDeliveryProblem(issue: JiraIssue): Promise<string | null> {
+  async function activeDeliveryProblem(
+    issue: JiraIssue,
+    saved?: Selection,
+  ): Promise<string | null> {
     const status = statusNameOf(issue) ?? 'unknown';
     const recorded = issue.fields[settings.workspacePointerField];
     if (typeof recorded !== 'string' || recorded.trim() === '' || !path.isAbsolute(recorded)) {
@@ -212,13 +224,62 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
         'work.'
       );
     }
-    const attempt = await readRecord(path.join(recorded, attemptFile), attemptDeclaration);
-    if (attempt === null) {
-      return (
-        `Issue ${issue.key} is in the active status "${status}" while its retained workspace ` +
-        `"${recorded}" records no retained finite-delivery attempt; Nexus does not start a new ` +
-        'delivery attempt for active work.'
+    const prepared = await readRecord(
+      path.join(recorded, preparedWorkspaceFile),
+      preparedWorkspaceDeclaration,
+    );
+    if (prepared === null || prepared.taskKey !== issue.key) {
+      // The saved ready selection proves an interrupted initial claim. This exception never admits
+      // In Review and never treats an attempt UUID as delivery/review evidence.
+      if (
+        status === settings.statuses.inProgress &&
+        saved?.stage === 'delivery' &&
+        statusNameOf(saved.task as JiraIssue) === settings.statuses.ready &&
+        saved.workspace.root === recorded
+      ) {
+        return null;
+      }
+      return `Issue ${issue.key} is in the active status "${status}" without a retained prepared finite-delivery workspace.`;
+    }
+    if (status === settings.statuses.review) {
+      const round = await readRecord(
+        path.join(recorded, currentRoundFile),
+        currentRoundDeclaration,
       );
+      const delivery =
+        round === null
+          ? null
+          : await readRecord(
+              roundArtifactPath(recorded, round.number, deliveryArtifact.pathFromArtifactsRoot),
+              { file: deliveryArtifact.pathFromArtifactsRoot, schema: deliveryArtifact.schema },
+            );
+      const verified =
+        round === null
+          ? null
+          : await readRecord(
+              roundArtifactPath(recorded, round.number, verificationArtifact.pathFromArtifactsRoot),
+              {
+                file: verificationArtifact.pathFromArtifactsRoot,
+                schema: verificationArtifact.schema,
+              },
+            );
+      const development =
+        round === null
+          ? null
+          : await readRecord(
+              roundArtifactPath(recorded, round.number, devArtifact.pathFromArtifactsRoot),
+              { file: devArtifact.pathFromArtifactsRoot, schema: devArtifact.schema },
+            );
+      if (
+        development?.status !== 'completed' ||
+        development.taskKey !== issue.key ||
+        delivery === null ||
+        development.headRevision !== delivery.headRevision ||
+        verified?.status !== 'passed' ||
+        verified.headRevision !== delivery.headRevision
+      ) {
+        return `Issue ${issue.key} is In Review without retained delivery and matching successful verification evidence.`;
+      }
     }
     return null;
   }
@@ -287,10 +348,11 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
         ? settings.ideaStatuses.active
         : stage === 'delivery' && status === settings.statuses.ready
           ? settings.statuses.inProgress
-          : null;
+          : stage === 'requirements' && status === settings.ideaStatuses.approved
+            ? (settings.preparation?.statuses.requirements ?? null)
+            : null;
     if (target === null || status === target) {
-      // Preparation work runs in the mapped stage status itself; an interrupted claim of delivery
-      // or idea work already moved the item, so the move is not repeated.
+      // Already-active work keeps its stage status; Draft admission moves to Requirements.
       return null;
     }
     const transition = await transitionInto(jira, issue, target);
@@ -309,6 +371,12 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
 
   /** Continue the retained issue, finishing an unfinished claim or its workspace reference. */
   async function continueSelection(saved: Selection, issue: JiraIssue): Promise<string> {
+    if (saved.stage === 'delivery' && statusNameOf(issue) !== settings.statuses.ready) {
+      const problem = await activeDeliveryProblem(issue, saved);
+      if (problem !== null) {
+        return fail(problem);
+      }
+    }
     const workspace = await workspaceFor(issue);
     if (!workspace.ok) {
       return fail(workspace.fault.message);

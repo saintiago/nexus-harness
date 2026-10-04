@@ -5,6 +5,7 @@ import { challengerArtifact, type ChallengerReport } from '../challenger/artifac
 import {
   editorResponseArtifact,
   framingArtifact,
+  refinedIdeaArtifact,
   type FramingResponse,
   type RefinedIdea,
 } from '../idea-editor/artifacts.js';
@@ -308,6 +309,60 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
         throw new Error(
           `Submission ${String(plan.submission)} already recorded the "${existing.decision}" ` +
             `decision; it cannot also record "${decision}".`,
+        );
+      }
+      if (existing.decision === 'approved') {
+        if (existing.refinedIdea === null || existing.challenger === null) {
+          throw new Error('The retained approval has no refined idea or Challenger reference.');
+        }
+        const idea = await readRequiredRecord(
+          existing.refinedIdea,
+          {
+            file: existing.refinedIdea,
+            schema: refinedIdeaArtifact.schema,
+          },
+          'Approved refined idea',
+        );
+        const assessed = await readRequiredRecord(
+          existing.challenger,
+          {
+            file: existing.challenger,
+            schema: challengerArtifact.schema,
+          },
+          'Approval assessment',
+        );
+        await readRequiredRecord(
+          existing.editor,
+          {
+            file: existing.editor,
+            schema:
+              assessed.editorResponse === null
+                ? framingArtifact.schema
+                : editorResponseArtifact.schema,
+          },
+          'Approved editor response',
+        );
+        if (
+          idea.revision !== existing.revision ||
+          assessed.verdict !== 'approve' ||
+          !binds(
+            assessed,
+            existing.refinedIdea,
+            assessed.editorResponse === null ? null : existing.editor,
+            idea.revision,
+          )
+        ) {
+          throw new Error(
+            'The retained approval does not bind its refined idea and editor response.',
+          );
+        }
+        await writeHandoff(
+          selection,
+          root,
+          plan.submission,
+          plan.cycle,
+          existing.refinedIdea,
+          decisionFile,
         );
       }
       return reported(settings, existing, selection.taskKey, plan.cycle, decisionFile);

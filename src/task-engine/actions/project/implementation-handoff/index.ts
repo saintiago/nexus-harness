@@ -1,9 +1,10 @@
-import { copyFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import {
   reviewEncoding,
   type GitHubAdapter,
+  type CheckObservation,
+  type PullRequestConversation,
   type PullRequest,
 } from '../../../../adapters/github.js';
 import type { JiraAdapter } from '../../../../adapters/jira.js';
@@ -14,7 +15,6 @@ import {
   stageResultArtifact,
   type PlannedTask,
   type PreparationResult,
-  type PreparationStage,
 } from '../../preparation/artifacts.js';
 import {
   readStageArtifact,
@@ -31,6 +31,21 @@ import {
   transitionInto,
 } from '../../source.js';
 import type { HandoffTicket, ParentHandoff } from '../../select-work/artifacts.js';
+import { readRecord, writeRecord } from '../../records.js';
+import { retainTerminalReason } from '../../terminal-reason.js';
+import {
+  implementationHandoffFailureDeclaration,
+  implementationHandoffResultDeclaration,
+} from './artifacts.js';
+import {
+  documentationReviewDeclaration,
+  documentationReviewsDirectory,
+} from '../../preparation/review-publication/artifacts.js';
+import {
+  prepareDocumentationPublication,
+  readAcceptedDocuments,
+  type AcceptedDocument,
+} from '../../preparation/publication.js';
 import { readHandoff, readSelection, writeHandoff } from '../state.js';
 
 /**
@@ -87,16 +102,6 @@ export type ImplementationHandoffSettings = {
 };
 
 /** One accepted authoritative document, relative to its repository and the stage that authored it. */
-type AcceptedDocument = {
-  /** The document's path relative to the repository root, as publication and tickets name it. */
-  readonly path: string;
-  /** The stage worktree file the accepted revision lives in. */
-  readonly source: string;
-  /** The producer's exact revision of the changed document, when it observed one. */
-  readonly revision: string | null;
-  /** The stage whose evaluated result accepted this revision. */
-  readonly stage: PreparationStage;
-};
 
 /** The references every implementation ticket carries so a new workspace can find its inputs. */
 type TicketReferences = {
@@ -104,6 +109,7 @@ type TicketReferences = {
   readonly plannedTask: string;
   readonly documents: readonly AcceptedDocument[];
   readonly mergeRevision: string | null;
+  readonly existing: readonly string[];
   readonly prototype: PreparationResult['prototype'];
 };
 
@@ -153,16 +159,11 @@ function ticketDescription(
     ...(prerequisites.length === 0 ? [] : ['', `Prerequisites: ${prerequisites.join(', ')}`]),
     '',
     'Preparation references:',
-    ...(references.documents.length === 0
-      ? [
-          '- Accepted existing authoritative documents satisfy the design; the evaluated result ' +
-            'and its references are retained with the source issue.',
-        ]
-      : references.documents.map(
-          (document) =>
-            `- ${document.path} (${document.stage} revision ` +
-            `${document.revision ?? 'unrecorded'})`,
-        )),
+    ...references.existing,
+    ...references.documents.map(
+      (document) =>
+        `- ${document.path} (${document.stage} revision ` + `${document.revision ?? 'unrecorded'})`,
+    ),
     ...(references.mergeRevision === null
       ? []
       : [`- Documentation merge revision: ${references.mergeRevision}`]),
@@ -222,55 +223,53 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
 
     /** Report a condition that prevents the handoff. */
     async function failed(reason: string): Promise<'failed'> {
+      await retainTerminalReason(
+        path.join(root, implementationHandoffFailureDeclaration.file),
+        reason,
+      );
       settings.publish({ source: 'implementation-handoff', type: 'failed', data: { reason } });
       return 'failed';
     }
 
-    /**
-     * The accepted changed authoritative documents of every preparation stage, reconciled by
-     * repository path: when a later stage accepted a change to a path an earlier stage also
-     * changed, the later accepted revision is the one in force. Only the evaluated document set is
-     * assembled; the implementation plan, prototype code and any unrelated worktree change stay
-     * out of the publication.
-     */
-    async function acceptedDocuments(): Promise<
-      | { readonly kind: 'documents'; readonly documents: AcceptedDocument[] }
-      | { readonly kind: 'invalid'; readonly reason: string }
-    > {
-      const byPath = new Map<string, AcceptedDocument>();
-      for (const stage of preparationStages) {
-        const areaRoot = stageRoot(root, stage);
-        const stagePlan = await readStagePlan(areaRoot);
-        if (stagePlan === null) {
-          continue;
-        }
-        const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
-        if (stageResult === null || stageResult.outcome !== 'accepted') {
-          continue;
-        }
-        const tree = stageWorktree(root, stage);
-        for (const document of stageResult.documents) {
-          const relative = path.relative(tree, document.path);
-          if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
-            return {
-              kind: 'invalid',
-              reason:
-                `The accepted ${stage} document "${document.path}" lies outside the stage ` +
-                `worktree "${tree}"; the handoff cannot publish it.`,
-            };
-          }
-          byPath.set(relative, {
-            path: relative,
-            source: document.path,
-            revision: document.revision,
-            stage,
-          });
-        }
+    /** Check the source before each publication boundary and preserve human pauses on replay. */
+    async function sourceProblem(): Promise<string | null> {
+      const source = await readIssue(settings.jira, selection.source.issueId);
+      const status = statusNameOf(source);
+      if (status === settings.architectureStatus) return null;
+      if (
+        status === settings.doneStatus &&
+        handoff.tickets.length === tasks.length &&
+        handoff.tickets.every((ticket) => ticket.linked === true)
+      )
+        return null;
+      return `Issue ${selection.taskKey} is in status "${status ?? 'unknown'}"; implementation handoff requires "${settings.architectureStatus}" and preserves unexpected human changes.`;
+    }
+    const sourceState = await sourceProblem();
+    if (sourceState !== null) return failed(sourceState);
+    // Validate every dependency identity and derive a stable topological creation order. The
+    // retained source identity remains the task's original plan index, including forward references.
+    for (const [index, task] of tasks.entries()) {
+      if (
+        new Set(task.prerequisites).size !== task.prerequisites.length ||
+        task.prerequisites.some(
+          (prerequisite) => prerequisite >= tasks.length || prerequisite === index,
+        )
+      ) {
+        return failed(
+          `Planned task ${String(index + 1)} has duplicate, missing or self prerequisites.`,
+        );
       }
-      return {
-        kind: 'documents',
-        documents: [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path)),
-      };
+    }
+    const taskOrder: number[] = [];
+    const remaining = new Set(tasks.map((_, index) => index));
+    while (remaining.size > 0) {
+      const next = [...remaining].find((index) =>
+        tasks[index]?.prerequisites.every((prerequisite) => !remaining.has(prerequisite)),
+      );
+      if (next === undefined)
+        return failed('The implementation dependency graph contains a cycle.');
+      taskOrder.push(next);
+      remaining.delete(next);
     }
 
     /** The retained prototype reference the Storybook Refinement result recorded, when one exists. */
@@ -284,7 +283,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       return stageResult?.prototype ?? null;
     }
 
-    const accepted = await acceptedDocuments();
+    const accepted = await readAcceptedDocuments(root);
     if (accepted.kind === 'invalid') {
       return failed(accepted.reason);
     }
@@ -299,13 +298,40 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       mergeRevision = publication.mergeRevision;
     }
     const prototype = await retainedPrototype();
+    const existingReferences: string[] = [];
+    for (const stage of preparationStages) {
+      const area = stageRoot(root, stage);
+      const stagePlan = await readStagePlan(area);
+      if (stagePlan === null) continue;
+      const stageResult = await readStageArtifact(area, stagePlan.round, stageResultArtifact);
+      if (stageResult?.outcome !== 'skipped') continue;
+      existingReferences.push(
+        `- ${stage} evaluated skip: ${path.join(area, 'artifacts', String(stagePlan.round), stageResultArtifact.pathFromArtifactsRoot)}; evaluation: ${stageResult.evaluation.path}`,
+      );
+      for (const document of stageResult.existingDocuments) {
+        existingReferences.push(
+          `- ${path.relative(stageWorktree(root, stage), document.path)} (${stage} existing document revision ${document.revision})`,
+        );
+      }
+      for (const reference of stageResult.skipReferences)
+        existingReferences.push(`- ${stage} accepted existing input: ${reference}`);
+    }
 
-    // Create the implementation tickets in plan order, reconciling any retained identity or
+    // Create the implementation tickets in topological order, reconciling any retained identity or
     // uncertain creation with the planned task before anything is retried, and finishing every
     // missing effect of a retained ticket.
-    const tickets: HandoffTicket[] = [...handoff.tickets];
-    for (const [index, task] of tasks.entries()) {
-      const retainedTicket = tickets[index];
+    const ticketsByTask = new Map(
+      handoff.tickets.map((ticket, index) => [ticket.plannedTask ?? index, ticket]),
+    );
+    const retainedTickets = (): HandoffTicket[] =>
+      [...ticketsByTask.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, ticket]) => ticket);
+    for (const index of taskOrder) {
+      const task = tasks[index] as PlannedTask;
+      const paused = await sourceProblem();
+      if (paused !== null) return failed(paused);
+      const retainedTicket = ticketsByTask.get(index);
       if (retainedTicket !== undefined && retainedTicket.summary !== task.summary) {
         return failed(
           `The retained implementation ticket ${retainedTicket.key} is ` +
@@ -323,14 +349,20 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
         if (reconciled.kind === 'found') {
           ticket = reconciled.ticket;
-          tickets[index] = ticket;
+          ticketsByTask.set(index, ticket);
           // Retain the reconciled identity before any dependent operation.
-          await writeHandoff(root, { ...handoff, tickets, publications: handoff.publications });
+          await writeHandoff(root, {
+            ...handoff,
+            tickets: retainedTickets(),
+            publications: handoff.publications,
+          });
         }
       }
-      const prerequisites = task.prerequisites.flatMap((prerequisite) => {
-        const prerequisiteTicket = tickets[prerequisite];
-        return prerequisiteTicket === undefined ? [] : [prerequisiteTicket.key];
+      const prerequisites = task.prerequisites.map((prerequisite) => {
+        const prerequisiteTicket = ticketsByTask.get(prerequisite);
+        if (prerequisiteTicket === undefined)
+          throw new Error('A validated prerequisite has no retained ticket identity.');
+        return prerequisiteTicket.key;
       });
       if (ticket === undefined) {
         const created = await settings.jira.createIssue({
@@ -341,6 +373,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
               sourceKey: selection.taskKey,
               plannedTask: `${String(index + 1)} of ${String(tasks.length)}`,
               documents: accepted.documents,
+              existing: existingReferences,
               mergeRevision,
               prototype,
             }),
@@ -353,13 +386,18 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         ticket = {
           key: created.value.key,
           issueId: created.value.id,
+          plannedTask: index,
           summary: task.summary,
           linked: false,
           ranked: false,
         };
         // Retain the identity before any dependent operation, so an interruption reuses it.
-        tickets[index] = ticket;
-        await writeHandoff(root, { ...handoff, tickets, publications: handoff.publications });
+        ticketsByTask.set(index, ticket);
+        await writeHandoff(root, {
+          ...handoff,
+          tickets: retainedTickets(),
+          publications: handoff.publications,
+        });
       }
 
       if (ticket.linked !== true) {
@@ -372,19 +410,38 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           return failed(linked.fault.message);
         }
         ticket = { ...ticket, linked: true };
-        tickets[index] = ticket;
-        await writeHandoff(root, { ...handoff, tickets, publications: handoff.publications });
-      }
-      if (prerequisites.length > 0 && ticket.ranked !== true) {
-        const ranked = await settings.jira.rankIssue(ticket.issueId, {
-          after: prerequisites.at(-1) as string,
+        ticketsByTask.set(index, ticket);
+        await writeHandoff(root, {
+          ...handoff,
+          tickets: retainedTickets(),
+          publications: handoff.publications,
         });
-        if (!ranked.ok) {
-          return failed(ranked.fault.message);
+      }
+      if (prerequisites.length > 0) {
+        const ordered = await settings.jira.searchIssues({
+          query: `project = ${jqlString(settings.project)}`,
+          orderBy: 'Rank ASC',
+        });
+        if (!ordered.ok) return failed(ordered.fault.message);
+        const keys = ordered.value.map((issue) => issue.key);
+        if (!keys.includes(ticket.key) || prerequisites.some((key) => !keys.includes(key))) {
+          return failed('The source rank order omits an implementation ticket or prerequisite.');
+        }
+        const last = prerequisites.reduce((left, right) =>
+          keys.indexOf(left) > keys.indexOf(right) ? left : right,
+        );
+        if (keys.indexOf(ticket.key) < keys.indexOf(last)) {
+          // Move only a premature dependent down, preserving unrelated higher-ranked work.
+          const ranked = await settings.jira.rankIssue(ticket.issueId, { after: last });
+          if (!ranked.ok) return failed(ranked.fault.message);
         }
         ticket = { ...ticket, ranked: true };
-        tickets[index] = ticket;
-        await writeHandoff(root, { ...handoff, tickets, publications: handoff.publications });
+        ticketsByTask.set(index, ticket);
+        await writeHandoff(root, {
+          ...handoff,
+          tickets: retainedTickets(),
+          publications: handoff.publications,
+        });
       }
       // The created ticket competes in the configured ready queue; an already-ready ticket is a
       // repeated effect and is not moved again.
@@ -402,6 +459,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       }
     }
 
+    const tickets = retainedTickets();
     // Close the original with the completed handoff and every implementation link. Only the status
     // the Architecture selection left behind (or a repeated Done) may be closed: an unexpected
     // human pause or reroute is preserved instead of overwritten.
@@ -449,7 +507,16 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       }
       await applyTransition(settings.jira, source.id, transition.transition);
     }
-    await writeHandoff(root, { ...handoff, tickets, publications: handoff.publications });
+    await writeHandoff(root, {
+      ...handoff,
+      tickets: retainedTickets(),
+      publications: handoff.publications,
+    });
+    await writeRecord(path.join(root, implementationHandoffResultDeclaration.file), {
+      outcome: 'handed-off',
+      tickets: tickets.map((ticket) => ticket.key),
+      mergeRevision,
+    });
     settings.publish({
       source: 'implementation-handoff',
       type: 'handed-off',
@@ -471,7 +538,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       | { readonly kind: 'failed'; readonly reason: string }
     > {
       const query =
-        `project = ${settings.project} AND summary = ${jqlString(task.summary)} AND ` +
+        `project = ${jqlString(settings.project)} AND ` +
         `labels = ${jqlString(plannedTaskLabel(selection.taskKey, index))}`;
       const found = await settings.jira.searchIssues({ query, orderBy: 'Rank ASC' });
       if (!found.ok) {
@@ -489,11 +556,27 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       if (identity === undefined) {
         return { kind: 'none' };
       }
+      const candidate = await readIssue(settings.jira, identity.id);
+      const labels = candidate.fields.labels;
+      if (
+        candidate.fields.summary !== task.summary ||
+        !Array.isArray(labels) ||
+        !labels.includes(plannedTaskLabel(selection.taskKey, index)) ||
+        !JSON.stringify(candidate.fields.description).includes(
+          `Source: ${selection.taskKey} (planned task ${String(index + 1)} of ${String(tasks.length)}).`,
+        )
+      ) {
+        return {
+          kind: 'failed',
+          reason: `Issue ${identity.key} does not match the source/planned-task identity and exact summary of task ${String(index + 1)}.`,
+        };
+      }
       return {
         kind: 'found',
         ticket: {
           key: identity.key,
           issueId: identity.id,
+          plannedTask: index,
           summary: task.summary,
           linked: false,
           ranked: false,
@@ -512,55 +595,21 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       | { readonly kind: 'merged'; readonly mergeRevision: string }
       | { readonly kind: 'failed'; readonly reason: string }
     > {
-      const inspection = await settings.git.inspectRepository(worktree);
-      if (!inspection.ok) {
-        return { kind: 'failed', reason: inspection.fault.message };
-      }
-      const branch = inspection.value.branch;
-      if (branch === null) {
-        return { kind: 'failed', reason: 'The architecture worktree has no branch to publish.' };
-      }
-      if (branch === settings.baseBranch) {
+      const prepared = await prepareDocumentationPublication({
+        root,
+        taskKey: selection.taskKey,
+        baseBranch: settings.baseBranch,
+        git: settings.git,
+      });
+      if (prepared.kind === 'failed') return prepared;
+      if (prepared.kind === 'unchanged')
         return {
           kind: 'failed',
-          reason:
-            `The architecture worktree is on the configured base branch "${settings.baseBranch}"; ` +
-            'preparation documents are never published from the base branch.',
+          reason: 'The accepted publication unexpectedly contains no documents.',
         };
-      }
-      // Assemble the accepted revisions in the publication worktree: each later stage's accepted
-      // revision of a path supersedes the earlier one, and each document keeps its repository
-      // path. Unrelated worktree changes stay where they are.
-      for (const document of documents) {
-        const target = path.join(worktree, document.path);
-        if (target === document.source) {
-          continue;
-        }
-        await mkdir(path.dirname(target), { recursive: true });
-        try {
-          await copyFile(document.source, target);
-        } catch (error) {
-          return {
-            kind: 'failed',
-            reason:
-              `The accepted ${document.stage} document "${document.path}" could not be assembled ` +
-              `for publication: ${error instanceof Error ? error.message : String(error)}.`,
-          };
-        }
-      }
-      // Only the accepted document paths are staged, so the publication commits no unrelated work.
-      const committed = await settings.git.commitPaths(
-        worktree,
-        documents.map((document) => document.path),
-        `Publish preparation documents for ${selection.taskKey}`,
-      );
-      if (!committed.ok) {
-        return { kind: 'failed', reason: committed.fault.message };
-      }
-      const head = committed.value.headRevision;
-      if (head === null) {
-        return { kind: 'failed', reason: 'The architecture worktree has no revision to publish.' };
-      }
+      const { branch, head } = prepared;
+      const paused = await sourceProblem();
+      if (paused !== null) return { kind: 'failed', reason: paused };
       const pushed = await settings.git.pushBranch(worktree, branch, head);
       if (!pushed.ok) {
         return { kind: 'failed', reason: pushed.fault.message };
@@ -578,8 +627,8 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     }
 
     /**
-     * Reuse or open the documentation pull request for the pushed revision, publish the missing
-     * review and review check the repository's merge rules require for that exact revision, request
+     * Reuse or open the documentation pull request for the pushed revision, assess the assembled
+     * content and publish its actual review/check verdict for that exact revision, request
      * native auto-merge for it and confirm its merge and configured checks.
      */
     async function ensurePullRequest(
@@ -636,7 +685,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
         pullRequestNumber = created.value.number;
       }
-      const prepared = await drivePublication(pullRequestNumber, head, documents);
+      const prepared = await drivePublication(pullRequestNumber, head);
       if (prepared.kind === 'failed') {
         return prepared;
       }
@@ -648,14 +697,13 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     }
 
     /**
-     * Drive one documentation pull request to merge for the published revision: publish the
-     * missing Nexus Lens review and review check, request native auto-merge when it is not enabled,
+     * Drive one documentation pull request to merge for the published revision: preserve negative
+     * evidence, publish the reviewer's retained assessment, request native auto-merge on approval,
      * then wait for the merge and its required pre-merge and post-merge checks.
      */
     async function drivePublication(
       pullRequestNumber: number,
       head: string,
-      documents: readonly AcceptedDocument[],
     ): Promise<
       | {
           readonly kind: 'merged';
@@ -664,55 +712,104 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
       | { readonly kind: 'failed'; readonly reason: string }
     > {
-      const body =
-        `Accepted preparation documents for ${selection.taskKey}: ` +
-        `${documents.map((document) => document.path).join(', ')}.`;
-      const conversation = await settings.github.readConversation(
+      let conversation = await settings.github.readConversation(
         settings.repository,
         pullRequestNumber,
       );
-      if (!conversation.ok) {
-        return { kind: 'failed', reason: conversation.fault.message };
+      if (!conversation.ok) return { kind: 'failed', reason: conversation.fault.message };
+      let checks = await settings.github.readChecks(settings.repository, head);
+      if (!checks.ok) return { kind: 'failed', reason: checks.fault.message };
+      function hasNegativeEvidence(
+        conversation: PullRequestConversation,
+        checks: readonly CheckObservation[],
+      ): boolean {
+        return (
+          conversation.reviews.some(
+            (review) => review.commit_id === head && review.state === 'CHANGES_REQUESTED',
+          ) ||
+          checks.some(
+            (check) =>
+              check.revision === head &&
+              check.name === settings.reviewCheck &&
+              check.producer?.id === settings.nexusLens.appId &&
+              check.status === 'completed' &&
+              check.conclusion !== 'success',
+          )
+        );
+      }
+      if (hasNegativeEvidence(conversation.value, checks.value)) {
+        return {
+          kind: 'failed',
+          reason: `Documentation revision ${head} has negative review evidence; repair the rejected publication before retrying.`,
+        };
+      }
+      const reportFile = path.join(root, documentationReviewsDirectory, `${head}.json`);
+      const report = await readRecord(reportFile, documentationReviewDeclaration);
+      if (report !== null && report.headRevision !== head)
+        throw new Error('The documentation review names another revision.');
+      if (report === null)
+        return {
+          kind: 'failed',
+          reason: `Documentation revision ${head} has no retained Architecture-child review; obtain its revision-specific assessment before publication.`,
+        };
+      const observed = await settings.git.inspectRepository(worktree);
+      if (!observed.ok) return { kind: 'failed', reason: observed.fault.message };
+      if (observed.value.headRevision !== head)
+        return {
+          kind: 'failed',
+          reason:
+            'The publication head changed during review; obtain evaluation of the new revision.',
+        };
+      const paused = await sourceProblem();
+      if (paused !== null) return { kind: 'failed', reason: paused };
+      conversation = await settings.github.readConversation(settings.repository, pullRequestNumber);
+      checks = await settings.github.readChecks(settings.repository, head);
+      if (!conversation.ok) return { kind: 'failed', reason: conversation.fault.message };
+      if (!checks.ok) return { kind: 'failed', reason: checks.fault.message };
+      if (hasNegativeEvidence(conversation.value, checks.value)) {
+        return {
+          kind: 'failed',
+          reason: `Documentation revision ${head} received negative review evidence during assessment; it is preserved for repair.`,
+        };
       }
       const reviewPublished = conversation.value.reviews.some(
         (review) =>
           review.author === settings.nexusLens.login &&
           review.commit_id === head &&
-          review.state === reviewEncoding.approved.state,
+          review.state === reviewEncoding[report.verdict].state &&
+          review.body === report.summary,
       );
       if (!reviewPublished) {
         const published = await settings.github.publishReview(settings.repository, {
           pullRequestNumber,
           revision: head,
-          verdict: 'approved',
-          body,
+          verdict: report.verdict,
+          body: report.summary,
         });
-        if (!published.ok) {
-          return { kind: 'failed', reason: published.fault.message };
-        }
+        if (!published.ok) return { kind: 'failed', reason: published.fault.message };
       }
-      const checks = await settings.github.readChecks(settings.repository, head);
-      if (!checks.ok) {
-        return { kind: 'failed', reason: checks.fault.message };
-      }
+      const conclusion = report.verdict === 'approved' ? 'success' : 'failure';
       const checkPublished = checks.value.some(
         (check) =>
           check.revision === head &&
           check.name === settings.reviewCheck &&
           check.producer?.id === settings.nexusLens.appId &&
           check.status === 'completed' &&
-          check.conclusion === 'success',
+          check.conclusion === conclusion,
       );
       if (!checkPublished) {
         const published = await settings.github.publishReviewCheck(settings.repository, {
           revision: head,
           name: settings.reviewCheck,
-          result: 'success',
+          result: conclusion,
         });
-        if (!published.ok) {
-          return { kind: 'failed', reason: published.fault.message };
-        }
+        if (!published.ok) return { kind: 'failed', reason: published.fault.message };
       }
+      if (report.verdict !== 'approved')
+        return {
+          kind: 'failed',
+          reason: `Documentation review ${report.verdict}: ${report.summary}; findings: ${reportFile}. Repair before retrying.`,
+        };
       const deadline = Date.now() + settings.completion.waitLimitSeconds * 1000;
       const initial = await settings.github.readPullRequest(settings.repository, pullRequestNumber);
       if (!initial.ok) {

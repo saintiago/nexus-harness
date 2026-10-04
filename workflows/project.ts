@@ -158,11 +158,15 @@ export const project = createMachine(
         },
       },
       requirements: {
+        entry: assign({ publishedStage: 'requirements' }),
         invoke: {
           src: 'Preparation',
           input: { stage: 'requirements' },
           onDone: [
-            { guard: ({ event }) => event.output === 'blocked', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'blocked',
+              target: 'analyzePreparationFailed',
+            },
             { target: 'publishRequirements' },
           ],
         },
@@ -185,17 +189,24 @@ export const project = createMachine(
               guard: ({ event }) => event.output === 'exhausted',
               target: 'analyzePreparationExhausted',
             },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzePreparationPublicationFailed',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
       ux: {
+        entry: assign({ publishedStage: 'ux' }),
         invoke: {
           src: 'Preparation',
           input: { stage: 'ux' },
           onDone: [
-            { guard: ({ event }) => event.output === 'blocked', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'blocked',
+              target: 'analyzePreparationFailed',
+            },
             { target: 'publishUx' },
           ],
         },
@@ -218,17 +229,24 @@ export const project = createMachine(
               guard: ({ event }) => event.output === 'exhausted',
               target: 'analyzePreparationExhausted',
             },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzePreparationPublicationFailed',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
       prototype: {
+        entry: assign({ publishedStage: 'prototype' }),
         invoke: {
           src: 'Preparation',
           input: { stage: 'prototype' },
           onDone: [
-            { guard: ({ event }) => event.output === 'blocked', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'blocked',
+              target: 'analyzePreparationFailed',
+            },
             { target: 'publishPrototype' },
           ],
         },
@@ -251,17 +269,24 @@ export const project = createMachine(
               guard: ({ event }) => event.output === 'exhausted',
               target: 'analyzePreparationExhausted',
             },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzePreparationPublicationFailed',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
       architecture: {
+        entry: assign({ publishedStage: 'architecture' }),
         invoke: {
           src: 'Preparation',
           input: { stage: 'architecture' },
           onDone: [
-            { guard: ({ event }) => event.output === 'blocked', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'blocked',
+              target: 'analyzePreparationFailed',
+            },
             { target: 'publishArchitecture' },
           ],
         },
@@ -274,7 +299,7 @@ export const project = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'handoff',
-              target: 'analyzePreparationHandoff',
+              target: 'handoff',
             },
             {
               guard: ({ event }) => event.output === 'advanced',
@@ -288,13 +313,16 @@ export const project = createMachine(
               guard: ({ event }) => event.output === 'exhausted',
               target: 'analyzePreparationExhausted',
             },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzePreparationPublicationFailed',
+            },
             { actions: 'unexpectedOutcome' },
           ],
         },
       },
-      // Every published preparation outcome is captured before the parent selects again, starts
-      // the handoff or blocks. Each analysis preserves the destination its terminal reached.
+      // Capture published outcomes and selected failures before selection, routing or recovery.
+      // Architecture capture follows the actual handoff; each analysis preserves its destination.
       analyzePreparationAdvanced: {
         invoke: {
           src: 'AnalyzeExperience',
@@ -316,7 +344,7 @@ export const project = createMachine(
             stage: context.publishedStage,
           }),
           onDone: [
-            { guard: preservesDestination, target: 'handoff' },
+            { guard: preservesDestination, target: 'select' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -347,13 +375,52 @@ export const project = createMachine(
           ],
         },
       },
+      analyzePreparationFailed: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-failed',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzePreparationPublicationFailed: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: ({ context }) => ({
+            terminal: 'preparation-publication-failed',
+            stage: context.publishedStage,
+          }),
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      analyzeHandoffFailed: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'handoff-failed', stage: 'architecture' },
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
       // Architecture hands off linked implementation tickets before the original closes.
       handoff: {
         invoke: {
           src: 'HandoffImplementation',
           onDone: [
-            { guard: ({ event }) => event.output === 'handed-off', target: 'select' },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            {
+              guard: ({ event }) => event.output === 'handed-off',
+              target: 'analyzePreparationHandoff',
+            },
+            { guard: ({ event }) => event.output === 'failed', target: 'analyzeHandoffFailed' },
             { actions: 'unexpectedOutcome' },
           ],
         },

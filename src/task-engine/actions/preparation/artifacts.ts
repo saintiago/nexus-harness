@@ -189,6 +189,10 @@ export const preparationResultSchema = z.object({
       revision: z.string().min(1).nullable(),
     }),
   ),
+  existingDocuments: z
+    .array(z.object({ path: z.string().min(1), revision: z.string().min(1) }))
+    .default([]),
+  skipReferences: z.array(z.string().min(1)).default([]),
   outputs: z.array(z.object({ path: z.string().min(1) })),
   evaluation: z.object({ path: z.string().min(1) }),
   reason: z.string().nullable(),
@@ -233,3 +237,9 @@ export function toFindings(
     ),
   }));
 }
+
+/** The most recent terminal invocation, separate from immutable completed-round history. */
+export const stageTerminalDeclaration = {
+  file: 'state/result.json',
+  schema: preparationResultSchema,
+} satisfies RecordDeclaration<typeof preparationResultSchema>;

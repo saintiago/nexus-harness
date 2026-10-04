@@ -23,8 +23,20 @@ export const finiteDelivery = createMachine(
         invoke: {
           src: 'PrepareWorkspace',
           onDone: [
-            { guard: ({ event }) => event.output === 'prepared', target: 'refreshRoundInput' },
+            { guard: ({ event }) => event.output === 'prepared', target: 'routeEntry' },
             { guard: ({ event }) => event.output === 'failed', target: 'analyzePrepareFailure' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      routeEntry: {
+        invoke: {
+          src: 'RouteDeliveryEntry',
+          onDone: [
+            { guard: ({ event }) => event.output === 'round', target: 'refreshRoundInput' },
+            { guard: ({ event }) => event.output === 'verify', target: 'verify' },
+            { guard: ({ event }) => event.output === 'deliver', target: 'deliver' },
+            { guard: ({ event }) => event.output === 'review', target: 'publishDelivery' },
             { actions: 'unexpectedOutcome' },
           ],
         },

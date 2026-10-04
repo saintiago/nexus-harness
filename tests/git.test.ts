@@ -5,11 +5,13 @@
  * Injected command results cover operational failures a real repository cannot produce.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitAdapter, type GitAdapter } from '../src/adapters/git.js';
+import { createPrepareArea } from '../src/task-engine/actions/preparation/prepare-stage/index.js';
+import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 
 /**
@@ -442,6 +444,257 @@ describe('Git adapter', () => {
     expect(result).toMatchObject({
       ok: false,
       fault: { message: expect.stringMatching(/already exists/) },
+    });
+  });
+
+  it('commits exactly the accepted paths while preserving an independently staged index entry', async () => {
+    const { origin, revision } = await repositoryWithOrigin();
+    const worktree = await cloneTo(origin);
+    await writeFile(path.join(worktree, 'readme.md'), 'accepted document\n');
+    await writeFile(path.join(worktree, 'code.js'), 'unrelated staged code\n');
+    await gitCommand(['add', 'code.js'], worktree);
+    const committed = await git.commitPaths(worktree, ['readme.md'], 'publish accepted documents');
+    expect(committed.ok).toBe(true);
+    const head = await headOf(worktree);
+    expect(await git.readChangedPaths(worktree, revision, head)).toEqual({
+      ok: true,
+      value: ['readme.md'],
+    });
+    expect(await git.readFileAtRevision(worktree, head, 'code.js')).toMatchObject({ ok: false });
+    expect((await gitCommand(['diff', '--cached', '--name-only'], worktree)).trim()).toBe(
+      'code.js',
+    );
+    // Repetition cannot turn the unrelated staged entry into an empty-publication commit.
+    expect(await git.commitPaths(worktree, ['readme.md'], 'repeat')).toMatchObject({
+      ok: true,
+      value: { headRevision: head },
+    });
+  });
+
+  it.each([false, true])(
+    'prepares the configured release base when the default branch differs (partial clone=%s)',
+    async (partial) => {
+      const { origin, source } = await repositoryWithOrigin();
+      await gitCommand(['checkout', '-b', 'release'], source);
+      const release = await commitFile(source, 'release.md', 'configured base\n');
+      await gitCommand(['push', 'origin', 'release'], source);
+      const directory = await temporaryDirectory();
+      const root = path.join(directory, 'NEX-1');
+      const worktree = path.join(root, 'requirements/worktree');
+      const selectionFile = path.join(directory, 'selection.json');
+      await writeFile(
+        selectionFile,
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '1' },
+          task: {},
+          conversation: [],
+          workspace: { root },
+          stage: 'requirements',
+        }),
+      );
+      if (partial) {
+        await mkdir(path.dirname(worktree), { recursive: true });
+        await git.cloneRepository(origin, worktree);
+      }
+      const prepare = createPrepareArea({
+        selectionFile,
+        area: 'requirements',
+        repository: { source: origin, mainBranch: 'release' },
+        git,
+        publish: () => undefined,
+      });
+      await expect(prepare()).resolves.toBe('prepared');
+      expect(await git.inspectRepository(worktree)).toMatchObject({
+        ok: true,
+        value: { branch: 'task/NEX-1-requirements', headRevision: release },
+      });
+      await writeFile(path.join(worktree, 'release.md'), 'retained stage work\n');
+      await expect(prepare()).resolves.toBe('prepared');
+      expect(await readFile(path.join(worktree, 'release.md'), 'utf8')).toBe(
+        'retained stage work\n',
+      );
+    },
+  );
+
+  it.each(['requirements', 'prototype'] as const)(
+    'retains an immutable %s revision containing uncommitted accepted content',
+    async (stage) => {
+      const { origin } = await repositoryWithOrigin();
+      const directory = await temporaryDirectory();
+      const root = path.join(directory, 'NEX-1');
+      const area = path.join(root, stage);
+      const worktree = path.join(area, 'worktree');
+      const selectionFile = path.join(directory, 'selection.json');
+      await mkdir(path.join(area, 'state'), { recursive: true });
+      await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
+      await git.cloneRepository(origin, worktree);
+      const base = await headOf(worktree);
+      await git.createBranch(worktree, `task/NEX-1-${stage}`, base);
+      await writeFile(path.join(worktree, 'readme.md'), 'accepted content\n');
+      if (stage === 'prototype')
+        await writeFile(path.join(worktree, 'stories.js'), 'accepted prototype\n');
+      await writeFile(
+        selectionFile,
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '1' },
+          task: {},
+          conversation: [],
+          workspace: { root },
+          stage,
+        }),
+      );
+      await writeFile(
+        path.join(area, 'state/current-round.json'),
+        JSON.stringify({
+          stage,
+          round: 1,
+          route: 'new',
+          profiles: { author: 'a', evaluator: 'e' },
+        }),
+      );
+      await writeFile(
+        path.join(area, 'artifacts/1/author.json'),
+        JSON.stringify({
+          stage,
+          revision: 1,
+          outcome: 'authored',
+          summary: 'Accepted work.',
+          documents: [{ path: 'readme.md', description: 'accepted document' }],
+          plan: [],
+          skip: null,
+          question: null,
+          upstream: null,
+          findingResponses: [],
+        }),
+      );
+      await writeFile(
+        path.join(area, 'artifacts/1/evaluation.json'),
+        JSON.stringify({
+          assessedRevision: 1,
+          verdict: 'accepted',
+          reason: 'Inspected exact content.',
+          findings: [],
+          priorFindings: [],
+          upstream: null,
+        }),
+      );
+      const finalize = createStageResult({ selectionFile, stage, git, publish: () => undefined });
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      const result = JSON.parse(
+        await readFile(path.join(area, 'artifacts/1/result.json'), 'utf8'),
+      ) as {
+        documents: { revision: string }[];
+        prototype: { branch: string; revision: string } | null;
+      };
+      const revision = result.documents[0]?.revision;
+      expect(revision).not.toBe(base);
+      expect(await git.readFileAtRevision(worktree, revision as string, 'readme.md')).toEqual({
+        ok: true,
+        value: 'accepted content\n',
+      });
+      if (stage === 'prototype') {
+        expect(result.prototype?.revision).toBe(revision);
+        expect(await git.readFileAtRevision(worktree, revision as string, 'stories.js')).toEqual({
+          ok: true,
+          value: 'accepted prototype\n',
+        });
+      }
+      await writeFile(path.join(worktree, 'readme.md'), 'later unaccepted content\n');
+      await finalize({ outcome: 'accepted' });
+      expect(await git.readFileAtRevision(worktree, revision as string, 'readme.md')).toEqual({
+        ok: true,
+        value: 'accepted content\n',
+      });
+    },
+  );
+
+  it('binds an evaluated skip to the existing document revision and refuses dirty evidence', async () => {
+    const { origin, revision } = await repositoryWithOrigin();
+    const directory = await temporaryDirectory();
+    const root = path.join(directory, 'NEX-1');
+    const area = path.join(root, 'architecture');
+    const worktree = path.join(area, 'worktree');
+    const selectionFile = path.join(directory, 'selection.json');
+    await mkdir(path.join(area, 'state'), { recursive: true });
+    await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
+    await git.cloneRepository(origin, worktree);
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: {},
+        conversation: [],
+        workspace: { root },
+        stage: 'architecture',
+      }),
+    );
+    await writeFile(
+      path.join(area, 'state/current-round.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'a', evaluator: 'e' },
+      }),
+    );
+    await writeFile(
+      path.join(area, 'artifacts/1/author.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        revision: 1,
+        outcome: 'skip-proposed',
+        summary: 'Existing design suffices.',
+        documents: [],
+        plan: [],
+        skip: { reason: 'Existing design suffices.', references: ['readme.md'] },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      }),
+    );
+    await writeFile(
+      path.join(area, 'artifacts/1/evaluation.json'),
+      JSON.stringify({
+        assessedRevision: 1,
+        verdict: 'accepted-skip',
+        reason: 'Inspected existing design.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      }),
+    );
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'architecture',
+      git,
+      publish: () => undefined,
+    });
+    await writeFile(path.join(worktree, 'readme.md'), 'not in the referenced revision\n');
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(
+      'differs from its accepted repository revision',
+    );
+    await writeFile(path.join(worktree, 'readme.md'), 'initial\n');
+    await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
+    const result = JSON.parse(
+      await readFile(path.join(area, 'artifacts/1/result.json'), 'utf8'),
+    ) as { existingDocuments: unknown; skipReferences: unknown };
+    expect(result.existingDocuments).toEqual([
+      { path: path.join(worktree, 'readme.md'), revision },
+    ]);
+    expect(result.skipReferences).toEqual(['readme.md']);
+  });
+
+  it('includes both sides of a rename when checking the complete publication path set', async () => {
+    const { origin, revision } = await repositoryWithOrigin();
+    const worktree = await cloneTo(origin);
+    await gitCommand(['mv', 'readme.md', 'accepted.md'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'rename'], worktree);
+    expect(await git.readChangedPaths(worktree, revision, await headOf(worktree))).toEqual({
+      ok: true,
+      value: ['accepted.md', 'readme.md'],
     });
   });
 

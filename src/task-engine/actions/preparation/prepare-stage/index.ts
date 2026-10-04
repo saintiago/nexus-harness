@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { messageOf } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
+import { retainStageFailure } from '../failure.js';
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import type { PreparationStage } from '../artifacts.js';
@@ -11,10 +12,10 @@ import { stageRoot, stageWorktree } from '../storage.js';
 /**
  * PrepareArea provides one preparation area's project worktree: an evaluated stage area or the
  * idea refinement area. A missing checkout is cloned; an existing checkout of the configured
- * repository is refreshed on its clean main branch, while a retained branch or uncommitted work is
- * kept for the roles to inspect. A clean main checkout continues on an area branch so the parent
- * can publish document work without touching main. Repository conditions return the failed outcome
- * with their reason.
+ * repository continues on its retained area branch. Fresh and interrupted clones resolve the
+ * configured base and create the area branch from that revision, regardless of the repository's
+ * default branch. Local work on another branch is preserved and reported for attention. Repository
+ * conditions return the failed outcome with their reason.
  */
 
 /** The area one preparation worktree belongs to. */
@@ -65,7 +66,8 @@ export function createPrepareArea(settings: PrepareAreaSettings): BoundAction {
         : stageWorktree(selection.workspace.root, settings.area);
 
     /** Report a repository condition that prevents readiness. */
-    function fail(reason: string): 'failed' {
+    async function fail(reason: string): Promise<'failed'> {
+      await retainStageFailure(root, reason);
       settings.publish({ source: 'prepare-stage', type: 'failed', data: { reason } });
       return 'failed';
     }
@@ -101,25 +103,6 @@ export function createPrepareArea(settings: PrepareAreaSettings): BoundAction {
       if (!cloned.ok) {
         return fail(cloned.fault.message);
       }
-      if (cloned.value.remoteUrl !== settings.repository.source) {
-        return fail(
-          `The prepared worktree belongs to "${cloned.value.remoteUrl ?? 'no remote'}", not to ` +
-            `"${settings.repository.source}".`,
-        );
-      }
-      if (cloned.value.branch !== settings.repository.mainBranch) {
-        return fail(
-          `The cloned worktree at "${worktree}" is on branch ` +
-            `"${cloned.value.branch ?? 'no branch'}", not the configured base ` +
-            `"${settings.repository.mainBranch}".`,
-        );
-      }
-      if (cloned.value.headRevision === null) {
-        return fail(`The cloned worktree at "${worktree}" has no revision to branch from.`);
-      }
-      // A fresh clone is the configured base already; the area branch is created on it exactly as
-      // on a refreshed checkout, so preparation never publishes from the base branch.
-      return await createAreaBranch(cloned.value.headRevision);
     }
 
     const inspection = await settings.git.inspectRepository(worktree);
@@ -132,27 +115,30 @@ export function createPrepareArea(settings: PrepareAreaSettings): BoundAction {
           `"${inspection.value.remoteUrl ?? 'no remote'}", not to "${settings.repository.source}".`,
       );
     }
+    const branchBase = `task/${selection.taskKey}-${settings.area}`;
     if (
-      inspection.value.branch !== settings.repository.mainBranch ||
-      inspection.value.trackedChanges ||
-      inspection.value.untrackedChanges
+      inspection.value.branch === branchBase ||
+      (inspection.value.branch?.startsWith(`${branchBase}-`) ?? false)
     ) {
-      // The stage roles' retained work is kept as it is; only a clean main checkout is refreshed.
+      // Only this area's branch is retained stage work. A default-branch clone whose initialization
+      // was interrupted still needs the configured base and its area branch.
       return 'prepared';
     }
-    const pulled = await settings.git.pullBranch(
+    if (inspection.value.trackedChanges || inspection.value.untrackedChanges) {
+      return fail(
+        `The unprepared worktree at "${worktree}" has local changes; they are preserved.`,
+      );
+    }
+    const base = await settings.git.fetchRevision(
       worktree,
       'origin',
       settings.repository.mainBranch,
     );
-    if (!pulled.ok) {
-      return fail(pulled.fault.message);
-    }
-    if (pulled.value.headRevision === null) {
-      return fail(`The stage worktree at "${worktree}" has no revision after refreshing main.`);
+    if (!base.ok) {
+      return fail(base.fault.message);
     }
     // Document work happens on a stage branch so the parent can publish a documentation-only pull
     // request without touching the configured main branch.
-    return await createAreaBranch(pulled.value.headRevision);
+    return await createAreaBranch(base.value);
   };
 }

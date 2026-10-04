@@ -5,7 +5,7 @@
  * credential or agent turn is involved.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -291,6 +291,8 @@ describe('worker action binding', () => {
         'RefreshTaskInput',
         'Researcher',
         'Review',
+        'ReviewPreparationPublication',
+        'RouteDeliveryEntry',
         'RouteSelection',
         'SelectWork',
         'StageAuthor',
@@ -302,6 +304,59 @@ describe('worker action binding', () => {
         'Verify',
       ].sort(),
     );
+  });
+
+  it('binds idea approval to its active source status and preserves a human feedback pause', async () => {
+    const { directory, settings: binding } = await settings();
+    const root = path.join(directory, 'NEX-1');
+    await mkdir(path.join(root, 'refinement/state'), { recursive: true });
+    await mkdir(path.join(root, 'refinement/artifacts/submissions/1'), { recursive: true });
+    await writeFile(
+      binding.paths.selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: {},
+        conversation: [],
+        workspace: { root },
+        stage: 'idea',
+      }),
+    );
+    await writeFile(
+      path.join(root, 'refinement/state/current-round.json'),
+      JSON.stringify({ submission: 1, cycle: 1, route: 'new', profiles: {} }),
+    );
+    await writeFile(
+      path.join(root, 'refinement/artifacts/submissions/1/decision.json'),
+      JSON.stringify({
+        decision: 'approved',
+        refinedIdea: '/refined.json',
+        revision: 1,
+        editor: '/editor.json',
+        challenger: '/challenger.json',
+        reason: null,
+        comment: 'Approved.',
+        source: null,
+      }),
+    );
+    const actions = createActionBinding({
+      ...binding,
+      jira: {
+        ...binding.jira,
+        readIssue: async () => ({
+          ok: true,
+          value: {
+            id: '1',
+            key: 'NEX-1',
+            fields: { status: { name: project.taskSource.ideas.statuses.waitingForFeedback } },
+          },
+        }),
+      },
+    })(
+      () => undefined,
+      () => undefined,
+    );
+    await expect(actions['PublishIdeaResult']?.({ decision: 'approved' })).resolves.toBe('failed');
   });
 
   it('resolves the parent stage from the retained selection on every invocation', async () => {

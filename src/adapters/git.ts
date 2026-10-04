@@ -44,6 +44,12 @@ export type GitAdapter = {
     paths: readonly string[],
     message: string,
   ): Promise<Result<BranchHead>>;
+  readFileAtRevision(repository: string, revision: string, file: string): Promise<Result<string>>;
+  readChangedPaths(
+    repository: string,
+    baseRevision: string,
+    headRevision: string,
+  ): Promise<Result<readonly string[]>>;
   readDiff(repository: string, baseRevision: string, headRevision: string): Promise<Result<string>>;
   pushBranch(repository: string, branch: string, expectedHead: string): Promise<Result<BranchHead>>;
   readRemoteBranchHead(remote: string, branch: string): Promise<Result<string | null>>;
@@ -228,6 +234,9 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
     },
 
     async commitPaths(repository, paths, message) {
+      if (paths.length === 0) {
+        return fault('A path-scoped commit requires at least one path.');
+      }
       // Stage only the named paths, so a publication commits its accepted document set without
       // sweeping unrelated worktree changes into the revision. The caller decides which paths those
       // are; the adapter adds and commits exactly them.
@@ -256,6 +265,9 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
           'commit',
           '--message',
           message,
+          '--only',
+          '--',
+          ...paths,
         ],
         repository,
       );
@@ -263,6 +275,19 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
         return commit;
       }
       return readBranchHead(repository);
+    },
+
+    async readFileAtRevision(repository, revision, file) {
+      const content = await required(['show', `${revision}:${file}`], repository);
+      return content.ok ? ok(content.value.stdout) : content;
+    },
+
+    async readChangedPaths(repository, baseRevision, headRevision) {
+      const changed = await required(
+        ['diff', '--no-renames', '--name-only', '-z', baseRevision, headRevision, '--'],
+        repository,
+      );
+      return changed.ok ? ok(changed.value.stdout.split('\0').filter(Boolean)) : changed;
     },
 
     async readDiff(repository, baseRevision, headRevision) {

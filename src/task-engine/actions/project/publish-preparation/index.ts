@@ -1,13 +1,15 @@
+import path from 'node:path';
+import { preparationPublicationFailureDeclaration } from './artifacts.js';
+import { retainTerminalReason } from '../../terminal-reason.js';
 import type { JiraAdapter } from '../../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
-  stageResultArtifact,
   type PreparationResult,
   type PreparationStage,
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
-import { readStageArtifact, readStagePlan, stageRoot } from '../../preparation/storage.js';
+import { readStageTerminal, readStagePlan, stageRoot } from '../../preparation/storage.js';
 import {
   publishComment,
   readComments,
@@ -48,7 +50,7 @@ export type PublishPreparationSettings = {
     | undefined;
   /** The configured statuses the parent uses for feedback and returned ideas. */
   readonly waitingForFeedback: string;
-  readonly ideaSubmitted: string;
+  readonly ideaActive: string;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
@@ -89,7 +91,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     if (plan === null) {
       throw new Error(`No ${stage} round plan exists under "${root}" to publish.`);
     }
-    const result = await readStageArtifact(root, plan.round, stageResultArtifact);
+    const result = await readStageTerminal(root);
     if (result === null) {
       throw new Error(`No ${stage} result exists under "${root}" to publish.`);
     }
@@ -100,7 +102,11 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     const comments = await readComments(settings.jira, selection.source.issueId);
 
     /** Report a source condition that prevents publication. */
-    function failed(reason: string): 'failed' {
+    async function failed(reason: string): Promise<'failed'> {
+      await retainTerminalReason(
+        path.join(root, preparationPublicationFailureDeclaration.file),
+        reason,
+      );
       settings.publish({ source: 'publish-preparation', type: 'failed', data: { reason } });
       return 'failed';
     }
@@ -108,7 +114,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     /** The configured status one stage's work runs in. */
     function statusOf(target: PreparationStage | 'idea'): string | null {
       if (target === 'idea') {
-        return settings.ideaSubmitted;
+        return settings.ideaActive;
       }
       if (settings.statuses === undefined) {
         return null;
@@ -229,6 +235,11 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     const outcome: PreparationResult['outcome'] = result.outcome;
     if (outcome === 'accepted' || outcome === 'skipped') {
       if (stage === 'architecture') {
+        if (statusNameOf(issue) !== statusOf(stage)) {
+          return failed(
+            `Issue ${selection.taskKey} is in status "${statusNameOf(issue)}"; Architecture handoff requires its active stage status.`,
+          );
+        }
         // Architecture hands off through the parent's documentation and ticket publication.
         return 'handoff';
       }

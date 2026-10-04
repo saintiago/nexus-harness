@@ -1296,10 +1296,37 @@ describe('decision publication', () => {
     ) as IdeaHandoff;
     expect(handoff.refinedIdea).toBe(record.refinedIdea);
 
-    // A repeated publication reuses the applied transition and the same comment body.
+    // Interrupt between the decision and its downstream handoff: replay must finish the handoff.
+    await rm(path.join(area.root, ideaHandoffFile));
     await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
+    expect(JSON.parse(await readFile(path.join(area.root, ideaHandoffFile), 'utf8'))).toEqual(
+      handoff,
+    );
     expect(jira.transitions).toEqual(['21']);
     expect(jira.comments).toHaveLength(1);
+  });
+
+  it('preserves a human feedback pause while an approval is awaiting publication', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
+    );
+    const jira = source('Waiting for Feedback');
+    await expect(
+      publication(area, jira, selectionFile, ['Idea Refinement'])({ decision: 'approved' }),
+    ).resolves.toBe('failed');
+    expect(jira.transitions).toEqual([]);
+    expect(jira.comments).toEqual([]);
   });
 
   it('preserves an unexpected human status change instead of overwriting it', async () => {

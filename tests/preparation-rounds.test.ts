@@ -12,7 +12,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createRecordStageReturn } from '../src/task-engine/actions/preparation/record-stage-return/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import type { PreparationResult } from '../src/task-engine/actions/preparation/artifacts.js';
-import { readStagePlan } from '../src/task-engine/actions/preparation/storage.js';
+import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
+import { scriptedGit } from './support/git.js';
+import {
+  readStageTerminal,
+  readStagePlan,
+} from '../src/task-engine/actions/preparation/storage.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -55,6 +60,8 @@ async function completeRound(root: string, round: number, stage: string): Promis
     outcome: 'accepted',
     authoredRevision: round,
     documents: [],
+    existingDocuments: [],
+    skipReferences: [],
     outputs: [],
     evaluation: { path: path.join(artifacts, 'evaluation.json') },
     reason: 'The stage criteria are met.',
@@ -82,6 +89,8 @@ async function authorRound(
       outcome: 'authored',
       summary: 'The revision addresses the current findings.',
       documents: [],
+      existingDocuments: [],
+      skipReferences: [],
       plan: [],
       skip: null,
       question: null,
@@ -159,6 +168,39 @@ describe('StartStageRound', () => {
     expect(await planOf(root)).toMatchObject({ round: 3, route: 'new' });
     expect((await planOf(root)).profiles.author).toBe('nexus-sol');
   });
+
+  it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
+    'preserves completed %s history when the planner and result writer exhaust on re-entry',
+    async (stage) => {
+      const { selectionFile, root } = await stageArea(stage);
+      const round = createStartStageRound({
+        selectionFile,
+        stage,
+        profiles: { authors: ['a'], evaluator: 'e' },
+        maxRounds: 1,
+        publish: () => undefined,
+      });
+      await round({ route: 'new' });
+      await completeRound(root, 1, stage);
+      const resultFile = path.join(root, 'artifacts/1/result.json');
+      const accepted = await readFile(resultFile, 'utf8');
+      await expect(round({ route: 'new' })).resolves.toBe('exhausted');
+      const result = createStageResult({
+        selectionFile,
+        stage,
+        git: scriptedGit([]).git,
+        publish: () => undefined,
+      });
+      await expect(result({ outcome: 'exhausted' })).resolves.toBe('saved');
+      expect(await readFile(resultFile, 'utf8')).toBe(accepted);
+      expect(await readStageTerminal(root)).toMatchObject({
+        outcome: 'exhausted',
+        reason: expect.stringContaining('maximum of 1'),
+      });
+      await result({ outcome: 'exhausted' });
+      expect(await readFile(resultFile, 'utf8')).toBe(accepted);
+    },
+  );
 
   it('reports the configured round allowance as exhausted across stage visits', async () => {
     const { selectionFile, root } = await stageArea('requirements');

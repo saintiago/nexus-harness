@@ -1,7 +1,8 @@
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
-import { readRecord, readRequiredRecord } from '../../records.js';
+import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
 import {
@@ -9,6 +10,7 @@ import {
   stageEvaluationArtifact,
   stagePlanArtifact,
   stageResultArtifact,
+  stageTerminalDeclaration,
   stageReturnExhaustionFile,
   stageRoundExhaustionFile,
   type PreparationResult,
@@ -83,6 +85,40 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(`No ${settings.stage} round plan exists under "${root}" to finalize.`);
     }
+    const completed = await readStageArtifact(root, plan.round, stageResultArtifact);
+    if (completed !== null) {
+      if (outcome !== completed.outcome && outcome !== 'exhausted') {
+        throw new Error(
+          'A completed preparation round cannot be rewritten with a different result.',
+        );
+      }
+      const terminal =
+        outcome === 'exhausted'
+          ? {
+              ...completed,
+              outcome,
+              reason: await readExhaustionReason(root),
+              documents: [],
+              existingDocuments: [],
+              skipReferences: [],
+              outputs: [],
+              prototype: null,
+              returnStage: null,
+              returnFinding: null,
+            }
+          : completed;
+      await writeRecord(path.join(root, stageTerminalDeclaration.file), terminal);
+      settings.publish(
+        actionOutcomeEvent('stage-result', {
+          task: selection.taskKey,
+          round: plan.round,
+          outcome,
+          detail: settings.stage,
+          artifact: { path: path.join(root, stageTerminalDeclaration.file) },
+        }),
+      );
+      return 'saved';
+    }
     const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
     if (author === null) {
       throw new Error(
@@ -105,6 +141,14 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               ? ((await readExhaustionReason(root)) ?? evaluation?.reason ?? author.summary)
               : (evaluation?.reason ?? author.summary);
 
+    if (outcome === 'accepted' || outcome === 'skipped') {
+      const verdict = outcome === 'accepted' ? 'accepted' : 'accepted-skip';
+      if (evaluation?.assessedRevision !== author.revision || evaluation.verdict !== verdict) {
+        throw new Error(
+          'Acceptance requires evaluation of the exact authored revision and applicability.',
+        );
+      }
+    }
     if (author.plan.length > 0) {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
       // is not a changed authoritative document and never triggers documentation publication.
@@ -116,12 +160,36 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       settings.stage === 'prototype' ? author.outcome === 'authored' : author.documents.length > 0;
     let revision: string | null = null;
     let prototype: PreparationResult['prototype'] = null;
-    if (inspectWorktree) {
+    if (inspectWorktree && outcome === 'accepted') {
+      const paths =
+        settings.stage === 'prototype' ? ['.'] : author.documents.map((document) => document.path);
+      for (const file of paths) {
+        const relative = path.relative(worktree, path.resolve(worktree, file));
+        if (path.isAbsolute(relative) || relative.startsWith('..')) {
+          throw new Error(`Accepted document "${file}" lies outside its worktree.`);
+        }
+      }
+      const committed = await settings.git.commitPaths(
+        worktree,
+        paths,
+        `Retain accepted ${settings.stage} content for ${selection.taskKey}`,
+      );
+      if (!committed.ok) throw new Error(committed.fault.message);
       const inspection = await settings.git.inspectRepository(worktree);
       if (!inspection.ok) {
         throw new Error(inspection.fault.message);
       }
       revision = inspection.value.headRevision;
+      if (revision === null) throw new Error('Accepted content has no saved repository revision.');
+      for (const document of author.documents) {
+        const saved = await settings.git.readFileAtRevision(worktree, revision, document.path);
+        if (!saved.ok) throw new Error(saved.fault.message);
+        if (saved.value !== (await readFile(path.resolve(worktree, document.path), 'utf8'))) {
+          throw new Error(
+            `Accepted document "${document.path}" does not match its saved revision.`,
+          );
+        }
+      }
       if (settings.stage === 'prototype') {
         const { branch, headRevision } = inspection.value;
         if (branch === null || headRevision === null) {
@@ -133,7 +201,37 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         prototype = { branch, revision: headRevision };
       }
     }
-    const documents: PreparationResult['documents'] = author.documents.map((document) => ({
+    const existingDocuments: PreparationResult['existingDocuments'] = [];
+    const skipReferences = outcome === 'skipped' ? (author.skip?.references ?? []) : [];
+    if (skipReferences.length > 0) {
+      const inspection = await settings.git.inspectRepository(worktree);
+      if (!inspection.ok) throw new Error(inspection.fault.message);
+      const head = inspection.value.headRevision;
+      for (const reference of skipReferences) {
+        const file = path.resolve(worktree, reference);
+        const relative = path.relative(worktree, file);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+        try {
+          if (!(await stat(file)).isFile()) continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw error;
+        }
+        if (head === null)
+          throw new Error('Existing authoritative documents need a saved revision.');
+        const saved = await settings.git.readFileAtRevision(worktree, head, relative);
+        if (!saved.ok) throw new Error(saved.fault.message);
+        if (saved.value !== (await readFile(file, 'utf8'))) {
+          throw new Error(
+            `Existing document "${relative}" differs from its accepted repository revision.`,
+          );
+        }
+        existingDocuments.push({ path: file, revision: head });
+      }
+    }
+    const documents: PreparationResult['documents'] = (
+      outcome === 'accepted' ? author.documents : []
+    ).map((document) => ({
       path: path.resolve(worktree, document.path),
       revision,
     }));
@@ -153,6 +251,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       outcome,
       authoredRevision: author.revision,
       documents,
+      existingDocuments,
+      skipReferences,
       outputs,
       evaluation: { path: evaluationRef },
       reason,
@@ -166,6 +266,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       );
     }
     await writeStageArtifact(root, plan.round, stageResultArtifact, result);
+    await writeRecord(path.join(root, stageTerminalDeclaration.file), result);
     const artifact = path.join(
       root,
       'artifacts',

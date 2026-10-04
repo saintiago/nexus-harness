@@ -1,4 +1,4 @@
-import { createMachine } from 'xstate';
+import { assign, createMachine } from 'xstate';
 
 /**
  * The evaluated preparation stage machine, invoked once per stage with the stage supplied as the
@@ -14,9 +14,12 @@ export const preparation = createMachine(
     id: 'preparation',
     types: {} as {
       readonly input: { readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture' };
-      readonly context: { readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture' };
+      readonly context: {
+        readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture';
+        readonly acceptedOutcome: 'accepted' | 'skipped' | null;
+      };
     },
-    context: ({ input }) => ({ stage: input.stage }),
+    context: ({ input }) => ({ stage: input.stage, acceptedOutcome: null }),
     initial: 'prepare',
     output: ({ event }) => event.output,
     states: {
@@ -122,6 +125,12 @@ export const preparation = createMachine(
           src: 'StageResult',
           input: ({ context }) => ({ stage: context.stage, outcome: 'accepted' }),
           onDone: [
+            {
+              guard: ({ context, event }) =>
+                event.output === 'saved' && context.stage === 'architecture',
+              target: 'reviewPublication',
+              actions: assign({ acceptedOutcome: 'accepted' }),
+            },
             { guard: ({ event }) => event.output === 'saved', target: 'accepted' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -132,6 +141,12 @@ export const preparation = createMachine(
           src: 'StageResult',
           input: ({ context }) => ({ stage: context.stage, outcome: 'skipped' }),
           onDone: [
+            {
+              guard: ({ context, event }) =>
+                event.output === 'saved' && context.stage === 'architecture',
+              target: 'reviewPublication',
+              actions: assign({ acceptedOutcome: 'skipped' }),
+            },
             { guard: ({ event }) => event.output === 'saved', target: 'skipped' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -166,6 +181,25 @@ export const preparation = createMachine(
             { actions: 'unexpectedOutcome' },
           ],
         },
+      },
+      reviewPublication: {
+        invoke: {
+          src: 'ReviewPreparationPublication',
+          onDone: [
+            {
+              guard: ({ event }) => event.output === 'approved' || event.output === 'unchanged',
+              target: 'publicationReviewed',
+            },
+            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      publicationReviewed: {
+        always: [
+          { guard: ({ context }) => context.acceptedOutcome === 'skipped', target: 'skipped' },
+          { target: 'accepted' },
+        ],
       },
       accepted: { type: 'final', output: 'accepted' },
       skipped: { type: 'final', output: 'skipped' },

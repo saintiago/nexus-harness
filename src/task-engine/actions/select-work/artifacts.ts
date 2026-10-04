@@ -27,6 +27,7 @@ export const parentPublicationSchema = z.object({
 export const handoffTicketSchema = z.object({
   key: z.string().min(1),
   issueId: z.string().min(1),
+  plannedTask: z.number().int().nonnegative().optional(),
   summary: z.string().min(1),
   linked: z.boolean().optional(),
   ranked: z.boolean().optional(),

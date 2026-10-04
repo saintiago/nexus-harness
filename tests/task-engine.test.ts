@@ -74,6 +74,7 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
   const inputs: { readonly action: string; readonly input: unknown }[] = [];
   const outcomes: Record<string, string> = {
     PrepareWorkspace: 'prepared',
+    RouteDeliveryEntry: 'round',
     RefreshTaskInput: 'refreshed',
     StartRound: 'started',
     Develop: 'completed',
@@ -230,6 +231,7 @@ describe('TaskEngine over the finite workflow', () => {
     // The failed check routes through the parent-owned refresh boundary before the next round.
     expect(calls).toEqual([
       'PrepareWorkspace',
+      'RouteDeliveryEntry',
       'RefreshTaskInput',
       'StartRound',
       'Develop',
@@ -255,6 +257,7 @@ describe('TaskEngine over the finite workflow', () => {
     await expect(engine.run()).resolves.toEqual({ ok: true, value: 'completed' });
     expect(calls).toEqual([
       'PrepareWorkspace',
+      'RouteDeliveryEntry',
       'RefreshTaskInput',
       'StartRound',
       'Develop',
@@ -358,7 +361,7 @@ describe('TaskEngine over the finite workflow', () => {
 
     expect(result.ok).toBe(false);
     expect(result.ok ? '' : result.fault.message).toMatch(
-      /No bound operation or child for workflow operations "RefreshTaskInput".*"AnalyzeExperience"/,
+      /No bound operation or child for workflow operations "RouteDeliveryEntry".*"AnalyzeExperience"/,
     );
   });
 

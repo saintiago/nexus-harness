@@ -12,12 +12,15 @@ import {
   parentHandoffDeclaration,
 } from '../task-engine/actions/select-work/artifacts.js';
 import {
-  stageResultArtifact,
   stageRoundPlanDeclaration,
   type PreparationStage,
 } from '../task-engine/actions/preparation/artifacts.js';
+import { implementationHandoffFailureDeclaration } from '../task-engine/actions/project/implementation-handoff/artifacts.js';
+import { stageFailureDeclaration } from '../task-engine/actions/preparation/failure.js';
+import { documentationReviewsDirectory } from '../task-engine/actions/preparation/review-publication/artifacts.js';
+import { preparationPublicationFailureDeclaration } from '../task-engine/actions/project/publish-preparation/artifacts.js';
 import {
-  readStageArtifact,
+  readStageTerminal,
   readStagePlan,
   stageRoot,
 } from '../task-engine/actions/preparation/storage.js';
@@ -120,9 +123,12 @@ export type IdeaPublicationTerminal = (typeof ideaPublicationTerminals)[number];
  */
 export const preparationTerminalEntries = {
   'preparation-advanced': { outcome: 'advanced', destination: 'route' },
-  'preparation-handoff': { outcome: 'handoff', destination: 'handoff' },
+  'preparation-handoff': { outcome: 'handed-off', destination: 'select' },
   'preparation-waiting': { outcome: 'needs-input', destination: 'select' },
   'preparation-exhausted': { outcome: 'exhausted', destination: 'select' },
+  'preparation-publication-failed': { outcome: 'failed', destination: 'blocked' },
+  'preparation-failed': { outcome: 'failed', destination: 'blocked' },
+  'handoff-failed': { outcome: 'failed', destination: 'blocked' },
   'selection-failed': { outcome: 'failed', destination: 'blocked' },
 } as const satisfies Record<
   string,
@@ -410,15 +416,48 @@ export async function preparationHandoff(options: {
     ...(await retainedFiles(root, 'state')),
     ...(round === null ? [] : await retainedFiles(root, path.join('artifacts', String(round)))),
   ];
-  const result = round === null ? null : await readStageArtifact(root, round, stageResultArtifact);
+  const result = await readStageTerminal(root);
+  const issueRoot = options.selection.workspace.root;
+  if (
+    options.terminal === 'preparation-failed' &&
+    (result?.outcome === 'accepted' || result?.outcome === 'skipped')
+  ) {
+    files.push(...(await retainedFiles(issueRoot, documentationReviewsDirectory)));
+  }
+  const isHandoff =
+    options.terminal === 'preparation-handoff' || options.terminal === 'handoff-failed';
+  let reason = result?.reason ?? null;
+  if (isHandoff) files.push(...(await retainedFiles(issueRoot, parentAreaDirectory)));
+  if (options.terminal === 'handoff-failed') {
+    reason =
+      (
+        await readRecord(
+          path.join(issueRoot, implementationHandoffFailureDeclaration.file),
+          implementationHandoffFailureDeclaration,
+        )
+      )?.reason ?? null;
+  } else if (
+    options.terminal === 'preparation-failed' ||
+    options.terminal === 'preparation-publication-failed'
+  ) {
+    const declaration =
+      options.terminal === 'preparation-publication-failed'
+        ? preparationPublicationFailureDeclaration
+        : stageFailureDeclaration;
+    reason = (await readRecord(path.join(root, declaration.file), declaration))?.reason ?? null;
+  }
+
   return {
     workId: options.selection.taskKey,
     workflow: 'preparation',
     attemptId: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
     terminalId: options.terminal,
     outcome: preparationTerminalEntries[options.terminal].outcome,
-    reason: result?.reason ?? null,
-    workspaceRoot: root,
+    reason,
+    workspaceRoot:
+      isHandoff || files.some((file) => file.startsWith(path.join(issueRoot, 'parent')))
+        ? issueRoot
+        : root,
     artifacts: evidence({ files }),
   };
 }

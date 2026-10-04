@@ -39,6 +39,7 @@ import {
 import { createRecordStageReturn } from '../task-engine/actions/preparation/record-stage-return/index.js';
 import { createStageAuthor } from '../task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../task-engine/actions/preparation/stage-evaluator/index.js';
+import { createReviewPreparationPublication } from '../task-engine/actions/preparation/review-publication/index.js';
 import { createStageResult } from '../task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../task-engine/actions/preparation/start-stage-round/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
@@ -60,6 +61,7 @@ import {
 import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { readIssue, statusNameOf } from '../task-engine/actions/source.js';
 import { createResearcher } from '../task-engine/actions/researcher/index.js';
+import { createRouteDeliveryEntry } from '../task-engine/actions/route-delivery-entry/index.js';
 import { createReview } from '../task-engine/actions/review/index.js';
 import { createSelectWork } from '../task-engine/actions/select-work/index.js';
 import {
@@ -406,11 +408,7 @@ export function createActionBinding(
         createPublishDecision({
           selection,
           refinementRoot: path.join(selection.workspace.root, 'refinement'),
-          expected: [
-            taskSource.ideas.statuses.active,
-            taskSource.ideas.statuses.approved,
-            taskSource.ideas.statuses.waitingForFeedback,
-          ],
+          expected: [taskSource.ideas.statuses.active],
           statuses: {
             approved: taskSource.ideas.statuses.approved,
             waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
@@ -423,7 +421,7 @@ export function createActionBinding(
         selectionFile,
         statuses: taskSource.preparation?.statuses,
         waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
-        ideaSubmitted: taskSource.ideas.statuses.submitted,
+        ideaActive: taskSource.ideas.statuses.active,
         jira: settings.jira,
         publish,
       }),
@@ -529,8 +527,17 @@ export function createActionBinding(
       StageAuthor: forStage(stageAuthorActions),
       StageEvaluator: forStage(stageEvaluatorActions),
       RecordStageReturn: forStage(stageReturnActions),
+      ReviewPreparationPublication: createReviewPreparationPublication({
+        selectionFile,
+        baseBranch: project.delivery.baseBranch,
+        reviewerProfile: nexus.executionPolicy.reviewerProfile,
+        reviewer: reviewerRunner,
+        git: settings.git,
+        publish,
+      }),
       StageResult: forStage(stageResultActions),
       // ---- finite delivery child ----
+      RouteDeliveryEntry: createRouteDeliveryEntry({ selectionFile }),
       PrepareWorkspace: createPrepareWorkspace({
         selectionFile,
         repository: project.repository,

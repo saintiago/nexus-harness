@@ -59,6 +59,16 @@ export type GitOperations = {
     remote: string,
     branch: string,
   ): Result<string | null> | Promise<Result<string | null>>;
+  readFileAtRevision?(
+    repository: string,
+    revision: string,
+    file: string,
+  ): Result<string> | Promise<Result<string>>;
+  readChangedPaths?(
+    repository: string,
+    base: string,
+    head: string,
+  ): Result<readonly string[]> | Promise<Result<readonly string[]>>;
   readDiff?(
     repository: string,
     baseRevision: string,
@@ -134,6 +144,18 @@ export function scriptedGit(
         return operations.readRemoteBranchHead
           ? await operations.readRemoteBranchHead(remote, branch)
           : unexpected('readRemoteBranchHead');
+      },
+      async readFileAtRevision(repository, revision, file) {
+        calls.push(`file:${revision}:${file}`);
+        return operations.readFileAtRevision
+          ? await operations.readFileAtRevision(repository, revision, file)
+          : unexpected('readFileAtRevision');
+      },
+      async readChangedPaths(repository, base, head) {
+        calls.push(`paths:${base}..${head}`);
+        return operations.readChangedPaths
+          ? await operations.readChangedPaths(repository, base, head)
+          : unexpected('readChangedPaths');
       },
       async readDiff(repository, baseRevision, headRevision) {
         calls.push(`diff:${baseRevision}..${headRevision}`);

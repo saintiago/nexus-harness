@@ -13,6 +13,7 @@ import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageResultArtifact,
+  stageTerminalDeclaration,
   stageRoundPlanDeclaration,
   type PreparationStage,
   type StageAuthorOutput,
@@ -172,4 +173,15 @@ export async function writeReturnCount(
   round: number | null,
 ): Promise<void> {
   await writeRecord(path.join(root, returnCountFile), { count, round });
+}
+
+/** Read the latest terminal invocation; legacy results live in the current round. */
+export async function readStageTerminal(root: string): Promise<PreparationResult | null> {
+  const result = await readRecord(
+    path.join(root, stageTerminalDeclaration.file),
+    stageTerminalDeclaration,
+  );
+  if (result !== null) return result;
+  const plan = await readStagePlan(root);
+  return plan === null ? null : readStageResult(root, plan.round);
 }
