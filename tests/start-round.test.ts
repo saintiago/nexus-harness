@@ -265,14 +265,6 @@ describe('StartRound', () => {
         },
       ],
       [
-        'an inconclusive review',
-        async () => {
-          await writeDevelopment(1, 'dev-a');
-          await writeVerification(1, 'passed');
-          await writeReview(1, 'inconclusive');
-        },
-      ],
-      [
         'an approved review',
         async () => {
           await writeDevelopment(1, 'dev-a');
@@ -295,6 +287,31 @@ describe('StartRound', () => {
       await expect(stat(path.join(root, 'artifacts', '2')), label).rejects.toThrow(/ENOENT/);
     }
   });
+
+  it.each(['the current round', 'an earlier round'])(
+    'rejects a report carrying the removed inconclusive verdict retained in %s',
+    async (position) => {
+      // The invalid report is the current round's saved sibling or an earlier round's history.
+      const current = position === 'the current round' ? 1 : 2;
+      await writeCurrentRound({ number: current, profile: 'dev-a', reason: 'Planned.' });
+      await writeDevelopment(current, 'dev-a');
+      await writeVerification(current, 'failed');
+      await writeRoundArtifact(1, reviewArtifact.pathFromArtifactsRoot, {
+        profile: 'reviewer',
+        headRevision: headOf(1),
+        verdict: 'inconclusive',
+        summary: 'The available evidence could not settle the assessment.',
+        findings: [],
+        priorFindings: [],
+      });
+
+      // The removed verdict is neither an approval, a rejection nor an absent report: its read
+      // fails validation instead of being translated.
+      await expect(startRoundOver(ladder)()).rejects.toThrow(
+        /does not match its declared content type/,
+      );
+    },
+  );
 
   it('rejects a present but invalid current-round record', async () => {
     const startRound = startRoundOver(ladder);

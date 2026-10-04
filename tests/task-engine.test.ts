@@ -142,9 +142,14 @@ describe('TaskEngine over the finite workflow', () => {
     expect(delivery.result).toEqual({ ok: true, value: 'blocked' });
     expect(delivery.handoffs).toEqual([{ terminal: 'deliver-failed' }]);
 
-    const inconclusive = await runWith({ Review: async () => 'inconclusive' });
-    expect(inconclusive.result).toEqual({ ok: true, value: 'blocked' });
-    expect(inconclusive.handoffs).toEqual([{ terminal: 'review-inconclusive' }]);
+    // The removed inconclusive verdict is not a workflow outcome: it faults the run instead of
+    // reaching a dedicated analysis state, and no terminal handoff exists for it.
+    const removedVerdict = await runWith({ Review: async () => 'inconclusive' });
+    expect(removedVerdict.result.ok).toBe(false);
+    expect(removedVerdict.result.ok ? '' : removedVerdict.result.fault.message).toMatch(
+      /Unexpected action outcome: inconclusive/,
+    );
+    expect(removedVerdict.handoffs).toEqual([]);
 
     const failedCompletion = await runWith({ CompleteTask: async () => 'failed' });
     expect(failedCompletion.result).toEqual({ ok: true, value: 'blocked' });

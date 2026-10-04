@@ -132,7 +132,7 @@ export type PullRequestConversation = {
 };
 
 /** The verdict the calling action recorded for one reviewed revision. */
-export type ReviewVerdict = 'approved' | 'changesRequested' | 'inconclusive';
+export type ReviewVerdict = 'approved' | 'changesRequested';
 
 /** One review to publish as the Nexus Lens App for an exact revision. */
 export type ReviewPublicationRequest = {
@@ -431,7 +431,6 @@ export const reviewEncoding: Readonly<
 > = {
   approved: { event: 'APPROVE', state: 'APPROVED' },
   changesRequested: { event: 'REQUEST_CHANGES', state: 'CHANGES_REQUESTED' },
-  inconclusive: { event: 'COMMENT', state: 'COMMENTED' },
 };
 
 /**

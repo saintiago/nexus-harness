@@ -715,6 +715,16 @@ describe('Review', () => {
         output: JSON.stringify({ verdict: 'done', summary: 'Finished.' }),
       },
       {
+        label: 'the removed inconclusive verdict',
+        expected: /does not match the response format/,
+        output: JSON.stringify({
+          verdict: 'inconclusive',
+          summary: 'The available evidence could not settle the assessment.',
+          findings: [],
+          priorFindings: [],
+        }),
+      },
+      {
         label: 'approval with a current blocking finding',
         expected: /approved the revision while reporting blocking finding/,
         output: JSON.stringify({
@@ -1142,35 +1152,29 @@ describe('Review', () => {
     });
   });
 
-  it('publishes a failed review check for an inconclusive verdict', async () => {
-    const { workspaceRoot, selectionFile } = await workspace({ name: 'inconclusive' });
+  it('fails a saved report carrying the removed inconclusive verdict without translating it', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'removed-verdict' });
     await writeDeliveredRound(workspaceRoot);
-    const { runtime } = scriptedRuntime(() =>
-      JSON.stringify({
-        verdict: 'inconclusive',
-        summary: 'The provider behaviour cannot be reproduced from the available evidence.',
-        findings: [],
-        priorFindings: [],
-      }),
-    );
-    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
-    const { github, calls: githubCalls } = scriptedGitHub({
-      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
-      readChecks: () => ok([]),
-      publishReview: () => ok({ id: 11, url: 'https://github.com/owner/repository/reviews/11' }),
-      publishReviewCheck: () => ok({ id: 12 }),
-    });
-    const { jira } = scriptedJira({
-      readIssue: () => ok(taskIssue),
-      readComments: () => ok([]),
-      addComment: (_issueId, body) => ok({ id: 'c9', body }),
+    // A report from the removed verdict is not an absent report, an approval or a revision to
+    // re-review: its read fails validation and the action faults.
+    await writeRoundArtifact(workspaceRoot, 1, 'review.json', {
+      profile: 'reviewer',
+      headRevision,
+      verdict: 'inconclusive',
+      summary: 'The provider behaviour cannot be reproduced from the available evidence.',
+      findings: [],
+      priorFindings: [],
     });
 
     await expect(
-      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira })(),
-    ).resolves.toBe('inconclusive');
-
-    expect(githubCalls).toContain(`publishCheck:${headRevision}:${reviewCheck}:failure`);
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(unusedRuntime()),
+        git: scriptedGit([]).git,
+        github: scriptedGitHub({}).github,
+      })(),
+    ).rejects.toThrow(/does not match its declared content type/);
+    // The saved report is preserved as written; no translation rewrote its verdict.
     expect(await readRoundArtifact(workspaceRoot, 1, 'review.json')).toMatchObject({
       verdict: 'inconclusive',
       headRevision,

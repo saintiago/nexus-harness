@@ -751,7 +751,6 @@ describe('GitHub adapter', () => {
   it.each([
     ['approved', 'APPROVE'],
     ['changesRequested', 'REQUEST_CHANGES'],
-    ['inconclusive', 'COMMENT'],
   ] as const)('publishes a %s review as the Nexus Lens App', async (verdict, event) => {
     const { adapter, gh, app } = harness(
       [],

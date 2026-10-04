@@ -60,7 +60,7 @@ export const reviewOutputSchema = z.object({
   taskSubject: z.string().optional(),
   profile: z.string(),
   headRevision: z.string(),
-  verdict: z.enum(['approved', 'changesRequested', 'inconclusive']),
+  verdict: z.enum(['approved', 'changesRequested']),
   summary: z.string(),
   findings: z.array(findingSchema),
   priorFindings: z.array(findingDispositionSchema),

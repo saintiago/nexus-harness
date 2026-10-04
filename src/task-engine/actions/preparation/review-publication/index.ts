@@ -73,7 +73,9 @@ export function createReviewPreparationPublication(settings: {
         outputSchema: z.toJSONSchema(reviewResponseSchema),
         task: selection.taskKey,
       });
-      if (!assessment.ok) return failed(assessment.fault.message);
+      // A reviewer invocation fault is an execution error, not a repository condition that
+      // prevents preparation: it cannot produce an assessment the parent may publish.
+      if (!assessment.ok) throw new Error(assessment.fault.message);
       const response = parseAgentReport(
         assessment.value.output,
         reviewResponseSchema,
