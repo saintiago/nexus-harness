@@ -5,13 +5,14 @@
  * service, provider or process is involved.
  */
 
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMachine } from 'xstate';
 import { createJiraAdapter, type JiraComment, type JiraTransition } from '../src/adapters/jira.js';
 import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
+import type { CodingRuntime, CodingRuntimeRequest } from '../src/adapters/coding-runtime.js';
 import { ok } from '../src/result.js';
 import {
   createActionBinding,
@@ -475,6 +476,174 @@ describe('preparation binding dispatch', () => {
     await expect(
       readFile(path.join(root, 'requirements', 'state', 'current-round.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('runs each preparation role in the retained stage checkout resolved exactly once', async () => {
+    const directory = await temporaryDirectory();
+    const root = path.join(directory, 'NEX-1');
+    const selectionFile = path.join(directory, 'selection.json');
+    const uxWorktree = path.join(root, 'ux', 'worktree');
+    const architectureWorktree = path.join(root, 'architecture', 'worktree');
+    const contentRevision = 'a'.repeat(40);
+    const publicationHead = 'b'.repeat(40);
+    const baseRevision = 'c'.repeat(40);
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: { id: '1', key: 'NEX-1', fields: {} },
+        conversation: [],
+        workspace: { root },
+        stage: 'ux',
+      }),
+    );
+    // The ux stage holds the prepared checkout and an open round the author proposes into.
+    await mkdir(path.join(uxWorktree, 'docs'), { recursive: true });
+    await writeFile(path.join(uxWorktree, 'docs', 'ux.md'), '# UX\n');
+    await mkdir(path.join(root, 'ux', 'state'), { recursive: true });
+    await writeFile(
+      path.join(root, 'ux', 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'ux',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'nexus-astra', evaluator: 'nexus-astra' },
+      }),
+    );
+    await mkdir(path.join(root, 'ux', 'artifacts', '1'), { recursive: true });
+    // Architecture retains an accepted document, so publication assembles and reviews it.
+    await mkdir(path.join(architectureWorktree, 'docs'), { recursive: true });
+    await writeFile(path.join(architectureWorktree, 'docs', 'architecture.md'), '# Architecture\n');
+    await mkdir(path.join(root, 'architecture', 'state'), { recursive: true });
+    await writeFile(
+      path.join(root, 'architecture', 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'nexus-astra', evaluator: 'nexus-review' },
+      }),
+    );
+    await mkdir(path.join(root, 'architecture', 'artifacts', '1'), { recursive: true });
+    await writeFile(
+      path.join(root, 'architecture', 'artifacts', '1', 'result.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        outcome: 'accepted',
+        authoredRevision: 1,
+        // StageResult retains each accepted document by its absolute worktree path.
+        documents: [
+          {
+            path: path.join(architectureWorktree, 'docs', 'architecture.md'),
+            revision: contentRevision,
+          },
+        ],
+        outputs: [],
+        evaluation: { path: path.join(root, 'architecture', 'artifacts', '1', 'evaluation.json') },
+        reason: 'Accepted.',
+        returnStage: null,
+        returnFinding: null,
+        prototype: null,
+      }),
+    );
+    const outputs: unknown[] = [
+      {
+        outcome: 'authored',
+        summary: 'The journey proposal.',
+        documents: [{ path: 'docs/ux.md', description: 'The proposed journey.' }],
+        plan: [],
+        skip: null,
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      },
+      {
+        assessedRevision: 1,
+        verdict: 'accepted',
+        reason: 'The revision is adequate.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      },
+      {
+        verdict: 'approved',
+        summary: 'Assessed the exact assembled documentation revision.',
+        findings: [],
+        priorFindings: [],
+      },
+    ];
+    const requests: CodingRuntimeRequest[] = [];
+    const codingRuntime: CodingRuntime = {
+      async execute(request) {
+        requests.push(request);
+        const output = outputs.shift();
+        if (output === undefined) {
+          throw new Error('No scripted provider output remains for this invocation.');
+        }
+        return ok({ output: JSON.stringify(output) });
+      },
+    };
+    const { git } = scriptedGit(
+      [
+        repositoryState({
+          remoteUrl: path.resolve(directory, 'repository.git'),
+          branch: 'task/NEX-1-architecture',
+          headRevision: publicationHead,
+        }),
+      ],
+      {
+        commitPaths: (repository) =>
+          ok({
+            branch: repository === uxWorktree ? 'task/NEX-1-ux' : 'task/NEX-1-architecture',
+            headRevision: repository === uxWorktree ? contentRevision : publicationHead,
+          }),
+        readFileAtRevision: async (repository, _revision, file) =>
+          ok(await readFile(path.join(repository, file), 'utf8')),
+        fetchRevision: () => ok(baseRevision),
+        readMergeBase: () => ok(baseRevision),
+        readChangedPaths: () => ok(['docs/architecture.md']),
+        readDiff: () => ok('diff --git a/docs/architecture.md b/docs/architecture.md'),
+      },
+    );
+    const settings: ActionBindingSettings = {
+      project: parseProjectConfiguration(projectConfiguration(), directory),
+      nexus: parseNexusConfiguration(nexusConfiguration(), directory),
+      paths: {
+        directory,
+        workflowStateFile: path.join(directory, 'workflow.json'),
+        selectionFile,
+      },
+      jira: unusedCapability('Jira'),
+      github: unusedCapability('GitHub'),
+      git,
+      codingRuntime,
+      runCommand: unusedCapability('processes'),
+      commandEnvironment: {},
+      activityDirectory: path.join(directory, 'agents'),
+      wait: () => Promise.resolve(),
+    };
+    const actions = createActionBinding(settings)(
+      () => undefined,
+      () => undefined,
+    );
+
+    await expect(actions['StageAuthor']?.({ stage: 'ux', task: 'propose' })).resolves.toBe(
+      'authored',
+    );
+    await expect(actions['StageEvaluator']?.({ stage: 'ux' })).resolves.toBe('accepted');
+    await expect(actions['ReviewPreparationPublication']?.()).resolves.toBe('approved');
+
+    // The real AgentRuntime appends worktree/ to the supplied area root: every provider runs in
+    // the existing checkout, never in a second worktree/ level under it.
+    expect(requests.map((request) => request.directory)).toEqual([
+      uxWorktree,
+      uxWorktree,
+      architectureWorktree,
+    ]);
+    for (const worktree of [uxWorktree, architectureWorktree]) {
+      expect((await stat(worktree)).isDirectory()).toBe(true);
+    }
   });
 });
 

@@ -59,7 +59,9 @@ export function createReviewPreparationPublication(settings: {
       const assessment = await settings.reviewer.run({
         operation: 'review',
         profile: settings.reviewerProfile,
-        workspace: { root: worktree },
+        // The reviewer's workspace is the architecture area root; AgentRuntime resolves its
+        // worktree/.
+        workspace: { root: stageRoot(root, 'architecture') },
         context: [
           `Review the assembled documentation publication for ${selection.taskKey} at exact revision ${head}, comparison base ${baseRevision}.`,
           `Source input: ${JSON.stringify(selection.task)}\nConversation: ${JSON.stringify(selection.conversation)}`,

@@ -186,7 +186,8 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     const result = await settings.runner.run({
       operation: 'stage-evaluator',
       profile: plan.profiles.evaluator,
-      workspace: { root: worktree },
+      // The invocation's workspace is the stage area root; AgentRuntime resolves its worktree/.
+      workspace: { root },
       context: [
         context,
         `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
