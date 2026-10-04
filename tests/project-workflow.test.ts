@@ -748,9 +748,15 @@ async function handoff(options: {
   readonly initialRankOrder?: readonly string[];
   readonly skipped?: boolean;
   readonly omitAssessment?: boolean;
+  readonly emptyPublication?: boolean;
+  readonly emptyAfterMerge?: boolean;
+  readonly failPostMergeOnce?: boolean;
+  readonly implementationStatus?: string;
+  readonly ticketStatusAfterFirst?: string;
 }): Promise<{
   readonly outcome: string;
   readonly firstOutcome: string;
+  readonly ticketStatus: () => string | undefined;
   readonly tickets: readonly { readonly key: string; readonly summary: string }[];
   readonly status: () => string;
   readonly links: readonly string[];
@@ -909,7 +915,9 @@ async function handoff(options: {
   let status = options.sourceStatus ?? 'Architecture';
   const transitions: JiraTransition[] = [
     { id: '41', name: 'Finish', to: { id: '5', name: 'Done' } },
+    { id: '42', name: 'Admit', to: { id: '6', name: options.implementationStatus ?? 'To Do' } },
   ];
+  const ticketStatuses = new Map<string, string>();
   const comments: JiraComment[] = [];
   const links: string[] = [];
   const ranked: string[] = [];
@@ -930,7 +938,10 @@ async function handoff(options: {
                 description: { type: 'doc', content: [] },
                 status: { id: '4', name: status },
               }
-            : { ...createdFields[index], status: { id: '2', name: 'To Do' } },
+            : {
+                ...createdFields[index],
+                status: { id: '2', name: ticketStatuses.get(issueId) ?? 'To Do' },
+              },
       });
     },
     readComments: () => ok([...comments]),
@@ -941,9 +952,11 @@ async function handoff(options: {
       return ok(comment);
     },
     updateFields: () => ok(undefined),
-    transitionIssue: (_issueId, transitionId) => {
+    transitionIssue: (issueId, transitionId) => {
       if (transitionId === '41') {
         status = 'Done';
+      } else if (transitionId === '42') {
+        ticketStatuses.set(issueId, options.implementationStatus ?? 'To Do');
       }
       return ok(undefined);
     },
@@ -1009,12 +1022,15 @@ async function handoff(options: {
     {
       readFileAtRevision: (_repository, _revision, file) => ok(`# Accepted ${file}\n`),
       fetchRevision: () => ok('1'.repeat(40)),
+      readMergeBase: () => ok('1'.repeat(40)),
       readChangedPaths: () =>
-        ok([
-          'docs/architecture.md',
-          'docs/requirements.md',
-          ...(options.extraPublishedPath ? [options.extraPublishedPath] : []),
-        ]),
+        options.emptyPublication || (options.emptyAfterMerge && merged)
+          ? ok([])
+          : ok([
+              'docs/architecture.md',
+              'docs/requirements.md',
+              ...(options.extraPublishedPath ? [options.extraPublishedPath] : []),
+            ]),
       readDiff: () =>
         ok('diff --git a/docs/architecture.md b/docs/architecture.md\n+Accepted architecture'),
       commitPaths: (_repository, paths) => {
@@ -1062,8 +1078,9 @@ async function handoff(options: {
     mergeRevision: merged ? mergeRevision : null,
     autoMergeEnabled: autoMerge,
   });
+  let postMergeObservations = 0;
   const { github } = scriptedGitHub({
-    findPullRequests: () => ok([]),
+    findPullRequests: () => ok(pullRequests > 0 ? [{ number: 9, url: pullRequestUrl }] : []),
     createPullRequest: () => {
       pullRequests += 1;
       return ok({ number: 9, url: pullRequestUrl, headRevision: head });
@@ -1109,18 +1126,21 @@ async function handoff(options: {
           },
         ],
       }),
-    readWorkflowRuns: (_repository, revision) =>
-      ok([
+    readWorkflowRuns: (_repository, revision) => {
+      postMergeObservations += 1;
+      return ok([
         {
           id: 5,
           name: 'validate.yml',
           path: 'validate.yml',
           revision,
           status: 'completed',
-          conclusion: 'success',
+          conclusion:
+            options.failPostMergeOnce && postMergeObservations === 1 ? 'failure' : 'success',
           jobs: [],
         },
-      ]),
+      ]);
+    },
   });
   // Reconciliation and rank searches pass through the actual adapter request. The controlled
   // transport enforces Jira's supported Summary operators rather than accepting summary equality.
@@ -1155,7 +1175,7 @@ async function handoff(options: {
     implementation: {
       issueType: 'Task',
       labels: ['implementation'],
-      status: 'To Do',
+      status: options.implementationStatus ?? 'To Do',
       linkType: 'Relates',
     },
     doneStatus: 'Done',
@@ -1199,6 +1219,7 @@ async function handoff(options: {
     committedPaths.length = 0; // Count the parent publication commit request separately.
   }
   const firstOutcome = await handoffAction();
+  if (options.ticketStatusAfterFirst) ticketStatuses.set('101', options.ticketStatusAfterFirst);
   // A second invocation over the same retained state exercises repetition and reconciliation.
   const outcome = options.retry === true ? await handoffAction() : firstOutcome;
   // A handoff that failed before retaining identities wrote no record.
@@ -1217,6 +1238,7 @@ async function handoff(options: {
   return {
     outcome,
     firstOutcome,
+    ticketStatus: () => ticketStatuses.get('101'),
     tickets: handoffRecord.tickets ?? [],
     status: () => status,
     links,
@@ -1431,6 +1453,70 @@ describe('architecture implementation handoff', () => {
       expect(result.createdFields).toEqual([]);
     },
   );
+
+  it('hands off accepted references without publishing an empty documentation diff', async () => {
+    const result = await handoff({ documents: true, emptyPublication: true });
+    expect(result.outcome).toBe('handed-off');
+    expect(result.published).toEqual({ reviews: 0, checks: 0, autoMerge: false, pullRequests: 0 });
+    expect(JSON.stringify(result.createdFields)).toContain('docs/requirements.md');
+  });
+
+  it('finishes an existing publication’s checks when the merge has made the diff empty', async () => {
+    const result = await handoff({
+      documents: true,
+      emptyAfterMerge: true,
+      failPostMergeOnce: true,
+      retry: true,
+    });
+    expect(result.firstOutcome).toBe('failed');
+    expect(result.outcome).toBe('handed-off');
+    expect(result.published.pullRequests).toBe(1);
+    expect(JSON.stringify(result.createdFields)).toContain(
+      `Documentation merge revision: ${'3'.repeat(40)}`,
+    );
+    expect(result.failures).toEqual([expect.stringContaining('post-merge check')]);
+  });
+
+  it('finishes interrupted initial ticket admission', async () => {
+    const result = await handoff({
+      documents: false,
+      implementationStatus: 'Implementation',
+      failLinkOnce: true,
+      retry: true,
+    });
+    expect(result.firstOutcome).toBe('failed');
+    expect(result.outcome).toBe('handed-off');
+    expect(result.ticketStatus()).toBe('Implementation');
+  });
+
+  it.each(['Waiting for Feedback', 'In Progress', 'In Review'])(
+    'preserves retained ticket human status %s before admission replay',
+    async (humanStatus) => {
+      const result = await handoff({
+        documents: false,
+        implementationStatus: 'Implementation',
+        failLinkOnce: true,
+        retry: true,
+        ticketStatusAfterFirst: humanStatus,
+      });
+      expect(result.outcome).toBe('failed');
+      expect(result.ticketStatus()).toBe(humanStatus);
+      expect(result.status()).toBe('Architecture');
+      expect(result.failures.at(-1)).toContain('human status is preserved');
+    },
+  );
+
+  it('preserves a human change after ticket admission has already completed', async () => {
+    const result = await handoff({
+      documents: false,
+      implementationStatus: 'Implementation',
+      retry: true,
+      ticketStatusAfterFirst: 'Waiting for Feedback',
+    });
+    expect(result.firstOutcome).toBe('handed-off');
+    expect(result.outcome).toBe('failed');
+    expect(result.ticketStatus()).toBe('Waiting for Feedback');
+  });
 
   it('finishes a missing link for a retained ticket before handing off', async () => {
     const handedOff = await handoff({ documents: false, failLinkOnce: true, retry: true });

@@ -66,3 +66,6 @@ preparation must not turn a continuation into a fresh checkout.
 
 This action does not select a round or inspect subsequent action artifact schemas.
 Baseline verification is not part of preparation.
+
+Successful preparation retires Selection.initialClaim only after its prepared-workspace record is
+durable, so repeated interrupted claims stay resumable until this boundary completes.

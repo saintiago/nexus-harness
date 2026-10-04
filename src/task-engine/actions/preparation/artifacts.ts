@@ -158,6 +158,10 @@ export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSche
  * one disposition for every finding the assessed revision inherited.
  */
 export const stageEvaluationOutputSchema = z.object({
+  /** Repository content retained before the assessment, never inferred at acceptance. */
+  contentRevision: z.string().min(1).nullable().default(null),
+  contentPaths: z.array(z.string().min(1)).default([]),
+  authorIdentity: z.string().min(1).nullable().default(null),
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
@@ -179,7 +183,7 @@ export const preparationResultSchema = z.object({
   outcome: z.enum(['accepted', 'skipped', 'returnUpstream', 'needsInput', 'exhausted']),
   authoredRevision: z.number().int().positive(),
   /**
-   * The changed authoritative documents of this result, with the stage worktree revision that
+   * The accepted changed documents, including explicitly reused assets on a skip, with the revision that
    * produced them when one was observed. The parent's documentation handoff publishes exactly this
    * set; the broader output references below stay available to consumers that need every artifact.
    */

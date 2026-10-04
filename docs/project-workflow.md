@@ -150,8 +150,11 @@ role or Jira status.
 ## Documentation and implementation handoff
 
 Publish changed authoritative documents in a documentation-only PR and confirm merge/check evidence
-before creating implementation tickets. If existing documents already suffice, reference their
-accepted revision and skip evidence; do not create an empty PR. Existing repository gates remain;
+before creating implementation tickets. Determine publication necessity from the actual document
+contribution reconciled with the current base. Unrelated base changes are not publication changes.
+An empty document diff opens no PR; a previously started publication still completes its exact-revision merge/check gates on replay.
+If existing documents already suffice, reference their accepted revision and skip evidence; do not
+create an empty PR. Existing repository gates remain;
 there is no additional approval gate beyond essential author decisions. The existing repository
 reviewer assesses the exact assembled documentation revision within the Architecture child; the
 deterministic parent publishes that saved assessment's actual Lens review/check verdict. Retained negative evidence is preserved and requests repairs, never replaced
@@ -163,7 +166,10 @@ create tasks in a topological order. Rank prerequisites before dependent tasks u
 rank order, moving a premature dependent after its last prerequisite without moving it ahead of
 unrelated higher-ranked work. Retain created ticket identities as operations succeed. Reconcile
 uncertain creation against the source issue and planned task before retrying; interruption must not
-duplicate tickets.
+duplicate tickets. Record each new ticket's initial admission status separately from later source
+changes. On replay, accept that recorded initial state while admission is unfinished, or the
+already-applied configured ready status. An unexpected retained status requests attention and is
+preserved; an unknown initial state cannot authorize a transition.
 
 After every planned ticket exists and is linked, move the original to Done with a preparation-complete
 comment and the implementation links. The original never enters finite delivery. Even one

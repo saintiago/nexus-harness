@@ -64,6 +64,11 @@ export type GitOperations = {
     revision: string,
     file: string,
   ): Result<string> | Promise<Result<string>>;
+  readMergeBase?(
+    repository: string,
+    base: string,
+    head: string,
+  ): Result<string> | Promise<Result<string>>;
   readChangedPaths?(
     repository: string,
     base: string,
@@ -150,6 +155,12 @@ export function scriptedGit(
         return operations.readFileAtRevision
           ? await operations.readFileAtRevision(repository, revision, file)
           : unexpected('readFileAtRevision');
+      },
+      async readMergeBase(repository, base, head) {
+        calls.push(`merge-base:${repository}:${base}:${head}`);
+        return operations.readMergeBase
+          ? await operations.readMergeBase(repository, base, head)
+          : unexpected('readMergeBase');
       },
       async readChangedPaths(repository, base, head) {
         calls.push(`paths:${base}..${head}`);

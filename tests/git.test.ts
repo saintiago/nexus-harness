@@ -11,6 +11,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitAdapter, type GitAdapter } from '../src/adapters/git.js';
 import { createPrepareArea } from '../src/task-engine/actions/preparation/prepare-stage/index.js';
+import { createReviewPreparationPublication } from '../src/task-engine/actions/preparation/review-publication/index.js';
+import { authoredIdentity } from '../src/task-engine/actions/preparation/evaluation-content.js';
+import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
+import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import {
+  prepareDocumentationPublication,
+  readAcceptedDocuments,
+} from '../src/task-engine/actions/preparation/publication.js';
+import { ok } from '../src/result.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 
@@ -569,18 +578,52 @@ describe('Git adapter', () => {
           findingResponses: [],
         }),
       );
+      const evaluator = createStageEvaluator({
+        selectionFile,
+        stage,
+        git,
+        publish: () => undefined,
+        runner: {
+          run: async () =>
+            ok({
+              output: JSON.stringify({
+                assessedRevision: 1,
+                verdict: 'accepted',
+                reason: 'Inspected exact content.',
+                findings: [],
+                priorFindings: [],
+                upstream: null,
+              }),
+            }),
+        },
+      });
+      await expect(evaluator()).resolves.toBe('accepted');
+      const finalize = createStageResult({ selectionFile, stage, git, publish: () => undefined });
+      const authoredFile = path.join(area, 'artifacts/1/author.json');
+      const authored = await readFile(authoredFile, 'utf8');
       await writeFile(
-        path.join(area, 'artifacts/1/evaluation.json'),
+        authoredFile,
         JSON.stringify({
-          assessedRevision: 1,
-          verdict: 'accepted',
-          reason: 'Inspected exact content.',
-          findings: [],
-          priorFindings: [],
-          upstream: null,
+          ...JSON.parse(authored),
+          plan: [
+            {
+              summary: 'Unevaluated plan',
+              scope: 'new work',
+              completionCriteria: ['do it'],
+              prerequisites: [],
+            },
+          ],
         }),
       );
-      const finalize = createStageResult({ selectionFile, stage, git, publish: () => undefined });
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow('exact authored revision');
+      await writeFile(authoredFile, authored);
+      const changedFile = stage === 'prototype' ? 'stories.js' : 'readme.md';
+      await writeFile(path.join(worktree, changedFile), 'content the evaluator never saw\n');
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow('reevaluation is required');
+      await writeFile(
+        path.join(worktree, changedFile),
+        stage === 'prototype' ? 'accepted prototype\n' : 'accepted content\n',
+      );
       await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
       const result = JSON.parse(
         await readFile(path.join(area, 'artifacts/1/result.json'), 'utf8'),
@@ -601,8 +644,128 @@ describe('Git adapter', () => {
           value: 'accepted prototype\n',
         });
       }
+      // Two evaluated re-entry skips explicitly reuse the preceding result's immutable assets.
+      for (const round of [2, 3]) {
+        await mkdir(path.join(area, 'artifacts', String(round)), { recursive: true });
+        await writeFile(
+          path.join(area, 'state/current-round.json'),
+          JSON.stringify({ stage, round, route: 'new', profiles: { author: 'a', evaluator: 'e' } }),
+        );
+        await writeFile(
+          path.join(area, 'artifacts', String(round), 'author.json'),
+          JSON.stringify({
+            stage,
+            revision: round,
+            outcome: 'skip-proposed',
+            summary: 'Reuse accepted work.',
+            documents: [],
+            plan: [],
+            skip: {
+              reason: 'Retained work still suffices.',
+              references: [
+                round === 2 && stage === 'requirements'
+                  ? 'readme.md'
+                  : path.join(area, 'artifacts', String(round - 1), 'result.json'),
+              ],
+            },
+            question: null,
+            upstream: null,
+            findingResponses: [],
+          }),
+        );
+        const reuse = createStageEvaluator({
+          selectionFile,
+          stage,
+          git,
+          publish: () => undefined,
+          runner: {
+            run: async () =>
+              ok({
+                output: JSON.stringify({
+                  assessedRevision: round,
+                  verdict: 'accepted-skip',
+                  reason: 'Retained assets remain adequate.',
+                  findings: [],
+                  priorFindings: [],
+                  upstream: null,
+                }),
+              }),
+          },
+        });
+        await expect(reuse()).resolves.toBe('accepted-skip');
+        await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
+        expect(await readAcceptedDocuments(root)).toMatchObject({
+          kind: 'documents',
+          documents: [{ path: 'readme.md', revision }],
+        });
+        const reused = JSON.parse(
+          await readFile(path.join(area, 'artifacts', String(round), 'result.json'), 'utf8'),
+        );
+        expect(reused.prototype).toEqual(result.prototype);
+      }
+      // An intervening invalid result prevents a later skip from resurrecting older outputs.
+      const prior = JSON.parse(await readFile(path.join(area, 'artifacts/3/result.json'), 'utf8'));
+      await mkdir(path.join(area, 'artifacts/4'), { recursive: true });
+      await writeFile(
+        path.join(area, 'artifacts/4/result.json'),
+        JSON.stringify({
+          ...prior,
+          outcome: 'returnUpstream',
+          documents: [],
+          prototype: null,
+          returnStage: 'idea',
+        }),
+      );
+      await mkdir(path.join(area, 'artifacts/5'), { recursive: true });
+      await writeFile(
+        path.join(area, 'state/current-round.json'),
+        JSON.stringify({
+          stage,
+          round: 5,
+          route: 'new',
+          profiles: { author: 'a', evaluator: 'e' },
+        }),
+      );
+      await writeFile(
+        path.join(area, 'artifacts/5/author.json'),
+        JSON.stringify({
+          stage,
+          revision: 5,
+          outcome: 'skip-proposed',
+          summary: 'Old references.',
+          documents: [],
+          plan: [],
+          skip: { reason: 'Reuse?', references: [path.join(area, 'artifacts/3/result.json')] },
+          question: null,
+          upstream: null,
+          findingResponses: [],
+        }),
+      );
+      await writeFile(
+        path.join(area, 'artifacts/5/evaluation.json'),
+        JSON.stringify({
+          authorIdentity: authoredIdentity(
+            stageAuthorArtifact.schema.parse(
+              JSON.parse(await readFile(path.join(area, 'artifacts/5/author.json'), 'utf8')),
+            ),
+          ),
+          assessedRevision: 5,
+          contentRevision: revision,
+          verdict: 'accepted-skip',
+          reason: 'Existing inputs.',
+          findings: [],
+          priorFindings: [],
+          upstream: null,
+        }),
+      );
+      await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
+      expect(await readAcceptedDocuments(root)).toMatchObject({ kind: 'documents', documents: [] });
+      const invalidated = JSON.parse(
+        await readFile(path.join(area, 'artifacts/5/result.json'), 'utf8'),
+      );
+      expect(invalidated.prototype).toBeNull();
       await writeFile(path.join(worktree, 'readme.md'), 'later unaccepted content\n');
-      await finalize({ outcome: 'accepted' });
+      await finalize({ outcome: 'skipped' });
       expect(await git.readFileAtRevision(worktree, revision as string, 'readme.md')).toEqual({
         ok: true,
         value: 'accepted content\n',
@@ -649,7 +812,10 @@ describe('Git adapter', () => {
         summary: 'Existing design suffices.',
         documents: [],
         plan: [],
-        skip: { reason: 'Existing design suffices.', references: ['readme.md'] },
+        skip: {
+          reason: 'Existing design suffices.',
+          references: ['readme.md', 'source requirements'],
+        },
         question: null,
         upstream: null,
         findingResponses: [],
@@ -658,6 +824,13 @@ describe('Git adapter', () => {
     await writeFile(
       path.join(area, 'artifacts/1/evaluation.json'),
       JSON.stringify({
+        authorIdentity: authoredIdentity(
+          stageAuthorArtifact.schema.parse(
+            JSON.parse(await readFile(path.join(area, 'artifacts/1/author.json'), 'utf8')),
+          ),
+        ),
+        contentRevision: revision,
+        contentPaths: ['readme.md'],
         assessedRevision: 1,
         verdict: 'accepted-skip',
         reason: 'Inspected existing design.',
@@ -673,10 +846,13 @@ describe('Git adapter', () => {
       publish: () => undefined,
     });
     await writeFile(path.join(worktree, 'readme.md'), 'not in the referenced revision\n');
-    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(
-      'differs from its accepted repository revision',
-    );
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow('reevaluation is required');
+    await rm(path.join(worktree, 'readme.md'));
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow('reevaluation is required');
     await writeFile(path.join(worktree, 'readme.md'), 'initial\n');
+    await writeFile(path.join(worktree, 'source requirements'), 'new unevaluated input\n');
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow('reevaluation is required');
+    await rm(path.join(worktree, 'source requirements'));
     await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
     const result = JSON.parse(
       await readFile(path.join(area, 'artifacts/1/result.json'), 'utf8'),
@@ -684,8 +860,124 @@ describe('Git adapter', () => {
     expect(result.existingDocuments).toEqual([
       { path: path.join(worktree, 'readme.md'), revision },
     ]);
-    expect(result.skipReferences).toEqual(['readme.md']);
+    expect(result.skipReferences).toEqual(['readme.md', 'source requirements']);
   });
+
+  it.each(['unchanged', 'already-landed', 'advancing-base', 'outside-documents'] as const)(
+    'checks the actual publication contribution (%s)',
+    async (scenario) => {
+      const { origin, source, revision } = await repositoryWithOrigin();
+      const directory = await temporaryDirectory();
+      const root = path.join(directory, 'NEX-1');
+      const area = path.join(root, 'architecture');
+      const worktree = path.join(area, 'worktree');
+      await mkdir(path.join(area, 'state'), { recursive: true });
+      await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
+      await git.cloneRepository(origin, worktree);
+      await git.createBranch(worktree, 'task/NEX-1-architecture', revision);
+      if (scenario !== 'unchanged') await commitFile(worktree, 'readme.md', 'accepted content\n');
+      const accepted = await headOf(worktree);
+      if (scenario === 'outside-documents')
+        await commitFile(worktree, 'implementation.js', 'unaccepted code\n');
+      if (scenario === 'already-landed')
+        await publish(source, 'readme.md', 'accepted content\n', 'independent accepted change');
+      if (scenario === 'advancing-base' || scenario === 'outside-documents')
+        await publish(source, 'unrelated.txt', 'new upstream content\n', 'unrelated merge');
+      await writeFile(
+        path.join(area, 'state/current-round.json'),
+        JSON.stringify({
+          stage: 'architecture',
+          round: 1,
+          route: 'new',
+          profiles: { author: 'a', evaluator: 'e' },
+        }),
+      );
+      await writeFile(
+        path.join(area, 'artifacts/1/result.json'),
+        JSON.stringify({
+          stage: 'architecture',
+          outcome: 'accepted',
+          authoredRevision: 1,
+          documents: [{ path: path.join(worktree, 'readme.md'), revision: accepted }],
+          outputs: [],
+          evaluation: { path: path.join(area, 'artifacts/1/evaluation.json') },
+          reason: 'Accepted.',
+          returnStage: null,
+          returnFinding: null,
+          prototype: null,
+        }),
+      );
+      const prepared = await prepareDocumentationPublication({
+        root,
+        baseBranch: 'main',
+        taskKey: 'NEX-1',
+        git,
+      });
+      expect(prepared.kind).toBe(
+        scenario === 'outside-documents'
+          ? 'failed'
+          : scenario === 'advancing-base'
+            ? 'prepared'
+            : 'unchanged',
+      );
+      const selectionFile = path.join(directory, 'selection.json');
+      await writeFile(
+        selectionFile,
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '1' },
+          task: {},
+          conversation: [],
+          workspace: { root },
+          stage: 'architecture',
+        }),
+      );
+      let reviews = 0;
+      const review = createReviewPreparationPublication({
+        selectionFile,
+        baseBranch: 'main',
+        git,
+        reviewerProfile: 'e',
+        publish: () => undefined,
+        reviewer: {
+          run: async (request) => {
+            reviews += 1;
+            expect(request.context).toContain('+accepted content');
+            expect(request.context).not.toContain('diff --git a/unrelated.txt');
+            return ok({
+              output: JSON.stringify({
+                verdict: 'approved',
+                summary: 'Inspected exact contribution.',
+                findings: [],
+                priorFindings: [],
+              }),
+            });
+          },
+        },
+      });
+      expect(await review()).toBe(
+        scenario === 'outside-documents'
+          ? 'failed'
+          : scenario === 'advancing-base'
+            ? 'approved'
+            : 'unchanged',
+      );
+      expect(reviews).toBe(scenario === 'advancing-base' ? 1 : 0);
+      // Assembly/review repetition preserves the exact assessed head even while main advances.
+      if (scenario === 'advancing-base') {
+        await publish(source, 'another-upstream.txt', 'later upstream\n', 'another merge');
+        const replay = await prepareDocumentationPublication({
+          root,
+          baseBranch: 'main',
+          taskKey: 'NEX-1',
+          git,
+        });
+        expect(replay).toMatchObject({ kind: 'prepared', head: accepted, baseRevision: revision });
+        expect(await review()).toBe('approved');
+        expect(reviews).toBe(1);
+      }
+    },
+  );
 
   it('includes both sides of a rename when checking the complete publication path set', async () => {
     const { origin, revision } = await repositoryWithOrigin();

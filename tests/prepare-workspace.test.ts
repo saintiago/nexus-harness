@@ -204,6 +204,7 @@ describe('PrepareWorkspace', () => {
     });
 
     await expect(prepare()).resolves.toBe('prepared');
+    expect(JSON.parse(await readFile(selectionFile, 'utf8')).initialClaim).toBe(false);
 
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-1',

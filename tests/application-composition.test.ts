@@ -5,7 +5,7 @@
  * credential or agent turn is involved.
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import { createActionBinding } from '../src/application/action-bindings.js';
 import {
   createAgentRuntimeSettings,
   executionPaths,
+  experienceStoreDirectory,
   recoveryEnvironment,
   toolEnvironment,
   workerProcessEnvironment,
@@ -22,6 +23,8 @@ import { installationConfigSetting } from '../src/application/installation.js';
 import type { CodingRuntime } from '../src/adapters/coding-runtime.js';
 import type { GitHubAdapter } from '../src/adapters/github.js';
 import type { GitAdapter } from '../src/adapters/git.js';
+import { ok } from '../src/result.js';
+import { scriptedJira } from './support/jira.js';
 import type { JiraAdapter } from '../src/adapters/jira.js';
 import {
   parseNexusConfiguration,
@@ -305,6 +308,72 @@ describe('worker action binding', () => {
       ].sort(),
     );
   });
+
+  it.each([false, true])(
+    'captures the actual failed candidate with its producer reason (stale selection=%s)',
+    async (stale) => {
+      const { directory, settings: binding } = await settings();
+      const failed = {
+        id: '2',
+        key: 'NEX-2',
+        fields: {
+          summary: 'Unmapped work',
+          description: 'Needs a mapped stage',
+          status: { name: 'Unmapped' },
+        },
+      };
+      if (stale)
+        await writeFile(
+          binding.paths.selectionFile,
+          JSON.stringify({
+            taskKey: 'NEX-1',
+            source: { kind: 'jira', issueId: '1' },
+            task: {},
+            conversation: [],
+            workspace: { root: path.join(directory, 'NEX-1') },
+            stage: 'delivery',
+          }),
+        );
+      const jira = scriptedJira({
+        searchIssues: () => ok([{ id: '2', key: 'NEX-2' }]),
+        readIssue: (id) =>
+          ok(id === '2' ? failed : { id: '1', key: 'NEX-1', fields: { status: { name: 'Done' } } }),
+      }).jira;
+      const events: unknown[] = [];
+      const enabledNexus = parseNexusConfiguration(memoryNexus(directory), installationDirectory);
+      const actions = createActionBinding({ ...binding, jira, nexus: enabledNexus })(
+        (event) => events.push(event),
+        () => {},
+      );
+      expect(await actions.SelectWork!()).toBe('failed');
+      // The binding must consume durable failure evidence even after restart, without reading Jira
+      // or attributing the capture to the old selection.
+      const restored = createActionBinding({ ...binding, nexus: enabledNexus })(
+        (event) => events.push(event),
+        () => {},
+      );
+      expect(await restored.AnalyzeExperience!({ terminal: 'selection-failed' })).toBe('recorded');
+      const store = experienceStoreDirectory(binding.paths);
+      const requestFiles = await readdir(path.join(store, 'requests'));
+      expect(requestFiles).toHaveLength(1);
+      const request = JSON.parse(
+        await readFile(path.join(store, 'requests', requestFiles[0]!), 'utf8'),
+      );
+      expect(request.handoff).toMatchObject({
+        workId: 'NEX-2',
+        workflow: 'selection',
+        reason: expect.stringContaining('no configured project stage mapping'),
+        workspaceRoot: directory,
+      });
+      expect(request.handoff.artifacts).toEqual([
+        { path: path.join(directory, 'selection-failure.json') },
+      ]);
+      if (stale)
+        expect(JSON.parse(await readFile(binding.paths.selectionFile, 'utf8')).taskKey).toBe(
+          'NEX-1',
+        );
+    },
+  );
 
   it('binds idea approval to its active source status and preserves a human feedback pause', async () => {
     const { directory, settings: binding } = await settings();

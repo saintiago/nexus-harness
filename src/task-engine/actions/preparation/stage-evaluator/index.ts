@@ -1,5 +1,11 @@
 import path from 'node:path';
 import { z } from 'zod';
+import type { GitAdapter } from '../../../../adapters/git.js';
+import {
+  authoredIdentity,
+  retainEvaluationContent,
+  requireEvaluationContent,
+} from '../evaluation-content.js';
 import {
   actionOutcomeEvent,
   type AgentRoleRunner,
@@ -41,6 +47,7 @@ export type StageEvaluatorSettings = {
   readonly stage: PreparationStage;
   /** The evaluator role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
+  readonly git: GitAdapter;
   readonly publish: EventPublisher;
 };
 
@@ -155,6 +162,19 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         ? ((await precedingStageWork(root, plan.round))?.evaluation ?? null)
         : null;
 
+    const contentRevision = await retainEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+    });
+    const contentPaths = await requireEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+      revision: contentRevision,
+    });
     const context = await stageContextText({
       selection,
       plan,
@@ -204,7 +224,21 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       throw new Error(`The ${settings.stage} evaluator report is unusable: ${problem}.`);
     }
 
+    await requireEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+      revision: contentRevision,
+      paths: contentPaths,
+    });
+    const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
+      throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {
+      contentRevision,
+      contentPaths,
+      authorIdentity: authoredIdentity(author),
       assessedRevision: report.assessedRevision,
       verdict: report.verdict,
       reason: report.reason,

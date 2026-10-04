@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ok } from '../src/result.js';
+import { scriptedGit, repositoryState } from './support/git.js';
 import type { AgentRoleRunner, BoundAction } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
@@ -254,6 +255,10 @@ describe('preparation repair rounds', () => {
       },
     ]);
     const evaluator = createStageEvaluator({
+      git: scriptedGit([repositoryState()], {
+        commitPaths: () => ok({ branch: 'ux', headRevision: '1'.repeat(40) }),
+        readFileAtRevision: () => ok('# UX\n'),
+      }).git,
       selectionFile,
       stage: 'ux',
       runner,

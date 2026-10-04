@@ -30,7 +30,10 @@ export async function readAcceptedDocuments(
       continue;
     }
     const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
-    if (stageResult === null || stageResult.outcome !== 'accepted') {
+    if (
+      stageResult === null ||
+      (stageResult.outcome !== 'accepted' && stageResult.outcome !== 'skipped')
+    ) {
       continue;
     }
     const tree = stageWorktree(root, stage);
@@ -110,7 +113,9 @@ export async function prepareDocumentationPublication(settings: {
     };
   const base = await git.fetchRevision(worktree, 'origin', settings.baseBranch);
   if (!base.ok) return { kind: 'failed' as const, reason: base.fault.message };
-  const changed = await git.readChangedPaths(worktree, base.value, head);
+  const ancestor = await git.readMergeBase(worktree, base.value, head);
+  if (!ancestor.ok) return { kind: 'failed' as const, reason: ancestor.fault.message };
+  const changed = await git.readChangedPaths(worktree, ancestor.value, head);
   if (!changed.ok) return { kind: 'failed' as const, reason: changed.fault.message };
   const paths = new Set(documents.map((document) => document.path));
   if (changed.value.some((file) => !paths.has(file)))
@@ -119,5 +124,25 @@ export async function prepareDocumentationPublication(settings: {
       reason:
         'The complete publication diff contains paths outside the accepted authoritative documents.',
     };
-  return { kind: 'prepared' as const, documents, head, branch, worktree, baseRevision: base.value };
+  // Upstream-only paths do not belong to this branch. Compare its contribution with the
+  // current base too, since an accepted change may already have landed independently.
+  const current = await git.readChangedPaths(worktree, base.value, head);
+  if (!current.ok) return { kind: 'failed' as const, reason: current.fault.message };
+  if (!changed.value.some((file) => current.value.includes(file)))
+    return {
+      kind: 'unchanged' as const,
+      documents,
+      head,
+      branch,
+      worktree,
+      baseRevision: ancestor.value,
+    };
+  return {
+    kind: 'prepared' as const,
+    documents,
+    head,
+    branch,
+    worktree,
+    baseRevision: ancestor.value,
+  };
 }

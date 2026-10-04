@@ -8,8 +8,8 @@ import { deliveryFailureArtifact } from '../task-engine/actions/deliver/artifact
 import { listIdeaSubmissions } from '../task-engine/actions/idea-storage.js';
 import {
   parentAreaDirectory,
-  handoffFile,
-  parentHandoffDeclaration,
+  type SelectionFailure,
+  selectionFailureDeclaration,
 } from '../task-engine/actions/select-work/artifacts.js';
 import {
   stageRoundPlanDeclaration,
@@ -463,33 +463,45 @@ export async function preparationHandoff(options: {
 }
 
 /**
- * Build the terminal handoff of one selected-work failure: no stage ran, so the parent area holds
- * the only retained evidence. An empty queue never reaches this builder.
+ * Capture the producer's actual failed candidate and reason. Only an explicitly retained selected
+ * snapshot can supply stage evidence; a failure before ownership uses its execution-level record.
  */
 export async function selectionFailureHandoff(options: {
-  readonly selection: Selection;
-  readonly reason: string;
+  readonly failure: SelectionFailure;
+  readonly failureFile: string;
 }): Promise<ExperienceHandoff> {
-  const root = options.selection.workspace.root;
-  const handoff = await readRecord(
-    path.join(root, parentAreaDirectory, handoffFile),
-    parentHandoffDeclaration,
-  );
-  const area =
-    handoff === null || handoff.stage === 'idea' || handoff.stage === 'delivery'
+  const selection = options.failure.selection;
+  const selectedFailureFile =
+    selection === null
       ? null
-      : handoff.stage;
-  const stageRootDirectory = area === null ? null : stageRoot(root, area);
-  const files = stageRootDirectory === null ? [] : await retainedFiles(stageRootDirectory, 'state');
+      : path.join(selection.workspace.root, parentAreaDirectory, selectionFailureDeclaration.file);
+  const owned = selectedFailureFile !== null && (await isFile(selectedFailureFile));
+  const root =
+    owned && selection !== null ? selection.workspace.root : path.dirname(options.failureFile);
+  const area =
+    !owned || selection === null || selection.stage === 'idea' || selection.stage === 'delivery'
+      ? null
+      : selection.stage;
+  const files = area === null ? [] : await retainedFiles(stageRoot(root, area), 'state');
   return {
-    workId: options.selection.taskKey,
+    workId: options.failure.taskKey,
     workflow: 'selection',
-    attemptId: area === null ? 'unprepared' : `${area}-selection`,
+    attemptId:
+      selection === null
+        ? `candidate-${options.failure.source.issueId}`
+        : area === null
+          ? 'unprepared'
+          : `${area}-selection`,
     terminalId: 'selection-failed',
     outcome: 'failed',
-    reason: options.reason,
+    reason: options.failure.reason,
     workspaceRoot: root,
-    artifacts: evidence({ files }),
+    artifacts: evidence({
+      files: [
+        owned && selectedFailureFile !== null ? selectedFailureFile : options.failureFile,
+        ...files,
+      ],
+    }),
   };
 }
 

@@ -1,5 +1,6 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { authoredIdentity, requireEvaluationContent } from '../evaluation-content.js';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
@@ -20,6 +21,7 @@ import {
   readStageArtifact,
   readStagePlan,
   stageRoot,
+  stageRounds,
   stageWorktree,
   writeStageArtifact,
 } from '../storage.js';
@@ -143,11 +145,23 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
 
     if (outcome === 'accepted' || outcome === 'skipped') {
       const verdict = outcome === 'accepted' ? 'accepted' : 'accepted-skip';
-      if (evaluation?.assessedRevision !== author.revision || evaluation.verdict !== verdict) {
+      if (
+        evaluation?.assessedRevision !== author.revision ||
+        evaluation.verdict !== verdict ||
+        evaluation.authorIdentity !== authoredIdentity(author)
+      ) {
         throw new Error(
           'Acceptance requires evaluation of the exact authored revision and applicability.',
         );
       }
+      await requireEvaluationContent({
+        git: settings.git,
+        worktree,
+        stage: settings.stage,
+        author,
+        revision: evaluation?.contentRevision ?? null,
+        paths: evaluation.contentPaths,
+      });
     }
     if (author.plan.length > 0) {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
@@ -161,36 +175,11 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     let revision: string | null = null;
     let prototype: PreparationResult['prototype'] = null;
     if (inspectWorktree && outcome === 'accepted') {
-      const paths =
-        settings.stage === 'prototype' ? ['.'] : author.documents.map((document) => document.path);
-      for (const file of paths) {
-        const relative = path.relative(worktree, path.resolve(worktree, file));
-        if (path.isAbsolute(relative) || relative.startsWith('..')) {
-          throw new Error(`Accepted document "${file}" lies outside its worktree.`);
-        }
-      }
-      const committed = await settings.git.commitPaths(
-        worktree,
-        paths,
-        `Retain accepted ${settings.stage} content for ${selection.taskKey}`,
-      );
-      if (!committed.ok) throw new Error(committed.fault.message);
-      const inspection = await settings.git.inspectRepository(worktree);
-      if (!inspection.ok) {
-        throw new Error(inspection.fault.message);
-      }
-      revision = inspection.value.headRevision;
+      revision = evaluation?.contentRevision ?? null;
       if (revision === null) throw new Error('Accepted content has no saved repository revision.');
-      for (const document of author.documents) {
-        const saved = await settings.git.readFileAtRevision(worktree, revision, document.path);
-        if (!saved.ok) throw new Error(saved.fault.message);
-        if (saved.value !== (await readFile(path.resolve(worktree, document.path), 'utf8'))) {
-          throw new Error(
-            `Accepted document "${document.path}" does not match its saved revision.`,
-          );
-        }
-      }
       if (settings.stage === 'prototype') {
+        const inspection = await settings.git.inspectRepository(worktree);
+        if (!inspection.ok) throw new Error(inspection.fault.message);
         const { branch, headRevision } = inspection.value;
         if (branch === null || headRevision === null) {
           throw new Error(
@@ -201,40 +190,95 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         prototype = { branch, revision: headRevision };
       }
     }
-    const existingDocuments: PreparationResult['existingDocuments'] = [];
     const skipReferences = outcome === 'skipped' ? (author.skip?.references ?? []) : [];
-    if (skipReferences.length > 0) {
-      const inspection = await settings.git.inspectRepository(worktree);
-      if (!inspection.ok) throw new Error(inspection.fault.message);
-      const head = inspection.value.headRevision;
-      for (const reference of skipReferences) {
-        const file = path.resolve(worktree, reference);
-        const relative = path.relative(worktree, file);
-        if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
-        try {
-          if (!(await stat(file)).isFile()) continue;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-          throw error;
-        }
-        if (head === null)
+    const existingDocuments: PreparationResult['existingDocuments'] = [];
+    if (outcome === 'skipped') {
+      for (const file of evaluation?.contentPaths ?? []) {
+        const revision = evaluation?.contentRevision;
+        if (revision === null || revision === undefined)
           throw new Error('Existing authoritative documents need a saved revision.');
-        const saved = await settings.git.readFileAtRevision(worktree, head, relative);
-        if (!saved.ok) throw new Error(saved.fault.message);
-        if (saved.value !== (await readFile(file, 'utf8'))) {
-          throw new Error(
-            `Existing document "${relative}" differs from its accepted repository revision.`,
+        existingDocuments.push({ path: path.resolve(worktree, file), revision });
+      }
+    }
+    // Only the immediately preceding round may supply reused assets. A later rejection or
+    // return invalidates that acceptance; never search backwards past it for convenient work.
+    const reusedDocuments: PreparationResult['documents'] = [];
+    if (outcome === 'skipped') {
+      const previousRound = (await stageRounds(root)).filter((round) => round < plan.round).at(-1);
+      const previous =
+        previousRound === undefined
+          ? null
+          : await readStageArtifact(root, previousRound, stageResultArtifact);
+      if (
+        previous !== null &&
+        (previous.outcome === 'accepted' || previous.outcome === 'skipped')
+      ) {
+        const previousFile = path.join(
+          root,
+          'artifacts',
+          String(previousRound),
+          stageResultArtifact.pathFromArtifactsRoot,
+        );
+        const reusesResult = skipReferences.some(
+          (reference) => path.resolve(worktree, reference) === previousFile,
+        );
+        for (const document of previous.documents) {
+          if (
+            !reusesResult &&
+            !skipReferences.some((reference) => path.resolve(worktree, reference) === document.path)
+          )
+            continue;
+          if (document.revision === null)
+            throw new Error('Reused accepted content has no immutable revision.');
+          const relative = path.relative(worktree, document.path);
+          const saved = await settings.git.readFileAtRevision(
+            worktree,
+            document.revision,
+            relative,
           );
+          if (!saved.ok) throw new Error(saved.fault.message);
+          const evaluated =
+            evaluation?.contentRevision === null || evaluation?.contentRevision === undefined
+              ? null
+              : await settings.git.readFileAtRevision(
+                  worktree,
+                  evaluation.contentRevision,
+                  relative,
+                );
+          if (
+            evaluated === null ||
+            !evaluated.ok ||
+            saved.value !== evaluated.value ||
+            saved.value !== (await readFile(document.path, 'utf8'))
+          )
+            throw new Error('Reused document changed; reevaluation is required.');
+          reusedDocuments.push(document);
         }
-        existingDocuments.push({ path: file, revision: head });
+        if (settings.stage === 'prototype' && previous.prototype !== null) {
+          const reusesPrototype =
+            reusesResult ||
+            skipReferences.some((reference) => {
+              const file = path.resolve(worktree, reference);
+              return (
+                reference === previous.prototype?.revision ||
+                reference === previous.prototype?.branch ||
+                file === worktree ||
+                existingDocuments.some((document) => document.path === file)
+              );
+            });
+          if (reusesPrototype && evaluation?.contentRevision === previous.prototype.revision)
+            prototype = previous.prototype;
+        }
       }
     }
     const documents: PreparationResult['documents'] = (
       outcome === 'accepted' ? author.documents : []
-    ).map((document) => ({
-      path: path.resolve(worktree, document.path),
-      revision,
-    }));
+    )
+      .map((document) => ({
+        path: path.resolve(worktree, document.path),
+        revision,
+      }))
+      .concat(reusedDocuments);
     const outputs: PreparationResult['outputs'] = documents.map((document) => ({
       path: document.path,
     }));

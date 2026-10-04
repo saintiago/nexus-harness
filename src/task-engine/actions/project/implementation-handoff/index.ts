@@ -280,7 +280,9 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         return null;
       }
       const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
-      return stageResult?.prototype ?? null;
+      return stageResult?.outcome === 'accepted' || stageResult?.outcome === 'skipped'
+        ? stageResult.prototype
+        : null;
     }
 
     const accepted = await readAcceptedDocuments(root);
@@ -295,7 +297,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       if (publication.kind === 'failed') {
         return failed(publication.reason);
       }
-      mergeRevision = publication.mergeRevision;
+      mergeRevision = publication.kind === 'unchanged' ? null : publication.mergeRevision;
     }
     const prototype = await retainedPrototype();
     const existingReferences: string[] = [];
@@ -340,6 +342,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         );
       }
       let ticket = retainedTicket;
+      let newlyCreated = false;
       if (ticket === undefined) {
         // An interrupted create may have succeeded without its response reaching Nexus. Its
         // source-side identity is searched before another create request is sent.
@@ -383,6 +386,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         if (!created.ok) {
           return failed(created.fault.message);
         }
+        newlyCreated = true;
         ticket = {
           key: created.value.key,
           issueId: created.value.id,
@@ -400,6 +404,18 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         });
       }
 
+      if (retainedTicket === undefined && ticket.admission === undefined && newlyCreated) {
+        const initial = statusNameOf(await readIssue(settings.jira, ticket.issueId));
+        if (initial === null)
+          return failed(`Implementation ticket ${ticket.key} has no observable initial status.`);
+        ticket = { ...ticket, admission: { initialStatus: initial, completed: false } };
+        ticketsByTask.set(index, ticket);
+        await writeHandoff(root, {
+          ...handoff,
+          tickets: retainedTickets(),
+          publications: handoff.publications,
+        });
+      }
       if (ticket.linked !== true) {
         const linked = await settings.jira.linkIssues(
           ticket.issueId,
@@ -443,20 +459,40 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           publications: handoff.publications,
         });
       }
-      // The created ticket competes in the configured ready queue; an already-ready ticket is a
-      // repeated effect and is not moved again.
+      // Admission is distinct from later human status changes. Replays finish only the recorded
+      // initial-to-ready transition or recognize its already-applied target.
       const issue = await readIssue(settings.jira, ticket.issueId);
-      if (statusNameOf(issue) !== settings.implementation.status) {
+      const status = statusNameOf(issue);
+      if (status !== settings.implementation.status) {
+        if (
+          ticket.admission === undefined ||
+          ticket.admission.completed ||
+          status !== ticket.admission.initialStatus
+        )
+          return failed(
+            `Implementation ticket ${ticket.key} is in unexpected status "${status ?? 'unknown'}"; its human status is preserved and admission needs attention.`,
+          );
         const transition = await transitionInto(
           settings.jira,
           issue,
           settings.implementation.status,
         );
-        if (transition.kind === 'blocked') {
-          return failed(transition.reason);
-        }
+        if (transition.kind === 'blocked') return failed(transition.reason);
         await applyTransition(settings.jira, issue.id, transition.transition);
       }
+      ticket = {
+        ...ticket,
+        admission: {
+          initialStatus: ticket.admission?.initialStatus ?? settings.implementation.status,
+          completed: true,
+        },
+      };
+      ticketsByTask.set(index, ticket);
+      await writeHandoff(root, {
+        ...handoff,
+        tickets: retainedTickets(),
+        publications: handoff.publications,
+      });
     }
 
     const tickets = retainedTickets();
@@ -593,6 +629,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       documents: readonly AcceptedDocument[],
     ): Promise<
       | { readonly kind: 'merged'; readonly mergeRevision: string }
+      | { readonly kind: 'unchanged' }
       | { readonly kind: 'failed'; readonly reason: string }
     > {
       const prepared = await prepareDocumentationPublication({
@@ -602,11 +639,39 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         git: settings.git,
       });
       if (prepared.kind === 'failed') return prepared;
-      if (prepared.kind === 'unchanged')
-        return {
-          kind: 'failed',
-          reason: 'The accepted publication unexpectedly contains no documents.',
-        };
+      if (prepared.kind === 'unchanged') {
+        // A merge can make the diff empty before its checks finish. Discover an existing exact-head
+        // publication and finish its gates; an empty diff never authorizes bypassing those checks.
+        if (prepared.head === undefined || prepared.branch === undefined) return prepared;
+        const found = await settings.github.findPullRequests(settings.repository, {
+          branch: prepared.branch,
+          baseBranch: settings.baseBranch,
+        });
+        if (!found.ok) return { kind: 'failed', reason: found.fault.message };
+        for (const identity of found.value) {
+          const observed = await settings.github.readPullRequest(
+            settings.repository,
+            identity.number,
+          );
+          if (!observed.ok) return { kind: 'failed', reason: observed.fault.message };
+          if (observed.value.headRevision !== prepared.head) continue;
+          if (observed.value.state === 'closed' && !observed.value.merged)
+            return {
+              kind: 'failed',
+              reason:
+                'The documentation pull request was closed without merging; the retained human decision is preserved.',
+            };
+          const publication = await drivePublication(identity.number, prepared.head);
+          if (publication.kind === 'failed') return publication;
+          handoff.publications = [
+            ...handoff.publications.filter((entry) => entry.kind !== 'documentation-pr'),
+            { kind: 'documentation-pr', id: publication.pullRequest.url },
+          ];
+          await writeHandoff(root, handoff);
+          return { kind: 'merged', mergeRevision: publication.mergeRevision };
+        }
+        return prepared;
+      }
       const { branch, head } = prepared;
       const paused = await sourceProblem();
       if (paused !== null) return { kind: 'failed', reason: paused };

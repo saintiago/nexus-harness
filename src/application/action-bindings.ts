@@ -59,7 +59,7 @@ import {
   createRecordIdeaDecision,
 } from '../task-engine/actions/publish-decision/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
-import { readIssue, statusNameOf } from '../task-engine/actions/source.js';
+import { selectionFailureDeclaration } from '../task-engine/actions/select-work/artifacts.js';
 import { createResearcher } from '../task-engine/actions/researcher/index.js';
 import { createRouteDeliveryEntry } from '../task-engine/actions/route-delivery-entry/index.js';
 import { createReview } from '../task-engine/actions/review/index.js';
@@ -256,7 +256,13 @@ export function createActionBinding(
     const stageEvaluatorActions = Object.fromEntries(
       preparationStages.map((stage) => [
         stage,
-        createStageEvaluator({ selectionFile, stage, runner: stageEvaluators[stage], publish }),
+        createStageEvaluator({
+          selectionFile,
+          stage,
+          runner: stageEvaluators[stage],
+          git: settings.git,
+          publish,
+        }),
       ]),
     ) as Record<PreparationStage, BoundAction>;
 
@@ -300,6 +306,18 @@ export function createActionBinding(
           ? (input as { readonly terminal?: unknown }).terminal
           : undefined;
       try {
+        if (terminal === 'selection-failed') {
+          const failureFile = path.join(
+            path.dirname(selectionFile),
+            selectionFailureDeclaration.file,
+          );
+          const failure = await readRequiredRecord(
+            failureFile,
+            selectionFailureDeclaration,
+            'Selection failure',
+          );
+          return await analyzeExperience(await selectionFailureHandoff({ failure, failureFile }));
+        }
         const selection = await selected();
         if (
           typeof terminal === 'string' &&
@@ -310,18 +328,6 @@ export function createActionBinding(
             terminal: terminal as (typeof ideaPublicationTerminals)[number],
           });
           return await analyzeExperience(handoff);
-        }
-        if (terminal === 'selection-failed') {
-          const issue = await readIssue(settings.jira, selection.source.issueId);
-          const status = statusNameOf(issue);
-          return await analyzeExperience(
-            await selectionFailureHandoff({
-              selection,
-              reason:
-                `Selection of ${selection.taskKey} failed${status === null ? '' : ` in status "${status}"`}; ` +
-                'the issue needs attention before the parent can continue.',
-            }),
-          );
         }
         if (isPreparationTerminal(terminal)) {
           // The published stage is supplied with the terminal: an advance has already moved the

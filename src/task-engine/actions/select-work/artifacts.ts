@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { selectionSchema } from '../select-task/artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 
 /**
@@ -31,6 +32,7 @@ export const handoffTicketSchema = z.object({
   summary: z.string().min(1),
   linked: z.boolean().optional(),
   ranked: z.boolean().optional(),
+  admission: z.object({ initialStatus: z.string().min(1), completed: z.boolean() }).optional(),
 });
 
 export type HandoffTicket = z.infer<typeof handoffTicketSchema>;
@@ -95,3 +97,16 @@ export function initialHandoff(stage: ParentHandoff['stage']): ParentHandoff {
     publications: [],
   };
 }
+
+/** SelectWork's failed candidate, independent of any earlier selection. */
+export const selectionFailureDeclaration = {
+  file: 'selection-failure.json',
+  schema: z.object({
+    taskKey: z.string().min(1),
+    source: z.object({ kind: z.literal('jira'), issueId: z.string().min(1) }),
+    reason: z.string().min(1),
+    selection: selectionSchema.nullable(),
+  }),
+} satisfies RecordDeclaration;
+
+export type SelectionFailure = z.infer<typeof selectionFailureDeclaration.schema>;

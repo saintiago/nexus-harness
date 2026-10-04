@@ -43,13 +43,19 @@ and result.json. The round plan records the selected role profiles, the authored
 reason for opening the round. Earlier rounds remain history. StageResult retains the latest terminal
 invocation in state/result.json; re-entry exhaustion updates this record without replacing a
 completed round result. Parent publication reads that terminal, while history consumers read rounds.
-Accepted document changes are committed by named paths; accepted prototype work is committed on its
-retained stage branch. References name revisions containing the accepted content. Evaluated skips
-retain their input references and the saved revisions of existing authoritative documents. Parent
-source handoffs are stored outside stage-owned rounds. Before returning an accepted Architecture
+Before evaluation, authored document changes are committed by named paths and prototype work is
+committed on its retained stage branch. The assessment records that immutable content revision and
+the concrete file paths it assessed and the identity of the authored report, including its plan and
+skip references. Validate content and report after evaluation and before accepting the result; changed content requires reevaluation. References name
+revisions containing the evaluated content. Evaluated skips retain their input references and the
+saved revisions of existing authoritative documents. Explicit reuse of the preceding accepted or
+skipped result carries forward its unchanged accepted documents and prototype references. Never
+search past an intervening invalid or unfinished round to recover older acceptance. Parent source
+handoffs are stored outside stage-owned rounds. Before returning an accepted Architecture
 handoff, ReviewPreparationPublication assembles the immutable accepted documents, validates the
-whole diff and saves the repository reviewer's assessment for that exact revision. The parent
-reconciles publication from this report; an absent or negative assessment cannot authorize merge.
+branch's complete contributed diff from its common ancestor with the configured base, and saves the
+repository reviewer's assessment for that exact revision. The parent reconciles publication from this
+report; an absent or negative assessment cannot authorize merge.
 
 The author owns its proposed artifacts, applicability reason and finding responses. The evaluator
 owns findings, prior dispositions and acceptance of the current revision. Import the existing

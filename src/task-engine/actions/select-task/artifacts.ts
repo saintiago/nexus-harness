@@ -34,6 +34,8 @@ export const selectionSchema = z.object({
   workspace: z.object({ root: z.string().min(1) }),
   /** The stage this selection entered; the parent invokes that stage's child. */
   stage: z.enum(workflowStages),
+  /** Initial ready admission survives refreshed snapshots until preparation completes. */
+  initialClaim: z.boolean().optional(),
 });
 
 /** The selected task, complete source input and retained workspace reference. */

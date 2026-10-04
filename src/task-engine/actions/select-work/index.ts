@@ -26,6 +26,7 @@ import {
   handoffFile,
   parentHandoffDeclaration,
   initialHandoff,
+  selectionFailureDeclaration,
   type ParentHandoff,
 } from './artifacts.js';
 import {
@@ -126,7 +127,29 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
   const { jira, publish } = settings;
 
   /** Report an issue condition that prevents selection. */
-  function fail(reason: string): 'failed' {
+  async function fail(
+    reason: string,
+    issue: JiraIssue,
+    selection: Selection | null = null,
+  ): Promise<'failed'> {
+    const failure = {
+      taskKey: issue.key,
+      source: { kind: 'jira' as const, issueId: issue.id },
+      reason,
+      selection,
+    };
+    await mkdir(path.dirname(settings.selectionFile), { recursive: true });
+    await writeRecord(
+      path.join(path.dirname(settings.selectionFile), selectionFailureDeclaration.file),
+      failure,
+    );
+    if (selection !== null && (await isDirectory(selection.workspace.root))) {
+      await mkdir(path.join(selection.workspace.root, parentAreaDirectory), { recursive: true });
+      await writeRecord(
+        path.join(selection.workspace.root, parentAreaDirectory, selectionFailureDeclaration.file),
+        failure,
+      );
+    }
     publish({ source: 'select-work', type: 'failed', data: { reason } });
     return 'failed';
   }
@@ -232,9 +255,10 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       // The saved ready selection proves an interrupted initial claim. This exception never admits
       // In Review and never treats an attempt UUID as delivery/review evidence.
       if (
+        prepared === null &&
         status === settings.statuses.inProgress &&
         saved?.stage === 'delivery' &&
-        statusNameOf(saved.task as JiraIssue) === settings.statuses.ready &&
+        (saved.initialClaim ?? statusNameOf(saved.task as JiraIssue) === settings.statuses.ready) &&
         saved.workspace.root === recorded
       ) {
         return null;
@@ -374,18 +398,28 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     if (saved.stage === 'delivery' && statusNameOf(issue) !== settings.statuses.ready) {
       const problem = await activeDeliveryProblem(issue, saved);
       if (problem !== null) {
-        return fail(problem);
+        return fail(problem, issue, saved);
       }
     }
     const workspace = await workspaceFor(issue);
     if (!workspace.ok) {
-      return fail(workspace.fault.message);
+      return fail(workspace.fault.message, issue, saved);
     }
     // Re-capture the issue and its complete attributed conversation, so human clarifications
     // added while the item waited for feedback govern the resumed work.
     const conversation = await readComments(jira, issue.id);
+    const prepared = await readRecord(
+      path.join(workspace.value, preparedWorkspaceFile),
+      preparedWorkspaceDeclaration,
+    );
     await saveSelection({
       ...saved,
+      initialClaim:
+        saved.stage === 'delivery' &&
+        prepared === null &&
+        (statusNameOf(issue) === settings.statuses.ready ||
+          (saved.initialClaim ??
+            statusNameOf(saved.task as JiraIssue) === settings.statuses.ready)),
       task: issue,
       conversation,
       workspace: { root: workspace.value },
@@ -393,7 +427,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     await retainHandoff(workspace.value, saved.stage);
     const problem = await claim(issue, saved.stage, workspace.value);
     if (problem !== null) {
-      return fail(problem);
+      return fail(problem, issue, saved);
     }
     return selected(saved.taskKey, saved.stage);
   }
@@ -426,7 +460,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       }
       const firstStage = stageOf(statusNameOf(first) ?? '');
       if (!firstStage.ok) {
-        return fail(firstStage.fault.message);
+        return fail(firstStage.fault.message, first);
       }
       if (firstStage.value === null) {
         continue;
@@ -440,7 +474,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       }
       const currentStage = stageOf(statusNameOf(current) ?? '');
       if (!currentStage.ok) {
-        return fail(currentStage.fault.message);
+        return fail(currentStage.fault.message, current);
       }
       if (currentStage.value === null) {
         continue;
@@ -450,27 +484,30 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
         // delivery attempt.
         const problem = await activeDeliveryProblem(current);
         if (problem !== null) {
-          return fail(problem);
+          return fail(problem, current);
         }
       }
 
       const workspace = await workspaceFor(current);
       if (!workspace.ok) {
-        return fail(workspace.fault.message);
+        return fail(workspace.fault.message, current);
       }
-      await saveSelection({
+      const nextSelection: Selection = {
         taskKey: current.key,
         source: { kind: 'jira', issueId: current.id },
         task: current,
         conversation,
         workspace: { root: workspace.value },
         stage: currentStage.value,
-      });
+        initialClaim:
+          currentStage.value === 'delivery' && statusNameOf(current) === settings.statuses.ready,
+      };
+      await saveSelection(nextSelection);
       await retainHandoff(workspace.value, currentStage.value);
 
       const problem = await claim(current, currentStage.value, workspace.value);
       if (problem !== null) {
-        return fail(problem);
+        return fail(problem, current, nextSelection);
       }
       return selected(current.key, currentStage.value);
     }
@@ -486,7 +523,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     const issue = await readIssue(jira, saved.source.issueId);
     const stage = stageOf(statusNameOf(issue) ?? '');
     if (!stage.ok) {
-      return fail(stage.fault.message);
+      return fail(stage.fault.message, issue, saved);
     }
     if (stage.value === null) {
       // The retained issue reached a state the parent does not continue; selection starts over.

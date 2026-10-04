@@ -18,6 +18,8 @@ import {
 import { createTaskEngine } from '../src/task-engine/index.js';
 import { preparation } from '../workflows/preparation.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
+import { authoredIdentity } from '../src/task-engine/actions/preparation/evaluation-content.js';
+import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { scriptedGit, repositoryState } from './support/git.js';
@@ -60,6 +62,8 @@ async function select(options: {
   readonly issues: readonly JiraIssue[];
   readonly preparation?: boolean;
   readonly orderBy?: string;
+  readonly selectionFile?: string;
+  readonly replays?: number;
   readonly retained?: { readonly task: JiraIssue; readonly workspace: string };
 }): Promise<{
   readonly result: string;
@@ -73,7 +77,7 @@ async function select(options: {
 }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-select-work-'));
   temporaryDirectories.push(directory);
-  const selectionFile = path.join(directory, 'selection.json');
+  const selectionFile = options.selectionFile ?? path.join(directory, 'selection.json');
   if (options.retained) {
     await writeFile(
       selectionFile,
@@ -159,7 +163,11 @@ async function select(options: {
     },
   };
   const action: BoundAction = createSelectWork(settings);
-  const result = await action();
+  let result = await action();
+  for (let replay = 0; replay < (options.replays ?? 0); replay += 1) {
+    expect(result).toBe('selected');
+    result = await action();
+  }
   let selection: { readonly stage?: string; readonly taskKey?: string } | null = null;
   try {
     selection = JSON.parse(await readFile(selectionFile, 'utf8')) as typeof selection;
@@ -238,6 +246,11 @@ describe('SelectWork admission and routing', () => {
             JSON.stringify({
               assessedRevision: 1,
               verdict: 'accepted-skip',
+              authorIdentity: authoredIdentity(
+                stageAuthorArtifact.schema.parse(
+                  JSON.parse(await readFile(path.join(artifacts, 'author.json'), 'utf8')),
+                ),
+              ),
               reason: 'Examples are covered.',
               findings: [],
               priorFindings: [],
@@ -399,12 +412,33 @@ describe('SelectWork admission and routing', () => {
     const selected = await select({
       issues: [candidate],
       retained: { task: issue('1', 'NEX-1', 'To Do'), workspace },
+      replays: 3,
     });
     expect(selected.result).toBe('selected');
     expect(selected.transitions).toEqual([]);
+    expect(JSON.parse(await readFile(selected.selectionFile, 'utf8')).initialClaim).toBe(true);
+    await mkdir(path.join(workspace, 'state'), { recursive: true });
+    const preparedFile = path.join(workspace, 'state/prepared-workspace.json');
+    await writeFile(
+      preparedFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        repository: '/repo.git',
+        branch: 'task/NEX-1',
+        baseRevision: '1'.repeat(40),
+      }),
+    );
+    expect(
+      (await select({ issues: [candidate], selectionFile: selected.selectionFile })).result,
+    ).toBe('selected');
+    expect(JSON.parse(await readFile(selected.selectionFile, 'utf8')).initialClaim).toBe(false);
+    await rm(preparedFile);
+    expect(
+      (await select({ issues: [candidate], selectionFile: selected.selectionFile })).result,
+    ).toBe('failed');
     const review = await select({
       issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
-      retained: { task: issue('1', 'NEX-1', 'To Do'), workspace },
+      selectionFile: selected.selectionFile,
     });
     expect(review.result).toBe('failed');
   });

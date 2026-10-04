@@ -45,6 +45,12 @@ export type GitAdapter = {
     message: string,
   ): Promise<Result<BranchHead>>;
   readFileAtRevision(repository: string, revision: string, file: string): Promise<Result<string>>;
+  /** Common ancestor used to inspect the branch's contribution against an advancing base. */
+  readMergeBase(
+    repository: string,
+    baseRevision: string,
+    headRevision: string,
+  ): Promise<Result<string>>;
   readChangedPaths(
     repository: string,
     baseRevision: string,
@@ -280,6 +286,11 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
     async readFileAtRevision(repository, revision, file) {
       const content = await required(['show', `${revision}:${file}`], repository);
       return content.ok ? ok(content.value.stdout) : content;
+    },
+
+    async readMergeBase(repository, baseRevision, headRevision) {
+      const base = await required(['merge-base', baseRevision, headRevision], repository);
+      return base.ok ? ok(base.value.stdout.trim()) : base;
     },
 
     async readChangedPaths(repository, baseRevision, headRevision) {

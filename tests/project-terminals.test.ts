@@ -265,16 +265,25 @@ describe('preparation terminal handoffs', () => {
       JSON.stringify(initialHandoff('requirements')),
     );
     await writeFile(path.join(stage, 'state/current-round.json'), JSON.stringify({}));
+    await writeFile(
+      path.join(root, parentAreaDirectory, 'selection-failure.json'),
+      JSON.stringify({ reason: 'the mapped status is missing' }),
+    );
     const handoff = await selectionFailureHandoff({
-      selection: {
+      failureFile: path.join(root, 'selection-failure.json'),
+      failure: {
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: {},
-        conversation: [],
-        workspace: { root },
-        stage: 'requirements',
+        reason: 'the mapped status is missing',
+        selection: {
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '1' },
+          task: {},
+          conversation: [],
+          workspace: { root },
+          stage: 'requirements',
+        },
       },
-      reason: 'the mapped status is missing',
     });
 
     expect(handoff).toMatchObject({
