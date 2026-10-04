@@ -998,7 +998,7 @@ describe('idea refinement journeys', () => {
    * clarification as the current proposal, the earlier publication as history, and approval
    * publishing the proposal with an optional suggestion that did not block it. Whether a real
    * agent produces those outputs is a role-quality question, established separately by inspecting
-   * actual exchanges (tests/fixtures/idea-refinement), not by a controlled journey.
+   * actual exchanges, not by a controlled journey.
    */
   it('keeps a clarified architectural proposal open and publishes it as proposed', async () => {
     const earlierInterpretation =

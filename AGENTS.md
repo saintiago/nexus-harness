@@ -95,4 +95,3 @@ Apply these to component responsibilities and public contracts as well as code.
 
 - [Testing architecture](docs/testing.md): test scopes, contracts and system journeys.
 - [Documentation guide](docs/documentation.md): document ownership and maintenance.
-- [Task inventory](docs/tasks/inventory.md): implementation tasks and current statuses.
