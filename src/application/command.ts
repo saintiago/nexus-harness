@@ -25,12 +25,11 @@ export type OperatorCommand =
 /** The documented command forms; help requires no configuration or external connections. */
 export const operatorUsage = `Usage:
   nexus queue run --project-config <file>
-  nexus ideas refine --project-config <file>
   nexus --help
 
-Runs one execution of the selected workflow for the project the configuration file describes: the
-finite delivery queue, or one idea refinement pass. The installation names its Nexus configuration
-filepath through the ${installationConfigSetting} environment setting.
+Runs one execution of the project parent for the project the configuration file describes. The
+parent selects one issue at a time and invokes the child appropriate to its stage. The installation
+names its Nexus configuration filepath through the ${installationConfigSetting} environment setting.
 `;
 
 /** Reject one input as invalid, naming what the command did not accept. */
@@ -47,16 +46,9 @@ export function parseOperatorCommand(args: readonly string[]): OperatorCommand {
   if (command === '--help') {
     return rest.length === 0 ? { kind: 'help' } : invalid(`Unknown option "${rest[0]}".`);
   }
-  const selected =
-    command === 'queue'
-      ? { workflow: 'finite-delivery' as const, subcommand: 'run' }
-      : command === 'ideas'
-        ? { workflow: 'idea-refinement' as const, subcommand: 'refine' }
-        : null;
+  const selected = command === 'queue' ? { workflow: 'project' as const, subcommand: 'run' } : null;
   if (selected === null) {
-    return invalid(
-      `Unknown command "${command}"; the documented commands are "queue run" and "ideas refine".`,
-    );
+    return invalid(`Unknown command "${command}"; the documented command is "queue run".`);
   }
   const [subcommand, ...options] = rest;
   if (subcommand !== selected.subcommand) {

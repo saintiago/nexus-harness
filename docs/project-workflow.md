@@ -38,9 +38,13 @@ is distinct from this parent state machine.
 ## Entry and routing
 
 New selection uses mapped Jira status. Draft is the admission boundary: selected Draft work enters
-Requirements. Active statuses require retained work; an In Review entry cannot invent delivery or
-review evidence. Interrupted execution restores the parent snapshot and its active children rather
-than choosing another entry from Jira.
+Requirements and is claimed into its distinct active Requirements status before the child runs.
+An upstream return to Idea establishes active Idea Refinement before invoking that child. Active
+delivery statuses require prepared work on both fresh selection and retained continuation; In Review
+also requires delivery and matching completed development/passed verification evidence. An attempt UUID is not that
+evidence. A saved ready selection may finish an interrupted initial In Progress claim. Interrupted
+execution restores the parent snapshot and its active children rather than choosing another entry
+from Jira.
 
 | Source stage | Child |
 | --- | --- |
@@ -146,14 +150,26 @@ role or Jira status.
 ## Documentation and implementation handoff
 
 Publish changed authoritative documents in a documentation-only PR and confirm merge/check evidence
-before creating implementation tickets. If existing documents already suffice, reference their
-accepted revision and skip evidence; do not create an empty PR. Existing repository gates remain;
-there is no additional approval gate beyond essential author decisions.
+before creating implementation tickets. Determine publication necessity from the actual document
+contribution reconciled with the current base. Unrelated base changes are not publication changes.
+An empty document diff opens no PR; a previously started publication still completes its exact-revision merge/check gates on replay.
+If existing documents already suffice, reference their accepted revision and skip evidence; do not
+create an empty PR. Existing repository gates remain;
+there is no additional approval gate beyond essential author decisions. The existing repository
+reviewer assesses the exact assembled documentation revision within the Architecture child; the
+deterministic parent publishes that saved assessment's actual Lens review/check verdict. Retained negative evidence is preserved and requests repairs, never replaced
+with deterministic approval. Validate the entire publication diff against accepted document paths.
 
 The parent creates concise implementation tickets linked to merged documents, source issue and any
-retained prototype references. Rank prerequisites before dependent tasks within the normal project
-queue. Retain created ticket identities as operations succeed. Reconcile uncertain creation against
-the source issue and planned task before retrying; interruption must not duplicate tickets.
+retained prototype references. Validate the dependency graph before applying handoff effects and
+create tasks in a topological order. Rank prerequisites before dependent tasks using actual Jira
+rank order, moving a premature dependent after its last prerequisite without moving it ahead of
+unrelated higher-ranked work. Retain created ticket identities as operations succeed. Reconcile
+uncertain creation against the source issue and planned task before retrying; interruption must not
+duplicate tickets. Record each new ticket's initial admission status separately from later source
+changes. On replay, accept that recorded initial state while admission is unfinished, or the
+already-applied configured ready status. An unexpected retained status requests attention and is
+preserved; an unknown initial state cannot authorize a transition.
 
 After every planned ticket exists and is linked, move the original to Done with a preparation-complete
 comment and the implementation links. The original never enters finite delivery. Even one
@@ -166,8 +182,11 @@ rank order rather than bypassing higher-ranked project work.
 The parent invokes the existing development/verification/delivery/review/repair/completion machine
 for one selected implementation ticket. Move selection and Jira publication to parent-owned actions
 and supplied boundary actors. Keep verified-head publication, auto-merge, complete findings/profile
-escalation, GitHub review publication and required pre/post-merge checks. Completion returns merge/check
-evidence; the parent marks the ticket Done only afterward. Parent-owned actors refresh source input
+escalation, GitHub review publication and required pre/post-merge checks. On admission of retained
+work, RouteDeliveryEntry chooses the first unfinished phase from development/verification/delivery
+artifacts; an already-delivered revision continues publication/review rather than opening another
+coding round. An active child restored from a snapshot keeps its checkpoint. Completion returns
+merge/check evidence; the parent marks the ticket Done only afterward. Parent-owned actors refresh source input
 at the coding boundaries that need it and publish milestone feedback before the child proceeds.
 
 The existing queue command runs the project parent. HARN delivery-only configuration can bootstrap

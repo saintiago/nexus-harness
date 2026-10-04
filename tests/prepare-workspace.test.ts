@@ -2,7 +2,7 @@
  * Focused integration tests: the real PrepareWorkspace drives real temporary repositories through
  * the real Git and Processes adapters, establishing new-attempt branching, retained-work
  * continuation, preparation output and failure reporting. Controlled Jira input covers the
- * producer-to-consumer path from SelectTask. No live service or existing workspace is involved.
+ * producer-to-consumer path from SelectWork. No live service or existing workspace is involved.
  */
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -18,7 +18,7 @@ import {
   createPrepareWorkspace,
   type PrepareWorkspaceSettings,
 } from '../src/task-engine/actions/prepare-workspace/index.js';
-import { createSelectTask } from '../src/task-engine/actions/select-task/index.js';
+import { createSelectWork } from '../src/task-engine/actions/select-work/index.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { scriptedJira } from './support/jira.js';
 
@@ -114,7 +114,7 @@ async function publish(
   return headOf(source);
 }
 
-/** Write the selection SelectTask normally saves for one task. */
+/** Write the selection SelectWork normally saves for one task. */
 async function writeSelection(taskKey: string, workspaceRoot: string): Promise<string> {
   const file = path.join(root, 'executions', 'selection.json');
   await mkdir(path.dirname(file), { recursive: true });
@@ -127,6 +127,7 @@ async function writeSelection(taskKey: string, workspaceRoot: string): Promise<s
         task: { id: taskKey, key: taskKey, fields: {} },
         conversation: [],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -203,6 +204,7 @@ describe('PrepareWorkspace', () => {
     });
 
     await expect(prepare()).resolves.toBe('prepared');
+    expect(JSON.parse(await readFile(selectionFile, 'utf8')).initialClaim).toBe(false);
 
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-1',
@@ -574,7 +576,7 @@ describe('PrepareWorkspace', () => {
     );
   });
 
-  it('prepares the workspace that the real SelectTask selected', async () => {
+  it('prepares the workspace that the real SelectWork selected', async () => {
     const { origin, revision } = await repositoryWithOrigin();
     const selected = {
       id: '1',
@@ -595,11 +597,19 @@ describe('PrepareWorkspace', () => {
       transitionIssue: () => ok(undefined),
     });
     const selectionFile = path.join(root, 'executions', 'selection.json');
-    const select = createSelectTask({
+    const select = createSelectWork({
       selectionFile,
       workspaceRoot: path.join(root, 'workspaces'),
       project: 'NEX',
       selection: { query: 'project = NEX', orderBy: 'Rank ASC' },
+      ideas: { query: 'project = NEX AND status = Idea', orderBy: 'Rank ASC' },
+      preparation: undefined,
+      ideaStatuses: {
+        submitted: 'Idea',
+        active: 'Idea Refinement',
+        approved: 'Draft',
+        waitingForFeedback: 'Waiting for Feedback',
+      },
       statuses: {
         ready: 'To Do',
         inProgress: 'In Progress',

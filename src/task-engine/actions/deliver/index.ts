@@ -1,26 +1,16 @@
 import path from 'node:path';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
-import type { JiraAdapter, JiraTransition } from '../../../adapters/jira.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
-import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
+import { devArtifact } from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
-import {
-  applyTransition,
-  issueSummary,
-  publishComment,
-  readComments,
-  readIssue,
-  statusNameOf,
-  transitionInto,
-  updateIssueFields,
-} from '../source.js';
+import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { retainTerminalReason } from '../terminal-reason.js';
 import { verificationArtifact } from '../verify/artifacts.js';
@@ -28,9 +18,9 @@ import { deliveryArtifact, deliveryFailureArtifact, type DeliveryOutput } from '
 
 /**
  * Deliver publishes the current round's verified revision: it pushes the prepared branch, confirms
- * the remote head, finds or creates the task's pull request, requests native auto-merge and
- * publishes the developer report to the ticket. Publication does not merge or complete the task;
- * Review and CompleteTask own the remaining gates.
+ * the remote head, finds or creates the task's pull request, requests native auto-merge and saves
+ * the delivery artifact. Source publication belongs to the parent-owned boundary actor;
+ * publication does not merge or complete the task, and Review/CompleteTask own the remaining gates.
  *
  * A verified-revision or publication condition produces the failed outcome with its observed
  * reason. Adapter faults and inputs that contradict each other are execution errors.
@@ -52,12 +42,9 @@ export type DeliverSettings = {
   /** The configured base branch the pull request merges into. */
   readonly baseBranch: string;
   /** The configured Jira field identity that retains the pull request URL. */
-  readonly pullRequestField: string;
   /** The configured Jira status the delivered task moves to for review. */
-  readonly reviewStatus: string;
   readonly git: GitAdapter;
   readonly github: GitHubAdapter;
-  readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
   /** Wait before the next pull-request confirmation read; supplied so tests control time. */
   readonly wait: (milliseconds: number) => Promise<void>;
@@ -100,26 +87,6 @@ async function readPullRequest(
 function pullRequestTitle(selection: Selection): string {
   const summary = issueSummary(selection.task);
   return summary === null ? selection.taskKey : `${selection.taskKey}: ${summary}`;
-}
-
-/**
- * The developer report: the profile, what changed and why, the completed repair turns and any
- * profile escalation. Operational paths and repeated links stay out of the comment.
- */
-function reportText(
-  development: DevelopmentOutput,
-  repairsUsed: number,
-  escalatedFrom: string | null,
-): string {
-  const lines = [`profile: ${development.profile}`, development.summary];
-  if (repairsUsed > 0) {
-    const escalation =
-      escalatedFrom === null
-        ? ''
-        : `, escalated from "${escalatedFrom}" to "${development.profile}"`;
-    lines.push(`Repairs used: ${repairsUsed}${escalation}.`);
-  }
-  return lines.join('\n');
 }
 
 /** Create Deliver over the selected workspace, configured delivery target and adapters. */
@@ -486,32 +453,6 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       }
     }
 
-    // Every retained development report is one executed turn and the first is the initial
-    // implementation: the earlier rounds hold every repair turn but this round's. Their recorded
-    // profiles show whether this round escalated from a weaker one.
-    const earlierReports = await helpers.readArtifactHistory(devArtifact);
-    const repairsUsed = earlierReports.length;
-    const escalatedFrom =
-      earlierReports
-        .map((report) => report.value.profile)
-        .filter((profile) => profile !== development.profile)
-        .at(-1) ?? null;
-
-    // Read the ticket state before recording the publication, so a known completion condition
-    // cannot leave a delivery artifact for an unpublished result.
-    const issue = await readIssue(settings.jira, selection.source.issueId);
-    const comments = await readComments(settings.jira, selection.source.issueId);
-    const needsPullRequestField = issue.fields[settings.pullRequestField] !== pullRequestUrl;
-    const status = statusNameOf(issue);
-    let transition: JiraTransition | null = null;
-    if (status !== settings.reviewStatus) {
-      const found = await transitionInto(settings.jira, issue, settings.reviewStatus);
-      if (found.kind === 'blocked') {
-        return fail(found.reason);
-      }
-      transition = found.transition;
-    }
-
     const output: DeliveryOutput = {
       repository: settings.repository,
       pullRequestNumber,
@@ -519,19 +460,8 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       headRevision,
     };
     await helpers.writeOutputArtifact(deliveryArtifact, output);
-
-    if (needsPullRequestField) {
-      await updateIssueFields(settings.jira, issue.id, { pullRequest: pullRequestUrl });
-    }
-    if (transition !== null) {
-      await applyTransition(settings.jira, issue.id, transition);
-    }
-    await publishComment(
-      settings.jira,
-      issue.id,
-      comments,
-      reportText(development, repairsUsed, escalatedFrom),
-    );
+    // The parent-owned publication actor sets the ticket's PR field/review status and publishes the
+    // developer report from this saved artifact and the round's development report.
     settings.publish(
       actionOutcomeEvent('deliver', {
         task: selection.taskKey,

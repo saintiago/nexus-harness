@@ -10,32 +10,23 @@ import { createMachine } from 'xstate';
  * StartIdeaRound opens the next cycle from the route XState supplies and reports the configured
  * cycle limit as exhausted, so approval at the limit still succeeds.
  *
- * Bind Nexus operations as promise actors with machine.provide({ actors }) before execution.
+ * The parent supplies the captured author input and publishes the terminal decision; this child
+ * reads the parent selection and returns its decision without any source capability. Bind Nexus
+ * operations as promise actors with machine.provide({ actors }) before execution.
  */
-
-/**
- * AnalyzeExperience's capture outcomes; all three preserve the publication destination, so a
- * skipped or unavailable capture never changes what the author is told or which queue item runs.
- */
-const experienceOutcomes: readonly string[] = ['recorded', 'skipped', 'unavailable'];
-
-/** Whether one AnalyzeExperience outcome preserves the original destination. */
-const preservesDestination = ({ event }: { readonly event: { readonly output: unknown } }) =>
-  typeof event.output === 'string' && experienceOutcomes.includes(event.output);
 
 export const ideaRefinement = createMachine(
   {
     id: 'idea-refinement',
-    initial: 'selectIdea',
+    initial: 'prepare',
     output: ({ event }) => event.output,
     states: {
-      // One selection path for a first submission and a resubmission after human feedback.
-      selectIdea: {
+      // The refinement area's project worktree is prepared before any role reads the project.
+      prepare: {
         invoke: {
-          src: 'SelectIdea',
+          src: 'PrepareIdeaWorkspace',
           onDone: [
-            { guard: ({ event }) => event.output === 'selected', target: 'startSubmission' },
-            { guard: ({ event }) => event.output === 'empty', target: 'drained' },
+            { guard: ({ event }) => event.output === 'prepared', target: 'startSubmission' },
             { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -50,7 +41,7 @@ export const ideaRefinement = createMachine(
             { guard: ({ event }) => event.output === 'opened', target: 'frameIdea' },
             {
               guard: ({ event }) => event.output === 'exhausted',
-              target: 'analyzeStartSubmissionExhausted',
+              target: 'blocked',
             },
             { actions: 'unexpectedOutcome' },
           ],
@@ -243,109 +234,41 @@ export const ideaRefinement = createMachine(
       },
       publishApproved: {
         invoke: {
-          src: 'PublishDecision',
+          src: 'RecordIdeaDecision',
           input: { decision: 'approved' },
-          onDone: [
-            { guard: ({ event }) => event.output === 'approved', target: 'analyzeApproved' },
-            { actions: 'unexpectedOutcome' },
-          ],
+          onDone: [{ guard: ({ event }) => event.output === 'recorded', target: 'approved' }],
         },
       },
       returnUnsuitable: {
         invoke: {
-          src: 'PublishDecision',
+          src: 'RecordIdeaDecision',
           input: { decision: 'unsuitable' },
-          onDone: [
-            {
-              guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'analyzeUnsuitable',
-            },
-            { actions: 'unexpectedOutcome' },
-          ],
+          onDone: [{ guard: ({ event }) => event.output === 'recorded', target: 'unsuitable' }],
         },
       },
       returnAuthorDecision: {
         invoke: {
-          src: 'PublishDecision',
+          src: 'RecordIdeaDecision',
           input: { decision: 'author-decision-needed' },
           onDone: [
-            {
-              guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'analyzeAuthorDecision',
-            },
-            { actions: 'unexpectedOutcome' },
+            { guard: ({ event }) => event.output === 'recorded', target: 'author-decision-needed' },
           ],
         },
       },
       returnAttemptsExhausted: {
         invoke: {
-          src: 'PublishDecision',
+          src: 'RecordIdeaDecision',
           input: { decision: 'attempts-exhausted' },
           onDone: [
-            {
-              guard: ({ event }) => event.output === 'waiting-for-feedback',
-              target: 'analyzeAttemptsExhausted',
-            },
-            { actions: 'unexpectedOutcome' },
+            { guard: ({ event }) => event.output === 'recorded', target: 'attempts-exhausted' },
           ],
         },
       },
-      // One handoff state per terminal publication: approval and the three author returns are
-      // terminal, while conversation cycles, focused help and empty/failed selection stay
-      // intermediate work that never reaches AnalyzeExperience.
-      analyzeApproved: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'publish-approved' },
-          onDone: [
-            { guard: preservesDestination, target: 'approved' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      analyzeUnsuitable: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'publish-unsuitable' },
-          onDone: [
-            { guard: preservesDestination, target: 'waitingForFeedback' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      analyzeAuthorDecision: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'publish-author-decision' },
-          onDone: [
-            { guard: preservesDestination, target: 'waitingForFeedback' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      analyzeAttemptsExhausted: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'publish-attempts-exhausted' },
-          onDone: [
-            { guard: preservesDestination, target: 'waitingForFeedback' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      analyzeStartSubmissionExhausted: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'start-submission-exhausted' },
-          onDone: [
-            { guard: preservesDestination, target: 'blocked' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      drained: { type: 'final', output: 'drained' },
+      // The parent owns publication and the terminal experience analysis.
       approved: { type: 'final', output: 'approved' },
-      waitingForFeedback: { type: 'final', output: 'waiting-for-feedback' },
+      unsuitable: { type: 'final', output: 'unsuitable' },
+      'author-decision-needed': { type: 'final', output: 'author-decision-needed' },
+      'attempts-exhausted': { type: 'final', output: 'attempts-exhausted' },
       blocked: { type: 'final', output: 'blocked' },
     },
   },
@@ -358,13 +281,13 @@ export const ideaRefinement = createMachine(
   },
 );
 
-// Application loads this module for the explicitly selected idea refinement workflow: the default
-// export is the definition and successfulOutcomes names its successful terminal outcomes. A
-// returned idea and an empty queue are successful endings; blocked is not.
+// The parent invokes this definition as a child actor: the default export is the definition and
+// successfulOutcomes names the decision outcomes the parent publishes. Blocked is not successful.
 export const successfulOutcomes: readonly string[] = [
   'approved',
-  'waiting-for-feedback',
-  'drained',
+  'unsuitable',
+  'author-decision-needed',
+  'attempts-exhausted',
 ];
 
 export default ideaRefinement;

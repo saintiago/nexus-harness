@@ -69,7 +69,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Preparation stage actions](docs/task-engine/actions/preparation-stage.md): applicability, round artifacts, evaluation and preparation results.
 - [Preparation roles](docs/agent-runtime/preparation-roles.md): requirements, UX, prototype and architecture author/evaluator instructions.
 - [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
-- [SelectTask design](docs/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
+- [SelectWork design](docs/task-engine/actions/select-task.md): source selection, stage routing, task input and retained workspace reference.
 - [PrepareWorkspace design](docs/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
 - [StartDevRound design](docs/task-engine/actions/start-dev-round.md): round planning, developer profile selection and current-round state.
 - [Develop design](docs/task-engine/actions/develop.md): implementation context, selected developer profile and developer output.

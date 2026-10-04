@@ -69,10 +69,10 @@ PrepareWorkspace failure, StartRound exhaustion, Deliver failure, inconclusive R
 CompleteTask. Selection failure and an empty queue skip analysis. Develop/Verify failures and
 changesRequested reviews that return to StartRound are intermediate work.
 
-Idea refinement inserts it after PublishDecision for approval and each return to the author:
-unsuitable, author-decision-needed and attempts-exhausted. Waiting for feedback is a valid handoff,
-not an execution error. Selected-submission routes to blocked also pass through it; failed selection
-and drain skip it. Refinement, discussion and focused-help cycles remain intermediate work.
+The project parent inserts it after publishing an idea decision for approval and for each return to
+the author: unsuitable, author-decision-needed and attempts-exhausted. Waiting for feedback is a
+valid handoff, not an execution error. The idea child's selection-free blocked routes return to the
+parent without a handoff; refinement, discussion and focused-help cycles remain intermediate work.
 
 Unexpected execution errors are terminal handoffs only after already-started agents have settled.
 Retain the original fault and invoke the same action before recovery, with saved evidence. A killed

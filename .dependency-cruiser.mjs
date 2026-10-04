@@ -10,6 +10,19 @@
 
 /** Action directories under src/task-engine/actions/, per docs/task-engine/actions/. */
 const actionDirectories = [
+  'select-work',
+  'project/select-work',
+  'project/route-selection',
+  'project/publish-preparation',
+  'project/implementation-handoff',
+  'project/complete-delivery',
+  'project/source-boundaries',
+  'preparation/prepare-stage',
+  'preparation/start-stage-round',
+  'preparation/stage-author',
+  'preparation/stage-evaluator',
+  'preparation/record-stage-return',
+  'preparation/stage-result',
   'select-task',
   'prepare-workspace',
   'start-round',

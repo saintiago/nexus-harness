@@ -1,10 +1,10 @@
 import { createMachine } from 'xstate';
 
 /**
- * The terminal experience handoffs every workflow routes through the shared AnalyzeExperience
- * action. A handoff state returns the action's capture outcome (`recorded`, `skipped` or
- * `unavailable`); all three continue to the same original business destination, so analysis can
- * never mask success, convert failure to success, prevent the next item or replace recovery.
+ * The terminal experience handoffs the child routes through the shared AnalyzeExperience action.
+ * A handoff state returns the action's capture outcome (`recorded`, `skipped` or `unavailable`);
+ * all three continue to the same original business destination, so analysis can never mask
+ * success, convert failure to success, prevent the next item or replace recovery.
  */
 const experienceOutcomes: readonly string[] = ['recorded', 'skipped', 'unavailable'];
 
@@ -16,26 +16,39 @@ const preservesDestination = ({ event }: { readonly event: { readonly output: un
 export const finiteDelivery = createMachine(
   {
     id: 'finite-delivery',
-    initial: 'select',
+    initial: 'prepare',
     output: ({ event }) => event.output,
     states: {
-      select: {
-        invoke: {
-          src: 'SelectTask',
-          onDone: [
-            { guard: ({ event }) => event.output === 'selected', target: 'prepare' },
-            { guard: ({ event }) => event.output === 'empty', target: 'finished' },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
       prepare: {
         invoke: {
           src: 'PrepareWorkspace',
           onDone: [
-            { guard: ({ event }) => event.output === 'prepared', target: 'startRound' },
+            { guard: ({ event }) => event.output === 'prepared', target: 'routeEntry' },
             { guard: ({ event }) => event.output === 'failed', target: 'analyzePrepareFailure' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      routeEntry: {
+        invoke: {
+          src: 'RouteDeliveryEntry',
+          onDone: [
+            { guard: ({ event }) => event.output === 'round', target: 'refreshRoundInput' },
+            { guard: ({ event }) => event.output === 'verify', target: 'verify' },
+            { guard: ({ event }) => event.output === 'deliver', target: 'deliver' },
+            { guard: ({ event }) => event.output === 'review', target: 'publishDelivery' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // The parent-owned input boundary refreshes the captured task and conversation before the
+      // coding round reads them.
+      refreshRoundInput: {
+        invoke: {
+          src: 'RefreshTaskInput',
+          input: { boundary: 'round' },
+          onDone: [
+            { guard: ({ event }) => event.output === 'refreshed', target: 'startRound' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -55,7 +68,9 @@ export const finiteDelivery = createMachine(
           src: 'Develop',
           onDone: [
             { guard: ({ event }) => event.output === 'completed', target: 'verify' },
-            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
+            // A failed synthesis or verification is a repair turn: refresh the captured source
+            // input before the next coding round reads it.
+            { guard: ({ event }) => event.output === 'failed', target: 'refreshRoundInput' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -65,7 +80,7 @@ export const finiteDelivery = createMachine(
           src: 'Verify',
           onDone: [
             { guard: ({ event }) => event.output === 'passed', target: 'deliver' },
-            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
+            { guard: ({ event }) => event.output === 'failed', target: 'refreshRoundInput' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -74,8 +89,31 @@ export const finiteDelivery = createMachine(
         invoke: {
           src: 'Deliver',
           onDone: [
-            { guard: ({ event }) => event.output === 'published', target: 'review' },
+            { guard: ({ event }) => event.output === 'published', target: 'publishDelivery' },
             { guard: ({ event }) => event.output === 'failed', target: 'analyzeDeliveryFailure' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // The parent-owned publication actor sets the ticket's PR field/review status and publishes
+      // the developer report before the child continues to review.
+      publishDelivery: {
+        invoke: {
+          src: 'PublishDeliveryReport',
+          onDone: [
+            { guard: ({ event }) => event.output === 'published', target: 'refreshReviewInput' },
+            { guard: ({ event }) => event.output === 'failed', target: 'analyzeDeliveryFailure' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // Reviewers read the task input refreshed at the review boundary.
+      refreshReviewInput: {
+        invoke: {
+          src: 'RefreshTaskInput',
+          input: { boundary: 'review' },
+          onDone: [
+            { guard: ({ event }) => event.output === 'refreshed', target: 'review' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -84,11 +122,42 @@ export const finiteDelivery = createMachine(
         invoke: {
           src: 'Review',
           onDone: [
-            { guard: ({ event }) => event.output === 'approved', target: 'complete' },
-            { guard: ({ event }) => event.output === 'changesRequested', target: 'startRound' },
+            { guard: ({ event }) => event.output === 'approved', target: 'publishApprovedReview' },
+            {
+              guard: ({ event }) => event.output === 'changesRequested',
+              target: 'publishChangesReview',
+            },
             {
               guard: ({ event }) => event.output === 'inconclusive',
               target: 'analyzeInconclusive',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      // The parent-owned publication actor publishes the ticket feedback before completion or the
+      // next repair round proceeds.
+      publishApprovedReview: {
+        invoke: {
+          src: 'PublishReviewFeedback',
+          onDone: [
+            { guard: ({ event }) => event.output === 'published', target: 'complete' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzeReviewPublicationFailure',
+            },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
+      publishChangesReview: {
+        invoke: {
+          src: 'PublishReviewFeedback',
+          onDone: [
+            { guard: ({ event }) => event.output === 'published', target: 'refreshRoundInput' },
+            {
+              guard: ({ event }) => event.output === 'failed',
+              target: 'analyzeReviewPublicationFailure',
             },
             { actions: 'unexpectedOutcome' },
           ],
@@ -112,7 +181,7 @@ export const finiteDelivery = createMachine(
           src: 'AnalyzeExperience',
           input: { terminal: 'complete-completed' },
           onDone: [
-            { guard: preservesDestination, target: 'select' },
+            { guard: preservesDestination, target: 'completed' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -157,6 +226,16 @@ export const finiteDelivery = createMachine(
           ],
         },
       },
+      analyzeReviewPublicationFailure: {
+        invoke: {
+          src: 'AnalyzeExperience',
+          input: { terminal: 'review-publication-failed' },
+          onDone: [
+            { guard: preservesDestination, target: 'blocked' },
+            { actions: 'unexpectedOutcome' },
+          ],
+        },
+      },
       analyzeCompletionFailure: {
         invoke: {
           src: 'AnalyzeExperience',
@@ -167,7 +246,8 @@ export const finiteDelivery = createMachine(
           ],
         },
       },
-      finished: { type: 'final', output: 'drained' },
+      // The child returns its completion evidence to the parent, which marks the ticket Done.
+      completed: { type: 'final', output: 'completed' },
       blocked: { type: 'final', output: 'blocked' },
     },
   },
@@ -180,9 +260,8 @@ export const finiteDelivery = createMachine(
   },
 );
 
-// Application loads this module for both entry points: the default export is the workflow finite
-// execution runs and successfulOutcomes names its successful terminal outcomes. The blocked
-// outcome is not successful; it stops the execution.
-export const successfulOutcomes: readonly string[] = ['drained'];
+// The parent invokes this definition as a child actor. Its completed outcome carries the saved
+// completion evidence to the parent; the blocked outcome stops the selected work for recovery.
+export const successfulOutcomes: readonly string[] = ['completed'];
 
 export default finiteDelivery;

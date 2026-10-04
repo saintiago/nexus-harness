@@ -1,13 +1,11 @@
 import path from 'node:path';
 import type { GitHubAdapter } from '../../../adapters/github.js';
-import type { JiraAdapter } from '../../../adapters/jira.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import { reviewArtifact } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
-import { applyTransition, readIssue, statusNameOf, transitionInto } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { retainTerminalReason } from '../terminal-reason.js';
 import {
@@ -46,10 +44,7 @@ export type CompleteTaskSettings = {
     readonly pollIntervalSeconds: number;
     readonly waitLimitSeconds: number;
   };
-  /** The configured Jira status the completed task holds. */
-  readonly doneStatus: string;
   readonly github: GitHubAdapter;
-  readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
   /** Wait before the next completion poll; supplied so tests control time instead of passing it. */
   readonly wait: (milliseconds: number) => Promise<void>;
@@ -83,7 +78,6 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
     const [delivery, review] = await helpers.readInputArtifacts(deliveryArtifact, reviewArtifact);
     const [recorded] = await helpers.readOptionalInputArtifacts(completionArtifact);
     const taskKey = selection.taskKey;
-    const issueId = selection.source.issueId;
     const round = await readRequiredRecord(
       path.join(root, currentRoundFile),
       currentRoundDeclaration,
@@ -314,20 +308,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       }
     }
 
-    /** Finish the task once the evidence holds: move the ticket to its completed status. */
-    async function completeTicket(): Promise<'completed' | 'failed'> {
-      const issue = await readIssue(settings.jira, issueId);
-      const status = statusNameOf(issue);
-      if (status === settings.doneStatus) {
-        return 'completed';
-      }
-      const transition = await transitionInto(settings.jira, issue, settings.doneStatus);
-      if (transition.kind === 'blocked') {
-        return fail(transition.reason);
-      }
-      await applyTransition(settings.jira, issue.id, transition.transition);
-      return 'completed';
-    }
+    // The parent marks the ticket Done after this completed outcome carries the saved evidence.
 
     // Confirmed evidence for this task and pull request is reused: a merged pull request is not
     // enough on its own, but the saved evidence already carries the checks confirmed for its merge.
@@ -344,9 +325,8 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
         return fail(observed.reason);
       }
       if (observed.kind === 'merged' && observed.revision === confirmed.mergeRevision) {
-        const outcome = await completeTicket();
-        report(outcome);
-        return outcome;
+        report('completed');
+        return 'completed';
       }
     }
 
@@ -396,8 +376,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       checks: observed.checks,
     };
     await helpers.writeOutputArtifact(completionArtifact, output);
-    const outcome = await completeTicket();
-    report(outcome);
-    return outcome;
+    report('completed');
+    return 'completed';
   };
 }

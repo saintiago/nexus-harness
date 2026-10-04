@@ -44,8 +44,8 @@ describe('configuration files', () => {
     expect(project.preparation).toEqual([
       { executable: path.join(projectDirectory, 'bin', 'prepare'), args: ['ci'] },
     ]);
-    expect(nexus.workflow['finite-delivery']).toBe(
-      path.join(installationDirectory, 'workflows', 'finite-delivery.ts'),
+    expect(nexus.workflow.project).toBe(
+      path.join(installationDirectory, 'workflows', 'project.ts'),
     );
     expect(nexus.storage.root).toBe(path.join(installationDirectory, 'state'));
     expect(nexus.agentRuntime.provider.executable).toBe(

@@ -27,10 +27,55 @@ const httpUrl = (description: string): z.ZodString =>
       return endpoint.username === '' && endpoint.password === '' && !/[?#]/.test(url);
     }, `${description} must be valid and contain no credentials, query or fragment`);
 
-/** The workflows the operator command selects; each name identifies its configured definition. */
-export const workflowNames = ['finite-delivery', 'idea-refinement'] as const;
+/**
+ * The project workflow the operator command runs. Its children are invoked machine actors of the
+ * parent; they are not separately selected operator modes.
+ */
+export const workflowNames = ['project'] as const;
 
 export type WorkflowName = (typeof workflowNames)[number];
+
+/** The configured parent/child workflow definition paths. */
+export type WorkflowDefinitions = {
+  readonly project: string;
+  readonly children: {
+    readonly 'idea-refinement': string;
+    readonly 'finite-delivery': string;
+    readonly preparation: string;
+  };
+};
+
+/** The preparation stage profiles and positive allowances. */
+const stageProfilesSchema = z.strictObject({
+  author: identifier,
+  evaluator: identifier,
+});
+
+/**
+ * The prototype stage's author ladder: its ordered profiles escalate as repair rounds open and
+ * never downgrade. A single profile is a ladder that never promotes.
+ */
+const prototypeProfilesSchema = z.strictObject({
+  authors: z.array(identifier).min(1),
+  evaluator: identifier,
+});
+
+/** The four evaluated preparation stages and the finite round/upstream-return allowances. */
+const preparationSchema = z.strictObject({
+  maxRounds: z.number().int().positive(),
+  maxUpstreamReturns: z.number().int().positive(),
+  profiles: z.strictObject({
+    requirements: stageProfilesSchema,
+    ux: stageProfilesSchema,
+    prototype: prototypeProfilesSchema,
+    architecture: stageProfilesSchema,
+  }),
+});
+
+/** The preparation stage names the configuration and the workflow share. */
+export const preparationStages = ['requirements', 'ux', 'prototype', 'architecture'] as const;
+
+export type PreparationStage = (typeof preparationStages)[number];
 
 /** Profiles conform to AgentProfile in the AgentRuntime design. */
 const profileSchema = z.strictObject({
@@ -131,8 +176,12 @@ const memorySchema = z
 const nexusConfigurationSchema = z
   .strictObject({
     workflow: z.strictObject({
-      'finite-delivery': identifier,
-      'idea-refinement': identifier,
+      project: identifier,
+      children: z.strictObject({
+        'finite-delivery': identifier,
+        'idea-refinement': identifier,
+        preparation: identifier,
+      }),
     }),
     storage: z.strictObject({
       root: identifier,
@@ -158,6 +207,7 @@ const nexusConfigurationSchema = z
       recoveryProfile: identifier,
       maxRecoveryAttempts: z.number().int().positive(),
     }),
+    preparation: preparationSchema,
     ideaRefinement: ideaRefinementSchema,
     memory: memorySchema,
     notifications: z.strictObject({
@@ -233,6 +283,29 @@ const nexusConfigurationSchema = z
           path: ['ideaRefinement', 'profiles', role],
           message: `Unknown profile "${profile}"`,
         });
+      }
+    }
+
+    const stageProfiles: [string, readonly string[]][] = [];
+    for (const stage of ['requirements', 'ux', 'architecture'] as const) {
+      const profiles = configuration.preparation.profiles[stage];
+      stageProfiles.push([`${stage}.author`, [profiles.author]]);
+      stageProfiles.push([`${stage}.evaluator`, [profiles.evaluator]]);
+    }
+    const prototype = configuration.preparation.profiles.prototype;
+    prototype.authors.forEach((profile, index) => {
+      stageProfiles.push([`prototype.authors.${String(index)}`, [profile]]);
+    });
+    stageProfiles.push(['prototype.evaluator', [prototype.evaluator]]);
+    for (const [part, profiles] of stageProfiles) {
+      for (const profile of profiles) {
+        if (!profileIds.has(profile)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['preparation', 'profiles', ...part.split('.')],
+            message: `Unknown profile "${profile}"`,
+          });
+        }
       }
     }
 
@@ -323,8 +396,18 @@ function resolveNexusConfiguration(
       },
     },
     workflow: {
-      'finite-delivery': path.resolve(directory, configuration.workflow['finite-delivery']),
-      'idea-refinement': path.resolve(directory, configuration.workflow['idea-refinement']),
+      project: path.resolve(directory, configuration.workflow.project),
+      children: {
+        'finite-delivery': path.resolve(
+          directory,
+          configuration.workflow.children['finite-delivery'],
+        ),
+        'idea-refinement': path.resolve(
+          directory,
+          configuration.workflow.children['idea-refinement'],
+        ),
+        preparation: path.resolve(directory, configuration.workflow.children.preparation),
+      },
     },
     storage: { root: path.resolve(directory, configuration.storage.root) },
   });

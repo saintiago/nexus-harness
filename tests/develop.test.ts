@@ -25,7 +25,6 @@ import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/ar
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
-import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 const baseRevision = '1'.repeat(40);
@@ -125,9 +124,10 @@ async function workspace(
       {
         taskKey,
         source: { kind: 'jira', issueId: '1' },
-        task: { id: '1', key: taskKey, fields: { summary: 'stale selection copy' } },
-        conversation: [{ id: 'old', body: 'stale conversation copy' }],
+        task: taskIssue,
+        conversation: [{ id: 'c1', body: 'Original request.' }],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -169,18 +169,6 @@ const taskIssue = {
     status: { id: '2', name: 'In Progress' },
   },
 };
-
-/** The source the tests refresh, with a human comment the selection copy does not have. */
-function sourceWithComments(): ReturnType<typeof scriptedJira> {
-  return scriptedJira({
-    readIssue: () => ok(taskIssue),
-    readComments: () =>
-      ok([
-        { id: 'c1', body: 'Original request.' },
-        { id: 'c2', body: 'Human clarification.' },
-      ]),
-  });
-}
 
 const blockingFinding: Finding = {
   id: 'NEX-1-finding-1',
@@ -237,7 +225,6 @@ function developmentOutcome(
 describe('Develop', () => {
   it('implements the task and records the observed profile and revisions', async () => {
     const { taskKey, workspaceRoot, selectionFile } = await workspace();
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState(), repositoryState({ headRevision })]);
     const { runtime, requests } = scriptedRuntime(() =>
       JSON.stringify({
@@ -250,7 +237,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -266,9 +252,8 @@ describe('Develop', () => {
     expect(request?.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
     expect(strictSchemaProblems(request?.outputSchema)).toEqual([]);
     const context = request?.context ?? '';
-    // The refreshed task and conversation replace the stale selection copies.
+    // The parent-owned boundary refreshed the saved task and conversation before this round.
     expect(context).toContain('Implement the retry guard');
-    expect(context).not.toContain('stale selection copy');
     expect(context).toContain(`Prepared branch: task/${taskKey} (comparison base ${baseRevision})`);
     expect(context).toContain(
       `Local selection record (refreshed task and complete conversation): ${selectionFile}`,
@@ -278,16 +263,14 @@ describe('Develop', () => {
     expect(context).toContain(
       'Include exactly one findingResponses entry for every supplied finding ID and no others',
     );
-    // The selection record keeps its identity and workspace and gains the refreshed source input.
+    // The action leaves the parent-owned selection record unchanged.
     expect(JSON.parse(await readFile(selectionFile, 'utf8'))).toEqual({
       taskKey,
       source: { kind: 'jira', issueId: '1' },
       task: taskIssue,
-      conversation: [
-        { id: 'c1', body: 'Original request.' },
-        { id: 'c2', body: 'Human clarification.' },
-      ],
+      conversation: [{ id: 'c1', body: 'Original request.' }],
       workspace: { root: workspaceRoot },
+      stage: 'delivery',
     });
     // No extra persistent record is introduced for the conversation.
     expect((await readdir(path.join(workspaceRoot, 'state'))).sort()).toEqual([
@@ -311,7 +294,6 @@ describe('Develop', () => {
 
   it('records failed with the agent summary when the turn reports incomplete work', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState(), repositoryState()]);
     const { runtime } = scriptedRuntime(() =>
       JSON.stringify({
@@ -324,7 +306,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -355,7 +336,6 @@ describe('Develop', () => {
     for (const [label, observation, expected] of cases) {
       events = [];
       const { workspaceRoot, selectionFile } = await workspace();
-      const { jira } = sourceWithComments();
       const { git } = scriptedGit([repositoryState(), observation]);
       const { runtime } = scriptedRuntime(() =>
         JSON.stringify({
@@ -368,7 +348,6 @@ describe('Develop', () => {
         selectionFile,
         runner: runnerOf(runtime),
         git,
-        jira,
         publish: (event) => events.push(event),
       });
 
@@ -394,7 +373,6 @@ describe('Develop', () => {
 
   it('accepts the untracked dependencies and verification output a completed turn leaves', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
-    const { jira } = sourceWithComments();
     // Installing dependencies or running focused checks leaves untracked files; they do not make
     // the committed revision unreviewable.
     const { git } = scriptedGit([
@@ -412,7 +390,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -433,7 +410,6 @@ describe('Develop', () => {
 
   it('carries the observed readiness failure into the next repair invocation', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
-    const { jira } = sourceWithComments();
     const first = scriptedRuntime(() =>
       JSON.stringify({
         status: 'completed',
@@ -450,7 +426,6 @@ describe('Develop', () => {
         selectionFile,
         runner: runnerOf(first.runtime),
         git: firstGit,
-        jira,
         publish: (event) => events.push(event),
       })(),
     ).resolves.toBe('failed');
@@ -493,7 +468,6 @@ describe('Develop', () => {
         selectionFile,
         runner: runnerOf(repair.runtime),
         git: repairGit,
-        jira,
         publish: (event) => events.push(event),
       })(),
     ).resolves.toBe('completed');
@@ -526,7 +500,6 @@ describe('Develop', () => {
         },
       ],
     });
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([
       repositoryState({ headRevision }),
       repositoryState({ headRevision: laterRevision }),
@@ -547,7 +520,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -598,7 +570,6 @@ describe('Develop', () => {
       events = [];
       const { workspaceRoot, selectionFile } = await workspace({ round: 2 });
       await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
-      const { jira } = sourceWithComments();
       const { git } = scriptedGit([repositoryState({ headRevision })]);
       const { runtime } = scriptedRuntime(() =>
         JSON.stringify({
@@ -611,7 +582,6 @@ describe('Develop', () => {
         selectionFile,
         runner: runnerOf(runtime),
         git,
-        jira,
         publish: (event) => events.push(event),
       });
 
@@ -634,7 +604,6 @@ describe('Develop', () => {
       summary: 'Implemented the retry guard.',
       findingResponses: [],
     });
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState({ headRevision })]);
     const { runtime, requests } = scriptedRuntime(() => {
       throw new Error('The agent must not be invoked again.');
@@ -643,7 +612,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -656,7 +624,6 @@ describe('Develop', () => {
 
   it('ignores agent claims about the profile and revisions and rejects a wrong report shape', async () => {
     const observed = await workspace();
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState(), repositoryState({ headRevision })]);
     const { runtime } = scriptedRuntime(() =>
       JSON.stringify({
@@ -673,7 +640,6 @@ describe('Develop', () => {
         selectionFile: observed.selectionFile,
         runner: runnerOf(runtime),
         git,
-        jira,
         publish: (event) => events.push(event),
       })(),
     ).resolves.toBe('completed');
@@ -698,7 +664,6 @@ describe('Develop', () => {
         selectionFile: wrong.selectionFile,
         runner: runnerOf(wrongRuntime),
         git,
-        jira,
         publish: (event) => events.push(event),
       })(),
     ).rejects.toThrow(/does not match the response format/);
@@ -716,7 +681,6 @@ describe('Develop', () => {
       summary: 'Report for another revision.',
       findingResponses: [],
     });
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([
       repositoryState({ headRevision }),
       repositoryState({ headRevision }),
@@ -732,7 +696,6 @@ describe('Develop', () => {
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -745,16 +708,14 @@ describe('Develop', () => {
     });
   });
 
-  it('treats unusable agent output and unavailable source reads as execution errors', async () => {
+  it('treats unusable agent output as an execution error', async () => {
     const { workspaceRoot, selectionFile } = await workspace();
-    const { jira } = sourceWithComments();
     const { git } = scriptedGit([repositoryState(), repositoryState()]);
     const { runtime, requests } = scriptedRuntime(() => 'not a JSON report');
     const develop = createDevelop({
       selectionFile,
       runner: runnerOf(runtime),
       git,
-      jira,
       publish: (event) => events.push(event),
     });
 
@@ -764,17 +725,5 @@ describe('Develop', () => {
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'development.json')),
     ).rejects.toThrow(/ENOENT/);
-
-    const unavailable = scriptedJira({
-      readIssue: () => ({ ok: false, fault: { message: 'Jira is unavailable.' } }),
-    });
-    const second = createDevelop({
-      selectionFile,
-      runner: runnerOf(runtime),
-      git,
-      jira: unavailable.jira,
-      publish: (event) => events.push(event),
-    });
-    await expect(second()).rejects.toThrow('Jira is unavailable.');
   });
 });

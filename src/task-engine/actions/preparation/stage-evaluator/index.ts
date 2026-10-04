@@ -1,0 +1,267 @@
+import path from 'node:path';
+import { z } from 'zod';
+import type { GitAdapter } from '../../../../adapters/git.js';
+import {
+  authoredIdentity,
+  retainEvaluationContent,
+  requireEvaluationContent,
+} from '../evaluation-content.js';
+import {
+  actionOutcomeEvent,
+  type AgentRoleRunner,
+  type BoundAction,
+  type EventPublisher,
+} from '../../../index.js';
+import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
+import { readRequiredRecord } from '../../records.js';
+import { selectionDeclaration } from '../../select-task/artifacts.js';
+import {
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
+  stageEvaluationResponseSchema,
+  toFindings,
+  type PreparationStage,
+  type StageEvaluationOutput,
+} from '../artifacts.js';
+import { stageContextText } from '../context.js';
+import {
+  precedingStageWork,
+  priorStageFindings,
+  readStageArtifact,
+  readStagePlan,
+  stageRoot,
+  stageWorktree,
+  writeStageArtifact,
+} from '../storage.js';
+
+/**
+ * StageEvaluator assesses the exact authored revision of one evaluated preparation round. It
+ * resolves the previous round's findings, distinguishes necessary changes from optional
+ * suggestions and accepts the work, the author's skip proposal or a concrete upstream return. A
+ * report that assesses another revision or invents a skip the author did not propose is unusable.
+ */
+
+export type StageEvaluatorSettings = {
+  /** The absolute selection-file path beside the queue's workflow-state file. */
+  readonly selectionFile: string;
+  readonly stage: PreparationStage;
+  /** The evaluator role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
+  readonly git: GitAdapter;
+  readonly publish: EventPublisher;
+};
+
+/**
+ * Why the evaluator's report is not a usable assessment of the current revision, or null. The
+ * report disposes of exactly the prior findings the response round inherited, keeps open findings
+ * in its current list, and states a verdict its current blocking findings support.
+ */
+function reportProblem(
+  report: z.output<typeof stageEvaluationResponseSchema>,
+  authorRevision: number,
+  authorProposedSkip: boolean,
+  priorFindings: readonly { readonly id: string }[],
+): string | null {
+  if (report.assessedRevision !== authorRevision) {
+    return (
+      `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
+      `revision is ${String(authorRevision)}`
+    );
+  }
+  if (report.verdict === 'accepted-skip' && !authorProposedSkip) {
+    return 'the evaluator accepted a skip the author did not propose';
+  }
+  if (report.verdict === 'return-upstream' && report.upstream === null) {
+    return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+
+  const current = new Set<string>();
+  for (const finding of report.findings) {
+    if (current.has(finding.id)) {
+      return `finding "${finding.id}" is reported more than once`;
+    }
+    current.add(finding.id);
+  }
+  const supplied = new Set(priorFindings.map((finding) => finding.id));
+  const answered = new Set<string>();
+  for (const disposition of report.priorFindings) {
+    if (!supplied.has(disposition.findingId)) {
+      return `prior finding "${disposition.findingId}" is not part of the inherited set`;
+    }
+    if (answered.has(disposition.findingId)) {
+      return `prior finding "${disposition.findingId}" is disposed of more than once`;
+    }
+    answered.add(disposition.findingId);
+    const present = current.has(disposition.findingId);
+    if (disposition.disposition === 'open' && !present) {
+      return (
+        `prior finding "${disposition.findingId}" is left open without appearing in the current ` +
+        'findings'
+      );
+    }
+    if (disposition.disposition !== 'open' && present) {
+      return (
+        `prior finding "${disposition.findingId}" is reported as "${disposition.disposition}" ` +
+        'while it is still in the current findings'
+      );
+    }
+  }
+  const missing = priorFindings.map((finding) => finding.id).filter((id) => !answered.has(id));
+  if (missing.length > 0) {
+    return (
+      `the report does not dispose of prior finding${missing.length === 1 ? '' : 's'} ` +
+      `${missing.map((id) => `"${id}"`).join(', ')}`
+    );
+  }
+
+  const blocking = report.findings.filter((finding) => finding.severity === 'blocking');
+  if (
+    (report.verdict === 'accepted' || report.verdict === 'accepted-skip') &&
+    blocking.length > 0
+  ) {
+    return (
+      `the report accepts the revision while reporting blocking finding` +
+      `${blocking.length === 1 ? '' : 's'} ${blocking.map((finding) => `"${finding.id}"`).join(', ')}`
+    );
+  }
+  if (report.verdict === 'changes-requested' && blocking.length === 0) {
+    return 'a changes-requested verdict needs at least one current blocking finding';
+  }
+  return null;
+}
+
+/** Create the StageEvaluator invocation for one evaluated preparation stage. */
+export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAction {
+  return async () => {
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
+    const root = stageRoot(selection.workspace.root, settings.stage);
+    const worktree = stageWorktree(selection.workspace.root, settings.stage);
+    const plan = await readStagePlan(root);
+    if (plan === null || plan.stage !== settings.stage) {
+      throw new Error(
+        `No ${settings.stage} round plan exists under "${root}"; the evaluator needs an opened ` +
+          'round.',
+      );
+    }
+    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    if (author === null) {
+      throw new Error(
+        `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
+          'assess.',
+      );
+    }
+    const findings = await priorStageFindings(root, plan);
+    // A response round resolves the preceding evaluation's findings against the response it
+    // assesses; a fresh round was already evaluated on its own revision, if at all.
+    const previous =
+      plan.route === 'next'
+        ? ((await precedingStageWork(root, plan.round))?.evaluation ?? null)
+        : null;
+
+    const contentRevision = await retainEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+    });
+    const contentPaths = await requireEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+      revision: contentRevision,
+    });
+    const context = await stageContextText({
+      selection,
+      plan,
+      stageRoot: root,
+      worktree,
+      author,
+      evaluation: previous,
+    });
+    const result = await settings.runner.run({
+      operation: 'stage-evaluator',
+      profile: plan.profiles.evaluator,
+      workspace: { root: worktree },
+      context: [
+        context,
+        `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
+          'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
+          'return; separate necessary changes from optional suggestions.',
+        findings.length === 0
+          ? 'No prior findings are inherited by this round; return an empty priorFindings array.'
+          : `Eligible prior finding IDs: ${findings
+              .map((finding) => `"${finding.id}"`)
+              .join(', ')}. Return exactly one priorFindings disposition for each and none for ` +
+            'any other ID; an open disposition requires the finding in findings, and resolved or ' +
+            'withdrawn findings stay out of it.',
+        'State a verdict the current findings support: accepted and accepted-skip require no ' +
+          'blocking finding, and changes-requested needs at least one.',
+        responseFormatText(stageEvaluationResponseSchema),
+      ].join('\n\n'),
+      outputSchema: z.toJSONSchema(stageEvaluationResponseSchema),
+      task: selection.taskKey,
+    });
+    if (!result.ok) {
+      throw new Error(result.fault.message);
+    }
+    const report = parseAgentReport(
+      result.value.output,
+      stageEvaluationResponseSchema,
+      `${settings.stage} evaluator`,
+    );
+    const problem = reportProblem(
+      report,
+      author.revision,
+      author.outcome === 'skip-proposed',
+      findings,
+    );
+    if (problem !== null) {
+      throw new Error(`The ${settings.stage} evaluator report is unusable: ${problem}.`);
+    }
+
+    await requireEvaluationContent({
+      git: settings.git,
+      worktree,
+      stage: settings.stage,
+      author,
+      revision: contentRevision,
+      paths: contentPaths,
+    });
+    const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
+      throw new Error('The authored report changed during assessment; reevaluation is required.');
+    const output: StageEvaluationOutput = {
+      contentRevision,
+      contentPaths,
+      authorIdentity: authoredIdentity(author),
+      assessedRevision: report.assessedRevision,
+      verdict: report.verdict,
+      reason: report.reason,
+      findings: toFindings(report.findings),
+      priorFindings: report.priorFindings,
+      upstream: report.upstream,
+    };
+    await writeStageArtifact(root, plan.round, stageEvaluationArtifact, output);
+    const artifact = path.join(
+      root,
+      'artifacts',
+      String(plan.round),
+      stageEvaluationArtifact.pathFromArtifactsRoot,
+    );
+    settings.publish(
+      actionOutcomeEvent('stage-evaluator', {
+        task: selection.taskKey,
+        round: plan.round,
+        outcome: report.verdict,
+        detail: `${settings.stage} · revision ${String(author.revision)}`,
+        artifact: { path: artifact },
+      }),
+    );
+    return report.verdict;
+  };
+}

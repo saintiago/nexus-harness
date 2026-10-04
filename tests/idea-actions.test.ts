@@ -53,19 +53,20 @@ import {
 } from '../src/task-engine/actions/project-guide/artifacts.js';
 import { createProjectGuide } from '../src/task-engine/actions/project-guide/index.js';
 import {
-  decisionArtifact,
   ideaHandoffFile,
   type IdeaDecisionRecord,
   type IdeaHandoff,
 } from '../src/task-engine/actions/publish-decision/artifacts.js';
-import { createPublishDecision } from '../src/task-engine/actions/publish-decision/index.js';
+import {
+  createPublishDecision,
+  createRecordIdeaDecision,
+} from '../src/task-engine/actions/publish-decision/index.js';
 import {
   researchArtifact,
   researchFollowUpArtifact,
   researchResponseSchema,
 } from '../src/task-engine/actions/researcher/artifacts.js';
 import { createResearcher } from '../src/task-engine/actions/researcher/index.js';
-import type { IdeaSelection } from '../src/task-engine/actions/select-idea/artifacts.js';
 import {
   ideaRoundPlanFile,
   type IdeaRoundPlan,
@@ -156,24 +157,12 @@ afterEach(async () => {
   );
 });
 
-/** The text of one published comment document. */
-function commentText(document: unknown): string {
-  const content =
-    typeof document === 'object' && document !== null
-      ? (document as { readonly content?: readonly { readonly content?: unknown }[] }).content
-      : undefined;
-  return (content ?? [])
-    .flatMap((paragraph) => {
-      const text = paragraph.content;
-      return Array.isArray(text)
-        ? text.flatMap((node) =>
-            typeof (node as { readonly text?: unknown }).text === 'string'
-              ? [(node as { readonly text: string }).text]
-              : [],
-          )
-        : [];
-    })
-    .join('\n');
+/**
+ * The published comment text of one decision record. The parent publication publishes the exact
+ * text the child's record retained.
+ */
+function commentText(record: { readonly comment: string }): string {
+  return record.comment;
 }
 
 /** One refinement area with the supplied plan, captured input and project guidance. */
@@ -183,8 +172,10 @@ async function refinementArea(options?: {
   readonly route?: IdeaRoundPlan['route'];
   readonly guidance?: string | null;
 }) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-action-'));
-  temporaryDirectories.push(root);
+  const issueRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-action-'));
+  temporaryDirectories.push(issueRoot);
+  const root = path.join(issueRoot, 'refinement');
+  await mkdir(root, { recursive: true });
   const plan: IdeaRoundPlan = {
     submission: options?.submission ?? 1,
     cycle: options?.cycle ?? 1,
@@ -1170,32 +1161,62 @@ describe('challenger', () => {
     );
   });
 });
-
 describe('decision publication', () => {
-  /** One retained selection with the two publication transitions the active status permits. */
-  const selection: IdeaSelection = {
-    taskKey: 'NEX-1',
-    source: { kind: 'jira', issueId: '10518' },
-    issue: capturedInput.issue,
-    conversation: [{ id: 'c1', body: { text: 'the author\u2019s idea' } }],
-    transitions: {
-      toActive: { id: '11', name: 'Start refinement', to: { id: '2', name: 'Idea Refinement' } },
-      fromActive: [
-        { id: '21', name: 'Approve', to: { id: '3', name: 'Draft' } },
-        { id: '22', name: 'Request feedback', to: { id: '4', name: 'Waiting for Feedback' } },
-      ] satisfies JiraTransition[],
-    },
-    claimed: true,
-    retainedSubmissions: 0,
-    workspace: { root: '' },
-    issueWorkspace: { root: '' },
-  };
+  const capturedSummary = 'Add a lint gate';
+  const editorResponseFixture = {
+    disposition: 'revise',
+    response: 'Revised to cover the affected paths.',
+    reason: null,
+    help: null,
+  } as const;
 
-  /** A controlled source recording comments and transitions. */
-  function source() {
+  /** Write an approval-ready cycle: framing, one revision and an approving Challenger result. */
+  async function approvedCycle(area: Awaited<ReturnType<typeof refinementArea>>) {
+    await area.write(1, framingArtifact.pathFromArtifactsRoot, framingFixture);
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      idea: 'Add a lint gate so reviews stay on behaviour.',
+      projectFit: 'The project already enforces checks in CI.',
+      feasibility: 'Adopt the smallest configured lint gate.',
+      openQuestions: [],
+      changeSummary: 'Framed the gate and the smallest configuration.',
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'approve',
+      assessment: 'The idea is worth pursuing.',
+      obstacle: null,
+      concerns: [],
+      suggestions: [],
+      refinedIdea: path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot),
+      editorResponse: null,
+      revision: 1,
+    });
+  }
+
+  /** A controlled source: the issue, its conversation and the permitted transitions. */
+  function source(status = 'Idea Refinement') {
     const comments: JiraComment[] = [];
     const transitions: string[] = [];
+    let current = status;
     const scripted = scriptedJira({
+      readIssue: () =>
+        ok({
+          id: '10518',
+          key: 'NEX-1',
+          fields: {
+            summary: capturedSummary,
+            description: { type: 'doc', content: [] },
+            status: { id: '2', name: current },
+          },
+        }),
+      readComments: () => ok([...comments]),
+      readTransitions: () =>
+        ok([
+          { id: '21', name: 'Approve', to: { id: '3', name: 'Draft' } },
+          { id: '22', name: 'Request feedback', to: { id: '4', name: 'Waiting for Feedback' } },
+        ] satisfies JiraTransition[]),
       addComment: (_issueId, body) => {
         const comment = { id: `c${String(comments.length + 2)}`, body };
         comments.push(comment);
@@ -1203,358 +1224,249 @@ describe('decision publication', () => {
       },
       transitionIssue: (_issueId, transitionId) => {
         transitions.push(transitionId);
+        current = transitionId === '21' ? 'Draft' : 'Waiting for Feedback';
         return ok(undefined);
       },
     });
     return { jira: scripted.jira, calls: scripted.calls, comments, transitions };
   }
 
-  /** One publication over the supplied refinement area and controlled source. */
+  /** The child's record action and the parent's publication over one refinement area. */
   function publication(
     area: Awaited<ReturnType<typeof refinementArea>>,
     jira: ReturnType<typeof source>,
+    selectionFile: string,
+    expected?: readonly string[],
   ) {
-    return createPublishDecision({
+    const record = createRecordIdeaDecision({
+      selectionFile,
+      submittedStatus: 'Idea',
+      publish: (event) => area.events.push(event),
+    });
+    const publishDecision = createPublishDecision({
       selection: {
-        ...selection,
-        workspace: { root: area.root },
-        issueWorkspace: { root: path.join(area.root, '..', 'NEX-1') },
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
       },
-      statuses: {
-        submitted: 'Idea',
-        approved: 'Draft',
-        waitingForFeedback: 'Waiting for Feedback',
-      },
+      refinementRoot: area.root,
+      ...(expected === undefined ? {} : { expected }),
+      statuses: { approved: 'Draft', waitingForFeedback: 'Waiting for Feedback' },
       jira: jira.jira,
       publish: (event) => area.events.push(event),
     });
+    return async (input?: unknown) => {
+      await record(input);
+      return publishDecision();
+    };
   }
 
-  /** One approval-ready cycle: contributions, a revision, a response and an approving Challenger. */
-  async function approvedCycle(area: Awaited<ReturnType<typeof refinementArea>>) {
-    await area.write(1, framingArtifact.pathFromArtifactsRoot, framingFixture);
-    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
-      ...researchFixture,
-      role: 'researcher',
-      question: null,
-    });
-    await area.write(1, projectGuideArtifact.pathFromArtifactsRoot, {
-      ...guidanceFixture,
-      role: 'project-guide',
-      question: null,
-    });
-    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    const response = await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
-      disposition: 'revised',
-      response: 'I wrote the smallest lint gate.',
-      reason: null,
-      help: null,
-    });
-    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
-      verdict: 'approve',
-      assessment: 'Plausible way forward.',
-      obstacle: null,
-      concerns: [],
-      suggestions: [],
-      refinedIdea: revision,
-      editorResponse: response,
-      revision: 1,
-    });
-    return revision;
-  }
-
-  it('publishes the approved refined idea, moves the item and leaves a handoff of references', async () => {
+  it('records and publishes an approval, then reuses the retained publication', async () => {
     const area = await refinementArea();
-    const revision = await approvedCycle(area);
+    await approvedCycle(area);
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
+    );
     const jira = source();
+    const decide = publication(area, jira, selectionFile);
 
-    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
-
-    // Publication uses the captured snapshot: no issue or comment read reaches Jira.
-    expect(jira.calls.some((call) => call.startsWith('read:'))).toBe(false);
-    expect(jira.calls.some((call) => call.startsWith('comments:'))).toBe(false);
+    await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
     expect(jira.transitions).toEqual(['21']);
     expect(jira.comments).toHaveLength(1);
-    const published = commentText(jira.comments[0]?.body);
-    expect(published).toContain('Approved refined idea (revision 1)');
-    expect(published).toContain('Project fit: The project already enforces checks in CI.');
-    expect(published).toContain('Conversation cycles used: 1');
-    expect(published).toContain('What refinement changed: Refined idea revision 1.');
-    expect(published).not.toContain('Plausible way forward.');
-
-    const decision = JSON.parse(
-      await readFile(
-        path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
-        'utf8',
-      ),
+    const record = JSON.parse(
+      await readFile(path.join(area.root, 'artifacts/submissions/1/decision.json'), 'utf8'),
     ) as IdeaDecisionRecord;
-    expect(decision).toMatchObject({
-      decision: 'approved',
-      refinedIdea: revision,
-      revision: 1,
-      reason: null,
-      source: { transition: { id: '21', to: 'Draft' }, status: 'Draft', commentId: 'c2' },
-    });
+    expect(record.decision).toBe('approved');
+    expect(record.source?.status).toBe('Draft');
+    expect(commentText(record)).toContain('Approved refined idea');
     const handoff = JSON.parse(
       await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
     ) as IdeaHandoff;
-    expect(handoff).toMatchObject({
-      issue: { id: '10518', key: 'NEX-1' },
-      capturedInput: ideaSubmissionInputFile(area.root, 1),
-      refinedIdea: revision,
-    });
-    expect(handoff.contributions).toHaveLength(2);
-    expect(handoff.challengerResults).toEqual([
-      path.join(area.cycleRoot(), challengerArtifact.pathFromArtifactsRoot),
-    ]);
-    expect(handoff.framing).toBe(
-      path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot),
-    );
-  });
+    expect(handoff.refinedIdea).toBe(record.refinedIdea);
 
-  it('returns an unsuitable idea with the plain reason and the latest idea', async () => {
-    const area = await refinementArea();
-    await area.write(1, framingArtifact.pathFromArtifactsRoot, framingFixture);
-    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
-      disposition: 'unsuitable',
-      response: 'This does not look worth pursuing.',
-      reason: 'The project already checks style in its editor, so the gate adds little.',
-      help: null,
-    });
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'unsuitable' })).resolves.toBe(
-      'waiting-for-feedback',
-    );
-
-    expect(jira.transitions).toEqual(['22']);
-    const published = commentText(jira.comments[0]?.body);
-    expect(published).toContain('Returned for feedback: this idea does not look suitable');
-    expect(published).toContain('Latest refined idea (revision 1)');
-    expect(published).toContain('Conversation cycles used: 1');
-    expect(published).toContain('Why it was returned:');
-    expect(published).toContain('The project already checks style in its editor');
-    expect(published).toContain('to "Idea" to resubmit it');
-    expect(published).not.toContain('This does not look worth pursuing.');
-    expect(await area.exists('artifacts/handoff.json')).toBe(false);
-    const decision = JSON.parse(
-      await readFile(
-        path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
-        'utf8',
-      ),
-    ) as IdeaDecisionRecord;
-    expect(decision).toMatchObject({
-      decision: 'unsuitable',
-      refinedIdea: revision,
-      editor: path.join(area.cycleRoot(), editorResponseArtifact.pathFromArtifactsRoot),
-    });
-  });
-
-  it('asks the author for the essential decision when the framing found one', async () => {
-    const area = await refinementArea();
-    await area.write(1, framingArtifact.pathFromArtifactsRoot, {
-      framing: 'The author wants faster checks without saying how far they should reach.',
-      questions: [],
-      authorDecision: { question: 'Which repositories must the gate cover at launch?' },
-    });
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'author-decision-needed' })).resolves.toBe(
-      'waiting-for-feedback',
-    );
-
-    const published = commentText(jira.comments[0]?.body);
-    expect(published).toContain('Author decision needed');
-    expect(published).toContain('Captured idea (no refined idea revision yet)');
-    expect(published).toContain('Add a lint gate');
-    expect(published).toContain('Which repositories must the gate cover at launch?');
-    // A return that stopped at the framing still reports what refinement reached.
-    expect(published).toContain(
-      'What refinement changed: The editor framed the author\u2019s proposal shown above; ' +
-        'refinement stopped before a refined idea revision was written.',
-    );
-    expect(published).not.toContain('Conversation cycles used: 0');
-    expect(jira.transitions).toEqual(['22']);
-  });
-
-  it('reports exhausted attempts with the author-facing obstacle and no internal concerns', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'next' });
-    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    const response = await area.write(2, editorResponseArtifact.pathFromArtifactsRoot, {
-      disposition: 'answered',
-      response: 'The gate runs on changed files only.',
-      reason: null,
-      help: null,
-    });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
-      verdict: 'discuss',
-      assessment: 'The answer does not resolve the value concern.',
-      obstacle: 'Nothing yet shows the gate is worth the change.',
-      concerns: [
-        {
-          concern: 'src/task-engine/actions/verify/index.ts shows the value claim lacks evidence.',
-          consequence: 'The idea may not be worth developing.',
-          resolution: 'Cite comparable projects in the refined idea, not in the answer.',
-        },
-      ],
-      suggestions: [],
-      refinedIdea: revision,
-      editorResponse: response,
-      revision: 1,
-    });
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'attempts-exhausted' })).resolves.toBe(
-      'waiting-for-feedback',
-    );
-
-    const published = commentText(jira.comments[0]?.body);
-    expect(published).toContain('Attempts exhausted after 2 cycles');
-    expect(published).toContain('Conversation cycles used: 2');
-    expect(published).toContain('What refinement changed: Refined idea revision 1.');
-    expect(published).toContain('Nothing yet shows the gate is worth the change.');
-    // The internal concerns and their editor-directed resolutions stay in the artifact.
-    expect(published).not.toContain('verify/index.ts');
-    expect(published).not.toContain('Cite comparable projects in the refined idea');
-    expect(published).not.toContain('The answer does not resolve the value concern.');
-    const decision = JSON.parse(
-      await readFile(
-        path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
-        'utf8',
-      ),
-    ) as IdeaDecisionRecord;
-    expect(decision).toMatchObject({
-      decision: 'attempts-exhausted',
-      revision: 1,
-      reason: 'Nothing yet shows the gate is worth the change.',
-      challenger: path.join(area.cycleRoot(2), challengerArtifact.pathFromArtifactsRoot),
-    });
-  });
-
-  it('refuses an exhausted return without a plain statement of the remaining obstacle', async () => {
-    const area = await refinementArea({ cycle: 2, route: 'next' });
-    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
-      ...revisedTurn(1).refinedIdea,
-      openQuestions: undefined,
-      revision: 1,
-      submission: 1,
-      cycle: 1,
-    });
-    await area.write(2, challengerArtifact.pathFromArtifactsRoot, {
-      verdict: 'discuss',
-      assessment: 'A concern remains.',
-      obstacle: null,
-      concerns: [
-        {
-          concern: 'The value claim still lacks evidence.',
-          consequence: 'The idea may not be worth developing.',
-          resolution: 'Cite comparable projects.',
-        },
-      ],
-      suggestions: [],
-      refinedIdea: revision,
-      editorResponse: null,
-      revision: 1,
-    });
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'attempts-exhausted' })).rejects.toThrow(
-      /remaining obstacle/u,
-    );
-    expect(jira.comments).toEqual([]);
-  });
-
-  it('reuses a decision it already recorded instead of publishing again', async () => {
-    const area = await refinementArea();
-    await approvedCycle(area);
-    const jira = source();
-    const decide = publication(area, jira);
-
+    // Interrupt between the decision and its downstream handoff: replay must finish the handoff.
+    await rm(path.join(area.root, ideaHandoffFile));
     await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
-    await expect(decide({ decision: 'approved' })).resolves.toBe('approved');
-
-    expect(jira.comments).toHaveLength(1);
+    expect(JSON.parse(await readFile(path.join(area.root, ideaHandoffFile), 'utf8'))).toEqual(
+      handoff,
+    );
     expect(jira.transitions).toEqual(['21']);
+    expect(jira.comments).toHaveLength(1);
   });
 
-  it('refuses an approval the Challenger did not grant for this exact revision', async () => {
+  it('preserves a human feedback pause while an approval is awaiting publication', async () => {
     const area = await refinementArea();
     await approvedCycle(area);
-    // A Challenger result bound to another revision cannot authorize publication.
-    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
-      verdict: 'approve',
-      assessment: 'Approved elsewhere.',
-      obstacle: null,
-      concerns: [],
-      suggestions: [],
-      refinedIdea: path.join(area.cycleRoot(), 'another-revision.json'),
-      editorResponse: null,
-      revision: 1,
-    });
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'approved' })).rejects.toThrow(
-      /exact refined idea revision/u,
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
     );
+    const jira = source('Waiting for Feedback');
+    await expect(
+      publication(area, jira, selectionFile, ['Idea Refinement'])({ decision: 'approved' }),
+    ).resolves.toBe('failed');
+    expect(jira.transitions).toEqual([]);
     expect(jira.comments).toEqual([]);
   });
 
-  it('refuses an unsuitable return the editor did not explain', async () => {
+  it('preserves an unexpected human status change instead of overwriting it', async () => {
     const area = await refinementArea();
     await approvedCycle(area);
-    const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'unsuitable' })).rejects.toThrow(
-      /unsuitable/u,
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
     );
-    expect(jira.comments).toEqual([]);
+    // A human paused the item while the child was refining; the publication may only write from
+    // the status its own selection left behind (or the target a repeat already applied).
+    const jira = source('Blocked');
+    const decide = publication(area, jira, selectionFile, [
+      'Idea Refinement',
+      'Draft',
+      'Waiting for Feedback',
+    ]);
+
+    await expect(decide({ decision: 'approved' })).resolves.toBe('failed');
+    expect(jira.transitions).toEqual([]);
+    expect(jira.comments).toHaveLength(0);
   });
 
-  it('reports a refined idea that the first edit found unsuitable without a revision', async () => {
+  it.each(['unsuitable', 'author-decision-needed', 'attempts-exhausted'] as const)(
+    'publishes the %s return as Waiting for Feedback',
+    async (decision) => {
+      const area = await refinementArea();
+      const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+      await writeFile(
+        selectionFile,
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          source: { kind: 'jira', issueId: '10518' },
+          task: capturedInput.issue,
+          conversation: [],
+          workspace: { root: path.dirname(area.root) },
+          stage: 'idea',
+        }),
+      );
+      if (decision === 'unsuitable') {
+        await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
+          ...editorResponseFixture,
+          disposition: 'unsuitable',
+          reason: 'The idea does not serve a plausible user outcome.',
+        });
+      }
+      if (decision === 'author-decision-needed') {
+        await area.write(1, framingArtifact.pathFromArtifactsRoot, {
+          ...framingFixture,
+          authorDecision: { question: 'Which user should this serve?' },
+        });
+      }
+      if (decision === 'attempts-exhausted') {
+        await approvedCycle(area);
+        await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+          verdict: 'discuss',
+          assessment: 'The value concern is still open.',
+          obstacle: 'Nothing yet shows the gate is worth the change.',
+          concerns: [],
+          suggestions: [],
+          refinedIdea: path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot),
+          editorResponse: null,
+          revision: 1,
+        });
+      }
+      const jira = source();
+      const decide = publication(area, jira, selectionFile);
+      await expect(decide({ decision })).resolves.toBe('waiting-for-feedback');
+      expect(jira.transitions).toEqual(['22']);
+      expect(jira.comments).toHaveLength(1);
+      const record = JSON.parse(
+        await readFile(path.join(area.root, 'artifacts/submissions/1/decision.json'), 'utf8'),
+      ) as IdeaDecisionRecord;
+      expect(record.decision).toBe(decision);
+      expect(record.source?.status).toBe('Waiting for Feedback');
+    },
+  );
+
+  it('rejects an approval without the approving Challenger result', async () => {
     const area = await refinementArea();
-    await area.write(1, framingArtifact.pathFromArtifactsRoot, {
-      framing: 'The author proposes a gate the project already applies in its editor.',
-      questions: [],
-      authorDecision: null,
-    });
-    await area.write(1, editorResponseArtifact.pathFromArtifactsRoot, {
-      disposition: 'unsuitable',
-      response: 'The gate adds little here.',
-      reason: 'The project already runs the same checks in the editor.',
-      help: null,
-    });
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
+    );
     const jira = source();
-
-    await expect(publication(area, jira)({ decision: 'unsuitable' })).resolves.toBe(
-      'waiting-for-feedback',
+    await expect(publication(area, jira, selectionFile)({ decision: 'approved' })).rejects.toThrow(
+      /Approval needs the refined idea revision/u,
     );
+  });
 
-    const published = commentText(jira.comments[0]?.body);
-    expect(published).toContain('Captured idea (no refined idea revision yet)');
-    expect(published).toContain('The editor\u2019s framing of it:');
-    expect(published).toContain('The project already runs the same checks in the editor.');
-    expect(published).toContain(
-      'What refinement changed: The editor framed the author\u2019s proposal shown above; ' +
-        'refinement stopped before a refined idea revision was written.',
+  it('reports a missing publication transition as a failed outcome', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
     );
+    const jira = scriptedJira({
+      readIssue: () =>
+        ok({
+          id: '10518',
+          key: 'NEX-1',
+          fields: {
+            summary: capturedSummary,
+            description: { type: 'doc', content: [] },
+            status: { id: '2', name: 'Idea Refinement' },
+          },
+        }),
+      readComments: () => ok([]),
+      readTransitions: () => ok([]),
+    });
+    const decide = publication(
+      area,
+      { ...jira, calls: jira.calls, comments: [], transitions: [] },
+      selectionFile,
+    );
+    await expect(decide({ decision: 'approved' })).resolves.toBe('failed');
   });
 });

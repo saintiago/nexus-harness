@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import type { AnyStateMachine } from 'xstate';
+import type { NexusConfiguration } from '../configuration/index.js';
 import { messageOf } from '../result.js';
 
 /**
@@ -54,4 +55,44 @@ export async function loadWorkflow(filePath: string): Promise<Workflow> {
     );
   }
   return { machine, successfulOutcomes: outcomes };
+}
+
+/** The composed project parent and the child machines its states invoke by name. */
+export type ProjectWorkflow = Workflow & {
+  readonly children: Readonly<Record<string, AnyStateMachine>>;
+};
+
+/** The actor name each configured child definition is registered under. */
+const childActors: readonly {
+  readonly name: string;
+  readonly path: (workflow: NexusConfiguration['workflow']) => string;
+}[] = [
+  {
+    name: 'IdeaRefinement',
+    path: (workflow) => workflow.children['idea-refinement'],
+  },
+  {
+    name: 'FiniteDelivery',
+    path: (workflow) => workflow.children['finite-delivery'],
+  },
+  {
+    name: 'Preparation',
+    path: (workflow) => workflow.children.preparation,
+  },
+];
+
+/** Load the project parent and register its configured children under their actor names. */
+export async function loadProjectWorkflow(
+  definitions: NexusConfiguration['workflow'],
+): Promise<ProjectWorkflow> {
+  const parent = await loadWorkflow(definitions.project);
+  const children = Object.fromEntries(
+    await Promise.all(
+      childActors.map(async (child) => [
+        child.name,
+        (await loadWorkflow(child.path(definitions))).machine,
+      ]),
+    ),
+  );
+  return { ...parent, children };
 }

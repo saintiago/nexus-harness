@@ -49,7 +49,7 @@ async function launch(scenario: string): Promise<{
   })(
     {
       projectConfigPath,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       logDirectory: workingDirectory,
       environment: { NEXUS_TEST_SCENARIO: scenario },
     },

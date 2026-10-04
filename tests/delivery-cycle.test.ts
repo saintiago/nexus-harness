@@ -16,6 +16,11 @@ import type { CheckObservation } from '../src/adapters/github.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { ok } from '../src/result.js';
 import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
+import { createCompleteDelivery } from '../src/task-engine/actions/project/complete-delivery/index.js';
+import {
+  createPublishDeliveryReport,
+  createPublishReviewFeedback,
+} from '../src/task-engine/actions/project/source-boundaries/index.js';
 import { type DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
 import { createDeliver } from '../src/task-engine/actions/deliver/index.js';
 import { type DevelopmentOutput } from '../src/task-engine/actions/develop/artifacts.js';
@@ -100,6 +105,7 @@ beforeEach(async () => {
         task: { id: '1', key: 'NEX-1', fields: { summary: 'Implement the feature' } },
         conversation: [],
         workspace: { root: workspaceRoot },
+        stage: 'delivery',
       },
       null,
       2,
@@ -274,7 +280,6 @@ describe('delivery cycle', () => {
       selectionFile,
       runner: runnerOf(developerRuntime),
       git,
-      jira: jiraSource.jira,
       publish: (event) => events.push(event),
     });
     const verify = createVerify({
@@ -294,11 +299,8 @@ describe('delivery cycle', () => {
       selectionFile,
       repository,
       baseBranch: 'main',
-      pullRequestField: 'customfield_10002',
-      reviewStatus: 'In Review',
       git,
       github: githubSource.github,
-      jira: jiraSource.jira,
       publish: (event) => events.push(event),
       wait: async () => undefined,
     });
@@ -311,7 +313,6 @@ describe('delivery cycle', () => {
       runner: runnerOf(reviewerRuntime),
       git,
       github: githubSource.github,
-      jira: jiraSource.jira,
       publish: (event) => events.push(event),
     });
     const completeTask = createCompleteTask({
@@ -321,11 +322,30 @@ describe('delivery cycle', () => {
       nexusLens: { appId: lensAppId },
       postMergeChecks: [{ name: 'validate', workflow: 'validate.yml' }],
       completion: { pollIntervalSeconds: 5, waitLimitSeconds: 1800 },
-      doneStatus: 'Done',
       github: githubSource.github,
-      jira: jiraSource.jira,
       publish: (event) => events.push(event),
       wait: async () => undefined,
+    });
+
+    const publishDelivery = createPublishDeliveryReport({
+      selectionFile,
+      pullRequestField: 'customfield_10002',
+      inProgressStatus: 'In Progress',
+      reviewStatus: 'In Review',
+      jira: jiraSource.jira,
+      publish: (event) => events.push(event),
+    });
+    const publishReview = createPublishReviewFeedback({
+      selectionFile,
+      jira: jiraSource.jira,
+      publish: (event) => events.push(event),
+    });
+    const completeDelivery = createCompleteDelivery({
+      selectionFile,
+      doneStatus: 'Done',
+      reviewStatus: 'In Review',
+      jira: jiraSource.jira,
+      publish: (event) => events.push(event),
     });
 
     // Develop and Verify produce the current round's real inputs.
@@ -333,16 +353,20 @@ describe('delivery cycle', () => {
     await expect(develop()).resolves.toBe('completed');
     await expect(verify()).resolves.toBe('passed');
 
-    // Deliver consumes them and records the publication.
+    // Deliver consumes them and records the publication; the parent-owned boundary actor
+    // publishes the report and moves the source into review.
     await expect(deliver()).resolves.toBe('published');
+    await expect(publishDelivery()).resolves.toBe('published');
     const delivery = await readArtifact<DeliveryOutput>(1, 'delivery.json');
     const development = await readArtifact<DevelopmentOutput>(1, 'development.json');
     expect(delivery.headRevision).toBe(development.headRevision);
     expect(autoMergeRequested).toBe(true);
     expect(status).toBe('In Review');
 
-    // Review consumes the delivered revision and publishes its verdict and check.
+    // Review consumes the delivered revision and publishes its verdict and check; the parent
+    // publishes the milestone feedback.
     await expect(review()).resolves.toBe('approved');
+    await expect(publishReview()).resolves.toBe('published');
     const reviewed = await readArtifact<ReviewOutput>(1, 'review.json');
     expect(reviewed.profile).toBe('nexus-review');
     expect(reviewed.headRevision).toBe(delivery.headRevision);
@@ -353,8 +377,9 @@ describe('delivery cycle', () => {
     expect(context).toContain('+feature');
     expect(context).toContain('Implement the feature');
 
-    // CompleteTask confirms the merge and the post-merge check, then marks the task Done.
+    // CompleteTask confirms the merge and the post-merge check; the parent marks the task Done.
     await expect(completeTask()).resolves.toBe('completed');
+    await expect(completeDelivery()).resolves.toBe('completed');
     const completion = await readArtifact<CompletionOutput>(1, 'completion.json');
     expect(completion).toEqual({
       taskKey: 'NEX-1',

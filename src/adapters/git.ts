@@ -39,6 +39,23 @@ export type GitAdapter = {
     branch: string,
     startRevision: string,
   ): Promise<Result<BranchHead>>;
+  commitPaths(
+    repository: string,
+    paths: readonly string[],
+    message: string,
+  ): Promise<Result<BranchHead>>;
+  readFileAtRevision(repository: string, revision: string, file: string): Promise<Result<string>>;
+  /** Common ancestor used to inspect the branch's contribution against an advancing base. */
+  readMergeBase(
+    repository: string,
+    baseRevision: string,
+    headRevision: string,
+  ): Promise<Result<string>>;
+  readChangedPaths(
+    repository: string,
+    baseRevision: string,
+    headRevision: string,
+  ): Promise<Result<readonly string[]>>;
   readDiff(repository: string, baseRevision: string, headRevision: string): Promise<Result<string>>;
   pushBranch(repository: string, branch: string, expectedHead: string): Promise<Result<BranchHead>>;
   readRemoteBranchHead(remote: string, branch: string): Promise<Result<string | null>>;
@@ -64,6 +81,9 @@ function failureOf(command: CompletedCommand): Result<never> {
  */
 const absentReferenceExitCode = 1;
 const absentRemoteExitCode = 2;
+
+/** `git diff --cached --quiet` exits 1 when staged differences exist, 0 when the paths match HEAD. */
+const stagedDifferenceExitCode = 1;
 
 /** Create the Git adapter over the supplied command execution. */
 export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
@@ -217,6 +237,68 @@ export function createGitAdapter(execute: GitCommandExecution): GitAdapter {
         return checkout;
       }
       return readBranchHead(repository);
+    },
+
+    async commitPaths(repository, paths, message) {
+      if (paths.length === 0) {
+        return fault('A path-scoped commit requires at least one path.');
+      }
+      // Stage only the named paths, so a publication commits its accepted document set without
+      // sweeping unrelated worktree changes into the revision. The caller decides which paths those
+      // are; the adapter adds and commits exactly them.
+      const staged = await required(['add', '--', ...paths], repository);
+      if (!staged.ok) {
+        return staged;
+      }
+      const difference = await attempt(['diff', '--cached', '--quiet', '--', ...paths], repository);
+      if (!difference.ok) {
+        return difference;
+      }
+      if (difference.value.exitCode === 0) {
+        // The named paths already match the head: a repeated publication reuses the current
+        // revision instead of failing on an empty commit.
+        return readBranchHead(repository);
+      }
+      if (difference.value.exitCode !== stagedDifferenceExitCode) {
+        return failureOf(difference.value);
+      }
+      const commit = await required(
+        [
+          '-c',
+          'user.name=Nexus',
+          '-c',
+          'user.email=nexus@localhost',
+          'commit',
+          '--message',
+          message,
+          '--only',
+          '--',
+          ...paths,
+        ],
+        repository,
+      );
+      if (!commit.ok) {
+        return commit;
+      }
+      return readBranchHead(repository);
+    },
+
+    async readFileAtRevision(repository, revision, file) {
+      const content = await required(['show', `${revision}:${file}`], repository);
+      return content.ok ? ok(content.value.stdout) : content;
+    },
+
+    async readMergeBase(repository, baseRevision, headRevision) {
+      const base = await required(['merge-base', baseRevision, headRevision], repository);
+      return base.ok ? ok(base.value.stdout.trim()) : base;
+    },
+
+    async readChangedPaths(repository, baseRevision, headRevision) {
+      const changed = await required(
+        ['diff', '--no-renames', '--name-only', '-z', baseRevision, headRevision, '--'],
+        repository,
+      );
+      return changed.ok ? ok(changed.value.stdout.split('\0').filter(Boolean)) : changed;
     },
 
     async readDiff(repository, baseRevision, headRevision) {

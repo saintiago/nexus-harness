@@ -297,6 +297,8 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     }
 
     await writeRecord(recordFile, established.value);
+    // Close the ready-admission exception only after durable preparation succeeds.
+    await writeRecord(settings.selectionFile, { ...selection, initialClaim: false });
     publish(
       actionOutcomeEvent('prepare-workspace', {
         task: selection.taskKey,

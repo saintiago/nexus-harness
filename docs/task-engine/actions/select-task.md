@@ -1,4 +1,4 @@
-# SelectTask
+# SelectWork
 
 ## Responsibility
 
@@ -23,6 +23,10 @@ type Selection = {
   task: unknown;
   conversation: unknown[];
   workspace: WorkspaceRef;
+  /** The stage the parent routes to; the parent's publications update it. */
+  stage: 'idea' | 'requirements' | 'ux' | 'prototype' | 'architecture' | 'delivery';
+  /** Retained ready admission; PrepareWorkspace retires it on successful preparation. */
+  initialClaim?: boolean;
 };
 ```
 
@@ -31,12 +35,19 @@ acceptance-criteria section or prescribed description template is required. conv
 complete source conversation separately, saved locally for both development and review. Prior agent
 exchanges remain in the round artifacts. These records do not introduce another issue/comment schema.
 The source connection is supplied configuration. Workspace paths distinguish projects as well as tasks.
+The configured status mappings select the stage; a candidate whose status has no configured stage
+requests attention instead of being silently skipped, and the parent's own publications advance or
+return the stage and update the record.
 
 ### Outcomes
 
 - selected: the selected task, complete source input and workspace reference have been saved.
 - empty: a successful source inspection found no eligible task in the configured project.
-- failed: an observed task condition prevents selection, with the reason emitted for recovery.
+- failed: an observed task condition prevents selection, with the reason emitted for recovery
+  and the actual candidate identity/reason retained in selection-failure.json beside selection.json.
+  The failure carries a selected-work snapshot only when this invocation continued or claimed it;
+  a stale selection does not establish ownership. Selected-work failures also retain a copy under
+  that issue's parent area for terminal evidence.
 
 Only selected supplies a task for subsequent actions. Source access failures are execution errors,
 not evidence of an empty queue. selected publishes the
@@ -58,7 +69,10 @@ Save selection before updating the configured source status and workspace pointe
 chooses a reference; it does not create the worktree.
 
 On repetition, inspect the saved selection and current source state. Finish an incomplete claim or
-continue the same unfinished task before selecting unrelated work. A completed previous task allows
+continue the same unfinished task before selecting unrelated work. Preserve ready-admission
+evidence independently of refreshed task snapshots across repeated interruptions until repository
+preparation succeeds. This exception admits only In Progress; In Review always requires matching
+prepared, development, verification and delivery evidence. A completed previous task allows
 fresh selection. Unexpected source state is reported rather than overwritten.
 
 With no saved active selection, select from the current source order. There is no special blocker

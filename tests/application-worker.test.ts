@@ -57,7 +57,13 @@ async function configuredWorker(options?: {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow['finite-delivery'] = options?.workflowPath ?? workflowModule;
+  nexus.workflow.project = options?.workflowPath ?? workflowModule;
+  // The project parent's children are loaded beside it; this worker test uses the shipped ones.
+  for (const name of ['finite-delivery', 'idea-refinement', 'preparation'] as const) {
+    nexus.workflow.children[name] = fileURLToPath(
+      new URL(`../workflows/${name}.ts`, import.meta.url),
+    );
+  }
   nexus.storage.root = './state';
   const project = projectConfiguration();
   const installationConfigPath = path.join(installationDirectory, 'nexus.config.json');
@@ -78,6 +84,7 @@ async function configuredWorker(options?: {
       task: { id: '10001', key: 'NEX-7', fields: {} },
       conversation: [],
       workspace: { root: workspace },
+      stage: 'delivery',
     }),
   );
 
@@ -89,7 +96,7 @@ async function configuredWorker(options?: {
     workspace,
     settings: {
       projectConfigPath,
-      workflow: 'finite-delivery',
+      workflow: 'project',
       logDirectory: path.join(workspace, 'logs'),
       installationConfigPath,
       environment: { ...credentials, ...options?.environment },

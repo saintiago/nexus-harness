@@ -2,18 +2,34 @@ import { z } from 'zod';
 import type { RecordDeclaration } from '../records.js';
 
 /**
- * SelectIdea's selection record and the captured idea input it owns. The selection record sits
- * beside the idea-refinement execution's workflow-state file, outside the issue workspace, and
- * names the refinement area and the shared issue root. The captured input contract is durable
- * history: StartIdeaRound writes its retained copy into the submission it opens, and every idea
- * role reads that copy as the current captured idea.
+ * The captured idea input contract: source identity, the issue revision and the complete
+ * conversation the parent selected. StartIdeaRound writes its retained copy into the submission it
+ * opens, and every idea role reads that copy as the current captured idea.
  */
-
-/** The selection record's file name beside the idea-refinement workflow-state file. */
-export const ideaSelectionFile = 'selection.json';
 
 /** The retained submission input's file name under artifacts/submissions/<n>/. */
 export const ideaInputFile = 'input.json';
+
+/**
+ * The parent's retained correction for one selection: the specific question an item waited on and
+ * the concrete upstream return a later preparation stage stated. The parent supplies it with the
+ * captured input; older submissions retain no correction.
+ */
+export const ideaParentInputSchema = z.object({
+  /** The human question the item waited on, when the parent retained one for this stage. */
+  question: z.string().min(1).nullable(),
+  /** The upstream return a later stage stated for this idea, when one is in force. */
+  returnFinding: z
+    .object({
+      from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
+      problem: z.string().min(1),
+      consequence: z.string().min(1),
+      correction: z.string().min(1),
+    })
+    .nullable(),
+});
+
+export type IdeaParentInput = z.infer<typeof ideaParentInputSchema>;
 
 /** The captured idea input: source identity, the issue revision and the complete conversation. */
 export const ideaInputSchema = z.object({
@@ -21,6 +37,7 @@ export const ideaInputSchema = z.object({
   source: z.object({ kind: z.literal('jira'), issueId: z.string().min(1) }),
   issue: z.unknown(),
   conversation: z.array(z.unknown()),
+  parentInput: ideaParentInputSchema.optional(),
 });
 
 export type IdeaInput = z.infer<typeof ideaInputSchema>;
@@ -29,39 +46,3 @@ export const ideaInputDeclaration = {
   file: ideaInputFile,
   schema: ideaInputSchema,
 } satisfies RecordDeclaration<typeof ideaInputSchema>;
-
-/**
- * The selection document. The issue and conversation keep the source's native structures, and the
- * transitions are the ones observed at selection: the move into the active status and the moves
- * available from it for publication. A run reads the issue and its conversation once and publishes
- * from this snapshot.
- */
-export const ideaSelectionSchema = z.object({
-  taskKey: z.string().min(1),
-  source: z.object({ kind: z.literal('jira'), issueId: z.string().min(1) }),
-  issue: z.unknown(),
-  conversation: z.array(z.unknown()),
-  transitions: z.object({
-    toActive: z.unknown(),
-    fromActive: z.array(z.unknown()),
-  }),
-  /** Whether the item has been moved into the active status this selection claims. */
-  claimed: z.boolean(),
-  /**
-   * The latest submission retained when this selection captured the item; the submission this
-   * selection opens is the next number. Completion is judged against this selection's own
-   * submission, not against an earlier one the item already decided.
-   */
-  retainedSubmissions: z.number().int().nonnegative(),
-  /** The refinement workflow area the idea actions write under. */
-  workspace: z.object({ root: z.string().min(1) }),
-  /** The shared issue workspace root the source pointer retains. */
-  issueWorkspace: z.object({ root: z.string().min(1) }),
-});
-
-export type IdeaSelection = z.infer<typeof ideaSelectionSchema>;
-
-export const ideaSelectionDeclaration = {
-  file: ideaSelectionFile,
-  schema: ideaSelectionSchema,
-} satisfies RecordDeclaration<typeof ideaSelectionSchema>;

@@ -35,7 +35,7 @@ import {
 } from '../src/application/index.js';
 import { installationConfigSetting } from '../src/application/installation.js';
 import type { RecoveryRuntimeFactory } from '../src/application/recovery.js';
-import { loadWorkflow } from '../src/application/workflow.js';
+import { loadProjectWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
 import type { ExperienceAnalystRequest } from '../src/task-engine/actions/analyze-experience/index.js';
@@ -250,7 +250,14 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
       analysisProfile: 'nexus-astra',
     };
   }
-  nexus.workflow['idea-refinement'] = workflowPath;
+  nexus.workflow.project = fileURLToPath(new URL('../workflows/project.ts', import.meta.url));
+  nexus.workflow.children['finite-delivery'] = fileURLToPath(
+    new URL('../workflows/finite-delivery.ts', import.meta.url),
+  );
+  nexus.workflow.children['idea-refinement'] = workflowPath;
+  nexus.workflow.children.preparation = fileURLToPath(
+    new URL('../workflows/preparation.ts', import.meta.url),
+  );
   nexus.storage.root = './state';
   const project = projectConfiguration();
   project.repository.source = origin;
@@ -260,7 +267,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   await writeFile(projectConfigPath, JSON.stringify(project));
 
   const storage = path.join(installationDirectory, 'state');
-  const executionDirectory = path.join(storage, 'executions', 'NEX', 'idea-refinement');
+  const executionDirectory = path.join(storage, 'executions', 'NEX');
   const issueWorkspace = path.join(storage, 'workspaces', 'NEX', 'NEX-1');
   const refinement = path.join(issueWorkspace, 'refinement');
   const worktree = path.join(refinement, 'worktree');
@@ -360,14 +367,14 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   const launchWorker: WorkerLaunch = async (request, onEvent, onActivity) => {
     const loaded = await loadNexusConfiguration(installationConfigPath);
     const loadedProject = await loadProjectConfiguration(request.projectConfigPath);
-    const workflow = await loadWorkflow(loaded.workflow[request.workflow]);
-    const paths = executionPaths(loaded, loadedProject, request.workflow);
+    const workflow = await loadProjectWorkflow(loaded.workflow);
+    const paths = executionPaths(loaded, loadedProject);
     await mkdir(paths.directory, { recursive: true });
     const engine = createTaskEngine({
       workflow: workflow.machine,
+      children: workflow.children,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
-        workflow: request.workflow,
         project: loadedProject,
         nexus: loaded,
         paths,
@@ -476,7 +483,7 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
         },
       };
       return runOperatorCommand({
-        args: ['ideas', 'refine', '--project-config', projectConfigPath],
+        args: ['queue', 'run', '--project-config', projectConfigPath],
         workingDirectory: root,
         environment: { ...hostEnvironment, [installationConfigSetting]: installationConfigPath },
         output: { write: () => undefined },
@@ -624,9 +631,12 @@ describe('idea refinement journeys', () => {
     expect(exitCode, JSON.stringify(journey.finished())).toBe(0);
     expect(journey.status()).toBe('Draft');
     expect(journey.diagnostics).toEqual([]);
-    // One capture per run: the issue and its conversation are read once, at selection.
-    expect(journey.jiraCalls.filter((call) => call.startsWith('read:'))).toHaveLength(1);
-    expect(journey.jiraCalls.filter((call) => call.startsWith('comments:'))).toHaveLength(1);
+    // The parent captures the issue and its conversation at selection and re-reads them for its
+    // publication and its next selection; the child reads no Jira at all.
+    expect(journey.jiraCalls.filter((call) => call.startsWith('read:')).length).toBeGreaterThan(0);
+    expect(journey.jiraCalls.filter((call) => call.startsWith('comments:')).length).toBeGreaterThan(
+      0,
+    );
 
     const plan = await journey.plan();
     expect(plan).toEqual({
@@ -786,7 +796,7 @@ describe('idea refinement journeys', () => {
     // The analyst reads the request's retained copy of the submission's evidence.
     expect(journey.analyses[0]?.context).toContain('Retained evidence root:');
     expect(journey.analyses[0]?.workspace.root).toContain(
-      path.join('memory', 'evidence', 'NEX-1-publish-approved-'),
+      path.join('memory', 'evidence', 'NEX-1-idea-approved-'),
     );
     const requests = await readdir(path.join(journey.executionDirectory, 'memory', 'requests'));
     expect(requests).toHaveLength(1);

@@ -103,3 +103,64 @@ export const reviewArtifact = {
   pathFromArtifactsRoot: 'review.json',
   schema: reviewOutputSchema,
 } satisfies ArtifactDeclaration<typeof reviewOutputSchema>;
+
+/** Validate a revision assessment against the shared findings and verdict contract. */
+export function validateReviewResponse(
+  response: ReviewResponse,
+  priorFindings: readonly Finding[],
+): void {
+  const current = new Set<string>();
+  for (const finding of response.findings) {
+    if (current.has(finding.id)) {
+      throw new Error(`The reviewer reported finding "${finding.id}" more than once.`);
+    }
+    current.add(finding.id);
+  }
+
+  const supplied = new Set(priorFindings.map((finding) => finding.id));
+  const answered = new Set<string>();
+  for (const disposition of response.priorFindings) {
+    if (!supplied.has(disposition.findingId)) {
+      throw new Error(`The reviewer disposed of unknown prior finding "${disposition.findingId}".`);
+    }
+    if (answered.has(disposition.findingId)) {
+      throw new Error(
+        `The reviewer disposed of prior finding "${disposition.findingId}" more than once.`,
+      );
+    }
+    answered.add(disposition.findingId);
+    const present = current.has(disposition.findingId);
+    if (disposition.disposition === 'open' && !present) {
+      throw new Error(
+        `The reviewer left prior finding "${disposition.findingId}" open without reporting it ` +
+          'in findings.',
+      );
+    }
+    if (disposition.disposition !== 'open' && present) {
+      throw new Error(
+        `The reviewer reported prior finding "${disposition.findingId}" as ` +
+          `"${disposition.disposition}" while it is still in findings.`,
+      );
+    }
+  }
+  const missing = priorFindings
+    .filter((finding) => !answered.has(finding.id))
+    .map((finding) => finding.id);
+  if (missing.length > 0) {
+    throw new Error(
+      `The reviewer did not dispose of prior finding${missing.length === 1 ? '' : 's'} ` +
+        `${missing.map((id) => `"${id}"`).join(', ')}.`,
+    );
+  }
+
+  const blocking = response.findings.filter((finding) => finding.severity === 'blocking');
+  if (response.verdict === 'approved' && blocking.length > 0) {
+    throw new Error(
+      `The reviewer approved the revision while reporting blocking finding` +
+        `${blocking.length === 1 ? '' : 's'} ${blocking.map((finding) => `"${finding.id}"`).join(', ')}.`,
+    );
+  }
+  if (response.verdict === 'changesRequested' && blocking.length === 0) {
+    throw new Error('The reviewer requested changes without a current blocking finding.');
+  }
+}

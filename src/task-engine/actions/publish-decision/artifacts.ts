@@ -34,15 +34,21 @@ export const decisionSchema = z.object({
   reason: z.string().trim().min(1).nullable(),
   /** The human-facing Jira comment text. */
   comment: z.string().min(1),
-  /** What the source update changed: the applied transition and published comment identity. */
-  source: z.object({
-    transition: z.object({
-      id: z.string().min(1),
-      to: z.string().min(1),
-    }),
-    status: z.string().min(1),
-    commentId: z.string().nullable(),
-  }),
+  /**
+   * What the source update changed: the applied transition and published comment identity. The
+   * child records the decision with null; the parent-owned publication fills it in after the
+   * source write, so a repeated publication reuses the retained identities.
+   */
+  source: z
+    .object({
+      transition: z.object({
+        id: z.string().min(1),
+        to: z.string().min(1),
+      }),
+      status: z.string().min(1),
+      commentId: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 export type IdeaDecisionRecord = z.infer<typeof decisionSchema>;

@@ -19,21 +19,16 @@ import {
 } from '../src/application/action-bindings.js';
 import {
   finiteDeliveryHandoff,
-  ideaRefinementHandoff,
+  ideaPublicationHandoff,
   operationalErrorHandoff,
 } from '../src/application/analysis-handoff.js';
 import type { NexusConfiguration } from '../src/configuration/index.js';
-import type { IdeaSelection } from '../src/task-engine/actions/select-idea/artifacts.js';
 import type { Selection } from '../src/task-engine/actions/select-task/artifacts.js';
 import { ideaRoundPlanFile } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
 const workId = 'NEX-7';
-const submissionReason =
-  'The configured maximum of 1 conversation cycle for this selection is reached; another cycle ' +
-  'would exceed it.';
-
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -64,21 +59,19 @@ function selectionFor(workspace: string): Selection {
     task: { id: '10518', key: workId, fields: {} },
     conversation: [],
     workspace: { root: workspace },
+    stage: 'delivery',
   };
 }
 
-/** One idea-refinement selection naming the supplied refinement area. */
-function ideaSelectionFor(workspace: string, retainedSubmissions: number): IdeaSelection {
+/** One idea-stage parent selection naming the issue root that owns the refinement area. */
+function ideaSelectionFor(refinementArea: string): Selection {
   return {
     taskKey: workId,
     source: { kind: 'jira', issueId: '10518' },
-    issue: { id: '10518', key: workId, fields: {} },
+    task: { id: '10518', key: workId, fields: {} },
     conversation: [],
-    transitions: { toActive: {}, fromActive: [] },
-    claimed: true,
-    retainedSubmissions,
-    workspace: { root: workspace },
-    issueWorkspace: { root: path.dirname(workspace) },
+    workspace: { root: path.dirname(refinementArea) },
+    stage: 'idea',
   };
 }
 
@@ -188,11 +181,10 @@ describe('terminal handoffs', () => {
     await writeJson(path.join(workspace, 'artifacts', 'submissions', '2', 'input.json'), {
       taskKey: workId,
     });
-    const selection = ideaSelectionFor(workspace, 1);
+    const selection = ideaSelectionFor(workspace);
 
-    const handoff = await ideaRefinementHandoff({ selection, terminal: 'publish-approved' });
+    const handoff = await ideaPublicationHandoff({ selection, terminal: 'idea-approved' });
     const operational = await operationalErrorHandoff({
-      workflow: 'idea-refinement',
       selection,
       failure: 'the worker stopped',
     });
@@ -207,22 +199,27 @@ describe('terminal handoffs', () => {
     ]);
   });
 
-  it('states the exhaustion reason the idea round producer retained', async () => {
+  it('carries the idea publication outcome and its retained submission artifacts', async () => {
     const root = await temporaryDirectory();
     const workspace = path.join(root, 'refinement');
     await writeJson(path.join(workspace, 'artifacts', 'submissions', '1', 'input.json'), {
       taskKey: workId,
     });
-    await writeJson(path.join(workspace, 'state', 'submission-exhaustion.json'), {
-      reason: submissionReason,
+    await writeJson(path.join(workspace, 'artifacts', 'submissions', '1', 'decision.json'), {
+      decision: 'attempts-exhausted',
     });
 
-    const handoff = await ideaRefinementHandoff({
-      selection: ideaSelectionFor(workspace, 0),
-      terminal: 'start-submission-exhausted',
+    const handoff = await ideaPublicationHandoff({
+      selection: ideaSelectionFor(workspace),
+      terminal: 'idea-feedback',
     });
 
-    expect(handoff.reason).toBe(submissionReason);
+    expect(handoff.outcome).toBe('waiting-for-feedback');
+    expect(handoff.workflow).toBe('idea-refinement');
+    expect(handoff.artifacts.map((artifact) => artifact.path)).toEqual([
+      path.join(workspace, 'artifacts', 'submissions', '1', 'decision.json'),
+      path.join(workspace, 'artifacts', 'submissions', '1', 'input.json'),
+    ]);
   });
 });
 
@@ -234,7 +231,6 @@ function bindingOver(options: {
 }) {
   const directory = path.dirname(options.selectionFile);
   const settings: ActionBindingSettings = {
-    workflow: 'finite-delivery',
     project: projectConfiguration(),
     nexus: options.nexus,
     paths: {

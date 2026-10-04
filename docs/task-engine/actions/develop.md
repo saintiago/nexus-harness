@@ -7,7 +7,7 @@ Implement the selected task or repair the preceding round's findings in its reta
 ## Interface
 
 Follow the [action contract](architecture.md). Use the task input from
-[SelectTask](select-task.md#output), the prepared workspace from
+[SelectWork](select-task.md#output), the prepared workspace from
 [PrepareWorkspace](prepare-workspace.md#output), [AgentRuntime](../../agent-runtime/architecture.md#provided-interface)
 and the [Git adapter](../../adapters/git.md#interface). Use the
 parent-owned source input to refresh task content and conversation.

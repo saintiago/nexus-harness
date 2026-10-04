@@ -6,12 +6,15 @@ import {
   ideaEditorRoleInstructions,
   memoryAnalysisGuidance,
   memoryUseGuidance,
+  preparationRoleInstructions,
+  preparationRoles,
   projectGuideRoleInstructions,
   recoveryRoleInstructions,
   researcherRoleInstructions,
   reviewerRoleInstructions,
   type AgentProfile,
   type AgentRuntimeSettings,
+  type PreparationRole,
 } from '../agent-runtime/index.js';
 import type { CodingRuntime } from '../adapters/coding-runtime.js';
 import type { JiraSettings } from '../adapters/jira.js';
@@ -19,8 +22,8 @@ import type { NotificationSettings } from '../adapters/notifications.js';
 import {
   resolveCredential,
   type NexusConfiguration,
+  type PreparationStage,
   type ProjectConfiguration,
-  type WorkflowName,
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
 
@@ -38,7 +41,8 @@ type HostEnvironment = Readonly<Record<string, string | undefined>>;
  * The role whose constant instructions one invocation carries, selected by the execution policy.
  * The analysis role has no role constants: its guidance is the shared memory-analysis instruction.
  */
-export type ProfileRole = 'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole;
+export type ProfileRole =
+  'developer' | 'reviewer' | 'recovery' | 'analysis' | IdeaRole | PreparationRole;
 
 /** The complete constant instructions of each role, defined by the role contracts. */
 const roleInstructions: Record<ProfileRole, readonly string[]> = {
@@ -50,6 +54,7 @@ const roleInstructions: Record<ProfileRole, readonly string[]> = {
   researcher: researcherRoleInstructions,
   'project-guide': projectGuideRoleInstructions,
   challenger: challengerRoleInstructions,
+  ...preparationRoleInstructions,
 };
 
 /** The configured idea refinement profile of each role. */
@@ -58,6 +63,21 @@ const ideaRoleSettings: Record<IdeaRole, keyof NexusConfiguration['ideaRefinemen
   researcher: 'researcher',
   'project-guide': 'projectGuide',
   challenger: 'challenger',
+};
+
+/** The configured stage and part each evaluated preparation role selects a profile for. */
+export const preparationRoleSettings: Record<
+  PreparationRole,
+  { readonly stage: PreparationStage; readonly part: 'author' | 'evaluator' }
+> = {
+  'requirements-author': { stage: 'requirements', part: 'author' },
+  'requirements-evaluator': { stage: 'requirements', part: 'evaluator' },
+  'ux-author': { stage: 'ux', part: 'author' },
+  'ux-evaluator': { stage: 'ux', part: 'evaluator' },
+  'prototype-author': { stage: 'prototype', part: 'author' },
+  'prototype-evaluator': { stage: 'prototype', part: 'evaluator' },
+  'architecture-author': { stage: 'architecture', part: 'author' },
+  'architecture-evaluator': { stage: 'architecture', part: 'evaluator' },
 };
 
 /**
@@ -73,6 +93,7 @@ const memoryToolRoles: ReadonlySet<ProfileRole> = new Set<ProfileRole>([
   'researcher',
   'project-guide',
   'challenger',
+  ...preparationRoles,
 ]);
 
 /**
@@ -136,6 +157,17 @@ function profilesForRole(
   role: ProfileRole,
 ): ReadonlySet<string> {
   const { developerLadder, reviewerProfile, recoveryProfile } = configuration.executionPolicy;
+  const preparation = preparationRoles.find((candidate) => candidate === role);
+  if (preparation !== undefined) {
+    const selected = preparationRoleSettings[preparation];
+    const profiles = configuration.preparation.profiles[selected.stage];
+    if (selected.part === 'author') {
+      // Every profile of the prototype author ladder may be selected for the role, so each one
+      // carries the role's instructions and tools.
+      return new Set('authors' in profiles ? profiles.authors : [profiles.author]);
+    }
+    return new Set([profiles.evaluator]);
+  }
   switch (role) {
     case 'developer':
       return new Set(developerLadder.map((entry) => entry.profile));
@@ -152,6 +184,8 @@ function profilesForRole(
     case 'project-guide':
     case 'challenger':
       return new Set([configuration.ideaRefinement.profiles[ideaRoleSettings[role]]]);
+    default:
+      throw new Error(`No configured profile role "${String(role)}" exists.`);
   }
 }
 
@@ -261,26 +295,19 @@ export type ExecutionPaths = {
   readonly directory: string;
   /** The ExecutionRunner's workflow-state filepath. */
   readonly workflowStateFile: string;
-  /** SelectTask's selection filepath. */
+  /** SelectWork's selection filepath. */
   readonly selectionFile: string;
 };
 
 /**
- * The execution directory and record paths Application supplies for one project and selected
- * workflow. Idea refinement uses its own directory beside the finite delivery queue's, so the two
- * workflows keep separate workflow state, selection and logs.
+ * The execution directory and record paths Application supplies for one project. The composed
+ * project parent and all of its children share one workflow state, selection and log directory.
  */
 export function executionPaths(
   nexus: NexusConfiguration,
   project: ProjectConfiguration,
-  workflow: WorkflowName,
 ): ExecutionPaths {
-  const directory = path.join(
-    nexus.storage.root,
-    'executions',
-    project.taskSource.project,
-    ...(workflow === 'idea-refinement' ? ['idea-refinement'] : []),
-  );
+  const directory = path.join(nexus.storage.root, 'executions', project.taskSource.project);
   return {
     directory,
     workflowStateFile: path.join(directory, 'workflow.json'),

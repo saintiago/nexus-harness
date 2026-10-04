@@ -28,6 +28,20 @@ export function projectConfiguration(): ProjectConfiguration {
         review: 'In Review',
         done: 'Done',
       },
+      preparation: {
+        statuses: {
+          requirements: 'Requirements',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+      },
+      implementation: {
+        issueType: 'Task',
+        labels: ['implementation'],
+        status: 'To Do',
+        linkType: 'Relates',
+      },
       ideas: {
         selection: {
           query: 'project = NEX AND status = "Idea"',
@@ -58,8 +72,12 @@ export function projectConfiguration(): ProjectConfiguration {
 export function nexusConfiguration(): NexusConfiguration {
   return {
     workflow: {
-      'finite-delivery': './workflows/finite-delivery.ts',
-      'idea-refinement': './workflows/idea-refinement.ts',
+      project: './workflows/project.ts',
+      children: {
+        'finite-delivery': './workflows/finite-delivery.ts',
+        'idea-refinement': './workflows/idea-refinement.ts',
+        preparation: './workflows/preparation.ts',
+      },
     },
     storage: {
       root: './state',
@@ -110,6 +128,16 @@ export function nexusConfiguration(): NexusConfiguration {
       reviewerProfile: 'nexus-review',
       recoveryProfile: 'nexus-recovery',
       maxRecoveryAttempts: 1,
+    },
+    preparation: {
+      maxRounds: 3,
+      maxUpstreamReturns: 2,
+      profiles: {
+        requirements: { author: 'nexus-astra', evaluator: 'nexus-astra' },
+        ux: { author: 'nexus-astra', evaluator: 'nexus-astra' },
+        prototype: { authors: ['nexus-flash', 'nexus-astra'], evaluator: 'nexus-astra' },
+        architecture: { author: 'nexus-astra', evaluator: 'nexus-review' },
+      },
     },
     ideaRefinement: {
       profiles: {

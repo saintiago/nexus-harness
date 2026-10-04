@@ -7,8 +7,11 @@ export {
 export {
   loadNexusConfiguration,
   parseNexusConfiguration,
+  preparationStages,
   resolveCredential,
   workflowNames,
   type NexusConfiguration,
+  type PreparationStage,
+  type WorkflowDefinitions,
   type WorkflowName,
 } from './nexus.js';

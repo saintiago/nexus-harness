@@ -108,6 +108,7 @@ export type JiraAdapter = {
   addComment(issueId: string, body: JiraDocument): Promise<Result<JiraComment>>;
   editComment(issueId: string, commentId: string, body: JiraDocument): Promise<Result<JiraComment>>;
   createIssue(fields: Readonly<Record<string, unknown>>): Promise<Result<JiraIssueIdentity>>;
+  linkIssues(fromIssueId: string, toIssueId: string, linkType: string): Promise<Result<void>>;
   rankIssue(issueId: string, target: JiraRankTarget): Promise<Result<void>>;
 };
 
@@ -421,6 +422,22 @@ export function createJiraAdapter(
     return created.ok ? ok({ id: created.value.id, key: created.value.key }) : created;
   }
 
+  /**
+   * Link one issue to another with the configured link type: the first issue is the outward
+   * subject and the second the inward target, so the link reads from the created issue.
+   */
+  async function linkIssues(
+    fromIssueId: string,
+    toIssueId: string,
+    linkType: string,
+  ): Promise<Result<void>> {
+    return write('POST', '/rest/api/3/issueLink', {
+      type: { name: linkType },
+      outwardIssue: { id: fromIssueId },
+      inwardIssue: { id: toIssueId },
+    });
+  }
+
   /** Rank one issue before or after an existing issue. Priority is a separate field. */
   async function rankIssue(issueId: string, target: JiraRankTarget): Promise<Result<void>> {
     const placement =
@@ -454,6 +471,7 @@ export function createJiraAdapter(
     addComment,
     editComment,
     createIssue,
+    linkIssues,
     rankIssue,
   };
 }

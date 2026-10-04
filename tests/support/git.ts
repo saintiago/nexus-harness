@@ -35,15 +35,45 @@ export type GitOperations = {
     remote: string,
     branch: string,
   ): Result<BranchHead> | Promise<Result<BranchHead>>;
+  fetchRevision?(
+    repository: string,
+    remote: string,
+    ref: string,
+  ): Result<string> | Promise<Result<string>>;
+  createBranch?(
+    repository: string,
+    branch: string,
+    startRevision: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
   pushBranch?(
     repository: string,
     branch: string,
     expectedHead: string,
   ): Result<BranchHead> | Promise<Result<BranchHead>>;
+  commitPaths?(
+    repository: string,
+    paths: readonly string[],
+    message: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
   readRemoteBranchHead?(
     remote: string,
     branch: string,
   ): Result<string | null> | Promise<Result<string | null>>;
+  readFileAtRevision?(
+    repository: string,
+    revision: string,
+    file: string,
+  ): Result<string> | Promise<Result<string>>;
+  readMergeBase?(
+    repository: string,
+    base: string,
+    head: string,
+  ): Result<string> | Promise<Result<string>>;
+  readChangedPaths?(
+    repository: string,
+    base: string,
+    head: string,
+  ): Result<readonly string[]> | Promise<Result<readonly string[]>>;
   readDiff?(
     repository: string,
     baseRevision: string,
@@ -84,8 +114,17 @@ export function scriptedGit(
           ? await operations.cloneRepository(source, destination)
           : unexpected('cloneRepository');
       },
-      async fetchRevision() {
-        return unexpected('fetchRevision');
+      async fetchRevision(repository, remote, ref) {
+        calls.push(`fetch:${repository}:${remote}:${ref}`);
+        return operations.fetchRevision
+          ? await operations.fetchRevision(repository, remote, ref)
+          : unexpected('fetchRevision');
+      },
+      async commitPaths(repository, paths, message) {
+        calls.push(`commit:${repository}:${paths.join(',')}:${message}`);
+        return operations.commitPaths
+          ? await operations.commitPaths(repository, paths, message)
+          : unexpected('commitPaths');
       },
       async pullBranch(repository, remote, branch) {
         calls.push(`pull:${repository}:${remote}:${branch}`);
@@ -93,8 +132,11 @@ export function scriptedGit(
           ? await operations.pullBranch(repository, remote, branch)
           : unexpected('pullBranch');
       },
-      async createBranch() {
-        return unexpected('createBranch');
+      async createBranch(repository, branch, startRevision) {
+        calls.push(`create:${repository}:${branch}@${startRevision}`);
+        return operations.createBranch
+          ? await operations.createBranch(repository, branch, startRevision)
+          : unexpected('createBranch');
       },
       async pushBranch(repository, branch, expectedHead) {
         calls.push(`push:${branch}@${expectedHead}`);
@@ -107,6 +149,24 @@ export function scriptedGit(
         return operations.readRemoteBranchHead
           ? await operations.readRemoteBranchHead(remote, branch)
           : unexpected('readRemoteBranchHead');
+      },
+      async readFileAtRevision(repository, revision, file) {
+        calls.push(`file:${revision}:${file}`);
+        return operations.readFileAtRevision
+          ? await operations.readFileAtRevision(repository, revision, file)
+          : unexpected('readFileAtRevision');
+      },
+      async readMergeBase(repository, base, head) {
+        calls.push(`merge-base:${repository}:${base}:${head}`);
+        return operations.readMergeBase
+          ? await operations.readMergeBase(repository, base, head)
+          : unexpected('readMergeBase');
+      },
+      async readChangedPaths(repository, base, head) {
+        calls.push(`paths:${base}..${head}`);
+        return operations.readChangedPaths
+          ? await operations.readChangedPaths(repository, base, head)
+          : unexpected('readChangedPaths');
       },
       async readDiff(repository, baseRevision, headRevision) {
         calls.push(`diff:${baseRevision}..${headRevision}`);

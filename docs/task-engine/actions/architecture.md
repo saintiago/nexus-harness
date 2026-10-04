@@ -134,7 +134,7 @@ saved.
 
 ## Inputs before a round exists
 
-[SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.
+[SelectWork](select-task.md#output) owns selection.json beside the queue's workflow-state file.
 [PrepareWorkspace](prepare-workspace.md#output) owns state/prepared-workspace.json in the selected
 ticket's workspace. Consumers import these record declarations and read them directly; they are not
 resolved through the current-round helper. [StartDevRound](start-dev-round.md#output) owns the current-round
@@ -192,3 +192,12 @@ Consumers import producer-owned output declarations and schemas.
 Preparation areas retain applicability decisions, round history and accepted output references.
 Skips are evaluated and saved. The parent consumes current results for publication/routing.
 Original preparation completion and implementation completion require their distinct evidence.
+
+## Retained finite entry
+
+RouteDeliveryEntry imports the selected workspace, current-round declaration and development,
+verification and delivery artifacts. After PrepareWorkspace, it routes a new child admission to the
+first unfinished phase: round planning for missing/failed development or failed verification,
+verification for completed development, delivery for matching passed verification, or retained
+publication/review for an already-delivered revision. It validates task and revision identity and
+writes no artifact. Restoring an active child uses its saved checkpoint instead of this entry route.

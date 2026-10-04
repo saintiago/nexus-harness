@@ -111,12 +111,7 @@ describe('operator command parsing', () => {
     expect(parseOperatorCommand(['--help'])).toEqual({ kind: 'help' });
     expect(parseOperatorCommand(['queue', 'run', '--project-config', 'project.json'])).toEqual({
       kind: 'run',
-      workflow: 'finite-delivery',
-      projectConfigPath: 'project.json',
-    });
-    expect(parseOperatorCommand(['ideas', 'refine', '--project-config', 'project.json'])).toEqual({
-      kind: 'run',
-      workflow: 'idea-refinement',
+      workflow: 'project',
       projectConfigPath: 'project.json',
     });
   });
@@ -222,7 +217,7 @@ describe('operator command', () => {
     expect(controlled.requests).toEqual([
       {
         projectConfigPath: path.join(workingDirectory, 'configs/project.json'),
-        workflow: 'finite-delivery',
+        workflow: 'project',
       },
     ]);
     expect(received[0]?.installationConfigPath).toBe(

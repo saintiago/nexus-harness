@@ -18,6 +18,7 @@ import {
   challengerRoleInstructions,
   developmentRoleInstructions,
   ideaEditorRoleInstructions,
+  preparationRoleInstructions,
   projectGuideRoleInstructions,
   recoveryRoleInstructions,
   researcherRoleInstructions,
@@ -221,6 +222,25 @@ describe('AgentRuntime construction', () => {
         configuration.executionPolicy.agentInvocationLimitMinutes * 60_000,
       );
       expect(requests).toHaveLength(1);
+    }
+  });
+
+  it('carries the prototype author role on every profile of its escalation ladder', () => {
+    const configuration = nexus();
+    const authors = configuration.preparation.profiles.prototype.authors;
+    // The configured ladder must actually escalate for this check to mean anything.
+    expect(authors.length).toBeGreaterThan(1);
+    const { settings } = harness(configuration, 'prototype-author');
+
+    for (const profile of authors) {
+      const configured = configuration.agentRuntime.profiles.find(
+        (candidate) => candidate.id === profile,
+      )!;
+      // Every selectable ladder profile carries the prototype author's constant instructions, so a
+      // promoted repair round never loses its role.
+      expect(settings.profiles.find((candidate) => candidate.id === profile)?.instructions).toEqual(
+        [...preparationRoleInstructions['prototype-author'], ...configured.instructions],
+      );
     }
   });
 
