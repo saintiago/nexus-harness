@@ -141,7 +141,8 @@ it is worth pursuing. Each has a useful contribution without overlapping vetoes.
 ## Inputs and project context
 
 Each entry from `Idea` captures the issue text, links, author, revision and relevant conversation
-once. Selection then moves it to the active state. Submission and resubmission follow this same
+once through parent selection. The parent moves it to the active state. The child receives the
+capture and never reads or writes Jira. Submission and resubmission follow this same
 path; no special resubmission input or publication reread is required.
 
 Every invocation receives the captured author input, current framing or refined idea, and relevant
@@ -172,8 +173,8 @@ remain the handoff; saved role outputs are not automatically ingested.
 
 ## Conversation and cycles
 
-1. Select the idea, capture its input, reuse or create the shared issue workspace, and move it to
-   `Idea Refinement`. Prepare its `refinement/worktree/` before invoking agents.
+1. Receive parent-selected input in the shared issue workspace. The parent moves it to
+   Idea Refinement. Prepare refinement/worktree before invoking agents.
 2. StartIdeaRound opens cycle 1. The editor frames the idea and useful questions. If an essential
    author decision is already missing, the editor may return it with a specific question.
 3. Researcher and Project guide contribute concurrently. XState joins their results before the
@@ -202,9 +203,9 @@ remains. There is no unanimous vote, severity precedence or automatic restart of
 XState owns parallelism, joins, bounded conversation routing and termination. Actions save outputs
 and return typed outcomes; Application and AgentRuntime do not implement a second coordinator.
 
-## Outcomes and publication
+## Outcomes and parent publication
 
-| Outcome | Jira publication and transition |
+| Child outcome | Parent publication and transition |
 | --- | --- |
 | Approved | Publish the refined idea, short refinement summary and cycle count; move to `Draft` |
 | Unsuitable | Explain why pursuing this idea appears unwise, include the latest idea and summary, and move to `Waiting for Feedback` |
@@ -216,10 +217,11 @@ cycle count on every outcome. If no refined idea exists yet, use the captured id
 framing. State the reason plainly and end with the next step: reply in a Jira comment and move the
 issue back to `Idea`. Exhaustion does not mean rejection. Only approved output and human-facing
 feedback are published; internal conversation, raw concerns and tool transcripts stay in artifacts
-and logs. Do not publish interim messages or move an idea directly to To Do.
+and logs. The parent publishes terminal decisions; do not publish interim messages or bypass preparation by
+moving an idea directly to Implementation.
 
 Approval saves `artifacts/handoff.json` referencing the shared issue workspace and its input,
-approved revision, contributions and decision. A later Requirements and Design workflow can use all retained artifacts.
+approved revision, contributions and decision. The Requirements child receives these retained artifacts through the parent.
 Returned ideas are not selected again until the author moves them to `Idea`; each run terminates
 rather than waiting internally. Agent/tool failures, malformed output or source update failures
 remain operational faults handled by common execution recovery, never fabricated idea decisions.
@@ -267,10 +269,10 @@ artifacts without copying them or changing refinement state.
 This illustrates XState structure; it is not a separate executable coordinator.
 
 ```text
-selectIdea -> prepareWorkspace -> StartIdeaRound(new) -> frameIdea
+receiveParentInput -> prepareWorkspace -> StartIdeaRound(new) -> frameIdea
 frameIdea:
   framed -> gatherInitialContributions
-  needsAuthorDecision -> publishAuthorDecision -> final
+  needsAuthorDecision -> returnAuthorDecision -> final
 
 gatherInitialContributions (parallel):
   Researcher
@@ -279,19 +281,19 @@ join -> editIdea
 
 editIdea:
   written -> challenge
-  unsuitable -> publishUnsuitable -> final
-  needsAuthorDecision -> publishAuthorDecision -> final
+  unsuitable -> returnUnsuitable -> final
+  needsAuthorDecision -> returnAuthorDecision -> final
 
 challenge:
-  approve -> publishApproved -> final
-  discuss, cycle limit reached -> publishAttemptsExhausted -> final
+  approve -> returnApproved -> final
+  discuss, cycle limit reached -> returnAttemptsExhausted -> final
   discuss -> StartIdeaRound(next) -> editorResponse
 
 editorResponse:
   revise | answer | rebut -> challenge
   requestHelp -> gatherFocusedContributions
-  unsuitable -> publishUnsuitable -> final
-  needsAuthorDecision -> publishAuthorDecision -> final
+  unsuitable -> returnUnsuitable -> final
+  needsAuthorDecision -> returnAuthorDecision -> final
 
 gatherFocusedContributions (parallel):
   Researcher if requested, otherwise final
@@ -300,13 +302,13 @@ join -> editorResponseAfterHelp
 
 editorResponseAfterHelp:
   revise | answer | rebut -> challenge
-  unsuitable -> publishUnsuitable -> final
-  needsAuthorDecision -> publishAuthorDecision -> final
+  unsuitable -> returnUnsuitable -> final
+  needsAuthorDecision -> returnAuthorDecision -> final
 ```
 
 The parallel regions invoke distinct actions and join through XState completion. No promise fan-out
-or routing loop outside the machine replaces these states. Publication uses the captured input and
-saved artifacts without rereading Jira.
+or routing loop outside the machine replaces these states. The child returns saved decision artifacts. Parent-owned publication uses the capture and
+artifacts; the child has no source client.
 
 ## Agent activity and verification
 
@@ -321,10 +323,14 @@ preservation, decision and publication boundaries, and retained workspace behavi
 
 ## Terminal experience analysis
 
-Invoke [AnalyzeExperience](../task-engine/actions/analyze-experience.md) after PublishDecision's
+The parent invokes [AnalyzeExperience](../task-engine/actions/analyze-experience.md) after its
 approval or waiting-for-feedback handoff, including unsuitable, author-decision-needed and
 attempts-exhausted returns, and on selected-submission failure exits before blocked/recovery.
 Pass the terminal decision and retained conversation/evidence, not a Jira status trigger. Preserve
 approved, waiting-for-feedback and failure destinations; analysis failure does not change them.
 Do not analyze intermediate editor/Challenger cycles, focused help or an empty/failed selection.
 The same action serves finite delivery and any subsequent workflow's terminal handoffs.
+
+The [project workflow](../project-workflow.md) owns parent handoffs and profile assignments.
+Parent-owned publication replaces child PublishDecision source writes; retained decision artifacts
+remain publication and experience-analysis inputs.

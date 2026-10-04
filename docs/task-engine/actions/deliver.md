@@ -10,7 +10,7 @@ Follow the [action contract](architecture.md). Import [devArtifact](develop.md#o
 [verificationArtifact](verify.md#output). Read their earlier-round values for reporting. Use
 [Selection](select-task.md#output) and [PreparedWorkspace](prepare-workspace.md#output), delivery
 configuration, the [Git adapter](../../adapters/git.md#interface),
-[GitHub adapter](../../adapters/github.md#interface) and [Jira adapter](../../adapters/jira.md#interface).
+[GitHub adapter](../../adapters/github.md#interface) and the parent-owned publication acknowledgement.
 
 ### Output
 
@@ -63,12 +63,12 @@ any later one, on the pull request's most recent observation: an observation rep
 already enabled, or the pull request already merged, needs no request. Required review and checks
 remain repository merge gates; requesting auto-merge does not wait for Review or CompleteTask.
 
-Record the resulting pull-request identity and head. Set the ticket's PR field and configured review
-status. Publish a concise developer comment beginning with the profile, followed by what changed and
-why. Count development reports after the initial round as executed repair turns when reporting repairs
+Record the resulting PR identity/head and supply the developer report to the parent-owned
+publication actor. That actor sets the ticket's PR field/review status and publishes a concise
+comment beginning with the profile, followed by what changed and why. Count development reports after the initial round as executed repair turns when reporting repairs
 used, and derive profile escalation from their recorded profiles. A planned round without a
 development report is not a used repair. Keep operational paths and repeated links out of the comment.
-Jira publication applies only to Jira tasks.
+Deliver has no Jira capability; source publication belongs to the parent boundary.
 
 Inspect existing publication state on repetition and finish incomplete work, including requesting
 auto-merge if it is not enabled on the open pull request. Use the recorded PR

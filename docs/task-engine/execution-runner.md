@@ -18,8 +18,10 @@ interface ExecutionRunner {
 type BoundAction = (input?: unknown) => Promise<string>;
 ```
 
-Construction supplies the XState workflow, action names mapped to bound functions, the state filepath
-and an event publisher. Action dependencies are already bound. A workflow state may supply a static
+Construction supplies the XState parent, named bound operations and child definitions, the state
+filepath and event publisher. Bind operations as promise actors in child definitions, then register
+the bound child machines as parent actors. Preserve native child invocation/output; do not wrap
+another runner in a promise operation. Action dependencies are already bound. A workflow state may supply a static
 input to the operation it invokes — for example the correction route StartIdeaRound opens — and the
 runner passes that value through unchanged; the action decides whether and how to use it. An action
 that needs no input ignores the argument.
@@ -31,7 +33,7 @@ state does not imply task success: drained and blocked are both declared workflo
 
 | Concern | Nexus implements | XState provides |
 | --- | --- | --- |
-| Action binding | Register supplied functions as promise actors under their workflow names | Resolve and invoke the registered actors |
+| Actor binding | Bind promise operations and child machine actors | Resolve and invoke the registered actors |
 | Execution | Start the machine and await its final result | Wait for operations, evaluate guards and follow transitions |
 | Persistence | Read and write the state file; enforce save ordering | Produce persisted snapshots and restore a machine from one |
 | Progress | Subscribe and forward state observations as Nexus events | Publish snapshots of the running machine |
@@ -81,3 +83,7 @@ to each action. Presentation failures do not control execution.
 
 Report binding, workflow, operation and persistence errors to the caller. The runner does not choose
 repairs or recovery, inspect artifacts or interpret business outcomes.
+
+The composed snapshot includes invoked children. Nested invocation introduces no separate child
+state file, process or checkpoint system. Instrument all bound operations, including child operations,
+so the started-operation drain contract remains true on failure.

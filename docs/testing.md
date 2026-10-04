@@ -184,3 +184,11 @@ controlled time: silence before the first response and after activity warns at t
 silence does not repeat the warning, resumed activity permits a later warning, concurrent invocations
 remain independent, and completion or failure releases observation. Diagnostics must remain
 attributable in live presentation and durable activity logs, including plain terminal output.
+
+## Project parent coverage
+
+The [project workflow](project-workflow.md#persistence-observation-and-verification) defines the
+parent/child journeys and stage acceptance boundaries. Test invoked machine composition with
+controlled responses, restored child snapshots and resumable source handoffs. Exercise parent
+selection/publication independently of Jira-free child business actions. Preserve finite delivery's
+revision, repair, review and merge/check journeys after moving source effects.

@@ -11,7 +11,7 @@ Follow the [action contract](architecture.md). Import [devArtifact](develop.md#o
 Use [Selection](select-task.md#output), earlier-round review/development history, configured reviewer profile,
 [AgentRuntime](../../agent-runtime/architecture.md#provided-interface), the
 [Git adapter](../../adapters/git.md#interface), [GitHub adapter](../../adapters/github.md#interface)
-and [Jira adapter](../../adapters/jira.md#interface).
+and parent-supplied source input/publication acknowledgements.
 
 Use [ReviewerRole](../../agent-runtime/reviewer-role.md#interface). Supply the response format below
 and complete findings/responses using the [findings contract](findings.md). The profile includes
@@ -55,8 +55,8 @@ Unusable agent output is an execution error.
 ## Behavior
 
 Confirm that the delivered head, development result, verification result and retained worktree describe
-the same revision. Read the locally saved task conversation and round history; save refreshed task
-and PR conversations locally. Give the reviewer complete prior findings
+the same revision. Read saved task conversation and round history. A parent-owned input actor supplies refreshed task
+conversation; save that input and refreshed GitHub PR conversations locally. Give the reviewer complete prior findings
 and developer responses, not shortened Jira summaries.
 
 Supply a clearly identified current-round disposition input containing only the preceding review's
@@ -86,8 +86,10 @@ in local artifacts; the published review summarizes the result.
 Recognize an already-published review by the configured Nexus Lens author, the reviewed commit, the
 verdict and the report body, and the check by the configured name, the Nexus Lens producer identity,
 a completed status and the verdict's conclusion. Publish only the missing part.
-Publish a concise ticket comment beginning with the profile and explaining what was missed and what
-to improve. A requested repair stays in the current workflow; a Jira comment is not the repair input.
+Supply concise ticket feedback to the parent-owned publication actor, which publishes a comment
+beginning with the profile and explaining what was missed and what to improve. A requested repair stays in the current workflow; a Jira comment is not the repair input.
 
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
+
+Review has no Jira capability. GitHub Nexus Lens review/check publication remains Review-owned.

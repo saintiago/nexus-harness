@@ -2,7 +2,8 @@
 
 ## Responsibility
 
-Select one eligible task in source order and retain its identity and workspace reference for the workflow.
+Select one eligible project issue in source order and retain its identity, stage and workspace
+reference for the parent. This is a parent-owned source operation, not part of a child.
 
 ## Interface
 
@@ -67,3 +68,6 @@ preparation starts a fresh attempt from updated main. Earlier workflow artifacts
 available.
 
 The design assumes one queue consumer; no claim lease or distributed locking protocol is added here.
+
+Stage eligibility and entry follow the [project workflow](../../project-workflow.md#entry-and-routing).
+Children receive captured inputs without importing the Jira adapter.

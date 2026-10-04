@@ -46,7 +46,7 @@ Nexus
 ```
 
 Application is the parent of the Nexus worker process. Application constructs TaskEngine and its
-dependencies in the worker. Actions use AgentRuntime for delivery and idea refinement roles; Application uses it for recovery.
+dependencies in the worker. Actions use AgentRuntime for delivery, idea refinement and preparation roles; Application uses it for recovery.
 Adapters are modules at external boundaries, not a registry or additional service.
 
 Workspace and configuration are data designs. One issue workspace retains artifacts across
@@ -88,7 +88,9 @@ RecoveryRole investigates failures and chooses how to recover.
 Persisted workflow state is the checkpoint. Save and load it directly. The design requires
 neither a separate checkpoint subsystem nor a filesystem transaction protocol.
 
-Finite delivery executes actions sequentially. The [idea refinement workflow](idea-refinement/spec.md)
+The [project workflow](project-workflow.md) is the project-level XState parent. It selects one issue,
+invokes the appropriate child and owns Jira input/publication. Children receive captured data and
+artifacts without Jira dependencies. Finite delivery executes actions sequentially. The [idea refinement workflow](idea-refinement/spec.md)
 uses XState parallel regions for research and project guidance, then joins before idea editing.
 XState also routes editor/challenger exchanges. Each action owns separate artifacts.
 Application-level recovery starts after the worker invocation ends. Cancellation and shared-writer
@@ -168,66 +170,31 @@ is not a control protocol.
 Application connects event publishing before execution. TaskEngine forwards events unchanged;
 Application forwards them and emits its own lifecycle events. OperatorInterface presents the stream.
 
-## Finite Run
+## Project run
 
-Finite Run processes eligible work serially until a fresh source inspection finds no eligible tasks.
-It does not reserve a fixed batch at startup.
+The [project workflow](project-workflow.md) owns stage selection, cross-stage routing, source
+publication and implementation-ticket creation. The queue command runs that parent. It processes
+one issue at a time in source rank order until no eligible work remains. Fresh selection uses mapped
+Jira status; interrupted execution restores the parent and active child snapshot.
 
-1. Application resolves the project filepath and connects presentation to events.
-2. Application starts its worker entry point, which reads configuration and constructs the selected workflow.
-3. TaskEngine executes selection, round planning, implementation, verification, delivery, review and
-   completion actions according to the workflow, then selects again.
-4. Application forwards progress and adds lifecycle events for OperatorInterface to display.
-5. The empty queue produces a drained result; the worker exits and the result is presented.
+Preparation children are Idea Refinement, Requirements, UX Proposal, Storybook Refinement and
+Architecture. Each owns its agent loops and outputs. Architecture hands the original issue off to
+linked implementation tickets. Finite Delivery runs for each selected implementation ticket and
+retains development, verification, delivery, review, repair and merge/check behavior. Parent-owned
+boundary actors supply source refresh/publication acknowledgements where coding rounds need them.
+The parent completes the implementation issue only after the child's merge/check evidence.
 
-A source failure is not an empty queue. Ordinary failed checks and review findings follow the
-workflow's round and profile decisions in StartDevRound. Approved Review proceeds to CompleteTask;
-inconclusive Review or exhausted round planning stops the task without beginning a repair.
+Source adapters belong to parent-owned actions. Application binds child machine actors and
+operations; ExecutionRunner follows XState and persists the composed snapshot. Neither Application
+nor a Jira watcher implements another coordinator.
 
-When work cannot continue, Application invokes recovery with the failure and available context.
-Recovery investigates, performs repairs and decides whether to resume or request operator attention.
-When a blocker must run first, recovery ranks it first, moves the interrupted task to To Do immediately
-after it, discards the broken finite delivery attempt within the issue workspace, clears its
-active pointer and reconciles queue state to restart task selection before resuming. Earlier
-workflow artifacts remain available when the interrupted task starts anew after the blocker. Normal queue processing
-handles both tasks. Recovery and blocker execution stay within the current project. Cross-project
-repair and Nexus installation changes require operator attention.
-Application applies the decision within its configured recovery allowance.
-Required task checks and completion gates still belong to the normal actions.
+Recovery remains project-scoped. It reconciles the parent selection, current child and producer-owned
+evidence before resuming. Rank required blockers before interrupted implementation work and discard
+only the broken delivery attempt, retaining preparation artifacts. Unexpected human source changes
+are not overwritten. Recovery cannot weaken normal review/check gates. Cross-project repair and
+Nexus installation changes require operator attention.
 
-The defined workflow includes development, verification, delivery, review and completion.
-
-## Idea refinement
-
-[Idea refinement](idea-refinement/spec.md) is a separate workflow available to any connected
-project. Project configuration supplies an idea selection query and state mappings on its
-Jira task source; Nexus configuration supplies the workflow, four role profiles and cycle limit.
-The Idea editor frames the author's intent. Researcher and Project guide contribute concurrently;
-the guide discovers purpose documents or infers direction from code and commits. The editor writes
-the refined idea, then exchanges short responses with a Challenger. Responses can revise, answer,
-rebut or request focused contributions. XState owns the parallel join and conversation routing.
-Every entry from `Idea` uses the same selection path and stable issue workspace. StartIdeaRound
-opens each conversation cycle and records its role plan. The approved handoff references the shared
-workspace and artifacts for subsequent workflows. Selection moves the idea to its active state
-before agents run. Approval means worth pursuing in Requirements and Design; it publishes the
-refined idea and moves it to the approved state. An unsuitable idea, an essential author decision
-or an exhausted cycle limit returns human-facing feedback with that reason and moves the idea to
-the waiting-for-feedback state; internal agent
-feedback remains in artifacts and logs. The author replies in a Jira comment and moves the idea
-back to the submitted state to resubmit it. For HARN Jira, the path is
-`Idea -> Idea Refinement -> Draft` or `Idea -> Idea Refinement -> Waiting for Feedback -> Idea`.
-Finite delivery starts from its own To Do queue.
-
-Every agent invocation uses the same identity, activity-log reference and terminal-pane contract,
-regardless of how many roles are active. The Application logger persists each agent's complete
-activity separately; the main execution stream carries lifecycle and artifact references.
-
-## Experience memory
-
-Every workflow invokes [AnalyzeExperience](task-engine/actions/analyze-experience.md) after terminal
-handoffs for selected work, preserving the original route. It is the sole automatic Memory component
-consumer and owns resumable analysis, search, validated submissions and receipts. Application binds
-and supervises that capability rather than implementing analysis itself. AMEM owns the shared
-service, MCP, semantic memory and queue. Agents retain explicit MCP search/save tools; direct
-handoffs remain task context. Source statuses do not trigger learning. Dependency-cruiser enforces
-the action's exclusive imports of the Memory component.
+Idea Refinement retains its four-role conversation and concurrent Researcher/Project Guide join.
+Its child receives captured author input and returns its decision. The parent publishes approval to
+Draft and admits selected Draft work to Requirements. Waiting for Feedback retains the originating
+stage and question. Delivery-only projects enter Finite Delivery through their ready mapping.

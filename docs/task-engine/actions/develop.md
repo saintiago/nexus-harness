@@ -9,8 +9,8 @@ Implement the selected task or repair the preceding round's findings in its reta
 Follow the [action contract](architecture.md). Use the task input from
 [SelectTask](select-task.md#output), the prepared workspace from
 [PrepareWorkspace](prepare-workspace.md#output), [AgentRuntime](../../agent-runtime/architecture.md#provided-interface)
-and the [Git adapter](../../adapters/git.md#interface). For a Jira task, use the
-[Jira adapter](../../adapters/jira.md#interface) to refresh task content and conversation.
+and the [Git adapter](../../adapters/git.md#interface). Use the
+parent-owned source input to refresh task content and conversation.
 
 Import the output declarations of [Verify](verify.md#output) and [Review](review.md#output) for
 historical context. These are earlier-round reads, not fallbacks for missing current-round inputs.
@@ -67,10 +67,10 @@ or unusable output are execution errors.
 
 ## Behavior
 
-Use the profile recorded for the current round. Refresh the task and conversation, preserving human
-changes. Read relevant repository instructions and complete preceding findings and responses.
-Update the selection record with the refreshed task and complete conversation, preserving its
-identity and workspace, and provide that file with the existing round history.
+Use the profile recorded for the current round. Read the task and conversation refreshed by the
+parent-owned input boundary, preserving human changes. Read relevant repository instructions and
+complete preceding findings/responses. The parent owns the selection update; Develop supplies that
+saved input alongside the existing round history.
 Include available earlier-round history without silently truncating finding bodies.
 
 Invoke the agent once with the workspace reference and assembled context. The agent may inspect and
@@ -88,3 +88,6 @@ On repetition, inspect existing work and the current-round report before decidin
 invocation is needed. A report for a different task or revision is not evidence for the current work.
 
 Untracked files do not prevent completion. Do not classify or reject them as a readiness check.
+
+Task/conversation refresh is performed by a parent-owned input actor at the development-round
+boundary. Develop receives the saved snapshot and has no Jira capability.

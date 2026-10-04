@@ -14,7 +14,6 @@ The public module is `src/application/index.ts`.
 
 ```text
 nexus queue run --project-config <file>
-nexus ideas refine --project-config <file>
 nexus --help
 ```
 
@@ -35,7 +34,7 @@ interface Application {
 
 type ExecutionRequest = {
   projectConfigPath: string;
-  workflow: 'finite-delivery' | 'idea-refinement';
+  workflow: 'project';
 };
 type ExecutionEvent = EngineEvent;
 
@@ -63,7 +62,10 @@ type RecoveryReport = {
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and
 [TaskEngine event types](task-engine/architecture.md#provided-interface).
-One execute call manages one selected workflow using the absolute project filepath.
+One execute call manages the project parent using the absolute project filepath. The queue command
+invokes that parent; stage children are not separate OS workers or operator modes. Application
+binds the configured children and operations through ordinary construction. The
+[project workflow](project-workflow.md) owns stage/source responsibilities.
 Completed means the configured workflow finished successfully; needs-attention means it could not
 continue. The report points to the saved recovery report when recovery occurred.
 
@@ -165,7 +167,7 @@ launch a repair there or update the running Nexus installation.
 A resume decision restarts the worker with the same project configuration and the state reconciled
 by recovery.
 
-For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to To Do
+For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to the configured implementation-ready status
 immediately after it. Recovery discards the broken finite delivery worktree, round artifacts and state within the
 shared issue workspace, preserving other workflow areas. It clears the active source pointer and
 selection, then resets queue execution to initial selection. The normal workflow processes the
@@ -183,8 +185,7 @@ replace them.
 
 ## State and reports
 
-Application supplies a stable execution directory for each workflow and configured project.
-Finite delivery uses:
+Application supplies one stable project execution directory for the composed parent and children:
 
 ```text
 <storage root>/executions/<project>/
@@ -200,9 +201,10 @@ extracted observations, submissions and outcomes beside the queue execution stat
 outside every task workspace and disposable workflow attempt, so pending and interrupted analysis
 survives process exit.
 
-Idea refinement uses a separate `<storage root>/executions/<project>/idea-refinement/` directory
-with its own workflow.json, selection.json, logs/, recovery/ and memory/. Its selected source item
-and business artifacts live in the shared issue workspace's refinement area.
+Child stage artifacts live in their areas within the shared issue workspace. All children use the
+parent execution snapshot, selection, logging and recovery directories. Retained legacy standalone
+queue snapshots must be explicitly reconciled before the first project-parent run; do not attempt to
+restore an incompatible snapshot or discard unfinished delivery evidence silently.
 
 The runner owns workflow.json; the selection action owns selection.json. These records are outside task
 workspaces. Application retains its request, recovery count and reports under recovery/, alongside
@@ -259,9 +261,9 @@ for a logging failure. Initialization errors before a log can be opened remain s
 
 ## Idea refinement composition
 
-The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly for a connected
-project. Application loads its XState definition and binds project-scoped actions; it does not
-provide a separate idea router. Source selection and updates use the project's Jira task-source
+The project parent invokes the [idea refinement child](idea-refinement/spec.md) for selected idea
+stages. Application loads its XState definition and binds project-scoped actions; it does not
+provide a second workflow router. Source selection and updates use the project's Jira task-source
 adapter. Selection reuses the issue workspace's refinement area when present, and StartIdeaRound creates
 a plan for each conversation cycle. An idea moved to the waiting-for-feedback state is a successful
 terminal workflow outcome, not an execution fault requiring recovery. A provider or agent failure
