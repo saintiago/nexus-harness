@@ -65,7 +65,7 @@ type PlanningEvidence = {
 /**
  * Whether the current development result needs a repair: a failed report, a failed verification or
  * a changes-requested review of that report's revision. A result for another revision or an
- * inconclusive review is not a repair trigger.
+ * approval is not a repair trigger.
  */
 function hasRepairTrigger(
   development: DevelopmentOutput,

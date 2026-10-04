@@ -58,7 +58,7 @@ export const memoryUseGuidance = [
  */
 export const memoryAnalysisGuidance = [
   'Terminal experience analysis guidance:',
-  '- Analyze one terminal Nexus handoff — a completed, failed, inconclusive or returned work item —',
+  '- Analyze one terminal Nexus handoff — a completed, failed or returned work item —',
   '  from its retained evidence and the revisions bound to it. Read only the retained evidence the',
   '  invocation supplies and the shared memory search tool; never read credentials, unrelated',
   '  workspaces or arbitrary host logs.',

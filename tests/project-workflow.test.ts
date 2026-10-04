@@ -22,6 +22,7 @@ import { parseNexusConfiguration, parseProjectConfiguration } from '../src/confi
 import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { createReviewPreparationPublication } from '../src/task-engine/actions/preparation/review-publication/index.js';
+import { documentationReviewsDirectory } from '../src/task-engine/actions/preparation/review-publication/artifacts.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
@@ -906,7 +907,8 @@ async function handoff(options: {
   readonly sourceStatus?: string;
   readonly negativeReview?: boolean;
   readonly negativeCheck?: boolean;
-  readonly reviewerVerdict?: 'approved' | 'inconclusive';
+  readonly reviewerVerdict?: 'approved' | 'changesRequested';
+  readonly retainedRemovedVerdict?: boolean;
   readonly extraPublishedPath?: string;
   readonly tasks?: readonly {
     summary: string;
@@ -1367,6 +1369,28 @@ async function handoff(options: {
     !options.extraPublishedPath &&
     !options.omitAssessment
   ) {
+    if (options.retainedRemovedVerdict === true) {
+      // A retained assessment carrying the removed verdict is not an approval, a rejection or an
+      // absent report; its read fails validation instead of being translated.
+      const reportFile = path.join(root, documentationReviewsDirectory, `${head}.json`);
+      await mkdir(path.dirname(reportFile), { recursive: true });
+      await writeFile(
+        reportFile,
+        `${JSON.stringify(
+          {
+            profile: 'nexus-astra',
+            headRevision: head,
+            verdict: 'inconclusive',
+            summary: 'The available evidence could not settle the assessment.',
+            findings: [],
+            priorFindings: [],
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+    }
     await createReviewPreparationPublication({
       selectionFile,
       baseBranch: 'main',
@@ -1378,7 +1402,22 @@ async function handoff(options: {
             output: JSON.stringify({
               verdict: options.reviewerVerdict ?? 'approved',
               summary: 'Assessed the exact assembled documentation revision.',
-              findings: [],
+              findings:
+                options.reviewerVerdict === 'changesRequested'
+                  ? [
+                      {
+                        id: 'NEX-1-doc-finding-1',
+                        title: 'The publication contradicts the accepted requirements',
+                        severity: 'blocking',
+                        basis: 'The publication must match the accepted requirements revision.',
+                        evidence: 'The Architecture document restates a rejected requirement.',
+                        impact: 'Implementation tickets would be created from a contradiction.',
+                        repairGuidance:
+                          'Align the Architecture document with the accepted requirement.',
+                        locations: [{ path: 'docs/architecture.md', line: 1 }],
+                      },
+                    ]
+                  : [],
               priorFindings: [],
             }),
           }),
@@ -1523,13 +1562,20 @@ describe('architecture implementation handoff', () => {
     },
   );
 
-  it('publishes an actual inconclusive assessment without authorizing merge or tickets', async () => {
-    const result = await handoff({ documents: true, reviewerVerdict: 'inconclusive' });
+  it('preserves a changes-requested documentation assessment without authorizing merge or tickets', async () => {
+    const result = await handoff({ documents: true, reviewerVerdict: 'changesRequested' });
     expect(result.outcome).toBe('failed');
     expect(result.published.reviews).toBe(1);
     expect(result.published.checks).toBe(1);
     expect(result.published.autoMerge).toBe(false);
     expect(result.createdFields).toEqual([]);
+    expect(result.failures[0]).toContain('Documentation review changesRequested');
+  });
+
+  it('fails a retained documentation review carrying the removed inconclusive verdict', async () => {
+    await expect(handoff({ documents: true, retainedRemovedVerdict: true })).rejects.toThrow(
+      /does not match its declared content type/,
+    );
   });
 
   it('checks the whole publication diff for previously committed unrelated paths', async () => {

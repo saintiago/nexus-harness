@@ -127,10 +127,6 @@ export const finiteDelivery = createMachine(
               guard: ({ event }) => event.output === 'changesRequested',
               target: 'publishChangesReview',
             },
-            {
-              guard: ({ event }) => event.output === 'inconclusive',
-              target: 'analyzeInconclusive',
-            },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -210,16 +206,6 @@ export const finiteDelivery = createMachine(
         invoke: {
           src: 'AnalyzeExperience',
           input: { terminal: 'deliver-failed' },
-          onDone: [
-            { guard: preservesDestination, target: 'blocked' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      analyzeInconclusive: {
-        invoke: {
-          src: 'AnalyzeExperience',
-          input: { terminal: 'review-inconclusive' },
           onDone: [
             { guard: preservesDestination, target: 'blocked' },
             { actions: 'unexpectedOutcome' },

@@ -90,7 +90,6 @@ export const finiteDeliveryTerminals = {
     evidence: 'round',
     reason: { kind: 'round', pathFromArtifactsRoot: deliveryFailureArtifact.pathFromArtifactsRoot },
   },
-  'review-inconclusive': { outcome: 'inconclusive', producer: 'review', evidence: 'round' },
   'review-publication-failed': {
     outcome: 'failed',
     producer: 'review-publication',
