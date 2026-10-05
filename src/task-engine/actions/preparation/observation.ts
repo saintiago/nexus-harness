@@ -16,29 +16,51 @@ import { renderedImageProblem } from './rendered-image.js';
  */
 
 /** One saved prototype observation record, as both prototype roles declare it. */
-export const prototypeObservationSchema = z.object({
+export const prototypeObservationSchema = z.strictObject({
   /** Which prototype role performed the observation; it must match the declaring report. */
-  role: z.enum(['author', 'evaluator']),
+  role: z
+    .enum(['author', 'evaluator'])
+    .describe('The role that performed the observation; it must match the declaring report.'),
   /** The inspected prototype content, bound to the revision the role observed it at. */
-  content: z.array(assessedContentSchema).min(1),
+  content: z
+    .array(assessedContentSchema)
+    .min(1)
+    .describe('The inspected prototype content bound to the revision it was observed at.'),
   /** The preview the role actually used: the exact start command and the URL it reached. */
-  preview: z.object({
-    command: z.string().trim().min(1),
-    url: z.string().trim().min(1),
-  }),
+  preview: z
+    .strictObject({
+      command: z.string().trim().min(1).describe('The exact preview start command used.'),
+      url: z.string().trim().min(1).describe('The URL the preview reached.'),
+    })
+    .describe('The preview the role actually used.'),
   /** One exercised journey or state with its actions, result and rendered-image evidence. */
   journeys: z
     .array(
-      z.object({
-        example: z.string().trim().min(1),
-        state: z.string().trim().min(1),
-        actions: z.array(z.string().trim().min(1)).min(1),
-        observed: z.string().trim().min(1),
-        screenshots: z.array(z.object({ path: z.string().trim().min(1) })).min(1),
-        visualConclusion: z.string().trim().min(1),
+      z.strictObject({
+        example: z.string().trim().min(1).describe('The acceptance example or journey exercised.'),
+        state: z.string().trim().min(1).describe('The state the prototype was in.'),
+        actions: z
+          .array(z.string().trim().min(1))
+          .min(1)
+          .describe('The actions the role performed, in order.'),
+        observed: z.string().trim().min(1).describe('What the prototype did in response.'),
+        screenshots: z
+          .array(
+            z.strictObject({
+              path: z
+                .string()
+                .trim()
+                .min(1)
+                .describe('The saved rendered image under the round artifact area.'),
+            }),
+          )
+          .min(1)
+          .describe('The rendered-image evidence a reader can open, saved under the round area.'),
+        visualConclusion: z.string().trim().min(1).describe('What the rendered images show.'),
       }),
     )
-    .min(1),
+    .min(1)
+    .describe('The journeys or states actually exercised and observed.'),
 });
 
 export type PrototypeObservation = z.infer<typeof prototypeObservationSchema>;

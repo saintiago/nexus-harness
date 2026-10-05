@@ -11,12 +11,12 @@ import type { ArtifactDeclaration } from '../artifacts.js';
  * location has one.
  */
 const findingLocationFields = {
-  path: z.string(),
-  line: z.number().int().positive(),
+  path: z.string().describe('The affected file in the reviewed revision.'),
+  line: z.number().int().positive().describe('The one-based line in the reviewed revision.'),
 };
 
 /** One location in a saved Finding: a location without a line leaves the field out. */
-const findingLocationSchema = z.object({
+const findingLocationSchema = z.strictObject({
   ...findingLocationFields,
   line: findingLocationFields.line.optional(),
 });
@@ -26,30 +26,42 @@ const findingLocationSchema = z.object({
  * every property, so a location without a line reports null; the action turns that null back into
  * an absent line before saving the Finding.
  */
-const reportedLocationSchema = z.object({
+const reportedLocationSchema = z.strictObject({
   ...findingLocationFields,
-  line: findingLocationFields.line.nullable(),
+  line: findingLocationFields.line
+    .nullable()
+    .describe('The reviewed revision\u2019s line, or null when the location has no line.'),
 });
 
 /** One defect finding, identified by a task-stable ID. */
-export const findingSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  severity: z.enum(['blocking', 'non-blocking']),
-  basis: z.string(),
-  evidence: z.string(),
-  impact: z.string(),
-  repairGuidance: z.string(),
-  locations: z.array(findingLocationSchema),
+export const findingSchema = z.strictObject({
+  id: z.string().describe('The task-stable finding ID; reuse it for the same defect.'),
+  title: z.string().describe('A short title for the defect.'),
+  severity: z
+    .enum(['blocking', 'non-blocking'])
+    .describe('Whether the finding prevents acceptance.'),
+  basis: z.string().describe('The requirement or expected behavior that is violated.'),
+  evidence: z
+    .string()
+    .describe(
+      'The observed or reproducible failure, related occurrences inspected and material uncertainty.',
+    ),
+  impact: z.string().describe('The consequence of the defect.'),
+  repairGuidance: z.string().describe('The required correction.'),
+  locations: z.array(findingLocationSchema).describe('The affected locations; may be empty.'),
 });
 
 export type Finding = z.infer<typeof findingSchema>;
 
 /** The reviewer's disposition of one finding supplied from an earlier round. */
-export const findingDispositionSchema = z.object({
-  findingId: z.string(),
-  disposition: z.enum(['resolved', 'open', 'withdrawn']),
-  reason: z.string(),
+export const findingDispositionSchema = z.strictObject({
+  findingId: z.string().describe('The eligible prior finding ID this disposition answers.'),
+  disposition: z
+    .enum(['resolved', 'open', 'withdrawn'])
+    .describe('The finding\u2019s state in the current revision.'),
+  reason: z
+    .string()
+    .describe('The implementation evidence and developer response that support the disposition.'),
 });
 
 export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
@@ -58,12 +70,24 @@ export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
 export const reviewOutputSchema = z.object({
   /** Task subject captured for this report; older reports may omit it. */
   taskSubject: z.string().optional(),
-  profile: z.string(),
-  headRevision: z.string(),
-  verdict: z.enum(['approved', 'changesRequested']),
-  summary: z.string(),
-  findings: z.array(findingSchema),
-  priorFindings: z.array(findingDispositionSchema),
+  profile: z.string().describe('The reviewer profile that produced this verdict.'),
+  headRevision: z.string().describe('The exact revision this verdict reviews.'),
+  verdict: z
+    .enum(['approved', 'changesRequested'])
+    .describe(
+      'Approved requires sufficient evidence and no current blocking finding; changesRequested requires at least one.',
+    ),
+  summary: z
+    .string()
+    .describe('What was reviewed, the inspected scope and why this verdict is supported.'),
+  findings: z
+    .array(findingSchema)
+    .describe(
+      'Every finding still present in the reviewed revision, including retained open findings.',
+    ),
+  priorFindings: z
+    .array(findingDispositionSchema)
+    .describe('One disposition for every eligible prior finding ID and none for any other ID.'),
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
@@ -81,21 +105,28 @@ export function toFinding(reported: ReportedFinding): Finding {
   };
 }
 
-/** One current finding as the agent reports it. */
-const reportedFindingSchema = findingSchema.extend({
-  locations: z.array(reportedLocationSchema),
+/** One current finding as the agent reports it: a location without a line reports null. */
+export const reportedFindingSchema = findingSchema.extend({
+  locations: z
+    .array(reportedLocationSchema)
+    .describe('The affected locations; may be empty. A location without a line reports null.'),
 });
 
-type ReportedFinding = z.infer<typeof reportedFindingSchema>;
+export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
 
 /**
  * The agent's response fields: the same review fields with locations the strict provider schema
  * accepts. The action binds them to the configured profile and the observed reviewed head before
  * writing its output.
  */
-export const reviewResponseSchema = reviewOutputSchema
-  .pick({ verdict: true, summary: true, priorFindings: true })
-  .extend({ findings: z.array(reportedFindingSchema) });
+export const reviewResponseSchema = z.strictObject({
+  ...reviewOutputSchema.pick({ verdict: true, summary: true, priorFindings: true }).shape,
+  findings: z
+    .array(reportedFindingSchema)
+    .describe(
+      'Every finding still present in the reviewed revision, including retained open findings.',
+    ),
+});
 
 export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
 

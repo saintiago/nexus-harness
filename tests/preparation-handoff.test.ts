@@ -28,6 +28,7 @@ import {
   readStagePlan,
   reusedPreparationContent,
 } from '../src/task-engine/actions/preparation/storage.js';
+import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import type { Finding } from '../src/task-engine/actions/review/artifacts.js';
 
 const temporaryDirectories: string[] = [];
@@ -473,7 +474,14 @@ describe('preparation repair rounds', () => {
         summary: 'The retained design still holds.',
         documents: [],
         sourcePaths: [],
-        plan: [],
+        plan: [
+          {
+            summary: 'Implement the retained design',
+            scope: 'Carry the retained design into implementation.',
+            completionCriteria: ['The retained design is implemented.'],
+            prerequisites: [],
+          },
+        ],
         skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
         question: null,
         upstream: null,
@@ -551,6 +559,82 @@ describe('preparation repair rounds', () => {
     // The evaluator receives the preceding evaluation and the complete unresolved finding set.
     expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
     expect(contexts[1]).toContain('The previous evaluation of this work');
+  });
+
+  it('rejects an Architecture skip that omits the plan its handoff requires', async () => {
+    const { selectionFile } = await stageWithEvaluation({ stage: 'architecture' });
+    const { runner } = runnerOf([
+      {
+        outcome: 'skip-proposed',
+        summary: 'The retained design still holds.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
+        question: null,
+        upstream: null,
+        observation: null,
+        findingResponses: [],
+      },
+    ]);
+    const author = createStageAuthor({
+      selectionFile,
+      stage: 'architecture',
+      runner,
+      git: scriptedGit([repositoryState()]).git,
+      publish: () => undefined,
+    });
+    await expect(author({ stage: 'architecture', task: 'propose' })).rejects.toThrow(
+      /nonempty implementation plan/,
+    );
+  });
+
+  it('refuses to finalize a retained Architecture skip whose report carries no plan', async () => {
+    const { selectionFile, root } = await stageWithEvaluation({ stage: 'architecture' });
+    // A retained record written before the plan rule can still reach StageResult, so the result
+    // operation refuses it instead of saving a result the handoff cannot consume.
+    const retained = {
+      stage: 'architecture',
+      revision: 1,
+      outcome: 'skip-proposed',
+      summary: 'The retained design still holds.',
+      documents: [],
+      sourcePaths: [],
+      plan: [],
+      skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
+      question: null,
+      upstream: null,
+      observation: null,
+      findingResponses: [],
+    };
+    await writeFile(path.join(root, 'artifacts', '1', 'author.json'), JSON.stringify(retained));
+    const evaluation = JSON.parse(
+      await readFile(path.join(root, 'artifacts', '1', 'evaluation.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    const basis = evaluation['basis'] as Record<string, unknown>;
+    await writeFile(
+      path.join(root, 'artifacts', '1', 'evaluation.json'),
+      JSON.stringify({
+        ...evaluation,
+        basis: {
+          ...basis,
+          authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(retained)),
+        },
+        verdict: 'accepted-skip',
+        reason: 'The existing design still holds.',
+      }),
+    );
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async (repository, _revision, file) =>
+        ok(await readFile(path.join(repository, file), 'utf8')),
+    });
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'architecture',
+      git,
+      publish: () => undefined,
+    });
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(/nonempty implementation plan/);
   });
 
   it.each([

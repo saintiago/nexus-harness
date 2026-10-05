@@ -10,19 +10,33 @@ import type { ArtifactDeclaration } from '../artifacts.js';
  */
 
 /** The provider response: the short contribution with the project evidence behind it. */
-export const projectGuideResponseSchema = z.object({
-  contribution: z.string().trim().min(1),
+export const projectGuideResponseSchema = z.strictObject({
+  contribution: z.string().trim().min(1).describe('The short contribution the editor reads.'),
   /** How the idea could fit the project's purpose and direction. */
-  fit: z.string().trim().min(1),
+  fit: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('How the idea could fit the project\u2019s purpose and long-term direction.'),
   /** The smallest steering that would improve the idea's fit. */
-  steering: z.array(z.string().trim().min(1)),
+  steering: z
+    .array(z.string().trim().min(1))
+    .describe('The smallest steering that would improve the idea\u2019s fit.'),
   /** The real constraints that matter to this idea. */
-  constraints: z.array(z.string().trim().min(1)),
+  constraints: z
+    .array(z.string().trim().min(1))
+    .describe('The real constraints that matter to this idea.'),
   /** The purpose documents, files and commits each material claim rests on. */
-  evidence: z.array(z.string().trim().min(1)),
+  evidence: z
+    .array(z.string().trim().min(1))
+    .describe('The purpose documents, files and commits each material claim rests on.'),
   /** True when the contribution rests on direction inferred from code and commits. */
-  provisional: z.boolean(),
-  uncertainty: z.array(z.string().trim().min(1)),
+  provisional: z
+    .boolean()
+    .describe('True when the contribution rests on direction inferred from code and commits.'),
+  uncertainty: z
+    .array(z.string().trim().min(1))
+    .describe('What the contribution could not establish and how that limits it.'),
 });
 
 export type ProjectGuideResponse = z.infer<typeof projectGuideResponseSchema>;

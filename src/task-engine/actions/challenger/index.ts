@@ -124,6 +124,12 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
           'naming unresolved concerns.',
       );
     }
+    if (response.verdict === 'approve' && response.obstacle !== null) {
+      throw new Error(
+        `The Challenger approved refined idea revision ${String(revision.value.revision)} while ` +
+          'stating a remaining obstacle; approval reports the obstacle as null.',
+      );
+    }
     if (response.verdict === 'discuss' && response.concerns.length === 0) {
       throw new Error(
         'The Challenger chose "discuss" without naming a concern, its consequence and what ' +

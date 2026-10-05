@@ -179,7 +179,8 @@ function checkEvidence(root: string, histories: RoundHistories): string | null {
 /** The report shape and identity rules; the action observes the profile and revisions itself. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
 {"status":"completed"|"failed","summary":"<what changed and why, or why implementation could not be completed>","findingResponses":[{"findingId":"<supplied finding ID>","status":"addressed"|"disputed"|"unresolved","response":"<the change, disagreement or remaining problem, with supporting evidence>"}]}
-Include exactly one findingResponses entry for every supplied finding ID and no others; use an empty array when no findings are supplied. status "completed" means the implementation is committed on the prepared branch and ready for verification; "failed" means it could not be completed.`;
+Include exactly one findingResponses entry for every supplied finding ID and no others; use an empty array when no findings are supplied. status "completed" means the implementation is committed on the prepared branch and ready for verification; "failed" means it could not be completed.
+Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed task, profile and revisions and persists this report.`;
 
 /** Create Develop over the configured selection, profiles, developer runtime and adapters. */
 export function createDevelop(settings: DevelopSettings): BoundAction {

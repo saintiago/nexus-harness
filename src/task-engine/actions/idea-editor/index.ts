@@ -136,15 +136,38 @@ function turnIsValid(
     return false;
   }
   if (turn.disposition === 'unsuitable' || turn.disposition === 'author-decision-needed') {
-    return turn.reason !== null && turn.refinedIdea === null;
+    return turn.reason !== null && turn.help === null && turn.refinedIdea === null;
+  }
+  if (turn.reason !== null) {
+    return false;
   }
   if (turn.disposition === 'help-requested') {
-    return turn.help !== null && (turn.help.researcher !== null || turn.help.projectGuide !== null);
+    return (
+      turn.help !== null &&
+      (turn.help.researcher !== null || turn.help.projectGuide !== null) &&
+      turn.refinedIdea === null
+    );
+  }
+  if (turn.help !== null) {
+    return false;
   }
   if (turn.disposition === 'revised') {
     return turn.refinedIdea !== null;
   }
   return turn.refinedIdea === null;
+}
+
+/** Reject an editor turn that does not carry exactly the parts its task and disposition need. */
+function requireValidTurn(task: IdeaEditorTask, turn: EditorTurnResponse): void {
+  if (turnIsValid(task, turn)) {
+    return;
+  }
+  throw new Error(
+    `The idea editor's "${turn.disposition}" turn does not carry exactly the parts the ` +
+      `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
+      'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
+      'revised turn.',
+  );
 }
 
 /** The path of one cycle's refined idea revision. */
@@ -342,11 +365,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'below. Its `idea` part states the author\u2019s proposed change, why it matters and the',
       'principle behind it; `projectFit` states why it belongs in this project; `feasibility`',
       'states a plausible way forward given the known constraints and evidence; `openQuestions`',
-      'lists only the material questions the next workflow must answer and may be omitted.',
+      'lists only the material questions the next workflow must answer and reports null when the',
+      'revision states none.',
       'Preserve the author\u2019s intent and do not turn the idea into requirements, design',
       'decisions or an implementation plan. If pursuing the idea does not look sensible, return',
       'it as unsuitable with the author-facing reason; ask an essential author decision plainly',
       'when only the author can make it.',
+      'This task returns "revised", "unsuitable" or "author-decision-needed" only. A revised ' +
+        'turn carries the refinedIdea; an unsuitable or author-decision-needed return carries the ' +
+        'author-facing reason and no refinedIdea, and reports help as null.',
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
@@ -367,12 +394,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (!turnIsValid('edit', turn)) {
-      throw new Error(
-        `The idea editor returned the "${turn.disposition}" disposition without the parts the ` +
-          'edit task needs.',
-      );
-    }
+    requireValidTurn('edit', turn);
     return persist(root, plan.submission, plan.cycle, 'edit', turn);
   }
 
@@ -443,6 +465,10 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
             'help from the researcher or the Project guide, naming the specific questions. If the',
             'idea is unsuitable, explain why; ask an essential author decision plainly when only',
             'the author can make it.',
+            'A help-requested turn names at least one focused question and reports null for the ' +
+              'role it does not ask; every other disposition reports help as null. An unsuitable ' +
+              'or author-decision-needed return carries the author-facing reason and no ' +
+              'refinedIdea; answered, rebutted and help-requested turns report no refinedIdea.',
           ]),
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
@@ -468,12 +494,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (!turnIsValid(task, turn)) {
-      throw new Error(
-        `The idea editor returned the "${turn.disposition}" disposition without the parts the ` +
-          `${task} task needs.`,
-      );
-    }
+    requireValidTurn(task, turn);
     return persist(root, plan.submission, plan.cycle, task, turn);
   }
 

@@ -93,16 +93,18 @@ export type ExperienceCapture = z.infer<typeof experienceCaptureSchema>;
  * shows. The full reports stay on disk; the citation binds the observation to its evidence.
  */
 export const experienceEvidenceSchema = z.strictObject({
-  path: z.string().trim().min(1),
-  revision: z.string().trim().min(1),
-  detail: z.string().trim().min(1),
+  path: z.string().trim().min(1).describe('The retained evidence file the observation cites.'),
+  revision: z.string().trim().min(1).describe('The revision or capture that establishes it.'),
+  detail: z.string().trim().min(1).describe('What this evidence shows.'),
 });
 
 /** One existing memory note the observation was compared with. */
 export const experienceMemoryComparisonSchema = z.strictObject({
-  noteId: z.string().trim().min(1),
-  relationship: z.enum(['correction', 'extension']),
-  explanation: z.string().trim().min(1),
+  noteId: z.string().trim().min(1).describe('The existing memory note\u2019s ID.'),
+  relationship: z
+    .enum(['correction', 'extension'])
+    .describe('Whether the observation corrects or extends the earlier note.'),
+  explanation: z.string().trim().min(1).describe('How the new evidence changes the earlier note.'),
 });
 
 /**
@@ -111,13 +113,23 @@ export const experienceMemoryComparisonSchema = z.strictObject({
  * required, so the derived JSON Schema meets the provider's structured-output contract.
  */
 export const experienceAnalysisResponseSchema = z.strictObject({
-  observations: z.array(
-    z.strictObject({
-      content: z.string(),
-      evidence: z.array(experienceEvidenceSchema),
-      relatedMemories: z.array(experienceMemoryComparisonSchema),
-    }),
-  ),
+  observations: z
+    .array(
+      z.strictObject({
+        content: z
+          .string()
+          .describe(
+            'One independent, concise reusable lesson: the cause, constraint or corrective mechanism with its applicability and uncertainty.',
+          ),
+        evidence: z
+          .array(experienceEvidenceSchema)
+          .describe('The retained artifacts and revisions that establish the observation.'),
+        relatedMemories: z
+          .array(experienceMemoryComparisonSchema)
+          .describe('The existing memory notes the observation corrects or extends; may be empty.'),
+      }),
+    )
+    .describe('Zero or more independent observations; an empty array is a valid answer.'),
 });
 
 export type ExperienceAnalysisResponse = z.infer<typeof experienceAnalysisResponseSchema>;

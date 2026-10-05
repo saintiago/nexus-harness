@@ -99,6 +99,22 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'A completed preparation round cannot be rewritten with a different result.',
         );
       }
+      if (outcome === 'accepted' || outcome === 'skipped') {
+        const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+        if (author === null) {
+          throw new Error('A retained acceptance must keep its authored report.');
+        }
+        await requireCurrentAcceptance({
+          issueRoot,
+          stage: settings.stage,
+          selection,
+          round: plan.round,
+          verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
+          author,
+          evaluation: await readStageArtifact(root, plan.round, stageEvaluationArtifact),
+          git: settings.git,
+        });
+      }
       if (
         outcome !== 'exhausted' &&
         settings.stage === 'prototype' &&
@@ -185,6 +201,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
       // is not a changed authoritative document and never joins the accepted document set.
       await writeStageArtifact(root, plan.round, stagePlanArtifact, author.plan);
+    }
+    if (
+      settings.stage === 'architecture' &&
+      (outcome === 'accepted' || outcome === 'skipped') &&
+      author.plan.length === 0
+    ) {
+      throw new Error(
+        'The Architecture result needs the nonempty implementation plan its handoff requires; ' +
+          'the authored report carries none.',
+      );
     }
 
     /** The assessed revision an authored round retained, or null for a reference-only skip. */

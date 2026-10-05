@@ -33,8 +33,14 @@ artifacts, without separate checkouts. There is no cross-stage copying or assemb
 | `state/prepared-workspace.json` | Task, repository workspace, branch and comparison-base identity |
 | `state/preparation/` | Preparation command output |
 | `state/current-round.json` | Current developer round plan |
+| `report-feedback/` | Report rejection/correction evidence retained outside disposable delivery attempts |
 
 These locations are fixed. roundNumber is a positive integer. Producers define the record schemas.
+
+Preparation stage areas and the refinement area retain their own `report-feedback/` directories.
+The [report owner](task-engine/actions/architecture.md#rejection-evidence-and-continuation) supplies
+the scope and declaration. Repository continuation never transfers feedback to a donor issue or
+another role. Delivery cleanup preserves the issue-root feedback directory.
 
 ```ts
 type WorkspaceRef = {

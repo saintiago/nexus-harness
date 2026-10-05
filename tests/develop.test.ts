@@ -622,7 +622,7 @@ describe('Develop', () => {
     expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
   });
 
-  it('ignores agent claims about the profile and revisions and rejects a wrong report shape', async () => {
+  it('binds its own metadata, rejects agent claims about it and rejects a wrong report shape', async () => {
     const observed = await workspace();
     const { git } = scriptedGit([repositoryState(), repositoryState({ headRevision })]);
     const { runtime } = scriptedRuntime(() =>
@@ -630,9 +630,6 @@ describe('Develop', () => {
         status: 'completed',
         summary: 'Implemented the retry guard.',
         findingResponses: [],
-        profile: 'claimed-profile',
-        baseRevision: laterRevision,
-        headRevision: laterRevision,
       }),
     );
     await expect(
@@ -654,6 +651,31 @@ describe('Develop', () => {
       summary: 'Implemented the retry guard.',
       findingResponses: [],
     });
+
+    // A report claiming the metadata the action owns violates the response contract instead of
+    // having those claims silently replaced by the observed values.
+    const claiming = await workspace();
+    const { runtime: claimingRuntime } = scriptedRuntime(() =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Implemented the retry guard.',
+        findingResponses: [],
+        profile: 'claimed-profile',
+        baseRevision: laterRevision,
+        headRevision: laterRevision,
+      }),
+    );
+    await expect(
+      createDevelop({
+        selectionFile: claiming.selectionFile,
+        runner: runnerOf(claimingRuntime),
+        git,
+        publish: (event) => events.push(event),
+      })(),
+    ).rejects.toThrow(/"profile", "baseRevision", "headRevision"/);
+    await expect(
+      stat(path.join(claiming.workspaceRoot, 'artifacts', '1', 'development.json')),
+    ).rejects.toThrow(/ENOENT/);
 
     const wrong = await workspace();
     const { runtime: wrongRuntime } = scriptedRuntime(() =>

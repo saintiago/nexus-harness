@@ -18,6 +18,7 @@ import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
+  acceptanceVerdictProblem,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
@@ -35,6 +36,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  retainedStagePrototype,
   reusedPreparationContent,
   roundArtifactDirectory,
   roundArtifactFile,
@@ -76,22 +78,24 @@ function reportProblem(
   settings: {
     readonly stage: PreparationStage;
     readonly authorRevision: number;
-    readonly authorProposedSkip: boolean;
+    readonly authorOutcome: StageAuthorOutput['outcome'];
     readonly priorFindings: readonly { readonly id: string }[];
   },
 ): string | null {
-  const { authorRevision, authorProposedSkip, priorFindings } = settings;
+  const { authorRevision, authorOutcome, priorFindings } = settings;
   if (report.assessedRevision !== authorRevision) {
     return (
       `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
       `revision is ${String(authorRevision)}`
     );
   }
-  if (report.verdict === 'accepted-skip' && !authorProposedSkip) {
-    return 'the evaluator accepted a skip the author did not propose';
-  }
+  const acceptanceProblem = acceptanceVerdictProblem(authorOutcome, report.verdict);
+  if (acceptanceProblem !== null) return acceptanceProblem;
   if (report.verdict === 'return-upstream' && report.upstream === null) {
     return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+  if (report.upstream !== null && report.verdict !== 'return-upstream') {
+    return 'only a return-upstream verdict carries the upstream request';
   }
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
@@ -102,12 +106,6 @@ function reportProblem(
       return 'an evaluated applicability skip carries no observation; it needs no preview evidence';
     }
   } else if (report.verdict === 'accepted') {
-    if (authorProposedSkip) {
-      return (
-        'accepting a prototype skip proposal is an accepted-skip decision, which needs no ' +
-        'preview evidence'
-      );
-    }
     if (report.observation === null) {
       return (
         'accepting applicable prototype work needs the evaluator\u2019s own saved browser ' +
@@ -280,6 +278,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       author,
       reused: reused?.paths ?? [],
+      retainedPrototype: await retainedStagePrototype(root, plan.round),
     });
     const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
     const basis = {
@@ -321,6 +320,15 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
           'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
           'return; separate necessary changes from optional suggestions.',
+        'Return the response object only; do not write or overwrite the action-owned stage records ' +
+          '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
+          'adds the observed acceptance basis and persists your decision.',
+        settings.stage === 'prototype'
+          ? 'Accepting applicable prototype work needs your own saved browser observation; an ' +
+            'evaluated applicability skip carries none. The observation contract above states the ' +
+            'record and the round artifact area.'
+          : 'The observation field is null; only the Storybook Refinement stage retains an ' +
+            'observation record.',
         'The assessed repository content retained for this evaluation (path at revision, or a ' +
           'retained deletion): ' +
           JSON.stringify(basis.content),
@@ -350,7 +358,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     const problem = reportProblem(report, {
       stage: settings.stage,
       authorRevision: author.revision,
-      authorProposedSkip: author.outcome === 'skip-proposed',
+      authorOutcome: author.outcome,
       priorFindings: findings,
     });
     if (problem !== null) {
