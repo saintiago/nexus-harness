@@ -210,9 +210,10 @@ document citations are current inputs. A reference selecting an owned asset or c
 be downgraded to an input citation to bypass stale-reuse checks.
 
 When a later stage changes an earlier stage's owned document, the owning stage corrects its authored
-work against the complete current file and obtains a new evaluation. Subsequent stages confirm or
-repair their decisions against that corrected input through the existing pending reassessment route.
-Neither fresh citation assessment nor the owner's new acceptance renews downstream decisions.
+work against the complete current file, retaining compatible later-stage additions within the
+accepted scope, and obtains a new evaluation. Subsequent stages confirm or repair their decisions
+against that corrected input through the existing pending reassessment route. Neither fresh citation
+assessment nor the owner's new acceptance renews downstream decisions.
 
 Evaluation observes all current input citations and all paths selected for asset reuse before invoking
 the evaluator, then saves the existing acceptance basis. Resolving fresh citations needs no preceding
