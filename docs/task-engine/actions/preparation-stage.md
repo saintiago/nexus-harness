@@ -110,15 +110,17 @@ preparation publication. Architecture acceptance returns directly to handoff.
 
 The evaluation records its input basis: immutable upstream result/report references and identities,
 source input identity, and the document/prototype paths and Git revisions actually assessed or relied
-on. Existing-document skips have the same binding. Compare those paths with saved content before
-acceptance and before reuse; an unrelated new HEAD is not by itself a change to accepted content.
-A changed authored report, assessed content or relied-on input needs a current evaluator decision.
+on. Existing-document skips have the same binding. Compare those paths with saved content while
+finalizing and publishing a fresh evaluation, including replay of an interrupted finalization.
+Changes during that boundary require a fresh assessment. After the stage advances, document edits
+and upstream report revisions do not mechanically invalidate its completed verdict. Evaluators
+assess current documents against the ticket and return concrete input defects upstream.
 Resolve relative and in-checkout absolute references to canonical checkout-relative paths. Paths
 outside the checkout are not repository document references. Preserve source attribution.
 Unusable skip citations and repository citations missing from a retained evaluation's content basis
-require reevaluation before finalization, replay, downstream reuse or handoff. Removing or replacing
-a cited document cannot restore a historical acceptance with a missing binding. Preserve the
-historical record; current content cannot supply a retroactive binding.
+require reevaluation before fresh finalization or its interrupted replay. Historical bindings do
+not control later-stage document adequacy. Preserve the report history; do not reconstruct a
+historical evaluation from current bytes.
 
 ## Correction and reuse
 
@@ -139,8 +141,10 @@ preserve their complete, still-valid content and applicable observation evidence
 document citation does not by itself establish reuse of a prior owned asset.
 When the changed input affects the stage, repair and reevaluate it. No
 semantic dependency engine or extra reviewer is required. Optional suggestions remain non-blocking.
-Before final handoff, validate every required stage's current decision and clear pending work;
-a mismatching reference routes to the earliest responsible stage, without reviving an older approval.
+Before final handoff, require every stage's completed evaluator decision for the captured ticket,
+clear explicit pending corrections and validate applicable prototype inspection. Do not route back
+because a later stage edited a shared document or replaced an upstream report. Missing or corrupted
+reports, changed human intent and changed inspected prototype sources require reassessment.
 
 Re-entry supplies the latest work, complete unresolved findings, responses and any return finding.
 Author-only returns and input requests resume as reassessment and retain the latest evaluation's

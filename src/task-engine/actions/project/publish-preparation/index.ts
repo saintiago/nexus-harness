@@ -238,9 +238,9 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
 
     const outcome: PreparationResult['outcome'] = result.outcome;
     /**
-     * Every stage whose retained acceptance basis no longer matches: refreshed source input,
-     * changed reports or repository content require a current decision, whether the affected
-     * stage stands earlier or later in the route.
+     * Decisions missing a valid report for the current ticket or current prototype inspection
+     * need reassessment. Document edits are evaluated by their stage, with explicit upstream
+     * findings when another stage's input needs correction.
      */
     async function invalidatedStages(): Promise<PreparationStage[]> {
       const changed: PreparationStage[] = [];
