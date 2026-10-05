@@ -128,11 +128,12 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       responseFormatText(researchResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'researcher',
       operation: 'Researcher',
+      reportKind: 'research',
       input: inputRecord,
       context,
       schema: researchResponseSchema,
@@ -140,11 +141,12 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       publish: settings.publish,
     });
     const stored: ResearchContribution = {
-      ...response,
+      ...outcome.report,
       role: 'researcher',
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, response.sources.length, file);
+    await outcome.resolveFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, stored.sources.length, file);
   };
 }

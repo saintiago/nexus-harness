@@ -8,6 +8,7 @@ import {
   publishIdeaOutcome,
   responseFormatText,
   retainedHistoryText,
+  type IdeaInvocationOutcome,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
@@ -157,16 +158,16 @@ function turnIsValid(
   return turn.refinedIdea === null;
 }
 
-/** Reject an editor turn that does not carry exactly the parts its task and disposition need. */
-function requireValidTurn(task: IdeaEditorTask, turn: EditorTurnResponse): void {
+/** Why one editor turn is not usable for its task, or null. The saved turn is never normalized. */
+function turnProblem(task: IdeaEditorTask, turn: EditorTurnResponse): string | null {
   if (turnIsValid(task, turn)) {
-    return;
+    return null;
   }
-  throw new Error(
+  return (
     `The idea editor's "${turn.disposition}" turn does not carry exactly the parts the ` +
-      `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
-      'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
-      'revised turn.',
+    `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
+    'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
+    'revised turn.'
   );
 }
 
@@ -321,18 +322,21 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       responseFormatText(framingResponseSchema),
     ].join('\n\n');
 
-    const framing = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'FrameIdea',
+      reportKind: 'idea-framing',
       input,
       context,
       schema: framingResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
+    const framing = outcome.report;
     await writeCycleArtifact(cycleRoot, framingArtifact, framing);
+    await outcome.resolveFeedback({ path: file }, framing);
     return reported(
       taskKey,
       cycle,
@@ -383,19 +387,23 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
-    const turn = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'EditIdea',
+      reportKind: 'idea-editor-turn',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    requireValidTurn('edit', turn);
-    return persist(root, plan.submission, plan.cycle, 'edit', turn);
+    const problem = turnProblem('edit', outcome.report);
+    if (problem !== null) {
+      await outcome.reject(problem);
+    }
+    return persist(root, plan.submission, plan.cycle, 'edit', outcome);
   }
 
   /** Respond to the Challenger's concern, with focused help when the editor asks for it. */
@@ -483,19 +491,23 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
-    const turn = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'EditorResponse',
+      reportKind: 'idea-editor-turn',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    requireValidTurn(task, turn);
-    return persist(root, plan.submission, plan.cycle, task, turn);
+    const problem = turnProblem(task, outcome.report);
+    if (problem !== null) {
+      await outcome.reject(problem);
+    }
+    return persist(root, plan.submission, plan.cycle, task, outcome);
   }
 
   /**
@@ -509,8 +521,9 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     submission: number,
     cycle: number,
     task: IdeaEditorTask,
-    turn: EditorTurnResponse,
+    outcome: IdeaInvocationOutcome<typeof editorTurnResponseSchema>,
   ): Promise<string> {
+    const turn = outcome.report;
     const cycleRoot = ideaCycleDirectory(root, submission, cycle);
     const existing = await cycleRevision(root, submission, cycle);
     if (
@@ -542,6 +555,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const taskKey = inputRecord.taskKey;
     if (turn.disposition === 'help-requested') {
       const file = await writeCycleArtifact(cycleRoot, editorHelpArtifact, stored);
+      await outcome.resolveFeedback({ path: file }, stored);
       return reported(taskKey, cycle, 'help-requested', null, file);
     }
 
@@ -565,12 +579,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       }
     }
     const file = await writeCycleArtifact(cycleRoot, editorResponseArtifact, stored);
-    const outcome =
+    await outcome.resolveFeedback({ path: file }, stored);
+    const workflowOutcome =
       task === 'edit' ? editOutcome(turn.disposition) : responseOutcome(turn.disposition);
     return reported(
       taskKey,
       cycle,
-      outcome,
+      workflowOutcome,
       revision === null ? null : `revision ${String(revision)}`,
       revision === null ? file : revisionFile(root, submission, cycle),
     );

@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import type { IdeaRole } from '../../agent-runtime/index.js';
+import type { ArtifactRef } from '../../result.js';
+import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
 import { challengerArtifact } from './challenger/artifacts.js';
 import { readDocumentText } from './documents.js';
@@ -21,6 +24,16 @@ import {
 } from './idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  recordReportCorrection,
+  rejectReport,
+  reportFeedbackContextText,
+  type ReportRejection,
+  type ReportScope,
+  type RetainedReportFeedback,
+} from './report-feedback.js';
 import { researchArtifact, researchFollowUpArtifact } from './researcher/artifacts.js';
 import { issueSummary } from './source.js';
 import type { IdeaInput } from './select-idea/artifacts.js';
@@ -323,6 +336,11 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   readonly role: IdeaRole;
   /** The operation name the invocation boundary carries. */
   readonly operation: string;
+  /**
+   * The role's report kind within the refinement area; it distinguishes the incompatible response
+   * contracts one role invokes, such as the editor's framing and turn reports.
+   */
+  readonly reportKind: string;
   /** The captured idea input the invocation works on; its issue carries the boundary's Summary. */
   readonly input: IdeaInput;
   /** The caller-prepared context: role instructions, captured idea, history and sources. */
@@ -333,14 +351,31 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   readonly publish: EventPublisher;
 };
 
+/** One idea role invocation's returned report and its outstanding-rejection obligations. */
+export type IdeaInvocationOutcome<Schema extends z.ZodType> = {
+  readonly report: z.output<Schema>;
+  /**
+   * Retain a post-parse semantic violation of this invocation's report as rejection evidence and
+   * fail with its reason.
+   */
+  reject(reason: string, cause?: unknown): Promise<never>;
+  /**
+   * Record the correction that retires exactly the rejections this invocation was supplied, once
+   * the caller validated and saved the usable replacement report.
+   */
+  resolveFeedback(artifact: ArtifactRef, content: unknown): Promise<void>;
+};
+
 /**
  * Run one idea role through AgentRuntime with the profile the round plan selected, then parse its
- * declared report. The runner assigns the invocation's identity and announces its boundaries, so
- * concurrent roles stay attributable; a provider failure is an execution error.
+ * declared report. The invocation is supplied the outstanding rejections of its own report
+ * responsibility, and a malformed response is retained as rejection evidence before the invocation
+ * fails. The runner carries the invocation's preassigned identity and announces its boundaries, so
+ * concurrent roles stay independently attributable; a provider failure is an execution error.
  */
 export async function invokeIdeaRole<Schema extends z.ZodType>(
   settings: IdeaInvocationSettings<Schema>,
-): Promise<z.output<Schema>> {
+): Promise<IdeaInvocationOutcome<Schema>> {
   const profile = settings.plan.profiles[settings.role];
   if (profile === undefined) {
     throw new Error(
@@ -348,8 +383,23 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         `${String(settings.plan.cycle)}) selects no "${settings.role}" profile.`,
     );
   }
+  const scope: ReportScope = {
+    project: projectOfWorkspace(path.dirname(settings.root)),
+    workId: settings.input.taskKey,
+    area: settings.root,
+    role: settings.role,
+    reportKind: settings.reportKind,
+  };
+  const invocationId = randomUUID();
+  const attribution =
+    `Idea refinement ${settings.role} (${settings.reportKind}), submission ` +
+    `${String(settings.plan.submission)}, cycle ${String(settings.plan.cycle)}, ` +
+    `idea ${settings.input.taskKey}.`;
+  const feedback: readonly RetainedReportFeedback<ReportRejection>[] =
+    await outstandingReportFeedback({ areaRoot: settings.root, scope });
   const result = await settings.runner.run({
     operation: settings.operation,
+    invocationId,
     profile,
     workspace: { root: settings.root },
     context: [
@@ -364,6 +414,7 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         path.join(settings.root, 'state') + ' (the refinement state records)',
       ]),
       settings.context,
+      ...reportFeedbackContextText(feedback),
     ].join('\n\n'),
     outputSchema: z.toJSONSchema(settings.schema),
     idea: settings.input.taskKey,
@@ -372,7 +423,56 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
   if (!result.ok) {
     throw new Error(result.fault.message);
   }
-  return parseAgentReport(result.value.output, settings.schema, `"${settings.role}" agent`);
+  const report = await (async (): Promise<z.output<Schema>> => {
+    try {
+      return parseAgentReport(result.value.output, settings.schema, `"${settings.role}" agent`);
+    } catch (error) {
+      return await rejectReport({
+        areaRoot: settings.root,
+        scope,
+        invocationId,
+        operation: settings.operation,
+        profile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        reason: messageOf(error),
+        cause: error,
+      });
+    }
+  })();
+  return {
+    report,
+    async reject(reason, cause): Promise<never> {
+      return rejectReport({
+        areaRoot: settings.root,
+        scope,
+        invocationId,
+        operation: settings.operation,
+        profile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        reason,
+        cause,
+      });
+    },
+    async resolveFeedback(artifact, content): Promise<void> {
+      if (feedback.length === 0) {
+        return;
+      }
+      // The action validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: settings.root,
+        scope,
+        rejections: feedback.map((entry) => ({ path: entry.path })),
+        artifact,
+        content,
+        invocationId,
+      });
+    },
+  };
 }
 
 /** Publish one idea action's saved artifact as its outcome event. */

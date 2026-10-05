@@ -21,6 +21,7 @@ import {
   challengerArtifact,
   challengerResponseSchema,
   type ChallengerReport,
+  type ChallengerResponse,
 } from './artifacts.js';
 
 /**
@@ -39,6 +40,38 @@ export type ChallengerSettings = {
   readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
 };
+
+/**
+ * Why one Challenger response does not support the verdict it reports, or null. A verdict must
+ * carry exactly the parts the challenge contract requires; the saved report is never normalized.
+ */
+function challengerProblem(response: ChallengerResponse, assessedRevision: number): string | null {
+  if (response.verdict === 'approve' && response.concerns.length > 0) {
+    return (
+      `The Challenger approved refined idea revision ${String(assessedRevision)} while naming ` +
+      'unresolved concerns.'
+    );
+  }
+  if (response.verdict === 'approve' && response.obstacle !== null) {
+    return (
+      `The Challenger approved refined idea revision ${String(assessedRevision)} while stating ` +
+      'a remaining obstacle; approval reports the obstacle as null.'
+    );
+  }
+  if (response.verdict === 'discuss' && response.concerns.length === 0) {
+    return (
+      'The Challenger chose "discuss" without naming a concern, its consequence and what would ' +
+      'resolve it.'
+    );
+  }
+  if (response.verdict === 'discuss' && response.obstacle === null) {
+    return (
+      'The Challenger chose "discuss" without stating the remaining obstacle plainly for the ' +
+      'idea\u2019s author.'
+    );
+  }
+  return null;
+}
 
 /** Create Challenger over the refinement area it reports into. */
 export function createChallenger(settings: ChallengerSettings): BoundAction {
@@ -107,40 +140,22 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       responseFormatText(challengerResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'challenger',
       operation: 'Challenger',
+      reportKind: 'challenge',
       input,
       context,
       schema: challengerResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (response.verdict === 'approve' && response.concerns.length > 0) {
-      throw new Error(
-        `The Challenger approved refined idea revision ${String(revision.value.revision)} while ` +
-          'naming unresolved concerns.',
-      );
-    }
-    if (response.verdict === 'approve' && response.obstacle !== null) {
-      throw new Error(
-        `The Challenger approved refined idea revision ${String(revision.value.revision)} while ` +
-          'stating a remaining obstacle; approval reports the obstacle as null.',
-      );
-    }
-    if (response.verdict === 'discuss' && response.concerns.length === 0) {
-      throw new Error(
-        'The Challenger chose "discuss" without naming a concern, its consequence and what ' +
-          'would resolve it.',
-      );
-    }
-    if (response.verdict === 'discuss' && response.obstacle === null) {
-      throw new Error(
-        'The Challenger chose "discuss" without stating the remaining obstacle plainly for the ' +
-          'idea\u2019s author.',
-      );
+    const response = outcome.report;
+    const problem = challengerProblem(response, revision.value.revision);
+    if (problem !== null) {
+      await outcome.reject(problem);
     }
 
     const report: ChallengerReport = {
@@ -150,6 +165,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       revision: revision.value.revision,
     };
     await writeCycleArtifact(cycleRoot, challengerArtifact, report);
+    await outcome.resolveFeedback({ path: file }, report);
     return reported(response.verdict);
   };
 }

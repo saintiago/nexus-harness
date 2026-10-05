@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
@@ -22,6 +23,15 @@ import {
   type PreparedWorkspace,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  recordReportCorrection,
+  rejectReport,
+  rejectUnusableRecord,
+  reportFeedbackContextText,
+  type ReportScope,
+} from '../report-feedback.js';
 import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary } from '../source.js';
@@ -216,7 +226,31 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       'Current round',
     );
     const profile = round.profile;
-    const existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
+    const scope: ReportScope = {
+      project: projectOfWorkspace(root),
+      workId: selection.taskKey,
+      area: root,
+      role: 'developer',
+      reportKind: 'development',
+    };
+    const invocationId = randomUUID();
+    const attribution = `Development round ${String(round.number)}, profile ${profile}, task ${selection.taskKey}.`;
+    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    let existing: DevelopmentOutput | null;
+    try {
+      existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
+    } catch (error) {
+      return await rejectUnusableRecord({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'develop',
+        profile,
+        context: attribution,
+        file: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
+        error,
+      });
+    }
     const latestReview = latest(histories.review);
 
     /** Report the outcome referencing the current round's saved development report. */
@@ -262,6 +296,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
         ? 'No review findings are supplied for this round.'
         : `Findings to respond to (complete values from the review in round ${latestReview.number}):\n` +
           JSON.stringify(findings, null, 2),
+      ...reportFeedbackContextText(outstanding),
       historySection(root, histories),
       ...(evidence === null ? [] : [evidence]),
       responseInstructions,
@@ -269,6 +304,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
 
     const result: AgentResult = await settings.runner.run({
       operation: 'Develop',
+      invocationId,
       profile,
       workspace: repositoryWorkspace,
       context,
@@ -280,8 +316,26 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       throw new Error(result.fault.message);
     }
 
-    const response = parseResponse(result.value.output);
-    requireFindingResponses(response.findingResponses, findings, 'development agent');
+    const response = await (async (): Promise<DevelopmentResponse> => {
+      try {
+        const parsed = parseResponse(result.value.output);
+        requireFindingResponses(parsed.findingResponses, findings, 'development agent');
+        return parsed;
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'develop',
+          profile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
 
     const after = await inspectRepository(settings.git, worktree);
     if (after.headRevision === null) {
@@ -318,6 +372,20 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       findingResponses: response.findingResponses,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
+    if (outstanding.length > 0) {
+      // The owner validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: root,
+        scope,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+        artifact: {
+          path: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
+        },
+        content: output,
+        invocationId,
+      });
+    }
     report(status);
     return status;
   };

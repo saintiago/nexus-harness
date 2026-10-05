@@ -33,6 +33,10 @@ import {
   createAnalyzeExperienceAction,
   type ExperienceAnalyst,
 } from '../src/task-engine/actions/analyze-experience/index.js';
+import {
+  outstandingReportFeedback,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { controlledMemoryService, type ControlledMemoryService } from './support/memory.js';
 
@@ -1086,5 +1090,59 @@ describe('experience analysis', () => {
     expect(submission.observation.provenance).toMatchObject({
       migratedFrom: { task: workId, completionRevision: mergeRevision },
     });
+  });
+
+  it('retains a rejected analysis and supplies it to the next permitted attempt', async () => {
+    const scope = {
+      project,
+      workId,
+      role: 'experience-analyst',
+      reportKind: 'experience-analysis',
+    };
+    const rejectedOutput = JSON.stringify({
+      observations: [{ content: 'A fact without evidence.', evidence: [], relatedMemories: [] }],
+    });
+
+    // The schema-valid response violates the evidence rule; it is not accepted and its exact
+    // bytes and reason are retained under the analysis report responsibility.
+    const first = await harness(() => ok(rejectedOutput));
+    const problems = await first.process();
+    expect(problems.join('\n')).toContain('observation 1 has no supporting evidence');
+    const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: { ...scope, area: evidenceRootOf(first) },
+      operation: 'analyze-experience',
+      profile,
+      output: rejectedOutput,
+      reason: 'observation 1 has no supporting evidence',
+    });
+    // The existing attempt policy stays authoritative: the attempt failed, no analysis was saved.
+    expect(
+      await readFile(
+        path.join(first.directory, 'analyses', `${first.identity}.attempts.jsonl`),
+        'utf8',
+      ),
+    ).toContain('"outcome":"failed"');
+    await expect(
+      stat(path.join(first.directory, 'analyses', `${first.identity}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // The next permitted attempt receives the rejected bytes and reason; the validated saved
+    // replacement records the correction under the same responsibility.
+    const contexts = first.contexts.length;
+    await first.process({ analyze: (_context, workspace) => ok(observation(workspace)) });
+    const context = first.contexts.at(-1) ?? '';
+    expect(first.contexts.length).toBeGreaterThan(contexts);
+    expect(context).toContain('Violated rule: observation 1 has no supporting evidence');
+    expect(context).toContain('A fact without evidence.');
+    expect(await analysisOf(first)).toMatchObject({ workId, project, attemptId });
+    await expect(
+      outstandingReportFeedback({
+        areaRoot: evidenceRootOf(first),
+        scope: { ...scope, area: evidenceRootOf(first) },
+      }),
+    ).resolves.toEqual([]);
   });
 });

@@ -21,6 +21,10 @@ import {
   type FindingResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
+import {
+  outstandingReportFeedback,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { runnerOf } from './support/agent-runner.js';
@@ -747,5 +751,109 @@ describe('Develop', () => {
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'development.json')),
     ).rejects.toThrow(/ENOENT/);
+  });
+
+  it('routes rejection feedback to the selected issue root when the repository is borrowed', async () => {
+    const { taskKey, workspaceRoot, selectionFile } = await workspace();
+    // The prepared identity continues another issue's checkout; the selected issue keeps the
+    // rounds, and the report feedback belongs to it rather than to the donor.
+    const donorRoot = path.join(root, 'donor-issue');
+    await mkdir(path.join(donorRoot, 'worktree'), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, 'state', 'prepared-workspace.json'),
+      `${JSON.stringify(
+        {
+          taskKey,
+          repository: '/donor/repository.git',
+          repositoryWorkspace: { root: donorRoot },
+          branch: `task/${taskKey}`,
+          baseRevision,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    const rejected = createDevelop({
+      selectionFile,
+      runner: runnerOf(scriptedRuntime(() => 'not a JSON report').runtime),
+      git: scriptedGit([repositoryState()]).git,
+      publish: (event) => events.push(event),
+    });
+    await expect(rejected()).rejects.toThrow(/unusable output/);
+
+    const scope = {
+      project: path.basename(root),
+      workId: taskKey,
+      area: workspaceRoot,
+      role: 'developer',
+      reportKind: 'development',
+    };
+    const rejection = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope,
+      operation: 'develop',
+      output: 'not a JSON report',
+      reason: expect.stringContaining('unusable output'),
+    });
+    await expect(stat(path.join(donorRoot, 'report-feedback'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    // Mere reuse of a retained artifact never records a correction: the rejection stays
+    // outstanding until a producer-validated saved replacement resolves it.
+    await writeFile(
+      path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
+      JSON.stringify({
+        taskSubject: 'Implement the retry guard',
+        taskKey,
+        profile: 'dev-a',
+        status: 'completed',
+        baseRevision,
+        headRevision,
+        summary: 'Retained report.',
+        findingResponses: [],
+      }),
+    );
+    const replay = scriptedRuntime(() => {
+      throw new Error('the retained report must be reused without an invocation');
+    });
+    const reused = createDevelop({
+      selectionFile,
+      runner: runnerOf(replay.runtime),
+      git: scriptedGit([repositoryState({ headRevision })]).git,
+      publish: (event) => events.push(event),
+    });
+    await expect(reused()).resolves.toBe('completed');
+    expect(replay.requests).toHaveLength(0);
+    await expect(
+      outstandingReportFeedback({ areaRoot: workspaceRoot, scope }),
+    ).resolves.toHaveLength(1);
+
+    // The next permitted invocation receives the rejection; its validated saved replacement
+    // records the correction that retires it.
+    await rm(path.join(workspaceRoot, 'artifacts', '1', 'development.json'));
+    const retry = scriptedRuntime(() =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Implemented the retry guard.',
+        findingResponses: [],
+      }),
+    );
+    const develop = createDevelop({
+      selectionFile,
+      runner: runnerOf(retry.runtime),
+      git: scriptedGit([repositoryState(), repositoryState({ headRevision })]).git,
+      publish: (event) => events.push(event),
+    });
+    await expect(develop()).resolves.toBe('completed');
+    expect(retry.requests[0]?.context).toContain('Violated rule:');
+    expect(retry.requests[0]?.context).toContain('not a JSON report');
+    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
+      [],
+    );
   });
 });

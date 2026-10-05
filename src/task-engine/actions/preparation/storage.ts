@@ -143,27 +143,6 @@ export type PrecedingStageWork = {
 };
 
 /**
- * The most recent authored revision retained before one round. A
- * response or later-stage-visit round reads the work it revises from history instead of expecting
- * the new round's own directory to carry it.
- */
-export async function precedingStageWork(
-  root: string,
-  round: number,
-): Promise<PrecedingStageWork | null> {
-  for (let earlier = round - 1; earlier >= 1; earlier -= 1) {
-    const author = await readStageArtifact(root, earlier, stageAuthorArtifact);
-    if (author !== null) {
-      return {
-        round: earlier,
-        author,
-      };
-    }
-  }
-  return null;
-}
-
-/**
  * The most recent evaluation before one round. Author-only returns and input requests carry no
  * evaluator dispositions, so its finding evidence remains applicable until a later evaluation
  * explicitly resolves or withdraws it. This lookup supplies evidence, never an acceptance to reuse.

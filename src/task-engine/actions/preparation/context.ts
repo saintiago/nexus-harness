@@ -26,6 +26,11 @@ import {
   upstreamResultReferences,
 } from './storage.js';
 import { prototypeObservationContract } from './observation.js';
+import {
+  reportFeedbackContextText,
+  type ReportRejection,
+  type RetainedReportFeedback,
+} from '../report-feedback.js';
 
 /**
  * The context every evaluated preparation role receives: the shared preparation instructions, the
@@ -146,6 +151,8 @@ export type StageContextSettings = {
   readonly evaluation: StageEvaluationOutput | null;
   /** The stage's retained terminal result when an upstream correction requires reassessment. */
   readonly retained: { readonly outcome: string; readonly reason: string | null } | null;
+  /** The outstanding report rejections of this stage that the invocation must correct. */
+  readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
 };
 
 /** Assemble the preparation role's context for the current round. */
@@ -241,6 +248,7 @@ export async function stageContextText(settings: StageContextSettings): Promise<
           'Accepted upstream outputs (read the files that bear on this stage):',
           ...upstream.flatMap((reference) => reference.lines.map((line) => `- ${line}`)),
         ].join('\n'),
+    ...reportFeedbackContextText(settings.feedback),
     ...previousAuthor,
     ...previousEvaluation,
     ...prototype,

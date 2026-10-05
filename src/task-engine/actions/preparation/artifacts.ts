@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
@@ -417,3 +418,23 @@ export const stageTerminalDeclaration = {
   file: 'state/result.json',
   schema: preparationResultSchema,
 } satisfies RecordDeclaration<typeof preparationResultSchema>;
+
+/**
+ * The report-feedback scope of one preparation stage's author or evaluator responsibility. The
+ * area is the stage's own artifact area, so feedback never crosses stages, issues or roles.
+ */
+export function stageReportScope(settings: {
+  readonly project: string;
+  readonly workId: string;
+  readonly area: string;
+  readonly stage: PreparationStage;
+  readonly role: 'author' | 'evaluator';
+}): ReportScope {
+  return {
+    project: settings.project,
+    workId: settings.workId,
+    area: settings.area,
+    role: `${settings.stage}-${settings.role}`,
+    reportKind: settings.role === 'author' ? 'stage-author' : 'stage-evaluation',
+  };
+}

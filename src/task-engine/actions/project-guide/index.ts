@@ -127,11 +127,12 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       responseFormatText(projectGuideResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'project-guide',
       operation: 'ProjectGuide',
+      reportKind: 'project-guidance',
       input: inputRecord,
       context,
       schema: projectGuideResponseSchema,
@@ -139,11 +140,12 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       publish: settings.publish,
     });
     const stored: ProjectGuideContribution = {
-      ...response,
+      ...outcome.report,
       role: 'project-guide',
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, response.provisional, file);
+    await outcome.resolveFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, stored.provisional, file);
   };
 }

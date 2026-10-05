@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../adapters/git.js';
+import { recordIdentity } from '../report-feedback.js';
 import type { Selection } from '../select-task/artifacts.js';
 import type { AssessedContent, StageAuthorOutput } from './artifacts.js';
 
@@ -12,10 +12,7 @@ import type { AssessedContent, StageAuthorOutput } from './artifacts.js';
  * bind and reject content that no longer matches its evaluated revision.
  */
 
-/** The stable identity of one saved report or captured input value. */
-export function recordIdentity(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
+export { recordIdentity };
 
 /** The authored report's plan, applicability and references are also part of its revision. */
 export function authoredIdentity(author: StageAuthorOutput): string {

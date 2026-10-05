@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -30,6 +31,15 @@ import {
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  recordReportCorrection,
+  rejectReport,
+  rejectUnusableRecord,
+  reportFeedbackContextText,
+  type ReportScope,
+} from '../report-feedback.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
@@ -263,9 +273,35 @@ export function createReview(settings: ReviewSettings): BoundAction {
       verificationArtifact,
       deliveryArtifact,
     );
-    const [recorded] = await helpers.readOptionalInputArtifacts(reviewArtifact);
     const roundFile = path.join(root, currentRoundFile);
     const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
+    const scope: ReportScope = {
+      project: projectOfWorkspace(root),
+      workId: selection.taskKey,
+      area: root,
+      role: 'reviewer',
+      reportKind: 'review',
+    };
+    const invocationId = randomUUID();
+    const attribution =
+      `Review round ${String(round.number)}, profile ${settings.reviewerProfile}, ` +
+      `task ${selection.taskKey}.`;
+    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    let recorded: ReviewOutput | null;
+    try {
+      recorded = (await helpers.readOptionalInputArtifacts(reviewArtifact))[0];
+    } catch (error) {
+      return await rejectUnusableRecord({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'review',
+        profile: settings.reviewerProfile,
+        context: attribution,
+        file: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
+        error,
+      });
+    }
 
     if (development.taskKey !== selection.taskKey) {
       throw new Error(
@@ -409,12 +445,14 @@ export function createReview(settings: ReviewSettings): BoundAction {
       `Development result (round ${round.number}):\n${JSON.stringify(development, null, 2)}`,
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
       dispositionInput(priorReview?.number ?? null, priorFindings, development.findingResponses),
+      ...reportFeedbackContextText(outstanding),
       historySection(root, reviews, developments),
       responseInstructions,
     ].join('\n\n');
 
     const result: AgentResult = await settings.runner.run({
       operation: 'Review',
+      invocationId,
       profile: settings.reviewerProfile,
       workspace: repositoryWorkspace,
       context,
@@ -426,8 +464,26 @@ export function createReview(settings: ReviewSettings): BoundAction {
       throw new Error(result.fault.message);
     }
 
-    const response = parseResponse(result.value.output);
-    validateReviewResponse(response, priorFindings);
+    const response = await (async (): Promise<ReviewResponse> => {
+      try {
+        const parsed = parseResponse(result.value.output);
+        validateReviewResponse(parsed, priorFindings);
+        return parsed;
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'review',
+          profile: settings.reviewerProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
 
     // The implementation being reviewed must survive the turn; caches, logs and other untracked
     // verification output do not invalidate the review.
@@ -455,6 +511,20 @@ export function createReview(settings: ReviewSettings): BoundAction {
       findings: response.findings.map(toFinding),
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
+    if (outstanding.length > 0) {
+      // The owner validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: root,
+        scope,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+        artifact: {
+          path: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
+        },
+        content: review,
+        invocationId,
+      });
+    }
     await publishReport(review, conversation.value);
     report(review);
     return review.verdict;

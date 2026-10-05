@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -17,9 +18,11 @@ import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageAuthorResponseSchema,
+  stageReportScope,
   type PreparationStage,
   type StageAuthorOutput,
   type StageAuthorResponse,
+  type StageEvaluationOutput,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
@@ -37,15 +40,22 @@ import {
   type PrototypeObservation,
 } from '../observation.js';
 import {
-  precedingStageEvaluation,
-  precedingStageWork,
-  priorStageFindings,
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  recordReportCorrection,
+  rejectReport,
+  rejectUnusableRecord,
+  type ReportScope,
+} from '../../report-feedback.js';
+import {
+  type PrecedingStageWork,
   preparationWorktree,
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
   retainedStagePrototype,
   roundArtifactDirectory,
+  roundArtifactFile,
   stageRoot,
   stageRounds,
   writeStageArtifact,
@@ -357,17 +367,103 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         `No ${settings.stage} round plan exists under "${root}"; the author needs an opened round.`,
       );
     }
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const scope: ReportScope = stageReportScope({
+      project: projectOfWorkspace(selection.workspace.root),
+      workId: selection.taskKey,
+      area: root,
+      stage: settings.stage,
+      role: 'author',
+    });
+    const invocationId = randomUUID();
+    const authorProfile = plan.profiles.author;
+    const evaluatorProfile = plan.profiles.evaluator;
+    const evaluatorScope: ReportScope = stageReportScope({
+      project: projectOfWorkspace(selection.workspace.root),
+      workId: selection.taskKey,
+      area: root,
+      stage: settings.stage,
+      role: 'evaluator',
+    });
+    const attribution =
+      `Preparation ${settings.stage} author, round ${String(plan.round)} ` +
+      `(route ${plan.route}), task ${selection.taskKey}, task ${task}.`;
+
+    /**
+     * Read one retained authored report. An unusable retained record is preserved as rejection
+     * evidence under this report responsibility instead of silently failing its next reader.
+     */
+    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
+      const file = roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot);
+      try {
+        return await readStageArtifact(root, round, stageAuthorArtifact);
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-author',
+          profile: authorProfile,
+          context: attribution,
+          file,
+          error,
+        });
+      }
+    }
+
+    /**
+     * Read one retained evaluation. The evaluation is the evaluator's report: an unusable record
+     * is preserved under the evaluator's responsibility so its next invocation receives the
+     * correction obligation, while this invocation keeps failing on the unreadable evidence.
+     */
+    async function readEvaluation(round: number): Promise<StageEvaluationOutput | null> {
+      const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
+      try {
+        return await readStageArtifact(root, round, stageEvaluationArtifact);
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: evaluatorScope,
+          invocationId,
+          operation: 'stage-evaluator',
+          profile: evaluatorProfile,
+          context: `${attribution} Reading retained evaluation round ${String(round)}.`,
+          file,
+          error,
+        });
+      }
+    }
+
+    const author = await readAuthor(plan.round);
     // A response round revises the preceding authored revision in answer to the preceding
     // evaluation; the new round's own directory holds only the response it produces.
-    const preceding = await precedingStageWork(root, plan.round);
+    let preceding: PrecedingStageWork | null = null;
+    for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
+      const retained = await readAuthor(earlier);
+      if (retained !== null) {
+        preceding = { round: earlier, author: retained };
+        break;
+      }
+    }
     if (task === 'respond' && author === null && preceding === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
           'revise and no earlier round retains one.',
       );
     }
-    const findings = await priorStageFindings(root, plan);
+    // The most recent preceding evaluation supplies the findings this round answers; an unusable
+    // record is preserved under the evaluator responsibility instead of failing without evidence.
+    let precedingEvaluation: StageEvaluationOutput | null = null;
+    if (plan.route !== 'new') {
+      for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
+        const retained = await readEvaluation(earlier);
+        if (retained !== null) {
+          precedingEvaluation = retained;
+          break;
+        }
+      }
+    }
+    const findings = precedingEvaluation?.findings ?? [];
+    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
 
     // A response round and a pending reassessment both revise the preceding authored revision
     // rather than starting from nothing; the new round's own directory holds only its response.
@@ -378,7 +474,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stageRoot: root,
       worktree,
       author: revising ? (preceding?.author ?? author) : author,
-      evaluation: revising ? await precedingStageEvaluation(root, plan.round) : null,
+      evaluation: revising ? precedingEvaluation : null,
       retained:
         plan.route === 'reassess'
           ? await (async () => {
@@ -388,6 +484,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
                 : { outcome: terminal.outcome, reason: terminal.reason };
             })()
           : null,
+      feedback: outstanding,
     });
     // The pre-invocation revision is the evidence that a deletion committed during the invocation
     // was tracked before this edit; the post-invocation head no longer retains it.
@@ -397,7 +494,8 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     }
     const result = await settings.runner.run({
       operation: 'stage-author',
-      profile: plan.profiles.author,
+      invocationId,
+      profile: authorProfile,
       // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
       // shared checkout at its worktree/ child. Stage areas only hold artifacts.
       workspace: { root: selection.workspace.root },
@@ -443,11 +541,28 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     if (!result.ok) {
       throw new Error(result.fault.message);
     }
-    const report = parseAgentReport(
-      result.value.output,
-      stageAuthorResponseSchema,
-      `${settings.stage} author`,
-    );
+    const report = await (async (): Promise<StageAuthorResponse> => {
+      try {
+        return parseAgentReport(
+          result.value.output,
+          stageAuthorResponseSchema,
+          `${settings.stage} author`,
+        );
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-author',
+          profile: authorProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
     const problem = await reportProblem(
       report,
       {
@@ -466,9 +581,34 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       task,
     );
     if (problem !== null) {
-      throw new Error(`The ${settings.stage} author report is unusable: ${problem}.`);
+      await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'stage-author',
+        profile: authorProfile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        reason: `The ${settings.stage} author report is unusable: ${problem}.`,
+      });
     }
-    requireFindingResponses(report.findingResponses, findings, `${settings.stage} author`);
+    try {
+      requireFindingResponses(report.findingResponses, findings, `${settings.stage} author`);
+    } catch (error) {
+      await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'stage-author',
+        profile: authorProfile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        reason: messageOf(error),
+        cause: error,
+      });
+    }
 
     // The retained response keeps its revision on a replay; a new revision continues the stage's
     // cumulative authored revisions.
@@ -485,6 +625,18 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       String(plan.round),
       stageAuthorArtifact.pathFromArtifactsRoot,
     );
+    if (outstanding.length > 0) {
+      // The owner validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: root,
+        scope,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+        artifact: { path: artifact },
+        content: output,
+        invocationId,
+      });
+    }
     settings.publish(
       actionOutcomeEvent('stage-author', {
         task: selection.taskKey,

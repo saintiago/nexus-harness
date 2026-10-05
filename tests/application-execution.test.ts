@@ -44,6 +44,7 @@ import {
   createAnalyzeExperience,
   type ExperienceAnalystRequest,
 } from '../src/task-engine/actions/analyze-experience/index.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
@@ -1222,6 +1223,100 @@ describe('Application execution', () => {
       decision: { kind: 'needs-attention' },
     });
     expect(executed.notifications).toHaveLength(1);
+  });
+
+  it('retains a malformed recovery report and supplies it to the next execution recovery', async () => {
+    let invocations = 0;
+    const executed = await harness({
+      completions: [stopped('first stop\n'), stopped('second stop\n'), successful],
+      agent: () => {
+        invocations += 1;
+        return Promise.resolve(
+          ok({
+            output:
+              invocations === 1
+                ? '{"summary":"No decision was returned."}'
+                : report('Reconciled after the rejection.', 'resume'),
+          }),
+        );
+      },
+    });
+    const selectionFile = path.join(executed.executionDirectory, 'selection.json');
+    const selection = (task: string): unknown => ({
+      taskKey: task,
+      source: { kind: 'jira', issueId: '10518' },
+      task: { id: '10518', key: task, fields: { summary: 'Retained work' } },
+      conversation: [],
+      workspace: { root: path.join(executed.executionDirectory, 'workspaces', task) },
+      stage: 'requirements',
+    });
+    await mkdir(path.dirname(selectionFile), { recursive: true });
+    await writeFile(selectionFile, JSON.stringify(selection('NEX-1')));
+
+    // The malformed recovery report stops the execution; its exact bytes, violated format rule
+    // and invocation attribution stay retained under the stable project recovery area.
+    const first = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+    expect(first.outcome).toBe('needs-attention');
+    expect(first.reason).toContain('does not match the response format');
+    expect(invocations).toBe(1);
+    const recoveryArea = path.join(executed.executionDirectory, 'recovery');
+    const rejection = (await readReportFeedback(recoveryArea)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: {
+        project: 'NEX',
+        workId: 'NEX',
+        area: recoveryArea,
+        role: 'recovery',
+        reportKind: 'recovery-report',
+      },
+      operation: 'Recovery',
+      output: '{"summary":"No decision was returned."}',
+      reason: expect.stringContaining('does not match the response format'),
+    });
+
+    // Recovery cleared the selection; a later execution reselects different retained work. The
+    // recovery responsibility still matches, so the next permitted invocation receives it.
+    await rm(selectionFile);
+    await writeFile(selectionFile, JSON.stringify(selection('NEX-2')));
+    const second = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+    expect(second.outcome).toBe('completed');
+    expect(invocations).toBe(2);
+    const context = executed.invocations[1]?.context ?? '';
+    expect(context).toContain('Violated rule:');
+    expect(context).toContain('does not match the response format');
+    expect(context).toContain('{"summary":"No decision was returned."}');
+    expect(context).toContain('Rejected output (exact returned bytes):');
+
+    // Only the producer-validated saved replacement records the correction; history remains.
+    const records = await readReportFeedback(recoveryArea);
+    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
+    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+  });
+
+  it('stops for attention when the retained recovery feedback is unreadable', async () => {
+    const executed = await harness({ completions: [stopped('first stop\n')] });
+    const feedback = path.join(executed.executionDirectory, 'recovery', 'report-feedback');
+    await mkdir(feedback, { recursive: true });
+    await writeFile(path.join(feedback, 'broken.json'), '{"kind":"rejection"}');
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+
+    // Missing or unusable evidence is an explicit error, never an empty feedback set: the
+    // invocation that cannot receive its required correction does not run unawares.
+    expect(result.outcome).toBe('needs-attention');
+    expect(result.reason).toContain('could not read its retained report feedback');
+    expect(executed.invocations).toHaveLength(0);
   });
 
   it('runs recovery in its own operational workspace with the complete context', async () => {
