@@ -31,6 +31,7 @@ import { preparationSharedInstructions } from '../src/task-engine/actions/prepar
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
+import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
   acceptedResultIdentity,
@@ -902,6 +903,10 @@ async function publishPreparation(options: {
   readonly status: string;
   /** The parent handoff record the publication reads, when the case retains one. */
   readonly handoff?: Record<string, unknown>;
+  /** A completed legacy evaluation predates action-observed repository revisions. */
+  readonly legacyEvaluation?: boolean;
+  /** Retain or alter action records before recreating the parent publication. */
+  readonly beforePublish?: (selectionFile: string, stageRoot: string) => Promise<void>;
 }): Promise<{
   readonly outcome: string;
   readonly status: () => string;
@@ -948,12 +953,15 @@ async function publishPreparation(options: {
   const author = {
     stage: selectedStage,
     revision: Number(options.result.authoredRevision ?? 1),
-    outcome: 'authored',
+    outcome: options.result.outcome === 'skipped' ? 'skip-proposed' : 'authored',
     summary: 'The proposed work.',
     documents: [],
     sourcePaths: [],
     plan: [],
-    skip: null,
+    skip:
+      options.result.outcome === 'skipped'
+        ? { reason: 'The stage is inapplicable.', references: [] }
+        : null,
     question: null,
     upstream: null,
     observation: null,
@@ -968,7 +976,7 @@ async function publishPreparation(options: {
         authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
         sourceIdentity: sourceInputIdentity(selection as never),
         upstream: [],
-        repositoryRevision: repositoryState().headRevision,
+        repositoryRevision: options.legacyEvaluation ? undefined : repositoryState().headRevision,
         content: [],
       },
       assessedRevision: author.revision,
@@ -1028,6 +1036,7 @@ async function publishPreparation(options: {
   });
 
   const failures: string[] = [];
+  await options.beforePublish?.(selectionFile, stage);
   const publish = createPublishPreparation({
     selectionFile,
     statuses: {
@@ -1113,6 +1122,83 @@ describe('parent preparation publication', () => {
     });
     expect(published.awaiting()).toEqual([]);
   });
+
+  it.each(['accepted', 'skipped'] as const)(
+    'replays a completed legacy %s result through parent publication without rewriting history',
+    async (outcome) => {
+      let files: string[] = [];
+      let retained: string[] = [];
+      const published = await publishPreparation({
+        result: { ...accepted, outcome },
+        status: 'UX Proposal',
+        legacyEvaluation: true,
+        beforePublish: async (selectionFile, root) => {
+          files = ['author.json', 'evaluation.json', 'result.json'].map((name) =>
+            path.join(root, 'artifacts/1', name),
+          );
+          files.push(path.join(root, 'state/current-round.json'));
+          retained = await Promise.all(files.map((file) => readFile(file, 'utf8')));
+          const replay = createStageResult({
+            selectionFile,
+            stage: 'ux',
+            git: scriptedGit([]).git,
+            publish: () => undefined,
+          });
+          await expect(replay({ outcome })).resolves.toBe('saved');
+          expect(await Promise.all(files.map((file) => readFile(file, 'utf8')))).toEqual(retained);
+        },
+      });
+      expect(published.outcome).toBe('advanced');
+      expect(published.failures).toEqual([]);
+      expect(published.status()).toBe('Storybook Refinement');
+      expect(published.stage()).toBe('prototype');
+      expect(published.comments).toHaveLength(1);
+      expect(published.awaiting()).toEqual([]);
+      expect(await Promise.all(files.map((file) => readFile(file, 'utf8')))).toEqual(retained);
+    },
+  );
+
+  it.each(['authorIdentity', 'sourceIdentity'] as const)(
+    'rejects publication when the retained %s association is invalid',
+    async (association) => {
+      const published = await publishPreparation({
+        result: accepted,
+        status: 'UX Proposal',
+        legacyEvaluation: true,
+        beforePublish: async (_selectionFile, root) => {
+          const file = path.join(root, 'artifacts/1/evaluation.json');
+          const evaluation = JSON.parse(await readFile(file, 'utf8'));
+          evaluation.basis[association] = 'another report or input';
+          await writeFile(file, JSON.stringify(evaluation));
+        },
+      });
+      expect(published.outcome).toBe('failed');
+      expect(published.failures.join('\n')).toContain('changed since evaluation');
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('UX Proposal');
+    },
+  );
+
+  it.each(['accepted', 'skipped'] as const)(
+    'rejects publication of a legacy %s prototype without both roles\u2019 observations',
+    async (outcome) => {
+      const published = await publishPreparation({
+        result: {
+          ...accepted,
+          stage: 'prototype',
+          outcome,
+          prototype: { branch: 'task/NEX-1', revision: '1'.repeat(40) },
+          prototypeObservations: [],
+        },
+        status: 'Storybook Refinement',
+        legacyEvaluation: true,
+      });
+      expect(published.outcome).toBe('failed');
+      expect(published.failures.join('\n')).toContain('saved observation record');
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('Storybook Refinement');
+    },
+  );
 
   it('returns an upstream result to the named earlier stage', async () => {
     const published = await publishPreparation({
