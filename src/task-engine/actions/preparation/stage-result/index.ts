@@ -22,9 +22,11 @@ import {
   readStagePlan,
   reusedPreparationContent,
   requireCurrentAcceptance,
+  roundArtifactDirectory,
   stageRoot,
   writeStageArtifact,
 } from '../storage.js';
+import { evidenceFilePath } from '../observation.js';
 
 /**
  * StageResult saves the terminal result envelope of one evaluated preparation stage: its outcome,
@@ -109,6 +111,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               skipReferences: [],
               outputs: [],
               prototype: null,
+              prototypeObservations: [],
               returnStage: null,
               returnFinding: null,
             }
@@ -178,6 +181,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     // The retained prototype implementation tickets reuse: the stage's evaluated revision, not
     // whatever HEAD later holds.
     let prototype: PreparationResult['prototype'] = null;
+    /** The author's and the evaluator's retained observation records for an accepted prototype. */
+    const retainedObservations: PreparationResult['prototypeObservations'] = [];
     if (outcome === 'accepted' && settings.stage === 'prototype') {
       const revision = assessedRevision();
       if (revision === null) {
@@ -192,6 +197,27 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         );
       }
       prototype = { branch, revision };
+      const roundDirectory = roundArtifactDirectory(root, plan.round);
+      const declared = [
+        ['author', author.observation?.path ?? null],
+        ['evaluator', evaluation?.observation?.path ?? null],
+      ] as const;
+      for (const [role, declaredPath] of declared) {
+        if (declaredPath === null) {
+          throw new Error(
+            `An accepted prototype must retain the ${role}'s observation record and none was ` +
+              'declared.',
+          );
+        }
+        const file = evidenceFilePath(roundDirectory, declaredPath);
+        if (file === null) {
+          throw new Error(
+            `The ${role}'s prototype observation "${declaredPath}" lies outside the round ` +
+              `artifact area "${roundDirectory}".`,
+          );
+        }
+        retainedObservations.push({ role, path: file });
+      }
     }
 
     /** The accepted changed documents with the revision each was retained at. */
@@ -273,6 +299,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       // A reused acceptance keeps the prototype implementation tickets reference; changed
       // prototype content cannot pass the reuse validation above.
       prototype = reuse.prototype;
+      retainedObservations.length = 0;
+      retainedObservations.push(...reuse.prototypeObservations);
     }
 
     const documents: PreparationResult['documents'] = [...authoredDocuments, ...reuse.documents];
@@ -301,6 +329,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       returnStage: outcome === 'returnUpstream' ? (upstream?.stage ?? null) : null,
       returnFinding: outcome === 'returnUpstream' ? upstream : null,
       prototype,
+      prototypeObservations: retainedObservations,
     };
     if (result.outcome === 'returnUpstream' && result.returnStage === null) {
       throw new Error(

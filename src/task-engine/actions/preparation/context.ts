@@ -20,10 +20,12 @@ import {
 import {
   readStageArtifact,
   readStagePlan,
+  roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
   upstreamResultReferences,
 } from './storage.js';
+import { prototypeObservationContract } from './observation.js';
 
 /**
  * The context every evaluated preparation role receives: the shared preparation instructions, the
@@ -200,6 +202,16 @@ export async function stageContextText(settings: StageContextSettings): Promise<
             'must be repaired. An earlier acceptance cannot authorize changed content.',
           ].join('\n'),
         ];
+  // Only the prototype stage uses browser and image-inspection tools; its roles receive the
+  // producer-owned observation contract with the round artifact area their evidence lives in.
+  const prototype =
+    settings.plan.stage === 'prototype'
+      ? [
+          prototypeObservationContract(
+            roundArtifactDirectory(settings.stageRoot, settings.plan.round),
+          ),
+        ]
+      : [];
   return [
     preparationSharedInstructions,
     `Preparation stage: ${settings.plan.stage}, round ${String(settings.plan.round)}.`,
@@ -222,6 +234,7 @@ export async function stageContextText(settings: StageContextSettings): Promise<
         ].join('\n'),
     ...previousAuthor,
     ...previousEvaluation,
+    ...prototype,
     ...reassessment,
     'Stage area: each round keeps author.json and evaluation.json under artifacts/<round>/; result.json records the terminal result.',
   ].join('\n\n');

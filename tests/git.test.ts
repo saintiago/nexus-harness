@@ -45,6 +45,7 @@ import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { scriptedJira } from './support/jira.js';
 import { scriptedGitHub } from './support/github.js';
+import { savePrototypeObservation } from './support/prototype-observation.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 
@@ -696,6 +697,8 @@ describe('Git adapter', () => {
     readonly author: Record<string, unknown>;
     readonly verdict?: 'accepted' | 'accepted-skip';
     readonly invokeAuthor?: boolean;
+    /** The evaluator's declared observation record for an accepted applicable prototype. */
+    readonly evaluatorObservation?: string;
   }): Promise<Record<string, unknown>> {
     const stageRoot = path.join(settings.root, settings.stage);
     const artifacts = path.join(stageRoot, 'artifacts', String(settings.round));
@@ -736,6 +739,10 @@ describe('Git adapter', () => {
               assessedRevision: settings.round,
               verdict: settings.verdict ?? 'accepted',
               reason: 'Inspected the exact retained content.',
+              observation:
+                settings.evaluatorObservation === undefined
+                  ? null
+                  : { path: settings.evaluatorObservation },
               findings: [],
               priorFindings: [],
               upstream: null,
@@ -787,6 +794,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -819,6 +827,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -883,6 +892,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -1077,6 +1087,7 @@ describe('Git adapter', () => {
         skip: { reason: 'Existing content suffices.', references: ['readme.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       });
       // Retain earlier decisions as on feedback resumption. Later stages have not run yet.
@@ -1278,6 +1289,7 @@ describe('Git adapter', () => {
       skip: null,
       question: null,
       upstream: null,
+      observation: null,
       findingResponses: [],
     });
 
@@ -1380,6 +1392,7 @@ describe('Git adapter', () => {
         },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -1411,6 +1424,7 @@ describe('Git adapter', () => {
         skip: { reason: 'No useful prototype work applies.', references: ['readme.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -1459,10 +1473,24 @@ describe('Git adapter', () => {
       await mkdir(path.join(worktree, 'docs'), { recursive: true });
       await mkdir(path.join(worktree, 'stories'), { recursive: true });
       await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n');
-      await writeFile(
-        path.join(worktree, 'stories', 'ux.stories.ts'),
+      // The prototype author commits the story it inspected and binds its observation to that
+      // revision, exactly as the role instructions require of applicable work.
+      const storyRevision = await commitFile(
+        worktree,
+        'stories/ux.stories.ts',
         'export const journey = 1;\n',
       );
+      const artifacts = path.join(root, 'prototype', 'artifacts', '1');
+      const authorObservation = await savePrototypeObservation({
+        roundDirectory: artifacts,
+        role: 'author',
+        content: [{ path: 'stories/ux.stories.ts', revision: storyRevision }],
+      });
+      const evaluatorObservation = await savePrototypeObservation({
+        roundDirectory: artifacts,
+        role: 'evaluator',
+        content: [{ path: 'stories/ux.stories.ts', revision: storyRevision }],
+      });
       // Round 1 authors the changed document and the stage-owned Storybook story the prototype owns.
       const first = await acceptedRound({
         selectionFile,
@@ -1478,10 +1506,16 @@ describe('Git adapter', () => {
           skip: null,
           question: null,
           upstream: null,
+          observation: { path: authorObservation },
           findingResponses: [],
         },
+        evaluatorObservation,
       });
       const prototypeRevision = (first.prototype as { readonly revision: string }).revision;
+      expect(first.prototypeObservations).toEqual([
+        { role: 'author', path: authorObservation },
+        { role: 'evaluator', path: evaluatorObservation },
+      ]);
       expect(
         await git.readFileAtRevision(worktree, prototypeRevision, 'stories/ux.stories.ts'),
       ).toEqual({ ok: true, value: 'export const journey = 1;\n' });
@@ -1518,6 +1552,7 @@ describe('Git adapter', () => {
         },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       });
 
@@ -1615,6 +1650,7 @@ describe('Git adapter', () => {
         skip: { reason: 'Existing requirements suffice.', references },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       });
       const reference =
@@ -1735,6 +1771,7 @@ describe('Git adapter', () => {
       skip: null,
       question: null,
       upstream: null,
+      observation: null,
       findingResponses: [],
     };
     const first = await acceptedRound({
@@ -1784,6 +1821,7 @@ describe('Git adapter', () => {
         },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -1900,6 +1938,7 @@ describe('Git adapter', () => {
         },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       }),
     );
@@ -1920,6 +1959,7 @@ describe('Git adapter', () => {
         assessedRevision: 1,
         verdict: 'accepted-skip',
         reason: 'Inspected existing design.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
@@ -2009,6 +2049,7 @@ describe('Git adapter', () => {
           assessedRevision: number,
           verdict,
           reason: 'The retained work suffices.',
+          observation: null,
           findings: [],
           priorFindings: [],
           upstream: null,
@@ -2038,6 +2079,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
       [{ path: 'readme.md', revision, exists: true }],
@@ -2058,6 +2100,7 @@ describe('Git adapter', () => {
         },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
       // The reuse binds the retained document's current observation, as the evaluator's capture
@@ -2092,6 +2135,7 @@ describe('Git adapter', () => {
         skip: { reason: 'Reuse?', references: [path.join(area, 'artifacts/2/result.json')] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
       [],
@@ -2156,6 +2200,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });
@@ -2187,6 +2232,7 @@ describe('Git adapter', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     });

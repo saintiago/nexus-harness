@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { GitAdapter } from '../../../../adapters/git.js';
+import { messageOf } from '../../../../result.js';
 import {
   authoredIdentity,
   retainEvaluationContent,
@@ -21,7 +22,9 @@ import {
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
   toFindings,
+  type AssessedContent,
   type PreparationStage,
+  type StageAuthorOutput,
   type StageEvaluationOutput,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
@@ -33,11 +36,18 @@ import {
   readStagePlan,
   readStageTerminal,
   reusedPreparationContent,
+  roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
   upstreamResultReferences,
   writeStageArtifact,
 } from '../storage.js';
+import {
+  observationContentProblem,
+  readPrototypeObservation,
+  type PrototypeObservation,
+  type PrototypeObservationRole,
+} from '../observation.js';
 
 /**
  * StageEvaluator assesses the exact authored revision of one evaluated preparation round. It
@@ -63,10 +73,14 @@ export type StageEvaluatorSettings = {
  */
 function reportProblem(
   report: z.output<typeof stageEvaluationResponseSchema>,
-  authorRevision: number,
-  authorProposedSkip: boolean,
-  priorFindings: readonly { readonly id: string }[],
+  settings: {
+    readonly stage: PreparationStage;
+    readonly authorRevision: number;
+    readonly authorProposedSkip: boolean;
+    readonly priorFindings: readonly { readonly id: string }[];
+  },
 ): string | null {
+  const { authorRevision, authorProposedSkip, priorFindings } = settings;
   if (report.assessedRevision !== authorRevision) {
     return (
       `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
@@ -78,6 +92,29 @@ function reportProblem(
   }
   if (report.verdict === 'return-upstream' && report.upstream === null) {
     return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+  if (settings.stage !== 'prototype') {
+    if (report.observation !== null) {
+      return 'only the Storybook Refinement stage retains a prototype observation';
+    }
+  } else if (report.verdict === 'accepted') {
+    if (authorProposedSkip) {
+      return (
+        'accepting a prototype skip proposal is an accepted-skip decision, which needs no ' +
+        'preview evidence'
+      );
+    }
+    if (report.observation === null) {
+      return (
+        'accepting applicable prototype work needs the evaluator\u2019s own saved browser ' +
+        'observation'
+      );
+    }
+  } else if (report.observation !== null) {
+    return (
+      'only an accepted applicable prototype carries an evaluator observation; a skip decision, ' +
+      'change request or upstream return carries null'
+    );
   }
 
   const current = new Set<string>();
@@ -133,6 +170,62 @@ function reportProblem(
     return 'a changes-requested verdict needs at least one current blocking finding';
   }
   return null;
+}
+
+/**
+ * Validate the author's and the evaluator's saved observations against the exact revision an
+ * accepted applicable prototype assesses: both records must be readable evidence covering the
+ * stage-owned prototype paths, and their observed content must still match the evaluated revision.
+ * Missing or stale evidence cannot produce acceptance.
+ */
+async function requirePrototypeEvidence(settings: {
+  readonly git: GitAdapter;
+  readonly worktree: string;
+  readonly roundDirectory: string;
+  readonly author: StageAuthorOutput;
+  readonly evaluator: { readonly path: string } | null;
+  readonly assessed: readonly AssessedContent[];
+}): Promise<void> {
+  if (settings.author.observation === null) {
+    throw new Error(
+      'The prototype author report carries no observation; an accepted applicable prototype needs ' +
+        'the author\u2019s own browser evidence.',
+    );
+  }
+  if (settings.evaluator === null) {
+    throw new Error(
+      'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
+        'needs the evaluator\u2019s own browser evidence.',
+    );
+  }
+  const declared: readonly (readonly [PrototypeObservationRole, string])[] = [
+    ['author', settings.author.observation.path],
+    ['evaluator', settings.evaluator.path],
+  ];
+  for (const [role, observationPath] of declared) {
+    let observation: PrototypeObservation;
+    try {
+      observation = await readPrototypeObservation({
+        declared: observationPath,
+        roundDirectory: settings.roundDirectory,
+        role,
+      });
+    } catch (error) {
+      throw new Error(`The ${role} prototype observation is unusable: ${messageOf(error)}`, {
+        cause: error,
+      });
+    }
+    const problem = await observationContentProblem({
+      git: settings.git,
+      worktree: settings.worktree,
+      observation,
+      assessed: settings.assessed,
+      observedPaths: settings.author.sourcePaths,
+    });
+    if (problem !== null) {
+      throw new Error(`The ${role} prototype observation is unusable: ${problem}.`);
+    }
+  }
 }
 
 /** Create the StageEvaluator invocation for one evaluated preparation stage. */
@@ -250,14 +343,24 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       stageEvaluationResponseSchema,
       `${settings.stage} evaluator`,
     );
-    const problem = reportProblem(
-      report,
-      author.revision,
-      author.outcome === 'skip-proposed',
-      findings,
-    );
+    const problem = reportProblem(report, {
+      stage: settings.stage,
+      authorRevision: author.revision,
+      authorProposedSkip: author.outcome === 'skip-proposed',
+      priorFindings: findings,
+    });
     if (problem !== null) {
       throw new Error(`The ${settings.stage} evaluator report is unusable: ${problem}.`);
+    }
+    if (settings.stage === 'prototype' && report.verdict === 'accepted') {
+      await requirePrototypeEvidence({
+        git: settings.git,
+        worktree,
+        roundDirectory: roundArtifactDirectory(root, plan.round),
+        author,
+        evaluator: report.observation,
+        assessed: retained.content,
+      });
     }
 
     await requireEvaluationContent({
@@ -273,6 +376,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       assessedRevision: report.assessedRevision,
       verdict: report.verdict,
       reason: report.reason,
+      observation: report.observation,
       findings: toFindings(report.findings),
       priorFindings: report.priorFindings,
       upstream: report.upstream,

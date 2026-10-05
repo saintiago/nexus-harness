@@ -26,6 +26,12 @@ url = "https://mcp.tavily.com/mcp/"
 http_headers = { "X-Tavily-Access-Mode" = "keyless" }
 # bearer_token_env_var = "TAVILY_API_KEY"
 
+# Real browser interaction and rendered-screenshot inspection for the prototype roles. Selecting
+# the Playwright-managed Chromium build avoids requiring a separately installed system Chrome.
+[mcp_servers.playwright]
+command = "playwright-mcp"
+args = ["--headless", "--browser", "chromium"]
+
 [apps._default]
 enabled = false
 

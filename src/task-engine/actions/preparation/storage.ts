@@ -313,7 +313,12 @@ export async function upstreamResultReferences(
 
 /** One stage round artifact's filepath. */
 export function roundArtifactFile(root: string, round: number, relative: string): string {
-  return path.join(root, 'artifacts', String(round), relative);
+  return path.join(roundArtifactDirectory(root, round), relative);
+}
+
+/** One stage round's artifact directory, which also holds that round's retained evidence. */
+export function roundArtifactDirectory(root: string, round: number): string {
+  return path.join(root, 'artifacts', String(round));
 }
 
 /**
@@ -338,6 +343,8 @@ export type ReusedPreparationContent = {
   readonly content: readonly AssessedContent[];
   /** The retained prototype the preceding result recorded, when this stage owns one. */
   readonly prototype: PreparationResult['prototype'];
+  /** The retained prototype observations the preceding result recorded with that prototype. */
+  readonly prototypeObservations: PreparationResult['prototypeObservations'];
 };
 
 const nothingReused: ReusedPreparationContent = {
@@ -347,6 +354,7 @@ const nothingReused: ReusedPreparationContent = {
   paths: [],
   content: [],
   prototype: null,
+  prototypeObservations: [],
 };
 
 /** Resolve the content one skip proposal's references reuse from the preceding round. */
@@ -456,6 +464,7 @@ export async function reusedPreparationContent(settings: {
     paths,
     content,
     prototype: reusesPrototype ? prototype : null,
+    prototypeObservations: reusesPrototype ? result.prototypeObservations : [],
   };
 }
 

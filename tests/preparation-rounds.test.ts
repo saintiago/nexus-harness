@@ -69,6 +69,7 @@ async function completeRound(root: string, round: number, stage: string): Promis
     returnStage: null,
     returnFinding: null,
     prototype: null,
+    prototypeObservations: [],
   };
   await writeFile(path.join(artifacts, 'result.json'), JSON.stringify(result));
 }
@@ -97,6 +98,7 @@ async function authorRound(
       skip: null,
       question: null,
       upstream: null,
+      observation: null,
       findingResponses: [],
     }),
   );

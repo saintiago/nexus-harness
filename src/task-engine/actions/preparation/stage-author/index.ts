@@ -24,6 +24,12 @@ import {
 import { stageContextText } from '../context.js';
 import { checkoutRelative } from '../evaluation-content.js';
 import {
+  observationScopeProblem,
+  observationSubmissionProblem,
+  readPrototypeObservation,
+  type PrototypeObservation,
+} from '../observation.js';
+import {
   precedingStageEvaluation,
   precedingStageWork,
   priorStageFindings,
@@ -31,6 +37,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  roundArtifactDirectory,
   stageRoot,
   stageRounds,
   writeStageArtifact,
@@ -152,13 +159,59 @@ async function reportProblem(
   report: StageAuthorResponse,
   settings: {
     readonly git: GitAdapter;
+    readonly stage: PreparationStage;
     readonly worktree: string;
+    readonly roundDirectory: string;
     readonly retainedDeletions: ReadonlySet<string>;
   },
   task: 'propose' | 'respond',
 ): Promise<string | null> {
   if (task === 'respond' && report.outcome === 'skip-proposed') {
     return 'a revision round cannot propose a skip; the evaluator asked for changes';
+  }
+  if (settings.stage !== 'prototype') {
+    if (report.observation !== null) {
+      return 'only the Storybook Refinement stage retains a prototype observation';
+    }
+  } else if (report.outcome !== 'authored') {
+    if (report.observation !== null) {
+      return (
+        'only authored prototype work carries an observation; a skip proposal, question or ' +
+        'upstream return carries null'
+      );
+    }
+  } else if (report.observation === null) {
+    return (
+      'applicable prototype work needs the author\u2019s saved browser observation; retain the ' +
+      'record under the round artifact area and declare it'
+    );
+  } else {
+    let observation: PrototypeObservation;
+    try {
+      observation = await readPrototypeObservation({
+        declared: report.observation.path,
+        roundDirectory: settings.roundDirectory,
+        role: 'author',
+      });
+    } catch (error) {
+      return messageOf(error);
+    }
+    const scope = observationScopeProblem({
+      worktree: settings.worktree,
+      observation,
+      observedPaths: report.sourcePaths,
+    });
+    if (scope !== null) {
+      return scope;
+    }
+    const submission = await observationSubmissionProblem({
+      git: settings.git,
+      worktree: settings.worktree,
+      observation,
+    });
+    if (submission !== null) {
+      return submission;
+    }
   }
   if (report.outcome === 'authored') {
     if (report.documents.length === 0 && report.sourcePaths.length === 0) {
@@ -281,7 +334,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       report,
       {
         git: settings.git,
+        stage: settings.stage,
         worktree,
+        roundDirectory: roundArtifactDirectory(root, plan.round),
         retainedDeletions:
           report.outcome === 'authored'
             ? await retainedStageDeletions(root, plan.round, worktree)

@@ -535,12 +535,14 @@ describe('preparation binding dispatch', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
       {
         assessedRevision: 1,
         verdict: 'accepted',
         reason: 'The revision is adequate.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
@@ -667,6 +669,7 @@ async function publishPreparation(options: {
     skip: null,
     question: null,
     upstream: null,
+    observation: null,
     findingResponses: [],
   };
   const authorFile = path.join(stage, 'artifacts/1/author.json');
@@ -684,6 +687,7 @@ async function publishPreparation(options: {
       assessedRevision: author.revision,
       verdict: options.result.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
       reason: 'Accepted.',
+      observation: null,
       findings: [],
       priorFindings: [],
       upstream: null,
@@ -1104,6 +1108,7 @@ async function handoff(options: {
           : null,
       question: null,
       upstream: null,
+      observation: null,
       findingResponses: [],
     };
     const authorFile = path.join(artifacts, 'author.json');
@@ -1132,6 +1137,7 @@ async function handoff(options: {
         assessedRevision: 1,
         verdict: settings.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
         reason: 'Assessed the exact retained content.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
