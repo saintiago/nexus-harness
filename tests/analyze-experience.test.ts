@@ -966,6 +966,115 @@ describe('experience analysis', () => {
     expect(analysis.observations).toEqual([]);
   });
 
+  it.each(
+    (['pending', 'accepted'] as const).flatMap((status) =>
+      (['empty', 'fewer', 'removed record'] as const).map((correction) => ({
+        status,
+        correction,
+      })),
+    ),
+  )(
+    'preserves $status submissions through $correction report correction',
+    async ({ status, correction }) => {
+      const retained = await harness((_context, workspace) => {
+        const candidate = JSON.parse(observation(workspace)) as {
+          observations: { content: string }[];
+        };
+        return ok(
+          JSON.stringify({
+            observations: [
+              candidate.observations[0],
+              {
+                ...candidate.observations[0],
+                content: 'Receipt polling must survive report correction.',
+              },
+            ],
+          }),
+        );
+      });
+      if (status === 'pending') {
+        retained.service.intercept('/v1/observations', () => ({
+          status: 503,
+          body: { error: { code: 'unavailable', message: 'Try later.', retryable: true } },
+        }));
+      }
+      await expect(retained.process()).resolves.toHaveLength(2);
+      const original = await analysisOf(retained);
+      const submissions = await Promise.all(
+        ['1', '2'].map((identity) => submissionOf(retained, identity)),
+      );
+      expect(submissions.map((submission) => submission.status)).toEqual([status, status]);
+      if (status === 'accepted') {
+        for (const submission of submissions) retained.service.block(submission.sourceKey);
+      }
+
+      const markdown = await readFile(original.report.path, 'utf8');
+      await rm(original.report.path);
+      const calls = retained.service.requests.length;
+      expect((await retained.process()).join('\n')).toContain('does not exist');
+      expect(retained.service.requests).toHaveLength(calls);
+      await writeFile(original.report.path, markdown, 'utf8');
+      if (correction === 'removed record') {
+        await rm(experienceAnalysisFile(retained.directory, retained.identity));
+      }
+      retained.service.intercept('/v1/observations', () => null);
+
+      const problems = await retained.process({
+        analyze: (_context, workspace) =>
+          ok(
+            correction === 'fewer'
+              ? observation(workspace, 'A replacement candidate must not rewrite accepted lessons.')
+              : JSON.stringify({ observations: [] }),
+          ),
+      });
+      expect(problems).toHaveLength(2);
+      expect(problems.join('\n')).toContain('observation 1');
+      expect(problems.join('\n')).toContain('observation 2');
+      expect(retained.contexts.at(-1)).toContain('Outstanding report rejection');
+      expect(retained.requests).toHaveLength(2);
+      const corrected = await analysisOf(retained);
+      expect(corrected.invocationId).not.toBe(original.invocationId);
+      if (correction !== 'removed record') {
+        expect(corrected.observations).toEqual(original.observations);
+        expect(corrected.analyzedAt).toBe(original.analyzedAt);
+        expect(corrected.profile).toBe(original.profile);
+      }
+
+      // A fresh owner polls both receipts without invoking the analyst or rebuilding payloads.
+      const restarted = createAnalyzeExperience({
+        directory: retained.directory,
+        project,
+        profile: 'nexus-other',
+        memory: { url: retained.service.url },
+        analyze: () => Promise.reject(new Error('The corrected analysis must be reused.')),
+      });
+      const polls = retained.service.requests.length;
+      await expect(restarted.processPending()).resolves.toHaveLength(2);
+      const resumedSubmissions = await Promise.all(
+        ['1', '2'].map((identity) => submissionOf(retained, identity)),
+      );
+      expect(retained.service.requests.slice(polls).map((request) => request.path)).toEqual(
+        resumedSubmissions.map((submission) => `/v1/receipts/${submission.receiptId}`),
+      );
+      for (const [index, resumed] of resumedSubmissions.entries()) {
+        expect(resumed.observation).toEqual(submissions[index]!.observation);
+        expect(resumed.sourceKey).toBe(submissions[index]!.sourceKey);
+        const posts = retained.service.requests.filter(
+          (request) =>
+            request.path === '/v1/observations' &&
+            (request.body as { sourceKey: string }).sourceKey === resumed.sourceKey,
+        );
+        expect(posts).toHaveLength(status === 'pending' ? 2 : 1);
+        for (const post of posts) expect(post.body).toEqual(resumed.observation);
+        retained.service.store(resumed.sourceKey);
+      }
+      await expect(restarted.processPending()).resolves.toEqual([]);
+      const settled = retained.service.requests.length;
+      await expect(restarted.processPending()).resolves.toEqual([]);
+      expect(retained.service.requests).toHaveLength(settled);
+    },
+  );
+
   it.each(['experience', 'legacy'] as const)(
     'retains pending %s evidence before recovery replaces the workspace',
     async (format) => {

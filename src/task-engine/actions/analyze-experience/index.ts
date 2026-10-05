@@ -575,7 +575,7 @@ export function createAnalyzeExperience(
    */
   type SavedAnalysis =
     | { readonly kind: 'accepted'; readonly analysis: AcceptedAnalysis }
-    | { readonly kind: 'invoke' }
+    | { readonly kind: 'invoke'; readonly previous: AcceptedAnalysis | null }
     | { readonly kind: 'outstanding' };
 
   async function savedAnalysis(
@@ -595,7 +595,7 @@ export function createAnalyzeExperience(
       return { kind: 'outstanding' };
     }
     if (read === null) {
-      return { kind: 'invoke' };
+      return { kind: 'invoke', previous: null };
     }
     const binding = read.analysis.binding;
     if (binding !== null) {
@@ -627,7 +627,7 @@ export function createAnalyzeExperience(
       scope: reportScopeOf(request, scope),
     });
     if (outstanding.length > 0) {
-      return { kind: 'invoke' };
+      return { kind: 'invoke', previous: read.analysis };
     }
     return { kind: 'accepted', analysis: read.analysis };
   }
@@ -902,6 +902,7 @@ export function createAnalyzeExperience(
     request: ExperienceRequest,
     identity: string,
     problems: string[],
+    previous: AcceptedAnalysis | null,
   ): Promise<AcceptedAnalysis | null> {
     const analyze = settings.analyze;
     if (analyze === null) {
@@ -954,6 +955,14 @@ export function createAnalyzeExperience(
       result = await analyze({
         context: [
           experienceContextText(request, scope, suppliedFeedback),
+          ...(previous === null
+            ? []
+            : [
+                'Correct the report for the already accepted analysis below. Its observations, ' +
+                  'identities and submission provenance remain unchanged; return observations: [] ' +
+                  'after writing the corrected Markdown. Nexus retains the accepted analysis facts.\n' +
+                  JSON.stringify(previous, null, 2),
+              ]),
           experienceResponseInstructions({
             assignedReport: assignedReport.path,
             analysisFile: analysisFile(identity),
@@ -1029,19 +1038,22 @@ export function createAnalyzeExperience(
       attemptId: request.handoff.attemptId,
       terminalId: request.handoff.terminalId,
       role: 'experience-analyst',
-      profile,
-      analyzedAt: now().toISOString(),
-      observations: validated.value.observations.map((observation, index) => ({
-        identity: String(index + 1),
-        content: observation.content.trim(),
-        evidence: observation.evidence,
-        relatedMemories: observation.relatedMemories,
-      })),
+      profile: previous?.profile ?? profile,
+      analyzedAt: previous?.analyzedAt ?? now().toISOString(),
+      observations:
+        previous?.observations.map((observation) => ({ ...observation })) ??
+        validated.value.observations.map((observation, index) => ({
+          identity: String(index + 1),
+          content: observation.content.trim(),
+          evidence: observation.evidence,
+          relatedMemories: observation.relatedMemories,
+        })),
       report: assignedReport,
       reportIdentity: reportFile.identity,
       invocationId,
     };
-    // The validated output is written once, before any submission, so a retry reuses it.
+    // Report correction replaces the binding, never the already accepted observations or their
+    // provenance. Submission retries continue to reuse the original functional analysis facts.
     await writeDurableRecord(analysisFile(identity), output);
     // The owner validated and saved the usable replacement; recording its complete identity
     // retires exactly the rejections this invocation was supplied, preserving their history.
@@ -1135,17 +1147,12 @@ export function createAnalyzeExperience(
    */
   async function submitObservation(
     request: ExperienceRequest,
-    output: AcceptedAnalysis,
-    observation: AcceptedAnalysis['observations'][number],
+    identity: string,
+    payload: MemoryObservation | null,
     memory: Memory,
     problems: string[],
   ): Promise<void> {
-    const file = experienceSubmissionFile(
-      settings.directory,
-      request.identity,
-      observation.identity,
-    );
-    const payload = observationPayload(request, output, observation);
+    const file = experienceSubmissionFile(settings.directory, request.identity, identity);
     const recorded = await readDocumentText(file, 'Submission');
     let submission: ExperienceSubmission;
     if (recorded !== null) {
@@ -1163,6 +1170,9 @@ export function createAnalyzeExperience(
       }
       submission = parsed.content;
     } else {
+      if (payload === null) {
+        throw new Error(`The recorded submission at "${file}" disappeared before it was read.`);
+      }
       submission = {
         sourceKey: payload.sourceKey,
         observation: payload,
@@ -1248,7 +1258,7 @@ export function createAnalyzeExperience(
       await writeDurableRecord(file, submission);
     }
 
-    const problem = submissionProblem(request, observation.identity, submission);
+    const problem = submissionProblem(request, identity, submission);
     if (problem !== null) {
       problems.push(problem);
     }
@@ -1289,7 +1299,7 @@ export function createAnalyzeExperience(
             }
             if (saved.kind === 'invoke') {
               request = await retainPendingEvidence(request, problems);
-              const analyzed = await analyzeRequest(request, identity, problems);
+              const analyzed = await analyzeRequest(request, identity, problems, saved.previous);
               if (analyzed === null) {
                 continue;
               }
@@ -1304,12 +1314,48 @@ export function createAnalyzeExperience(
             );
             continue;
           }
-          for (const observation of output.observations) {
+          // Submission records own exact payloads and obligations independently of the current
+          // analysis list. A removed/replaced analysis must not orphan their retries or receipts.
+          const observations = new Map(
+            output.observations.map((observation) => [
+              observation.identity,
+              observationPayload(request, output, observation),
+            ]),
+          );
+          let recorded: string[];
+          try {
+            recorded = await readdir(
+              path.dirname(experienceSubmissionFile(settings.directory, identity, '1')),
+            );
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+              recorded = [];
+            } else {
+              problems.push(
+                `the submissions of ${request.handoff.workId} could not be read: ${messageOf(error)}`,
+              );
+              continue;
+            }
+          }
+          const identities = new Set([
+            ...observations.keys(),
+            ...recorded
+              .filter((entry) => entry.endsWith('.json'))
+              .sort()
+              .map((entry) => path.basename(entry, '.json')),
+          ]);
+          for (const observation of identities) {
             try {
-              await submitObservation(request, output, observation, memory, problems);
+              await submitObservation(
+                request,
+                observation,
+                observations.get(observation) ?? null,
+                memory,
+                problems,
+              );
             } catch (error) {
               problems.push(
-                `the submission of observation ${observation.identity} of ` +
+                `the submission of observation ${observation} of ` +
                   `${request.handoff.workId} could not be processed: ${messageOf(error)}`,
               );
             }

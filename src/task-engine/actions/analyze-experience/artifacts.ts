@@ -163,7 +163,8 @@ const experienceAnalysisFields = {
  * The persisted, validated analysis output. Nexus records it once, with the observed handoff
  * identities, role, profile and its assigned Markdown binding, then reuses it for every submission
  * retry instead of generating new observations after an interruption. The observation identity is
- * stable within this record and names its submission.
+ * stable within this record and names its submission. Report correction replaces the binding while
+ * preserving the accepted observations, original analysis time and profile.
  */
 export const experienceAnalysisOutputSchema = z.strictObject({
   ...experienceAnalysisFields,
