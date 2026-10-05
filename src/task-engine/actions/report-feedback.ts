@@ -3,6 +3,7 @@ import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { messageOf, type ArtifactRef } from '../../result.js';
+import { artifactRefSchema, readAssignedReport } from './agent-reports.js';
 import { describeIssues, parseDocument, readDocumentText } from './documents.js';
 
 /**
@@ -34,13 +35,13 @@ export const reportScopeSchema = z.strictObject({
 
 export type ReportScope = z.infer<typeof reportScopeSchema>;
 
-const artifactRefSchema = z.strictObject({ path: z.string().trim().min(1) });
-
 /**
  * One rejected report's immutable evidence: the exact returned bytes when available, the specific
  * violated rule and the invocation, operation, profile and original-round attribution. `source`
- * names a malformed saved record whose readable bytes are the rejected output. `invocationId` is
- * null only when importing unattributed retained evidence.
+ * names a malformed saved record whose readable bytes are the rejected output. `report` is an
+ * immutable copy of the available rejected Markdown; `assignedReport` is the attempted path, even
+ * when the report is unreadable or missing. `invocationId` is null only when importing
+ * unattributed retained evidence.
  */
 export const reportRejectionSchema = z.strictObject({
   kind: z.literal('rejection'),
@@ -52,6 +53,12 @@ export const reportRejectionSchema = z.strictObject({
   source: artifactRefSchema.nullable(),
   output: z.string().nullable(),
   reason: z.string().trim().min(1),
+  report: artifactRefSchema
+    .nullable()
+    .describe('The immutable copy of the available rejected Markdown, or null.'),
+  assignedReport: artifactRefSchema
+    .nullable()
+    .describe('The attempted report path, even when the report is unreadable or missing.'),
 });
 
 export type ReportRejection = z.infer<typeof reportRejectionSchema>;
@@ -135,8 +142,9 @@ export function reportFeedbackDeclarationText(): string {
 export async function writeReportFeedbackRecord(
   areaRoot: string,
   record: ReportFeedbackRecord,
+  recordId: string = nextRecordId(),
 ): Promise<ArtifactRef> {
-  const file = reportFeedbackRecordFile(areaRoot, nextRecordId());
+  const file = reportFeedbackRecordFile(areaRoot, recordId);
   const temporary = `${file}.${randomUUID()}.tmp`;
   await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
   try {
@@ -244,20 +252,44 @@ export async function rejectReport(settings: {
   readonly source: ArtifactRef | null;
   readonly output: string | null;
   readonly reason: string;
+  readonly assignedReport?: ArtifactRef | null;
   readonly cause?: unknown;
 }): Promise<never> {
+  const recordId = nextRecordId();
+  const assignedReport = settings.assignedReport ?? null;
+  let report: ArtifactRef | null = null;
+  if (assignedReport !== null) {
+    try {
+      // Available rejected Markdown is copied byte-for-byte into the feedback area before the
+      // error is raised; a missing or unreadable report stays explicitly unavailable with its
+      // attempted path retained.
+      const retained = await readAssignedReport(assignedReport.path, 'Rejected report');
+      const copy = path.join(reportFeedbackRoot(settings.areaRoot), `${recordId}.md`);
+      await mkdir(reportFeedbackRoot(settings.areaRoot), { recursive: true });
+      await writeFile(copy, retained.bytes);
+      report = { path: copy };
+    } catch {
+      report = null;
+    }
+  }
   try {
-    await writeReportFeedbackRecord(settings.areaRoot, {
-      kind: 'rejection',
-      scope: settings.scope,
-      invocationId: settings.invocationId,
-      operation: settings.operation,
-      profile: settings.profile,
-      context: settings.context,
-      source: settings.source,
-      output: settings.output,
-      reason: settings.reason,
-    });
+    await writeReportFeedbackRecord(
+      settings.areaRoot,
+      {
+        kind: 'rejection',
+        scope: settings.scope,
+        invocationId: settings.invocationId,
+        operation: settings.operation,
+        profile: settings.profile,
+        context: settings.context,
+        source: settings.source,
+        output: settings.output,
+        reason: settings.reason,
+        report,
+        assignedReport,
+      },
+      recordId,
+    );
   } catch (error) {
     throw new Error(
       `${settings.reason} The rejection evidence could not be saved: ${messageOf(error)}`,
@@ -280,6 +312,8 @@ export async function rejectUnusableRecord(settings: {
   readonly context: string;
   readonly file: string;
   readonly error: unknown;
+  /** The record's attempted report path, when the unusable record carries a binding. */
+  readonly assignedReport?: ArtifactRef | null;
 }): Promise<never> {
   let output: string | null = null;
   let explanation = '';
@@ -301,6 +335,7 @@ export async function rejectUnusableRecord(settings: {
     source: { path: settings.file },
     output,
     reason: `${messageOf(settings.error)}${explanation}`,
+    assignedReport: settings.assignedReport ?? null,
     cause: settings.error,
   });
 }
@@ -377,6 +412,16 @@ export function reportFeedbackContextText(
         ...record.output.split('\n').map((line) => `  ${line}`),
         '  ---',
       );
+    }
+    if (record.report === null) {
+      lines.push(
+        '  The rejected Markdown report itself is unavailable; do not invent or reconstruct it.',
+      );
+    } else {
+      lines.push(`  Rejected Markdown report (exact copy): ${record.report.path}`);
+    }
+    if (record.assignedReport !== null) {
+      lines.push(`  Assigned report path as attempted: ${record.assignedReport.path}`);
     }
     if (record.source !== null) {
       lines.push(`  Rejected source record: ${record.source.path}`);

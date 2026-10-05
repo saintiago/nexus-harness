@@ -649,6 +649,8 @@ export function createRecovery(settings: RecoverySettings): Recovery {
             source: null,
             output: result.value.output,
             reason,
+            report: null,
+            assignedReport: null,
           });
         } catch (writeError) {
           // A failed evidence write reports both the original rejection and the persistence

@@ -3,7 +3,7 @@ import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
-import { devArtifact } from '../develop/artifacts.js';
+import { devArtifact, developmentReportText } from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -394,7 +394,9 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     // that same pull request within the post-push confirmation deadline, and the confirming
     // observation is the latest state that decides the auto-merge request.
     const title = pullRequestTitle(selection);
-    const body = development.summary;
+    // The pull request body is the developer's saved Markdown under its producer-owned binding; a
+    // retained combined report supplies its former narrative.
+    const body = await developmentReportText(development);
     let pullRequestNumber: number;
     let pullRequestUrl: string;
     let needsAutoMerge: boolean;

@@ -25,6 +25,7 @@ import {
   reportFeedbackContextText,
   reportFeedbackRoot,
   writeReportFeedbackRecord,
+  type ReportRejection,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
 import { repositoryState, scriptedGit } from './support/git.js';
@@ -109,8 +110,75 @@ it('retains the exact rejected output, violated rule and attribution', async () 
     source: null,
     output,
     reason,
+    report: null,
+    assignedReport: null,
   });
   expect(path.dirname(record)).toBe(reportFeedbackRoot(areaRoot));
+});
+
+it('copies available rejected Markdown byte-for-byte and retains the attempted path', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const assigned = path.join(areaRoot, 'artifacts', '1', 'reports', 'invocation-1', 'developer.md');
+  await mkdir(path.dirname(assigned), { recursive: true });
+  const markdown = '# Report\r\n\r\nThe outcome explains the incomplete work.\r\n';
+  await writeFile(assigned, markdown);
+
+  const reason = 'The development agent returned an extra outcome field.';
+  await expect(
+    rejectReport({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: '{"status":"completed","summary":"extra"}',
+      reason,
+      assignedReport: { path: assigned },
+    }),
+  ).rejects.toThrow(reason);
+
+  const [entry] = await readReportFeedback(areaRoot);
+  expect(entry?.record.kind).toBe('rejection');
+  const rejection = entry!.record as ReportRejection;
+  expect(rejection.assignedReport).toEqual({ path: assigned });
+  expect(rejection.report).not.toBeNull();
+  // The copy is byte-for-byte identical and lives outside the disposable artifacts directory.
+  expect(await readFile(rejection.report!.path, 'utf8')).toBe(markdown);
+  expect(path.dirname(rejection.report!.path)).toBe(reportFeedbackRoot(areaRoot));
+
+  // The context names the readable rejected Markdown and its attempted path.
+  const text = reportFeedbackContextText(await outstandingReportFeedback({ areaRoot, scope })).join(
+    '\n',
+  );
+  expect(text).toContain(`Rejected Markdown report (exact copy): ${rejection.report!.path}`);
+  expect(text).toContain(`Assigned report path as attempted: ${assigned}`);
+
+  // A missing assigned report stays explicitly unavailable with its attempted path retained.
+  await rm(assigned);
+  await expect(
+    rejectReport({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-2',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'not json',
+      reason: 'The development agent returned unusable output.',
+      assignedReport: { path: assigned },
+    }),
+  ).rejects.toThrow('unusable output');
+  const records = await readReportFeedback(areaRoot);
+  const missing = records.at(-1)!.record as ReportRejection;
+  expect(missing.report).toBeNull();
+  expect(missing.assignedReport).toEqual({ path: assigned });
+  expect(
+    reportFeedbackContextText([{ record: missing, path: records.at(-1)!.path }]).join('\n'),
+  ).toContain('The rejected Markdown report itself is unavailable');
 });
 
 it('reports the original rejection when its evidence cannot be persisted', async () => {
@@ -485,6 +553,8 @@ it('resumes KAN-76-style retained work with the correction feedback supplied to 
     reason:
       `Record at "${malformedFile}" does not match its declared content type: ` +
       'stage: Invalid input; revision: Invalid input.',
+    report: null,
+    assignedReport: null,
   });
   // The explicit repair returns the producer-owned metadata, without erasing the rejection history.
   await writeFile(

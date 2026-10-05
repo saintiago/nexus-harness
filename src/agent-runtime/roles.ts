@@ -24,7 +24,7 @@ earlier decisions. Do not fetch the ticket conversation again from Jira or GitHu
 
 For repairs, examine all supplied findings and check failures before changing code. Address their
 causes; dispute mistaken findings with evidence. Explain corrections, disagreements, verification
-and remaining problems in the report narrative. Previous reports provide context; no per-finding
+and remaining problems in the assigned Markdown report. Previous reports provide context; no per-finding
 response or status record is required.
 
 Apply the project's existing design and ownership principles. Reconcile affected existing intent
@@ -45,8 +45,10 @@ repair. Complete this reconciliation before review; preserve task scope and the 
 Leave dependencies ready for verification and the implementation committed on the supplied branch.
 Publication and task completion belong to Nexus, not this role.
 
-Return only the JSON object in the supplied response format, without Markdown fences. Report
-incomplete work or missing material context honestly.`,
+Write changes, verification, corrections, disagreements and incomplete work honestly in the supplied
+Markdown report. Begin with a brief account of what changed and why for concise publication.
+Return only {"status":"completed"} or {"status":"failed"}, without fences.
+Do not write action-owned outcome/state records or return narrative or observed identity metadata.`,
 ];
 
 /** ReviewerRole: review the delivered revision and evaluate prior repairs against it. */
@@ -75,9 +77,9 @@ before reporting another occurrence. Report the inspected scope and uncertainty 
 findings contract. Seek the complete set of material problems within scope.
 
 Use previous reviews and developer narratives as context and judge whether earlier problems were
-addressed against the current revision. Consider disagreements fairly. Return actionable findings
+addressed against the current revision. Consider disagreements fairly. Write actionable findings
 for current problems without IDs or per-finding dispositions. Explain the inspected scope and verdict
-in the summary. Do not reopen a resolved issue without evidence
+in the assigned Markdown report. Do not reopen a resolved issue without evidence
 of a remaining or reintroduced defect, or change the acceptance standard between rounds.
 
 Apply the supplied verdict rules. Personal preferences and alternative implementations are not
@@ -92,7 +94,10 @@ Caches, logs and generated output are normal parts of verification. Preserve the
 being reviewed; do not implement fixes or commit. Remove your temporary test additions when finished,
 preserving pre-existing work. Publication belongs to Nexus.
 
-Return only the JSON object in the supplied response format, without Markdown fences.`,
+Write the complete assessment, current findings and optional suggestions in the supplied Markdown
+report. Begin with a brief account of the verdict and necessary corrections for concise publication.
+Return only {"verdict":"approved"} or {"verdict":"changesRequested"}, without fences.
+Do not return findings or explanations in JSON or write action-owned outcome/state records.`,
 ];
 
 /** RecoveryRole: investigate an interrupted execution and restore its ability to continue. */

@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
-import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
-import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
+import { devArtifact, type RetainedDevelopmentOutput } from '../develop/artifacts.js';
+import { reviewArtifact, type RetainedReviewOutput } from '../review/artifacts.js';
 import { ensureRoundDirectory, readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
 import { retainTerminalReason } from '../terminal-reason.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
@@ -53,9 +53,9 @@ type PlanningEvidence = {
   /** The developer ladder in increasing capability order. */
   readonly ladder: readonly DeveloperProfileAllowance[];
   /** The retained development reports of this round and every earlier round, in round order. */
-  readonly reports: readonly ArtifactHistoryValue<DevelopmentOutput>[];
+  readonly reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[];
   /** The retained review results of this round and every earlier round, in round order. */
-  readonly reviews: readonly ArtifactHistoryValue<ReviewOutput>[];
+  readonly reviews: readonly ArtifactHistoryValue<RetainedReviewOutput>[];
   /** The current round's number. */
   readonly currentRound: number;
   /** Whether the current repair trigger is the current round's changes-requested review. */
@@ -68,9 +68,9 @@ type PlanningEvidence = {
  * approval is not a repair trigger.
  */
 function hasRepairTrigger(
-  development: DevelopmentOutput,
+  development: RetainedDevelopmentOutput,
   verification: VerificationOutput | null,
-  review: ReviewOutput | null,
+  review: RetainedReviewOutput | null,
 ): boolean {
   if (development.status === 'failed') {
     return true;
@@ -91,7 +91,7 @@ function hasRepairTrigger(
 
 /** The executed repair turns per profile: the development reports in rounds after the first. */
 function repairTurns(
-  reports: readonly ArtifactHistoryValue<DevelopmentOutput>[],
+  reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[],
 ): ReadonlyMap<string, number> {
   const turns = new Map<string, number>();
   for (const { number, value } of reports) {
@@ -110,7 +110,7 @@ function repairTurns(
  * or a duplicate review of the same head is not a new rejection. An approval resets the streak;
  * other verdicts leave it unchanged.
  */
-function rejectionStreak(reviews: readonly ArtifactHistoryValue<ReviewOutput>[]): {
+function rejectionStreak(reviews: readonly ArtifactHistoryValue<RetainedReviewOutput>[]): {
   readonly streak: number;
   readonly latestRound: number | null;
 } {
@@ -135,7 +135,7 @@ function rejectionStreak(reviews: readonly ArtifactHistoryValue<ReviewOutput>[])
 /** Why no further configured repair turn is available, naming the executed turns and allowances. */
 function exhaustedReason(
   ladder: readonly DeveloperProfileAllowance[],
-  reports: readonly ArtifactHistoryValue<DevelopmentOutput>[],
+  reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[],
 ): string {
   const repairs = reports.filter((report) => report.number > 1).length;
   const allowances = ladder

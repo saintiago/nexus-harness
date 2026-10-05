@@ -11,12 +11,19 @@ import {
   type EventPublisher,
 } from '../../index.js';
 import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  parseAgentReport,
+  readAssignedReport,
+  readBoundReport,
+  responseFormatText,
+} from '../agent-reports.js';
+import {
   createArtifactHelpers,
   roundArtifactPath,
   type ArtifactDeclaration,
   type ArtifactHistoryValue,
 } from '../artifacts.js';
-import { describeIssues, parseDocument } from '../documents.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -32,7 +39,11 @@ import {
   reportFeedbackContextText,
   type ReportScope,
 } from '../report-feedback.js';
-import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
+import {
+  isBoundReviewOutput,
+  reviewArtifact,
+  type RetainedReviewOutput,
+} from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
@@ -40,21 +51,24 @@ import { verificationArtifact, type VerificationOutput } from '../verify/artifac
 import {
   devArtifact,
   developmentResponseSchema,
+  isBoundDevelopmentOutput,
   type DevelopmentOutput,
   type DevelopmentResponse,
+  type RetainedDevelopmentOutput,
 } from './artifacts.js';
 
 /**
  * Develop implements the selected task or repairs the preceding round's findings in the retained
  * worktree. It refreshes the task and conversation from the source into the selection record,
- * assembles the round's context from the earlier-round artifacts and invokes the profile the
- * current round selected once. The action records the profile and observed repository revisions;
- * the agent supplies only status and a narrative summary. A completed turn must leave committed
- * work on the prepared branch; otherwise the recorded summary also carries the observed readiness
- * failure.
+ * assembles the round's context from the earlier-round reports and invokes the profile the current
+ * round selected once. The action records the profile and observed repository revisions; the agent
+ * writes its Markdown report to the assigned path and returns only status. A completed turn must
+ * leave committed work on the prepared branch; otherwise the saved outcome records the observed
+ * readiness failure separately from the agent's Markdown.
  *
- * Source, repository and invocation failures are execution errors. Unusable agent output is an
- * execution error, not a failed report.
+ * Source, repository and invocation failures are execution errors. Unusable agent output, a
+ * missing or unreadable assigned report and an invalid binding are rejected with their evidence
+ * retained for the next responsible invocation.
  */
 
 export type DevelopSettings = {
@@ -68,9 +82,9 @@ export type DevelopSettings = {
 
 /** The earlier-round values of the artifacts this action reads as history. */
 type RoundHistories = {
-  readonly development: readonly ArtifactHistoryValue<DevelopmentOutput>[];
+  readonly development: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[];
   readonly verification: readonly ArtifactHistoryValue<VerificationOutput>[];
-  readonly review: readonly ArtifactHistoryValue<ReviewOutput>[];
+  readonly review: readonly ArtifactHistoryValue<RetainedReviewOutput>[];
 };
 
 /** The most recent value of an artifact history, or null when it has none. */
@@ -107,57 +121,66 @@ async function inspectRepository(git: GitAdapter, worktree: string): Promise<Rep
   return inspection.value;
 }
 
-/** The agent's report, or an error naming why its output is unusable. */
-function parseResponse(output: string): DevelopmentResponse {
-  const parsed = parseDocument(output, developmentResponseSchema);
-  if (parsed.kind === 'invalid-json') {
-    throw new Error(`The development agent returned unusable output: ${messageOf(parsed.error)}`, {
-      cause: parsed.error,
-    });
-  }
-  if (parsed.kind === 'invalid-content') {
-    throw new Error(
-      `The development agent's report does not match the response format: ` +
-        describeIssues(parsed.error, '<report>'),
-      { cause: parsed.error },
-    );
-  }
-  return parsed.content;
-}
-
 /** One earlier round's artifact path, relative to the workspace root. */
 function roundArtifact(root: string, round: number, pathFromArtifactsRoot: string): string {
   return path.join(root, 'artifacts', String(round), pathFromArtifactsRoot);
 }
 
-/** The available earlier-round results and their paths, in round order. */
+/** The readable reference one retained development outcome offers. */
+function developmentReference(
+  root: string,
+  round: number,
+  outcome: RetainedDevelopmentOutput,
+): string {
+  if (isBoundDevelopmentOutput(outcome)) {
+    const readiness =
+      outcome.readinessFailure === null ? '' : `, readiness failure: ${outcome.readinessFailure}`;
+    return (
+      `development report (${outcome.status}, profile ${outcome.profile}, ` +
+      `invocation ${outcome.invocationId}${readiness}): ${outcome.report.path}`
+    );
+  }
+  return (
+    `development report (${outcome.status}, profile ${outcome.profile}; retained combined ` +
+    `record): ${roundArtifact(root, round, devArtifact.pathFromArtifactsRoot)}`
+  );
+}
+
+/** The readable reference one retained review outcome offers. */
+function reviewReference(root: string, round: number, outcome: RetainedReviewOutput): string {
+  if (isBoundReviewOutput(outcome)) {
+    return (
+      `review report (${outcome.verdict}, profile ${outcome.profile}, ` +
+      `invocation ${outcome.invocationId}, reviewed revision ${outcome.headRevision}): ` +
+      outcome.report.path
+    );
+  }
+  return (
+    `review report (${outcome.verdict}, profile ${outcome.profile}; retained combined record): ` +
+    roundArtifact(root, round, reviewArtifact.pathFromArtifactsRoot)
+  );
+}
+
+/** The available earlier-round reports and results, in round order. */
 function historySection(root: string, histories: RoundHistories): string {
   const rounds = new Map<number, string[]>();
-  const add = (number: number, description: string, file: string): void => {
+  const add = (number: number, line: string): void => {
     const lines = rounds.get(number) ?? [];
-    lines.push(`  - ${description}: ${roundArtifact(root, number, file)}`);
+    lines.push(`  - ${line}`);
     rounds.set(number, lines);
   };
   for (const value of histories.development) {
-    add(
-      value.number,
-      `development result (${value.value.status})`,
-      devArtifact.pathFromArtifactsRoot,
-    );
+    add(value.number, developmentReference(root, value.number, value.value));
   }
   for (const value of histories.verification) {
     add(
       value.number,
-      `verification result (${value.value.status})`,
-      verificationArtifact.pathFromArtifactsRoot,
+      `verification result (${value.value.status}): ` +
+        roundArtifact(root, value.number, verificationArtifact.pathFromArtifactsRoot),
     );
   }
   for (const value of histories.review) {
-    add(
-      value.number,
-      `review result (${value.value.verdict})`,
-      reviewArtifact.pathFromArtifactsRoot,
-    );
+    add(value.number, reviewReference(root, value.number, value.value));
   }
   if (rounds.size === 0) {
     return 'Earlier rounds: none.';
@@ -186,11 +209,26 @@ function checkEvidence(root: string, histories: RoundHistories): string | null {
   ].join('\n');
 }
 
-/** The report shape and identity rules; the action observes the profile and revisions itself. */
-const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
-{"status":"completed"|"failed","summary":"<what changed and why, or why implementation could not be completed>"}
-The summary is the complete narrative: what changed, the verification performed and its results, answers to previous reviews, disagreements and remaining problems, as applicable. Previous reports provide context; there is no per-finding response or status record. status "completed" means the implementation is committed on the prepared branch and ready for verification; "failed" means it could not be completed.
-Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed task, profile and revisions and persists this report.`;
+/**
+ * The invocation instructions: the assigned Markdown path and its narrative obligations, the
+ * derived status-only response contract, and the action-owned records the agent must leave to the
+ * action. The action observes the profile and revisions itself.
+ */
+function responseInstructions(reportFile: string, artifactFile: string): string {
+  return [
+    `Assigned Markdown report: ${reportFile}`,
+    'Write your complete report to that path before returning. It carries what changed and why, ' +
+      'the verification performed and its results, corrections, disagreements, the scope checked ' +
+      'and remaining problems. Begin with a brief account of what changed and why for concise ' +
+      'publication. Report incomplete work or missing material context honestly.',
+    responseFormatText(developmentResponseSchema),
+    'status "completed" means the implementation is committed on the prepared branch and ready ' +
+      'for verification; "failed" means it could not be completed. Return exactly one of those ' +
+      'values and no narrative or observed identity metadata.',
+    'The assigned Markdown path is the only report artifact you write.',
+    actionOwnedRecordsText([artifactFile]),
+  ].join('\n\n');
+}
 
 /** Create Develop over the configured selection, profiles, developer runtime and adapters. */
 export function createDevelop(settings: DevelopSettings): BoundAction {
@@ -237,6 +275,12 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     };
     const invocationId = randomUUID();
     const attribution = `Development round ${String(round.number)}, profile ${profile}, task ${selection.taskKey}.`;
+    const artifactFile = roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot);
+    const assignedReport = await assignReportPath(
+      path.join(root, 'artifacts', String(round.number)),
+      invocationId,
+      'developer',
+    );
     /**
      * One retained report's earlier rounds. An unusable retained report is preserved under its
      * producer's responsibility before this invocation fails, so a later repair of the file
@@ -272,7 +316,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       }),
     };
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-    let existing: DevelopmentOutput | null;
+    let existing: RetainedDevelopmentOutput | null;
     try {
       existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
     } catch (error) {
@@ -283,7 +327,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
         operation: 'develop',
         profile,
         context: attribution,
-        file: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
+        file: artifactFile,
         error,
       });
     }
@@ -297,15 +341,56 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
           round: round.number,
           outcome: status,
           detail: `profile ${profile}`,
-          artifact: {
-            path: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
-          },
+          artifact: { path: artifactFile },
         }),
       );
     }
 
+    /**
+     * The latest review report as repair context: its Markdown text for a current outcome, or the
+     * retained combined record. An unreadable bound report is preserved as the reviewer's
+     * rejection evidence before this invocation fails.
+     */
+    async function latestReviewSection(
+      value: ArtifactHistoryValue<RetainedReviewOutput>,
+    ): Promise<string> {
+      const review = value.value;
+      const file = roundArtifact(root, value.number, reviewArtifact.pathFromArtifactsRoot);
+      if (!isBoundReviewOutput(review)) {
+        return (
+          `Most recent review report (round ${String(value.number)}, profile ${review.profile}, ` +
+          `verdict ${review.verdict}; retained combined report at ${file}; repair context, ` +
+          'judged by the next review against the current revision):\n' +
+          JSON.stringify(review, null, 2)
+        );
+      }
+      let text: string;
+      try {
+        text = (await readBoundReport(review, 'Review report')).text;
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: reviewerScope,
+          invocationId,
+          operation: 'review',
+          profile: review.profile,
+          context: `${attribution} Reading the retained review report.`,
+          file,
+          assignedReport: review.report,
+          error,
+        });
+      }
+      return (
+        `Most recent review report (round ${String(value.number)}, profile ${review.profile}, ` +
+        `invocation ${review.invocationId}, reviewed revision ${review.headRevision}, verdict ` +
+        `${review.verdict}; repair context, judged by the next review against the current ` +
+        `revision):\n${text}`
+      );
+    }
+
     // A repetition reuses a current-round report only while it still describes this task, profile,
-    // comparison base and committed revision. Otherwise another invocation is needed.
+    // comparison base and committed revision and carries its readable Markdown. Otherwise another
+    // invocation is needed.
     const before = await inspectRepository(settings.git, worktree);
     if (
       existing !== null &&
@@ -315,6 +400,23 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       existing.headRevision === before.headRevision &&
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
+      if (isBoundDevelopmentOutput(existing)) {
+        try {
+          await readBoundReport(existing, 'Development report');
+        } catch (error) {
+          return await rejectUnusableRecord({
+            areaRoot: root,
+            scope,
+            invocationId,
+            operation: 'develop',
+            profile,
+            context: attribution,
+            file: artifactFile,
+            assignedReport: existing.report,
+            error,
+          });
+        }
+      }
       report(existing.status);
       return existing.status;
     }
@@ -327,14 +429,13 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       JSON.stringify(selection.task, null, 2),
       `Prepared branch: ${prepared.branch} (comparison base ${prepared.baseRevision})`,
       `Local selection record (refreshed task and complete conversation): ${settings.selectionFile}`,
-      latestReview === null
-        ? 'No previous review report is retained for this round.'
-        : `Most recent review report (round ${latestReview.number}; repair context, judged by the ` +
-          `next review against the current revision):\n${JSON.stringify(latestReview.value, null, 2)}`,
+      ...(latestReview === null
+        ? ['No previous review report is retained for this round.']
+        : [await latestReviewSection(latestReview)]),
       ...reportFeedbackContextText(outstanding),
       historySection(root, histories),
       ...(evidence === null ? [] : [evidence]),
-      responseInstructions,
+      responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
 
     const result: AgentResult = await settings.runner.run({
@@ -353,7 +454,11 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
 
     const response = await (async (): Promise<DevelopmentResponse> => {
       try {
-        return parseResponse(result.value.output);
+        return parseAgentReport(
+          result.value.output,
+          developmentResponseSchema,
+          'development agent',
+        );
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -364,6 +469,27 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
           context: attribution,
           source: null,
           output: result.value.output,
+          assignedReport,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
+
+    const reportFile = await (async () => {
+      try {
+        return await readAssignedReport(assignedReport.path, 'Assigned development report');
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'develop',
+          profile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          assignedReport,
           reason: messageOf(error),
           cause: error,
         });
@@ -377,21 +503,20 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       );
     }
     const problem = readinessProblem(after, prepared);
-    let status: DevelopmentOutput['status'] = 'completed';
-    let summary = response.summary;
-    let failureReason: string | null = null;
-    if (response.status === 'failed') {
-      status = 'failed';
-      failureReason = `The development turn reported incomplete work: ${response.summary}`;
-    } else if (problem !== null) {
-      // A completed turn whose worktree is not ready becomes failed, and the summary keeps both the
-      // agent's explanation and the observed readiness failure for a later repair round.
-      status = 'failed';
-      failureReason = `The development turn reported completed work, but ${problem}.`;
-      summary = `${response.summary} ${failureReason}`;
-    }
-    if (failureReason !== null) {
-      settings.publish({ source: 'develop', type: 'failed', data: { reason: failureReason } });
+    const readinessFailure = response.status === 'completed' ? problem : null;
+    const status: DevelopmentOutput['status'] =
+      response.status === 'completed' && problem !== null ? 'failed' : response.status;
+    if (status === 'failed') {
+      settings.publish({
+        source: 'develop',
+        type: 'failed',
+        data: {
+          reason:
+            readinessFailure === null
+              ? `The development turn reported incomplete work; the report is at ${assignedReport.path}.`
+              : `The development turn reported completed work, but ${readinessFailure}.`,
+        },
+      });
     }
 
     const output: DevelopmentOutput = {
@@ -401,7 +526,11 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       status,
       baseRevision: prepared.baseRevision,
       headRevision: after.headRevision,
-      summary,
+      role: 'developer',
+      report: assignedReport,
+      reportIdentity: reportFile.identity,
+      invocationId,
+      readinessFailure,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
     if (outstanding.length > 0) {
@@ -411,9 +540,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
         areaRoot: root,
         scope,
         rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: {
-          path: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
-        },
+        artifact: { path: artifactFile },
         content: output,
         invocationId,
       });

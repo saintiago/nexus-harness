@@ -19,13 +19,24 @@ import {
   type EventPublisher,
 } from '../../index.js';
 import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  parseAgentReport,
+  readAssignedReport,
+  readBoundReport,
+  responseFormatText,
+} from '../agent-reports.js';
+import {
   createArtifactHelpers,
   roundArtifactPath,
   type ArtifactHistoryValue,
 } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
-import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
-import { describeIssues, parseDocument } from '../documents.js';
+import {
+  devArtifact,
+  isBoundDevelopmentOutput,
+  type RetainedDevelopmentOutput,
+} from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -45,24 +56,26 @@ import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
+  isBoundReviewOutput,
   reviewArtifact,
   reviewResponseSchema,
-  toFinding,
+  type RetainedReviewOutput,
   type ReviewOutput,
   type ReviewResponse,
-  validateReviewResponse,
 } from './artifacts.js';
 
 /**
- * Review evaluates the delivered revision against the task and produces an actionable review of
- * that revision. It refreshes the task and pull-request conversations into the local records,
- * supplies the reviewer the task requirements, developer artifacts, verification evidence and
- * previous reports, and binds the returned verdict to the revision it actually observed. Only a
- * revision Review itself published as approved can authorize merge.
+ * Review evaluates the delivered revision against the task and produces an actionable Markdown
+ * review of that revision. It refreshes the task and pull-request conversations into the local
+ * records, supplies the reviewer the task requirements, the developer's Markdown report,
+ * verification evidence and previous review reports, and binds the returned verdict to the
+ * revision it actually observed and the report it wrote. Only a revision Review itself published
+ * as approved can authorize merge.
  *
- * Unusable agent output, worktree contradictions and adapter faults are execution errors; the
- * verdict is the action's outcome. The saved report and the remote review and check make repetition
- * finish publication instead of reviewing again.
+ * Unusable agent output, a missing or unreadable assigned report, worktree contradictions and
+ * adapter faults are execution errors with their evidence retained; the verdict is the action's
+ * outcome. The saved report and the remote review and check make repetition finish publication
+ * instead of reviewing again.
  */
 
 /** The review-check conclusion for one verdict; only approved produces a successful check. */
@@ -73,7 +86,7 @@ function conclusionFor(verdict: ReviewOutput['verdict']): 'success' | 'failure' 
 /** True when one observed check is the Nexus Lens publication of this report's result. */
 function isPublishedCheck(
   check: CheckObservation,
-  report: ReviewOutput,
+  report: RetainedReviewOutput,
   name: string,
   appId: number,
 ): boolean {
@@ -86,13 +99,18 @@ function isPublishedCheck(
   );
 }
 
-/** True when one observed review is the Nexus Lens publication of this exact report. */
-function isPublishedReview(review: GitHubReview, report: ReviewOutput, login: string): boolean {
+/** True when one observed review published this exact report body for the reviewed head. */
+function isPublishedReview(
+  review: GitHubReview,
+  report: RetainedReviewOutput,
+  body: string,
+  login: string,
+): boolean {
   return (
     review.author === login &&
     review.commit_id === report.headRevision &&
     review.state === reviewEncoding[report.verdict].state &&
-    review.body === report.summary
+    review.body === body
   );
 }
 
@@ -151,67 +169,91 @@ function roundArtifact(root: string, round: number, pathFromArtifactsRoot: strin
   return path.join(root, 'artifacts', String(round), pathFromArtifactsRoot);
 }
 
-/** The available earlier-round results and their paths, in round order. */
+/** The readable reference one retained development report offers. */
+function developmentReference(
+  root: string,
+  round: number,
+  outcome: RetainedDevelopmentOutput,
+): string {
+  if (isBoundDevelopmentOutput(outcome)) {
+    const readiness =
+      outcome.readinessFailure === null ? '' : `, readiness failure: ${outcome.readinessFailure}`;
+    return (
+      `development report (${outcome.status}, profile ${outcome.profile}, ` +
+      `invocation ${outcome.invocationId}${readiness}): ${outcome.report.path}`
+    );
+  }
+  return (
+    `development report (${outcome.status}, profile ${outcome.profile}; retained combined ` +
+    `record): ${roundArtifact(root, round, devArtifact.pathFromArtifactsRoot)}`
+  );
+}
+
+/** The readable reference one retained review report offers. */
+function reviewReference(root: string, round: number, outcome: RetainedReviewOutput): string {
+  if (isBoundReviewOutput(outcome)) {
+    return (
+      `review report (${outcome.verdict}, profile ${outcome.profile}, ` +
+      `invocation ${outcome.invocationId}, reviewed revision ${outcome.headRevision}): ` +
+      outcome.report.path
+    );
+  }
+  return (
+    `review report (${outcome.verdict}, profile ${outcome.profile}; retained combined record): ` +
+    roundArtifact(root, round, reviewArtifact.pathFromArtifactsRoot)
+  );
+}
+
+/** The available earlier-round reports and results, in round order. */
 function historySection(
   root: string,
-  reviews: readonly ArtifactHistoryValue<ReviewOutput>[],
-  developments: readonly ArtifactHistoryValue<DevelopmentOutput>[],
+  reviews: readonly ArtifactHistoryValue<RetainedReviewOutput>[],
+  developments: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[],
 ): string {
   const rounds = new Map<number, string[]>();
-  const add = (number: number, description: string, file: string): void => {
+  const add = (number: number, line: string): void => {
     const lines = rounds.get(number) ?? [];
-    lines.push(`  - ${description}: ${roundArtifact(root, number, file)}`);
+    lines.push(`  - ${line}`);
     rounds.set(number, lines);
   };
   for (const value of developments) {
-    add(
-      value.number,
-      `development result (${value.value.status})`,
-      devArtifact.pathFromArtifactsRoot,
-    );
+    add(value.number, developmentReference(root, value.number, value.value));
   }
   for (const value of reviews) {
-    add(
-      value.number,
-      `review result (${value.value.verdict})`,
-      reviewArtifact.pathFromArtifactsRoot,
-    );
+    add(value.number, reviewReference(root, value.number, value.value));
   }
   if (rounds.size === 0) {
     return 'Historical evidence: no earlier rounds.';
   }
   const ordered = [...rounds.entries()].sort(([left], [right]) => left - right);
   return [
-    'Historical evidence (complete earlier-round reports saved in this workspace; read what bears ' +
+    'Historical evidence (readable earlier-round reports saved in this workspace; read what bears ' +
       'on earlier concerns and recurrence):',
     ...ordered.flatMap(([number, lines]) => [`- Round ${number}:`, ...lines]),
   ].join('\n');
 }
 
-/** The reviewer's report, or an error naming why its output is unusable. */
-function parseResponse(output: string): ReviewResponse {
-  const parsed = parseDocument(output, reviewResponseSchema);
-  if (parsed.kind === 'invalid-json') {
-    throw new Error(`The reviewer returned unusable output: ${messageOf(parsed.error)}`, {
-      cause: parsed.error,
-    });
-  }
-  if (parsed.kind === 'invalid-content') {
-    throw new Error(
-      `The reviewer's report does not match the response format: ` +
-        describeIssues(parsed.error, '<report>'),
-      { cause: parsed.error },
-    );
-  }
-  return parsed.content;
+/**
+ * The invocation instructions: the assigned Markdown path and its narrative obligations, the
+ * derived verdict-only response contract, and the action-owned records the agent must leave to the
+ * action.
+ */
+function responseInstructions(reportFile: string, artifactFile: string): string {
+  return [
+    `Assigned Markdown report: ${reportFile}`,
+    'Write the complete assessment to that path before returning: the inspected scope, current ' +
+      'findings with their evidence, consequence and required correction, optional suggestions, ' +
+      'and why the verdict is supported. Begin with a brief account of the verdict and necessary ' +
+      'corrections for concise publication.',
+    responseFormatText(reviewResponseSchema),
+    'verdict "approved" requires sufficient evidence and no current blocking finding; ' +
+      '"changesRequested" requires at least one current blocking finding with concrete basis, ' +
+      'evidence and impact. These are the only verdicts; when material evidence is unavailable ' +
+      'and the assessment cannot finish, supply no verdict.',
+    'The assigned Markdown path is the only report artifact you write.',
+    actionOwnedRecordsText([artifactFile]),
+  ].join('\n\n');
 }
-
-/** The report shape, current finding definition and verdict rules. */
-const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
-{"verdict":"approved"|"changesRequested","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}]}
-findings contains the defects present in the reviewed revision, including newly discovered ones; a remaining or recurring defect is a current finding with evidence, and a resolved problem needs no lifecycle record. findings have no stable IDs, responses, statuses or dispositions. Previous reviews and developer narratives are context: judge whether earlier problems remain against the current revision. locations may be empty when there is no useful code location; a location's line refers to the reviewed revision, and states null when the location has no line.
-Apply the verdict rules: approved requires sufficient evidence and no current blocking findings; changesRequested requires at least one current blocking finding with a concrete basis, evidence and impact. These are the only verdicts; when material evidence is unavailable and the assessment cannot finish, supply no verdict — do not convert missing evidence into approval, changesRequested or a fabricated blocking finding.
-Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed profile and reviewed head and persists this verdict.`;
 
 /** Create Review over the selected workspace, reviewer runtime, publication and adapters. */
 export function createReview(settings: ReviewSettings): BoundAction {
@@ -260,6 +302,16 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const attribution =
       `Review round ${String(round.number)}, profile ${settings.reviewerProfile}, ` +
       `task ${selection.taskKey}.`;
+    const artifactFile = roundArtifactPath(
+      root,
+      round.number,
+      reviewArtifact.pathFromArtifactsRoot,
+    );
+    const assignedReport = await assignReportPath(
+      path.join(root, 'artifacts', String(round.number)),
+      invocationId,
+      'reviewer',
+    );
     /** One retained report read: an unusable record is preserved under its producer's scope. */
     const readReport = async <Value>(
       file: string,
@@ -295,7 +347,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       deliveryArtifact,
     );
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-    let recorded: ReviewOutput | null;
+    let recorded: RetainedReviewOutput | null;
     try {
       recorded = (await helpers.readOptionalInputArtifacts(reviewArtifact))[0];
     } catch (error) {
@@ -306,7 +358,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
         operation: 'review',
         profile: settings.reviewerProfile,
         context: attribution,
-        file: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
+        file: artifactFile,
         error,
       });
     }
@@ -329,15 +381,81 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     /**
-     * Publish the report and its check for the reviewed head, then the ticket comment. The review
-     * is recognized by the Nexus Lens author, the reviewed commit, the verdict and the report body;
-     * the check by the Nexus Lens producer, the configured name, a completed status and the
-     * verdict's conclusion. Only the missing part of the publication is written.
+     * The readable review body of one saved outcome: the bound Markdown or the former combined
+     * summary. An unreadable bound report is preserved as the reviewer's rejection evidence.
      */
-    async function publishReport(review: ReviewOutput, conversation: PullRequestConversation) {
+    async function reviewText(outcome: RetainedReviewOutput): Promise<string> {
+      if (!isBoundReviewOutput(outcome)) {
+        return outcome.summary;
+      }
+      try {
+        return (await readBoundReport(outcome, 'Review report')).text;
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'review',
+          profile: outcome.profile,
+          context: attribution,
+          file: artifactFile,
+          assignedReport: outcome.report,
+          error,
+        });
+      }
+    }
+
+    /**
+     * The development report the reviewer assesses: the developer's Markdown text, or the retained
+     * combined record. An unreadable bound report is preserved as the developer's rejection
+     * evidence.
+     */
+    async function developmentSection(): Promise<string> {
+      const file = roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot);
+      if (!isBoundDevelopmentOutput(development)) {
+        return (
+          `Development result (round ${String(round.number)}, profile ${development.profile}, ` +
+          `status ${development.status}; retained combined report at ${file}):\n` +
+          JSON.stringify(development, null, 2)
+        );
+      }
+      let text: string;
+      try {
+        text = (await readBoundReport(development, 'Development report')).text;
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: developerScope,
+          invocationId,
+          operation: 'develop',
+          profile: development.profile,
+          context: `${attribution} Reading the development report under review.`,
+          file,
+          assignedReport: development.report,
+          error,
+        });
+      }
+      return (
+        `Development report (round ${String(round.number)}, profile ${development.profile}, ` +
+        `invocation ${development.invocationId}, status ${development.status}, head revision ` +
+        `${development.headRevision}):\n${text}`
+      );
+    }
+
+    /**
+     * Publish the report and its check for the reviewed head, then the ticket comment. The review
+     * is recognized by the Nexus Lens author, the reviewed commit, the verdict and the exact
+     * retained report body; the check by the Nexus Lens producer, the configured name, a completed
+     * status and the verdict's conclusion. Only the missing part of the publication is written.
+     */
+    async function publishReport(
+      review: RetainedReviewOutput,
+      body: string,
+      conversation: PullRequestConversation,
+    ) {
       const checks = await readChecks(settings.github, settings.repository, review.headRevision);
       const reviewPublished = conversation.reviews.some((candidate) =>
-        isPublishedReview(candidate, review, settings.nexusLens.login),
+        isPublishedReview(candidate, review, body, settings.nexusLens.login),
       );
       const checkPublished = checks.some((check) =>
         isPublishedCheck(check, review, settings.reviewCheck, settings.nexusLens.appId),
@@ -347,7 +465,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
           pullRequestNumber: delivery.pullRequestNumber,
           revision: review.headRevision,
           verdict: review.verdict,
-          body: review.summary,
+          body,
         });
         if (!publishedReview.ok) {
           throw new Error(publishedReview.fault.message);
@@ -367,25 +485,24 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     /** Report the outcome referencing the current round's saved review report. */
-    function report(review: ReviewOutput): void {
+    function report(review: RetainedReviewOutput): void {
       settings.publish(
         actionOutcomeEvent('review', {
           task: selection.taskKey,
           round: round.number,
           outcome: review.verdict,
           detail: `profile ${review.profile}`,
-          artifact: {
-            path: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
-          },
+          artifact: { path: artifactFile },
         }),
       );
     }
 
     // A saved report for the delivered head is the review of this revision: finish any missing
     // publication for that exact head instead of reviewing again. A report for another revision
-    // is not evidence for this one. The reader has already rejected a retained report whose
-    // verdict contradicts its findings; that failure is not a report to publish.
+    // is not evidence for this one. A retained combined review stays readable under its original
+    // protections.
     if (recorded !== null && recorded.headRevision === reviewedHead) {
+      const body = await reviewText(recorded);
       const conversation = await settings.github.readConversation(
         settings.repository,
         delivery.pullRequestNumber,
@@ -393,7 +510,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       if (!conversation.ok) {
         throw new Error(conversation.fault.message);
       }
-      await publishReport(recorded, conversation.value);
+      await publishReport(recorded, body, conversation.value);
       report(recorded);
       return recorded.verdict;
     }
@@ -457,6 +574,44 @@ export function createReview(settings: ReviewSettings): BoundAction {
     );
     const priorReview = latest(reviews);
 
+    /** The previous review report as context: its Markdown text or retained combined record. */
+    async function priorReviewSection(
+      value: ArtifactHistoryValue<RetainedReviewOutput>,
+    ): Promise<string> {
+      const review = value.value;
+      const file = roundArtifact(root, value.number, reviewArtifact.pathFromArtifactsRoot);
+      if (!isBoundReviewOutput(review)) {
+        return (
+          `Previous review report (round ${String(value.number)}, profile ${review.profile}, ` +
+          `verdict ${review.verdict}; retained combined record at ${file}; judge whether its ` +
+          'concerns remain against the current revision):\n' +
+          JSON.stringify(review, null, 2)
+        );
+      }
+      let text: string;
+      try {
+        text = (await readBoundReport(review, 'Previous review report')).text;
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'review',
+          profile: review.profile,
+          context: `${attribution} Reading the previous review report.`,
+          file,
+          assignedReport: review.report,
+          error,
+        });
+      }
+      return (
+        `Previous review report (round ${String(value.number)}, profile ${review.profile}, ` +
+        `invocation ${review.invocationId}, reviewed revision ${review.headRevision}, verdict ` +
+        `${review.verdict}; judge whether its concerns remain against the current revision):\n` +
+        text
+      );
+    }
+
     const context = [
       `Task ${selection.taskKey}:`,
       JSON.stringify(selection.task, null, 2),
@@ -473,22 +628,12 @@ export function createReview(settings: ReviewSettings): BoundAction {
       `Reviewed revision: ${reviewedHead} (comparison base ${prepared.baseRevision})`,
       `Comparison diff ${prepared.baseRevision}..${reviewedHead} (orientation only; ` +
         `task-relevant pre-existing code outside this range is in scope):\n${diff.value}`,
-      // The saved report is the complete developer artifact: a retained report may carry former
-      // response evidence the current typed view omits, so name its readable local file.
-      `Development result (round ${round.number}; complete retained report at ` +
-        `${roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot)}):\n` +
-        JSON.stringify(development, null, 2),
+      await developmentSection(),
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
-      ...(priorReview === null
-        ? []
-        : [
-            `Previous review report (round ${priorReview.number}; judge whether its concerns ` +
-              'remain against the current revision):\n' +
-              JSON.stringify(priorReview.value, null, 2),
-          ]),
+      ...(priorReview === null ? [] : [await priorReviewSection(priorReview)]),
       ...reportFeedbackContextText(outstanding),
       historySection(root, reviews, developments),
-      responseInstructions,
+      responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
 
     const result: AgentResult = await settings.runner.run({
@@ -507,9 +652,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
 
     const response = await (async (): Promise<ReviewResponse> => {
       try {
-        const parsed = parseResponse(result.value.output);
-        validateReviewResponse(parsed);
-        return parsed;
+        return parseAgentReport(result.value.output, reviewResponseSchema, 'reviewer');
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -520,6 +663,27 @@ export function createReview(settings: ReviewSettings): BoundAction {
           context: attribution,
           source: null,
           output: result.value.output,
+          assignedReport,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
+
+    const reportFile = await (async () => {
+      try {
+        return await readAssignedReport(assignedReport.path, 'Assigned review report');
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'review',
+          profile: settings.reviewerProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          assignedReport,
           reason: messageOf(error),
           cause: error,
         });
@@ -544,12 +708,14 @@ export function createReview(settings: ReviewSettings): BoundAction {
 
     const review: ReviewOutput = {
       taskSubject: issueSummary(selection.task) ?? selection.taskKey,
+      taskKey: selection.taskKey,
       profile: settings.reviewerProfile,
       headRevision: reviewedHead,
-      ...response,
-      // The response carries every location's line, reporting null when it has none; the saved
-      // Finding omits the line instead.
-      findings: response.findings.map(toFinding),
+      verdict: response.verdict,
+      role: 'reviewer',
+      report: assignedReport,
+      reportIdentity: reportFile.identity,
+      invocationId,
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
     if (outstanding.length > 0) {
@@ -559,14 +725,12 @@ export function createReview(settings: ReviewSettings): BoundAction {
         areaRoot: root,
         scope,
         rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: {
-          path: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
-        },
+        artifact: { path: artifactFile },
         content: review,
         invocationId,
       });
     }
-    await publishReport(review, conversation.value);
+    await publishReport(review, reportFile.text, conversation.value);
     report(review);
     return review.verdict;
   };

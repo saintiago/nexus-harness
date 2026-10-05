@@ -3,7 +3,6 @@ import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
-import { reportedFindingSchema, retainedFindingSchema, type Finding } from '../review/artifacts.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
@@ -208,6 +207,71 @@ export const stageAuthorArtifact = {
   pathFromArtifactsRoot: 'author.json',
   schema: stageAuthorOutputSchema,
 } satisfies ArtifactDeclaration<typeof stageAuthorOutputSchema>;
+
+/**
+ * One affected location's fields: its file, and its line in the assessed revision when the
+ * location has one.
+ */
+const findingLocationFields = {
+  path: z.string().describe('The affected file in the assessed revision.'),
+  line: z.number().int().positive().describe('The one-based line in the assessed revision.'),
+};
+
+/** One location in a saved finding: a location without a line leaves the field out. */
+const findingLocationSchema = z.strictObject({
+  ...findingLocationFields,
+  line: findingLocationFields.line.optional(),
+});
+
+/**
+ * One location as the evaluator reports it. The provider's strict structured-output schema
+ * requires every property, so a location without a line reports null; the action turns that null
+ * back into an absent line before saving the finding.
+ */
+const reportedLocationSchema = z.strictObject({
+  ...findingLocationFields,
+  line: findingLocationFields.line
+    .nullable()
+    .describe('The assessed revision\u2019s line, or null when the location has no line.'),
+});
+
+/** One defect finding present in the assessed revision. */
+export const findingSchema = z.strictObject({
+  title: z.string().describe('A short title for the defect.'),
+  severity: z
+    .enum(['blocking', 'non-blocking'])
+    .describe('Whether the finding prevents acceptance.'),
+  basis: z.string().describe('The requirement or expected behavior that is violated.'),
+  evidence: z
+    .string()
+    .describe(
+      'The observed or reproducible failure, related occurrences inspected and material uncertainty.',
+    ),
+  impact: z.string().describe('The consequence of the defect.'),
+  repairGuidance: z.string().describe('The required correction.'),
+  locations: z.array(findingLocationSchema).describe('The affected locations; may be empty.'),
+});
+
+export type Finding = z.infer<typeof findingSchema>;
+
+/**
+ * One finding as a retained evaluation may still carry it: the current shape plus the removed
+ * stable ID. The producer's saved-record reader preserves it as historical data, and no current
+ * rule reads, matches or validates it.
+ */
+export const retainedFindingSchema = z.strictObject({
+  id: z.string().optional(),
+  ...findingSchema.shape,
+});
+
+/** One current finding as the evaluator reports it: a location without a line reports null. */
+export const reportedFindingSchema = findingSchema.extend({
+  locations: z
+    .array(reportedLocationSchema)
+    .describe('The affected locations; may be empty. A location without a line reports null.'),
+});
+
+export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
 
 /**
  * The evaluator's report: the exact revision it assessed, its verdict, the findings present in

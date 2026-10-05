@@ -9,16 +9,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   devArtifact,
+  developmentReportText,
   developmentResponseSchema,
   type DevelopmentOutput,
+  type LegacyDevelopmentOutput,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  findingSchema,
   reviewArtifact,
   reviewResponseSchema,
-  type Finding,
   type ReviewOutput,
 } from '../src/task-engine/actions/review/artifacts.js';
 import {
@@ -35,7 +36,51 @@ const developmentOutput: DevelopmentOutput = {
   status: 'completed',
   baseRevision,
   headRevision,
+  role: 'developer',
+  report: { path: 'artifacts/1/reports/dev-1/developer.md' },
+  reportIdentity: 'a'.repeat(64),
+  invocationId: 'dev-1',
+  readinessFailure: null,
+};
+
+/** One bound development outcome whose report association distinguishes its round's work. */
+function developmentOutputOf(report: string): DevelopmentOutput {
+  return { ...developmentOutput, report: { path: report } };
+}
+
+/** A retained combined development report from before the narrative/outcome separation. */
+const legacyDevelopmentOutput: LegacyDevelopmentOutput = {
+  taskKey: 'NEX-1',
+  profile: 'developer',
+  status: 'completed',
+  baseRevision,
+  headRevision,
   summary: 'Implemented the retry guard.',
+  findingResponses: [
+    { findingId: 'NEX-1-finding-1', status: 'addressed', response: 'Retried the call.' },
+  ],
+};
+
+/** A retained combined review from before the narrative/outcome separation. */
+const legacyReviewOutput = {
+  profile: 'reviewer',
+  headRevision,
+  verdict: 'changesRequested',
+  summary: 'The missing retry guard is a current problem.',
+  findings: [
+    {
+      id: 'NEX-1-finding-1',
+      title: 'Transient provider failures are not retried',
+      severity: 'blocking',
+    },
+  ],
+  priorFindings: [
+    {
+      findingId: 'NEX-1-finding-1',
+      disposition: 'open',
+      reason: 'The guard was still missing in the reviewed revision.',
+    },
+  ],
 };
 
 const verificationOutput: VerificationOutput = {
@@ -51,36 +96,18 @@ const verificationOutput: VerificationOutput = {
   ],
 };
 
-const blockingFinding: Finding = {
-  title: 'Transient provider failures are not retried',
-  severity: 'blocking',
-  basis: 'The design requires a transient provider failure to be retried once.',
-  evidence: 'The failing call returns immediately and no second attempt appears in the log.',
-  impact: 'A transient failure leaves the work unfinished.',
-  repairGuidance: 'Retry the provider call once before reporting the failure.',
-  locations: [{ path: 'src/queue.ts', line: 42 }],
-};
-
-const nonBlockingFinding: Finding = {
-  title: 'Retry log entry omits the attempt number',
-  severity: 'non-blocking',
-  basis: 'The design requires a log entry to identify the attempt.',
-  evidence: 'The logged line names the operation only.',
-  impact: 'Operators cannot match the log entries to attempts.',
-  repairGuidance: 'Include the attempt number in the log entry.',
-  locations: [],
-};
-
-/** One review result for the reviewed head. */
-function reviewOutput(findings: Finding[]): ReviewOutput {
+/** One bound review outcome for the reviewed head. */
+function reviewOutput(overrides: Partial<ReviewOutput> = {}): ReviewOutput {
   return {
+    taskKey: 'NEX-1',
     profile: 'reviewer',
     headRevision,
-    verdict: findings.some((finding) => finding.severity === 'blocking')
-      ? 'changesRequested'
-      : 'approved',
-    summary: 'Reviewed the delivered revision.',
-    findings,
+    verdict: 'approved',
+    role: 'reviewer',
+    report: { path: 'artifacts/2/reports/rev-1/reviewer.md' },
+    reportIdentity: 'b'.repeat(64),
+    invocationId: 'rev-1',
+    ...overrides,
   };
 }
 
@@ -163,24 +190,16 @@ describe('artifact helpers over a workspace', () => {
     const helpers = createArtifactHelpers({ root });
 
     await startRound(root, 1);
-    await helpers.writeOutputArtifact(devArtifact, {
-      ...developmentOutput,
-      summary: 'First round implementation.',
-    });
+    const firstRound = developmentOutputOf('artifacts/1/reports/dev-1/developer.md');
+    await helpers.writeOutputArtifact(devArtifact, firstRound);
     await startRound(root, 2);
-    await helpers.writeOutputArtifact(devArtifact, {
-      ...developmentOutput,
-      summary: 'Second round implementation.',
-    });
+    const secondRound = developmentOutputOf('artifacts/2/reports/dev-2/developer.md');
+    await helpers.writeOutputArtifact(devArtifact, secondRound);
 
-    await expect(helpers.readInputArtifacts(devArtifact)).resolves.toEqual([
-      { ...developmentOutput, summary: 'Second round implementation.' },
-    ]);
+    await expect(helpers.readInputArtifacts(devArtifact)).resolves.toEqual([secondRound]);
 
     await startRound(root, 1);
-    await expect(helpers.readInputArtifacts(devArtifact)).resolves.toEqual([
-      { ...developmentOutput, summary: 'First round implementation.' },
-    ]);
+    await expect(helpers.readInputArtifacts(devArtifact)).resolves.toEqual([firstRound]);
   });
 
   it('fails a current-round read instead of falling back to an earlier round', async () => {
@@ -241,23 +260,19 @@ describe('artifact helpers over a workspace', () => {
     const helpers = createArtifactHelpers({ root });
 
     await startRound(root, 1);
-    await helpers.writeOutputArtifact(devArtifact, {
-      ...developmentOutput,
-      summary: 'First round implementation.',
-    });
+    const firstRound = developmentOutputOf('artifacts/1/reports/dev-1/developer.md');
+    await helpers.writeOutputArtifact(devArtifact, firstRound);
     await startRound(root, 2);
-    const review = reviewOutput([blockingFinding]);
+    const review = reviewOutput({ verdict: 'changesRequested' });
     await helpers.writeOutputArtifact(reviewArtifact, review);
     await startRound(root, 3);
-    await helpers.writeOutputArtifact(devArtifact, {
-      ...developmentOutput,
-      summary: 'Third round implementation.',
-    });
+    const thirdRound = developmentOutputOf('artifacts/3/reports/dev-3/developer.md');
+    await helpers.writeOutputArtifact(devArtifact, thirdRound);
     await startRound(root, 4);
 
     await expect(helpers.readArtifactHistory(devArtifact)).resolves.toEqual([
-      { number: 1, value: { ...developmentOutput, summary: 'First round implementation.' } },
-      { number: 3, value: { ...developmentOutput, summary: 'Third round implementation.' } },
+      { number: 1, value: firstRound },
+      { number: 3, value: thirdRound },
     ]);
     await expect(helpers.readArtifactHistory(reviewArtifact)).resolves.toEqual([
       { number: 2, value: review },
@@ -330,115 +345,94 @@ describe('artifact helpers over a workspace', () => {
   });
 });
 
-describe('findings contract', () => {
-  it('carries review findings into the next review input without lifecycle records', async () => {
+describe('retained report contracts', () => {
+  it('keeps a current bound record and a retained combined record readable as recorded', async () => {
     const root = await temporaryWorkspace();
     const helpers = createArtifactHelpers({ root });
-    const findings = [blockingFinding, nonBlockingFinding];
-
-    await startRound(root, 1);
-    await helpers.writeOutputArtifact(reviewArtifact, reviewOutput(findings));
-
-    // The developer's report is a narrative bound to the observed revisions, and the next review
-    // still receives the complete earlier report as readable evidence.
-    await startRound(root, 2);
-    const [firstReview] = await helpers.readArtifactHistory(reviewArtifact);
-    expect(firstReview).toEqual({ number: 1, value: reviewOutput(findings) });
-    await helpers.writeOutputArtifact(devArtifact, {
-      ...developmentOutput,
-      summary: 'Addressed the missing retry guard and the log entry.',
-    });
-
-    await startRound(root, 3);
-    const [development] = await helpers.readArtifactHistory(devArtifact);
-    const [suppliedReview] = await helpers.readArtifactHistory(reviewArtifact);
-    expect(suppliedReview?.value.findings).toEqual(findings);
-    expect(development?.value).not.toHaveProperty('findingResponses');
-
-    // A recurrence is a current finding again; a resolved problem needs no lifecycle record.
-    const nextReview = reviewOutput([blockingFinding]);
-    await helpers.writeOutputArtifact(reviewArtifact, nextReview);
-    await expect(helpers.readInputArtifacts(reviewArtifact)).resolves.toEqual([nextReview]);
-  });
-
-  it('reads retained former reports without lifecycle validation or a rewritten identity', async () => {
-    const root = await temporaryWorkspace();
-    const helpers = createArtifactHelpers({ root });
-    const formerReview = {
-      ...reviewOutput([blockingFinding]),
-      findings: [{ ...blockingFinding, id: 'NEX-1-finding-1' }],
-      priorFindings: [
-        {
-          findingId: 'NEX-1-finding-1',
-          disposition: 'open',
-          reason: 'The guard was still missing in the reviewed revision.',
-        },
-      ],
-    };
-    const formerDevelopment = {
-      ...developmentOutput,
-      findingResponses: [
-        { findingId: 'NEX-1-finding-1', status: 'addressed', response: 'Retried the call.' },
-      ],
-    };
-    await writeArtifactFile(root, 1, 'review.json', JSON.stringify(formerReview, null, 2));
+    await writeArtifactFile(root, 1, 'review.json', JSON.stringify(legacyReviewOutput, null, 2));
     await writeArtifactFile(
       root,
       1,
       'development.json',
-      JSON.stringify(formerDevelopment, null, 2),
+      JSON.stringify(legacyDevelopmentOutput, null, 2),
     );
     await startRound(root, 2);
+    const review = reviewOutput({ verdict: 'changesRequested' });
+    await helpers.writeOutputArtifact(reviewArtifact, review);
+    await startRound(root, 3);
 
-    // The producer-owned readers accept the removed fields as historical data: the review keeps
-    // its former finding identity and dispositions exactly as recorded, and the development
-    // report reads by its current fields without running a lifecycle rule.
-    const [review] = await helpers.readArtifactHistory(reviewArtifact);
-    expect(review?.value).toEqual(formerReview);
-    const [development] = await helpers.readArtifactHistory(devArtifact);
-    expect(development?.value).toEqual(developmentOutput);
-    expect(development?.value).not.toHaveProperty('findingResponses');
+    // The producer-owned readers accept the removed fields as historical data without running a
+    // lifecycle rule; a current record keeps its binding exactly as saved.
+    await expect(helpers.readArtifactHistory(reviewArtifact)).resolves.toEqual([
+      { number: 1, value: legacyReviewOutput },
+      { number: 2, value: review },
+    ]);
+    const [readDevelopment] = await helpers.readArtifactHistory(devArtifact);
+    expect(readDevelopment?.value).toEqual(legacyDevelopmentOutput);
   });
 
-  it('rejects values outside the shared finding and response shapes', () => {
-    expect(findingSchema.safeParse(blockingFinding).success).toBe(true);
-    expect(findingSchema.safeParse({ ...blockingFinding, severity: 'critical' }).success).toBe(
-      false,
+  it('rejects a damaged binding instead of falling back to the legacy shape', async () => {
+    const root = await temporaryWorkspace();
+    const helpers = createArtifactHelpers({ root });
+    // The record carries binding fields but omits the recorded identity. Both the current and the
+    // legacy schema must reject it: a damaged new record never reads as a retained combined one.
+    await writeArtifactFile(
+      root,
+      1,
+      'review.json',
+      JSON.stringify({
+        profile: 'reviewer',
+        headRevision,
+        verdict: 'approved',
+        role: 'reviewer',
+        report: { path: 'artifacts/1/reports/rev-1/reviewer.md' },
+        invocationId: 'rev-1',
+      }),
     );
+    await startRound(root, 2);
+    await expect(helpers.readArtifactHistory(reviewArtifact)).rejects.toThrow(
+      /does not match its declared content type/,
+    );
+  });
+
+  it('derives minimal response contracts that reject narrative and finding fields', () => {
+    expect(developmentResponseSchema.safeParse({ status: 'completed' }).success).toBe(true);
     expect(
-      findingSchema.safeParse({
-        title: 'Missing basis',
-        severity: 'blocking',
-        evidence: 'Observed.',
-        impact: 'Consequence.',
-        repairGuidance: 'Fix it.',
-        locations: [],
-      }).success,
+      developmentResponseSchema.safeParse({ status: 'completed', summary: 'Fixed it.' }).success,
     ).toBe(false);
     expect(
-      findingSchema.safeParse({
-        ...blockingFinding,
-        locations: [{ path: 'src/queue.ts', line: 0 }],
-      }).success,
+      developmentResponseSchema.safeParse({ status: 'completed', findingResponses: [] }).success,
     ).toBe(false);
-    // The current contracts have no stable finding ID, response array or disposition record.
-    expect(findingSchema.safeParse({ ...blockingFinding, id: 'NEX-1-finding-1' }).success).toBe(
-      false,
-    );
+    expect(reviewResponseSchema.safeParse({ verdict: 'approved' }).success).toBe(true);
     expect(
       reviewResponseSchema.safeParse({
         verdict: 'changesRequested',
         summary: 'The guard is missing.',
-        findings: [blockingFinding],
-        priorFindings: [],
       }).success,
     ).toBe(false);
     expect(
-      developmentResponseSchema.safeParse({
-        status: 'completed',
-        summary: 'Fixed it.',
-        findingResponses: [],
-      }).success,
+      reviewResponseSchema.safeParse({ verdict: 'changesRequested', findings: [] }).success,
     ).toBe(false);
+  });
+
+  it('reads a bound report by its recorded bytes and rejects a changed report', async () => {
+    const root = await temporaryWorkspace();
+    const reportFile = path.join(root, 'artifacts', '1', 'reports', 'dev-1', 'developer.md');
+    await mkdir(path.dirname(reportFile), { recursive: true });
+    const markdown = '# Implementation\n\nRetried the transient provider call once.\n';
+    await writeFile(reportFile, markdown, 'utf8');
+    const bound: DevelopmentOutput = {
+      ...developmentOutput,
+      report: { path: reportFile },
+      reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+    };
+
+    await expect(developmentReportText(bound)).resolves.toBe(markdown);
+    await expect(developmentReportText(legacyDevelopmentOutput)).resolves.toBe(
+      legacyDevelopmentOutput.summary,
+    );
+
+    await writeFile(reportFile, `${markdown}Edited after the fact.\n`, 'utf8');
+    await expect(developmentReportText(bound)).rejects.toThrow(/does not match the identity/);
   });
 });
