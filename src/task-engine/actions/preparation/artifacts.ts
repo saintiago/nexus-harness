@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
-import { readBoundReport, reportBindingFields, reportBindingSchema } from '../agent-reports.js';
+import {
+  artifactRefSchema,
+  readBoundReport,
+  reportBindingFields,
+  reportBindingSchema,
+} from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
@@ -494,6 +499,14 @@ export function evaluationVerdictProblem(
   return null;
 }
 
+/** The returning outcome's location and producer metadata accompany its Markdown binding. */
+export const returnReportSchema = reportBindingSchema.extend({
+  outcome: artifactRefSchema,
+  profile: z.string().min(1),
+});
+
+export type ReturnReport = z.infer<typeof returnReportSchema>;
+
 /**
  * A current return requires its producing role and complete Markdown binding together. Legacy
  * combined and action-generated corrections carry their required problem/consequence instead;
@@ -502,7 +515,7 @@ export function evaluationVerdictProblem(
 export const returnEvidenceSchema = z
   .object({
     role: z.enum(['author', 'evaluator']).nullable().default(null),
-    report: reportBindingSchema.nullable().default(null),
+    report: returnReportSchema.nullable().default(null),
     problem: z.string().min(1).optional(),
     consequence: z.string().min(1).optional(),
   })

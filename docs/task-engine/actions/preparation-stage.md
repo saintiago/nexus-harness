@@ -225,8 +225,10 @@ alter inspected prototype content.
 An upstream return retains its correction and owning earlier stage in the functional outcome, and
 its problem and consequence in the returning role's Markdown report. The return record references
 the returning stage, the destination stage, the returning role, the concrete correction and that
-role's saved report binding. The role and complete binding are required together; their omission
-cannot reclassify a current return as legacy. Unbound legacy and action-generated corrections
+role's saved report binding, producing outcome reference and observed profile. Rejection handling
+retains the outcome's raw bytes separately from the Markdown copy and uses the producing invocation,
+including when a later invocation reads repair context. The role and complete binding are required
+together; their omission cannot reclassify a current return as legacy. Unbound legacy and action-generated corrections
 require their problem and consequence text. The result's destination must match its correction.
 Finalization, replay, publication and destination context loading resolve the report
 through that producer-owned binding: a missing or changed report is preserved as the returning

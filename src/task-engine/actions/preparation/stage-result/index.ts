@@ -1,7 +1,6 @@
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
-import type { ReportBinding } from '../../agent-reports.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
@@ -16,6 +15,7 @@ import {
   stageReturnExhaustionFile,
   stageRoundExhaustionFile,
   type PreparationResult,
+  type ReturnReport,
   type PreparationStage,
 } from '../artifacts.js';
 import {
@@ -28,6 +28,7 @@ import {
   requireReturnReport,
   requireNeedsInputReport,
   roundArtifactDirectory,
+  roundArtifactFile,
   stageRoot,
   writeStageArtifact,
 } from '../storage.js';
@@ -251,7 +252,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
      */
     const returningReport = (): {
       readonly role: 'author' | 'evaluator';
-      readonly binding: ReportBinding;
+      readonly binding: ReturnReport;
     } | null => {
       if (upstream === null) {
         return null;
@@ -261,6 +262,14 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           ? {
               role: 'evaluator',
               binding: {
+                outcome: {
+                  path: roundArtifactFile(
+                    root,
+                    plan.round,
+                    stageEvaluationArtifact.pathFromArtifactsRoot,
+                  ),
+                },
+                profile: evaluation.profile,
                 report: evaluation.report,
                 reportIdentity: evaluation.reportIdentity,
                 invocationId: evaluation.invocationId,
@@ -272,6 +281,14 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         ? {
             role: 'author',
             binding: {
+              outcome: {
+                path: roundArtifactFile(
+                  root,
+                  plan.round,
+                  stageAuthorArtifact.pathFromArtifactsRoot,
+                ),
+              },
+              profile: author.profile,
               report: author.report,
               reportIdentity: author.reportIdentity,
               invocationId: author.invocationId,

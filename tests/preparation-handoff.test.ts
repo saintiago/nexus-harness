@@ -1086,6 +1086,10 @@ describe('preparation repair rounds', () => {
     expect(destinationFeedback.at(-1)?.record).toMatchObject({
       kind: 'rejection',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
+      source: { path: path.join(root, 'artifacts/2/evaluation.json') },
+      output: await readFile(path.join(root, 'artifacts/2/evaluation.json'), 'utf8'),
+      invocationId: ((await artifact(root, 2, 'evaluation.json')) as StageEvaluationOutput)
+        .invocationId,
     });
   });
 
@@ -1232,6 +1236,120 @@ async function boundRound(
 }
 
 describe('preparation retained outcome usability', () => {
+  it.each([
+    { consumer: 'author', producerRole: 'author' },
+    { consumer: 'author', producerRole: 'evaluator' },
+    { consumer: 'evaluator', producerRole: 'author' },
+    { consumer: 'evaluator', producerRole: 'evaluator' },
+    { consumer: 'author', producerRole: 'evaluator', malformed: true },
+    { consumer: 'evaluator', producerRole: 'author', malformed: true },
+  ] as const)(
+    'retains the producing $producerRole outcome when $consumer context rejects its binding',
+    async (testCase) => {
+      const { consumer, producerRole } = testCase;
+      const malformed = 'malformed' in testCase;
+      const fixture = await boundRound();
+      const { root, selectionFile, git, author, evaluation } = fixture;
+      const producer = producerRole === 'author' ? author : evaluation!;
+      const file = path.join(
+        root,
+        'artifacts/2',
+        producerRole === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      if (producerRole === 'evaluator' || consumer === 'author') {
+        const planFile = path.join(root, 'state/current-round.json');
+        const plan = JSON.parse(await readFile(planFile, 'utf8')) as Record<string, unknown>;
+        await writeFile(planFile, JSON.stringify({ ...plan, round: 3, route: 'next' }));
+        await mkdir(path.join(root, 'artifacts/3'), { recursive: true });
+        await writeFile(path.join(root, 'artifacts/3/author.json'), JSON.stringify(author));
+      }
+      const damaged = JSON.stringify({
+        ...producer,
+        reportIdentity: malformed ? undefined : '0'.repeat(64),
+      });
+      await writeFile(file, damaged);
+      const { runner, contexts } = runnerOf([]);
+      const settings = {
+        selectionFile,
+        stage: 'ux' as const,
+        git,
+        runner,
+        publish: () => undefined,
+      };
+      const invocation =
+        consumer === 'author'
+          ? createStageAuthor(settings)({ task: 'respond' })
+          : createStageEvaluator(settings)();
+      await expect(invocation).rejects.toThrow(malformed ? /reportIdentity/ : /does not match/);
+      expect(contexts).toEqual([]);
+      const feedback = await readReportFeedback(root);
+      expect(feedback).toHaveLength(1);
+      const rejection = feedback[0]!.record;
+      expect(rejection).toMatchObject({
+        kind: 'rejection',
+        scope: { role: `ux-${producerRole}` },
+        invocationId: producer.invocationId,
+        profile: producer.profile,
+        source: { path: file },
+        output: damaged,
+        assignedReport: producer.report,
+      });
+      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+      expect(await readFile(rejection.report!.path, 'utf8')).toBe(controlledMarkdown);
+      await writeFile(file, original);
+      expect(
+        await outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+      ).toHaveLength(1);
+      expect((await readReportFeedback(root))[0]!.record).toEqual(rejection);
+    },
+  );
+
+  it.each(['author', 'evaluator'] as const)(
+    'retains the %s outcome separately from Markdown on return finalization and replay',
+    async (role) => {
+      const fixture =
+        role === 'author'
+          ? await boundRound('return-upstream')
+          : await boundRound('authored', 'return-upstream');
+      const producer = role === 'author' ? fixture.author : fixture.evaluation!;
+      const file = path.join(
+        fixture.root,
+        'artifacts/2',
+        role === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      const damaged = JSON.stringify({ ...producer, reportIdentity: '0'.repeat(64) });
+      await writeFile(file, damaged);
+      await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
+        /does not match/,
+      );
+      await writeFile(file, original);
+      await expect(fixture.finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      await writeFile(producer.report.path, 'Changed after finalization.');
+      await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
+        /does not match/,
+      );
+      const feedback = await readReportFeedback(fixture.root);
+      expect(feedback).toHaveLength(2);
+      for (const [index, entry] of feedback.entries()) {
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          scope: { role: `ux-${role}` },
+          invocationId: producer.invocationId,
+          profile: producer.profile,
+          source: { path: file },
+          output: index === 0 ? damaged : original,
+          assignedReport: producer.report,
+        });
+        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        expect(await readFile(entry.record.report!.path, 'utf8')).toBe(
+          index === 0 ? controlledMarkdown : 'Changed after finalization.',
+        );
+      }
+    },
+  );
+
   it.each(['accepted', 'needsInput'] as const)(
     'retains invalid author bindings before changed-revision checks for %s',
     async (outcome) => {

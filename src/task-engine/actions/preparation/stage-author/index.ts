@@ -20,6 +20,7 @@ import {
 import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
+  isBoundStageAuthorOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -182,7 +183,11 @@ async function retainedStageDeletions(
   },
   readAuthor: (round: number) => Promise<RetainedStageAuthorOutput | null>,
   readEvaluation: (round: number) => Promise<RetainedStageEvaluationOutput | null>,
-  readObservation: (round: number, file: string) => Promise<PrototypeObservation | null>,
+  readObservation: (
+    round: number,
+    file: string,
+    author: RetainedStageAuthorOutput,
+  ) => Promise<PrototypeObservation | null>,
 ): Promise<ReadonlySet<string>> {
   const { git, root, round, worktree } = settings;
   const deleted = new Set<string>();
@@ -203,7 +208,7 @@ async function retainedStageDeletions(
         author.observation.path,
       );
       if (file !== null) {
-        const observation = await readObservation(retained, file);
+        const observation = await readObservation(retained, file, author);
         if (observation?.role === 'author') content = observation.content;
       }
     }
@@ -417,17 +422,23 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       readonly role: 'author' | 'evaluator';
       readonly round: number;
       readonly report: { readonly path: string };
+      readonly invocationId: string;
+      readonly profile: string;
       readonly error: Error;
     }): Promise<never> {
       const byAuthor = settings.role === 'author';
       return rejectUnusableRecord({
         areaRoot: root,
         scope: byAuthor ? scope : evaluatorScope,
-        invocationId,
+        invocationId: settings.invocationId,
         operation: byAuthor ? 'stage-author' : 'stage-evaluator',
-        profile: byAuthor ? authorProfile : evaluatorProfile,
+        profile: settings.profile,
         context: `${attribution} Reading the ${settings.role} report bound to round ${String(settings.round)}.`,
-        file: settings.report.path,
+        file: roundArtifactFile(
+          root,
+          settings.round,
+          (byAuthor ? stageAuthorArtifact : stageEvaluationArtifact).pathFromArtifactsRoot,
+        ),
         error: settings.error,
         assignedReport: settings.report,
       });
@@ -441,6 +452,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       round: number,
       file: string,
       read: () => Promise<Value>,
+      producer: RetainedStageAuthorOutput,
     ): Promise<Value> {
       try {
         return await read();
@@ -448,9 +460,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         return await rejectUnusableRecord({
           areaRoot: root,
           scope,
-          invocationId,
+          invocationId: isBoundStageAuthorOutput(producer) ? producer.invocationId : null,
           operation: 'stage-author',
-          profile: authorProfile,
+          profile: isBoundStageAuthorOutput(producer) ? producer.profile : null,
           context: `${attribution} Reading retained author round ${String(round)}.`,
           file,
           error,
@@ -466,7 +478,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         round,
         role: 'author',
         profile: authorProfile,
-        invocationId,
         context: `${attribution} Reading retained author round ${String(round)}.`,
       });
     }
@@ -479,7 +490,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         round,
         role: 'evaluator',
         profile: evaluatorProfile,
-        invocationId,
         context: `${attribution} Reading retained evaluation round ${String(round)}.`,
       });
     }
@@ -662,9 +672,12 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
               { git: settings.git, root, round: plan.round, worktree },
               readAuthor,
               readEvaluation,
-              (round, file) =>
-                readAuthorRecord(round, file, () =>
-                  readRecord(file, { file, schema: prototypeObservationSchema }),
+              (round, file, producer) =>
+                readAuthorRecord(
+                  round,
+                  file,
+                  () => readRecord(file, { file, schema: prototypeObservationSchema }),
+                  producer,
                 ),
             )
           : new Set(),

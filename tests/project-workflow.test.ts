@@ -1639,6 +1639,8 @@ describe('parent preparation publication', () => {
           role: 'evaluator',
           report: {
             report: { path: reportPath },
+            outcome: { path: path.join(stage, 'artifacts/1/evaluation.json') },
+            profile: 'nexus-sol',
             reportIdentity: evaluation.reportIdentity,
             invocationId: evaluation.invocationId,
           },
@@ -1702,6 +1704,7 @@ describe('parent preparation publication', () => {
             unknown
           >;
           availableReport = reportPath;
+          rejectedOutput = await readFile(producerFile, 'utf8');
           if (damage === 'changed-report') {
             await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
           } else {
@@ -1719,6 +1722,8 @@ describe('parent preparation publication', () => {
                 role: 'evaluator',
                 report: {
                   report: { path: reportPath },
+                  outcome: { path: producerFile },
+                  profile: evaluation['profile'],
                   reportIdentity: evaluation['reportIdentity'],
                   invocationId: evaluation['invocationId'],
                 },
@@ -1740,9 +1745,8 @@ describe('parent preparation publication', () => {
         kind: 'rejection',
         scope: { role: 'ux-evaluator' },
         assignedReport: { path: availableReport },
-        ...(damage === 'incomplete-binding'
-          ? { source: { path: producerFile }, output: rejectedOutput }
-          : {}),
+        source: { path: producerFile },
+        output: rejectedOutput,
       });
       expect(published.comments).toEqual([]);
       expect(published.status()).toBe('UX Proposal');

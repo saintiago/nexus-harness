@@ -283,6 +283,7 @@ describe('prototype observation evidence', () => {
       expect(feedback[0]?.record).toMatchObject({
         kind: 'rejection',
         scope: authorScope,
+        invocationId: (JSON.parse(originalAuthor) as { invocationId: string }).invocationId,
         operation: 'stage-author',
         profile: 'nexus-flash',
         source: { path: source },

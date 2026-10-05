@@ -820,8 +820,8 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
     output: '{"assessedRevision":2,"verdict":"accepted"}',
   });
 
-  // The evaluator's own next invocation fails on the same explicit evidence and retains its own
-  // attributable read of the record.
+  // The evaluator's next invocation fails on the same evidence. Neither consumer invocation
+  // produced this unattributed historical record.
   await writeFile(
     path.join(root, 'artifacts', '3', 'author.json'),
     JSON.stringify({ stage, revision: 3, ...capturedMalformedAuthor }),
@@ -836,5 +836,5 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
   await expect(evaluator()).rejects.toThrow('does not match its declared content type');
   const retained = await outstandingReportFeedback({ areaRoot: root, scope });
   expect(retained).toHaveLength(2);
-  expect(new Set(retained.map((entry) => entry.record.invocationId)).size).toBe(2);
+  expect(retained.map((entry) => entry.record.invocationId)).toEqual([null, null]);
 });

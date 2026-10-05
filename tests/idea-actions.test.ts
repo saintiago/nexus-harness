@@ -1623,6 +1623,9 @@ describe('retained idea reports', () => {
     await mkdir(path.dirname(report), { recursive: true });
     const markdown = '# Assessment\n\nThe controlled narrative.\n';
     await writeFile(report, markdown);
+    const outcome = { path: path.join(path.dirname(area.root), 'ux/artifacts/1/evaluation.json') };
+    const output = JSON.stringify({ verdict: 'return-upstream', invocationId: 'inv-1' });
+    await writeFile(outcome.path, output);
     const boundInput = {
       ...capturedInput,
       parentInput: {
@@ -1634,6 +1637,8 @@ describe('retained idea reports', () => {
             report: { path: report },
             reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
             invocationId: 'inv-1',
+            outcome,
+            profile: 'nexus-sol',
           },
           correction: 'Correct the acceptance example.',
         },
@@ -1657,6 +1662,10 @@ describe('retained idea reports', () => {
       kind: 'rejection',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       assignedReport: { path: report },
+      source: outcome,
+      output,
+      invocationId: 'inv-1',
+      profile: 'nexus-sol',
     });
   });
 

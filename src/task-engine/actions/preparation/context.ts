@@ -201,13 +201,15 @@ export type StageContextSettings = {
     readonly role: 'author' | 'evaluator';
     readonly round: number;
     readonly report: ArtifactRef;
+    readonly invocationId: string;
+    readonly profile: string;
     readonly error: Error;
   }) => Promise<never>;
 };
 
 /** One readable bound report's Markdown text, or the producer's rejection evidence. */
 async function reportText(settings: {
-  readonly binding: ReportBinding;
+  readonly binding: ReportBinding & { readonly profile: string };
   readonly role: 'author' | 'evaluator';
   readonly round: number;
   readonly kind: string;
@@ -220,6 +222,8 @@ async function reportText(settings: {
       role: settings.role,
       round: settings.round,
       report: settings.binding.report,
+      invocationId: settings.binding.invocationId,
+      profile: settings.binding.profile,
       error: error instanceof Error ? error : new Error(messageOf(error)),
     });
   }

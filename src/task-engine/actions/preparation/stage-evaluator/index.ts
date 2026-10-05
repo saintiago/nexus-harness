@@ -253,17 +253,23 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       readonly role: 'author' | 'evaluator';
       readonly round: number;
       readonly report: { readonly path: string };
+      readonly invocationId: string;
+      readonly profile: string;
       readonly error: Error;
     }): Promise<never> {
       const byAuthor = settings.role === 'author';
       return rejectUnusableRecord({
         areaRoot: root,
         scope: byAuthor ? authorScope : scope,
-        invocationId,
+        invocationId: settings.invocationId,
         operation: byAuthor ? 'stage-author' : 'stage-evaluator',
-        profile: byAuthor ? authorProfile : evaluatorProfile,
+        profile: settings.profile,
         context: `${attribution} Reading the ${settings.role} report bound to round ${String(settings.round)}.`,
-        file: settings.report.path,
+        file: roundArtifactFile(
+          root,
+          settings.round,
+          (byAuthor ? stageAuthorArtifact : stageEvaluationArtifact).pathFromArtifactsRoot,
+        ),
         error: settings.error,
         assignedReport: settings.report,
       });
@@ -277,7 +283,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         round,
         role: 'author',
         profile: authorProfile,
-        invocationId,
         context: attribution,
       });
     }
@@ -301,7 +306,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         round,
         role: 'evaluator',
         profile: evaluatorProfile,
-        invocationId,
         context: `${attribution} Reading retained evaluation round ${String(round)}.`,
       });
     }
@@ -495,9 +499,9 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             return rejectUnusableRecord({
               areaRoot: root,
               scope: authorScope,
-              invocationId,
+              invocationId: isBoundStageAuthorOutput(author) ? author.invocationId : null,
               operation: 'stage-author',
-              profile: authorProfile,
+              profile: isBoundStageAuthorOutput(author) ? author.profile : null,
               context: attribution,
               file:
                 observationFile ??

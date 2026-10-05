@@ -27,6 +27,7 @@ import {
   stageReportScope,
   type AcceptanceBasis,
   type PreparationWorkspace,
+  type ReturnReport,
   type PreparationStage,
   type RetainedStageAuthorOutput,
   type RetainedStageEvaluationOutput,
@@ -136,14 +137,23 @@ export async function readStageRoleArtifact<
   readonly round: number;
   readonly role: Role;
   readonly profile: string | null;
-  readonly invocationId?: string | null;
   readonly context: string;
 }): Promise<z.output<(typeof stageRoleArtifacts)[Role]['schema']> | null> {
   const root = stageRoot(settings.issueRoot, settings.stage);
   const declaration = stageRoleArtifacts[settings.role];
+  const file = roundArtifactFile(root, settings.round, declaration.pathFromArtifactsRoot);
   try {
     return await readStageArtifact(root, settings.round, declaration);
   } catch (error) {
+    // Recover attribution independently of outcome validity; the invocation doing this read did
+    // not produce the rejected record. Unrecoverable invocation metadata stays explicitly unknown.
+    const producer = await readRecord(file, {
+      file,
+      schema: z.object({
+        invocationId: z.string().trim().min(1).nullable().catch(null),
+        profile: z.string().trim().min(1).nullable().catch(null),
+      }),
+    }).catch(() => null);
     return await rejectUnusableRecord({
       areaRoot: root,
       scope: stageReportScope({
@@ -153,11 +163,11 @@ export async function readStageRoleArtifact<
         stage: settings.stage,
         role: settings.role,
       }),
-      invocationId: settings.invocationId ?? null,
+      invocationId: producer?.invocationId ?? null,
       operation: `stage-${settings.role}`,
-      profile: settings.profile,
+      profile: producer?.profile ?? settings.profile,
       context: settings.context,
-      file: roundArtifactFile(root, settings.round, declaration.pathFromArtifactsRoot),
+      file,
       error,
     });
   }
@@ -549,7 +559,7 @@ export type ReturnReportReference = {
   /** The stage whose round produced the return and owns the report. */
   readonly stage: PreparationStage;
   readonly role: 'author' | 'evaluator' | null;
-  readonly report: ReportBinding | null;
+  readonly report: ReturnReport | null;
 };
 
 /**
@@ -584,8 +594,8 @@ export async function requireReturnReport(settings: {
     stage,
     role,
     binding: report,
-    profile: null,
-    file: report.report.path,
+    profile: report.profile,
+    file: report.outcome.path,
     context: settings.context,
   });
 }
