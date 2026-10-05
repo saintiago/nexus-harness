@@ -11,7 +11,7 @@ import {
 } from '../../../index.js';
 import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
 import { requireFindingResponses } from '../../finding-responses.js';
-import { readRequiredRecord } from '../../records.js';
+import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   stageAuthorArtifact,
@@ -24,6 +24,14 @@ import {
 import { stageContextText } from '../context.js';
 import { checkoutRelative } from '../evaluation-content.js';
 import {
+  evidenceFilePath,
+  observationScopeProblem,
+  observationSubmissionProblem,
+  prototypeObservationSchema,
+  readPrototypeObservation,
+  type PrototypeObservation,
+} from '../observation.js';
+import {
   precedingStageEvaluation,
   precedingStageWork,
   priorStageFindings,
@@ -31,6 +39,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  roundArtifactDirectory,
   stageRoot,
   stageRounds,
   writeStageArtifact,
@@ -85,15 +94,19 @@ async function fileExists(worktree: string, relative: string): Promise<boolean> 
 
 /**
  * Why one declared path is not usable, or null. A path must stay inside the shared checkout and
- * either exist now, name a tracked file being deleted, or retain the stage's recorded deletion.
+ * either exist now, name a deletion attributable to this work, or retain the stage's recorded
+ * deletion. An absent path is attributable when the stage already retained its deletion, when
+ * the checkout still tracks it (an uncommitted deletion) or when the pre-invocation revision
+ * tracked it (a deletion this invocation committed, which the post-invocation head no longer holds).
  */
 async function declaredPathProblem(
   settings: {
     readonly git: GitAdapter;
     readonly worktree: string;
-    readonly retainedDeletions: ReadonlySet<string>;
+    readonly preEditHead: string | null;
   },
   value: string,
+  deletions: ReadonlySet<string>,
 ): Promise<string | null> {
   const relative = checkoutRelative(settings.worktree, value);
   if (relative === null) {
@@ -102,7 +115,7 @@ async function declaredPathProblem(
   if (await fileExists(settings.worktree, relative)) {
     return null;
   }
-  if (settings.retainedDeletions.has(relative)) {
+  if (deletions.has(relative)) {
     return null;
   }
   const inspection = await settings.git.inspectRepository(settings.worktree);
@@ -113,10 +126,17 @@ async function declaredPathProblem(
   if (head === null) {
     return `the declared path "${value}" does not exist and the checkout has no revision`;
   }
-  const tracked = await settings.git.readFileAtRevision(settings.worktree, head, relative);
-  return tracked.ok
-    ? null
-    : `the declared path "${value}" does not exist and was not tracked before this edit`;
+  if ((await settings.git.readFileAtRevision(settings.worktree, head, relative)).ok) {
+    return null;
+  }
+  if (
+    settings.preEditHead !== null &&
+    settings.preEditHead !== head &&
+    (await settings.git.readFileAtRevision(settings.worktree, settings.preEditHead, relative)).ok
+  ) {
+    return null;
+  }
+  return `the declared path "${value}" does not exist and was not tracked before this edit`;
 }
 
 /**
@@ -140,8 +160,22 @@ async function retainedStageDeletions(
         checkoutRelative(worktree, value),
       ),
     );
-    for (const entry of evaluation?.basis.content ?? []) {
-      if (!entry.exists && declared.has(entry.path)) deleted.add(entry.path);
+    // A validated author's observation also retains ownership before evaluation is saved. Read
+    // its declaration without requiring old screenshots: a repair may replace damaged evidence.
+    let content = evaluation?.basis.content ?? [];
+    if (evaluation === null && author.observation !== null) {
+      const file = evidenceFilePath(
+        roundArtifactDirectory(root, retained),
+        author.observation.path,
+      );
+      if (file !== null) {
+        const observation = await readRecord(file, { file, schema: prototypeObservationSchema });
+        if (observation?.role === 'author') content = observation.content;
+      }
+    }
+    for (const entry of content) {
+      const relative = checkoutRelative(worktree, entry.path);
+      if (!entry.exists && relative !== null && declared.has(relative)) deleted.add(relative);
     }
   }
   return deleted;
@@ -152,7 +186,11 @@ async function reportProblem(
   report: StageAuthorResponse,
   settings: {
     readonly git: GitAdapter;
+    readonly stage: PreparationStage;
     readonly worktree: string;
+    readonly roundDirectory: string;
+    /** The revision the checkout reported before this invocation; deletions it tracked. */
+    readonly preEditHead: string | null;
     readonly retainedDeletions: ReadonlySet<string>;
   },
   task: 'propose' | 'respond',
@@ -160,18 +198,63 @@ async function reportProblem(
   if (task === 'respond' && report.outcome === 'skip-proposed') {
     return 'a revision round cannot propose a skip; the evaluator asked for changes';
   }
+  const deletions = settings.retainedDeletions;
+  if (settings.stage !== 'prototype') {
+    if (report.observation !== null) {
+      return 'only the Storybook Refinement stage retains a prototype observation';
+    }
+  } else if (report.outcome !== 'authored') {
+    if (report.observation !== null) {
+      return (
+        'only authored prototype work carries an observation; a skip proposal, question or ' +
+        'upstream return carries null'
+      );
+    }
+  } else if (report.observation === null) {
+    return (
+      'applicable prototype work needs the author\u2019s saved browser observation; retain the ' +
+      'record under the round artifact area and declare it'
+    );
+  } else {
+    let observation: PrototypeObservation;
+    try {
+      observation = await readPrototypeObservation({
+        declared: report.observation.path,
+        roundDirectory: settings.roundDirectory,
+        role: 'author',
+      });
+    } catch (error) {
+      return messageOf(error);
+    }
+    const scope = observationScopeProblem({
+      worktree: settings.worktree,
+      observation,
+      observedPaths: report.sourcePaths,
+    });
+    if (scope !== null) {
+      return scope;
+    }
+    const submission = await observationSubmissionProblem({
+      git: settings.git,
+      worktree: settings.worktree,
+      observation,
+    });
+    if (submission !== null) {
+      return submission;
+    }
+  }
   if (report.outcome === 'authored') {
     if (report.documents.length === 0 && report.sourcePaths.length === 0) {
       return 'authored work must name at least one document or stage-owned source path';
     }
     for (const document of report.documents) {
-      const problem = await declaredPathProblem(settings, document.path);
+      const problem = await declaredPathProblem(settings, document.path, deletions);
       if (problem !== null) {
         return problem;
       }
     }
     for (const source of report.sourcePaths) {
-      const problem = await declaredPathProblem(settings, source);
+      const problem = await declaredPathProblem(settings, source, deletions);
       if (problem !== null) {
         return problem;
       }
@@ -245,6 +328,12 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             })()
           : null,
     });
+    // The pre-invocation revision is the evidence that a deletion committed during the invocation
+    // was tracked before this edit; the post-invocation head no longer retains it.
+    const before = await settings.git.inspectRepository(worktree);
+    if (!before.ok) {
+      throw new Error(before.fault.message);
+    }
     const result = await settings.runner.run({
       operation: 'stage-author',
       profile: plan.profiles.author,
@@ -281,7 +370,10 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       report,
       {
         git: settings.git,
+        stage: settings.stage,
         worktree,
+        roundDirectory: roundArtifactDirectory(root, plan.round),
+        preEditHead: before.value.headRevision,
         retainedDeletions:
           report.outcome === 'authored'
             ? await retainedStageDeletions(root, plan.round, worktree)

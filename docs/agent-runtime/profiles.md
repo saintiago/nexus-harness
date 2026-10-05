@@ -63,9 +63,11 @@ installation evidence. Native tool settings select this stdio server for both pr
 ```toml
 [mcp_servers.playwright]
 command = "playwright-mcp"
-args = ["--headless"]
+args = ["--headless", "--browser", "chromium"]
 ```
 
+The `--browser chromium` selection uses the Playwright-managed Chromium build; the server's default
+Chrome channel requires a separately installed system Chrome.
 The setup must expose navigation, interaction, browser diagnostics and rendered screenshots as
 images the selected model can inspect. Shell/preview permissions allow starting the project's
 Storybook server. Use separate browser sessions for author and evaluator, and release preview/browser

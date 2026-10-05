@@ -32,7 +32,9 @@ export default defineConfig({
         test: {
           name: 'integration',
           include: ['tests/**/*.test.ts'],
-          exclude: [...componentTests, ...systemTests],
+          // The isolated Storybook fixture is test data consumed by tests, never a test suite;
+          // its installed dependencies' own test files must not join discovery.
+          exclude: [...componentTests, ...systemTests, 'tests/fixtures/**'],
         },
       },
       {

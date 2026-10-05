@@ -109,6 +109,7 @@ async function stageWithEvaluation(
     skip: null,
     question: null,
     upstream: null,
+    observation: null,
     findingResponses: [],
   };
   await writeFile(path.join(root, 'artifacts', '1', 'author.json'), JSON.stringify(author));
@@ -125,6 +126,7 @@ async function stageWithEvaluation(
       assessedRevision: 1,
       verdict: options.verdict ?? 'changes-requested',
       reason: 'The journey contradicts the requirement.',
+      observation: null,
       findings: [finding],
       priorFindings: [],
       upstream:
@@ -200,6 +202,7 @@ describe('preparation repair rounds', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [
           { findingId: 'F1', status: 'addressed', response: 'Removed the forbidden path.' },
         ],
@@ -209,7 +212,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -242,6 +245,7 @@ describe('preparation repair rounds', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     ]);
@@ -249,7 +253,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -274,6 +278,7 @@ describe('preparation repair rounds', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [
           { findingId: 'F1', status: 'addressed', response: 'Removed the forbidden path.' },
         ],
@@ -284,6 +289,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 2,
         verdict: 'accepted',
         reason: 'Nothing further is needed.',
+        observation: null,
         findings: [finding],
         priorFindings: [{ findingId: 'F1', disposition: 'open', reason: 'It is still present.' }],
         upstream: null,
@@ -292,6 +298,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 2,
         verdict: 'accepted',
         reason: 'Nothing further is needed.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
@@ -300,6 +307,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 2,
         verdict: 'accepted',
         reason: 'Nothing further is needed.',
+        observation: null,
         findings: [],
         priorFindings: [
           { findingId: 'F1', disposition: 'resolved', reason: 'The path was removed.' },
@@ -398,6 +406,7 @@ describe('preparation repair rounds', () => {
         skip: null,
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     ]);
@@ -405,7 +414,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -468,6 +477,7 @@ describe('preparation repair rounds', () => {
         skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       },
     ]);
@@ -475,7 +485,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'architecture',
       runner: dropping,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
     await expect(author({ stage: 'architecture', task: 'propose' })).rejects.toThrow(
@@ -496,6 +506,7 @@ describe('preparation repair rounds', () => {
         skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [
           { findingId: 'F1', status: 'addressed', response: 'The corrected input resolves it.' },
         ],
@@ -506,6 +517,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 2,
         verdict: 'accepted-skip',
         reason: 'The retained design still holds.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
@@ -514,6 +526,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 2,
         verdict: 'accepted-skip',
         reason: 'The retained design still holds.',
+        observation: null,
         findings: [],
         priorFindings: [
           { findingId: 'F1', disposition: 'resolved', reason: 'The corrected input resolves it.' },
@@ -575,6 +588,7 @@ describe('preparation repair rounds', () => {
                 correction: 'Clarify the governing example.',
               }
             : null,
+        observation: null,
         findingResponses: [
           { findingId: 'F1', status: 'unresolved', response: 'The input needs correction.' },
         ],
@@ -616,6 +630,7 @@ describe('preparation repair rounds', () => {
         skip: { reason: 'The existing journey suffices.', references: ['docs/ux.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [],
       };
       const authorReports = runnerOf([
@@ -638,6 +653,7 @@ describe('preparation repair rounds', () => {
         assessedRevision: 3,
         verdict: 'accepted-skip',
         reason: 'The corrected input resolves the contradiction.',
+        observation: null,
         findings: [],
         priorFindings: [],
         upstream: null,
@@ -729,6 +745,7 @@ describe('preparation repair rounds', () => {
         skip: { reason: 'Retained work still suffices.', references: ['docs/ux.md'] },
         question: null,
         upstream: null,
+        observation: null,
         findingResponses: [
           { findingId: 'F1', status: 'addressed', response: 'The corrected input removes it.' },
         ],
@@ -738,7 +755,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
     await expect(author({ stage: 'ux', task: 'propose' })).resolves.toBe('skip-proposed');

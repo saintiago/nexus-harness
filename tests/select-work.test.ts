@@ -253,6 +253,7 @@ describe('SelectWork admission and routing', () => {
               },
               question: null,
               upstream: null,
+              observation: null,
               findingResponses: [],
             }),
           );
@@ -276,6 +277,7 @@ describe('SelectWork admission and routing', () => {
               assessedRevision: 1,
               verdict: 'accepted-skip',
               reason: 'Examples are covered.',
+              observation: null,
               findings: [],
               priorFindings: [],
               upstream: null,

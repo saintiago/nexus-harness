@@ -74,8 +74,10 @@ Identities bind complete saved reports or captured source input, including attri
 Publication acknowledgements do not themselves replace that captured input. Refreshed human input
 must be reconciled before reuse. Repository paths are canonical checkout-relative paths; a deleted
 file is represented by exists=false at its observed commit. A declaration may name a deletion when
-the path was tracked before the edit. This permits stage-owned cleanup without manufacturing a
-replacement document. Revisions must remain readable in the retained repository. Result references
+the path was tracked before the author invocation or this stage retained its deletion in a validated
+author observation or evaluation. An observation naming an ancestral deletion commit establishes
+absence, not ownership by the declaring stage. This permits stage-owned cleanup and replay without
+manufacturing a replacement document. Revisions must remain readable in the retained repository. Result references
 identify the evaluator decision carrying this basis; a stage name or round number alone is insufficient.
 
 ## Round storage and acceptance
@@ -130,13 +132,18 @@ Both prototype roles use a running preview with real browser interaction and ima
 Each role's report references its own saved observation record under its round's artifacts. The record
 identifies role, prototype commit and inspected source paths, preview/start command and URL, relevant
 journeys/states, actions, observed results, screenshots and visual conclusions. An image path or a
-claimed successful build alone is insufficient. The evaluator checks that both roles' evidence exists,
+claimed successful build alone is insufficient. Screenshots must fully decode as PNG, JPEG, GIF or
+WebP; format headers alone do not establish readable rendered pixels. The evaluator checks that both roles' evidence exists,
 is readable, matches the assessed prototype content and covers applicable acceptance examples and UX
 questions. Agent observations remain attributed evidence, not machine proof of usability.
 
 The prototype author response declares its source paths and observation ArtifactRef; the evaluator
 response declares its separate observation ArtifactRef. Other stage responses and evaluated skips
 carry null. The prototype result retains both observation references for downstream consumers.
+Any result retaining an applicable prototype, including a reuse skip, requires both roles' readable,
+current evidence even when its saved observation references are empty or absent. Finalization, replay
+and downstream current-decision checks validate these records and screenshots. Only a genuinely
+non-applicable skip with no retained prototype is exempt.
 These fields belong to the preparation response declarations, with the normal strict
 structured-output/nullability rules. Observation records use one producer-owned runtime schema:
 
@@ -162,7 +169,9 @@ when they explain a failure. Store screenshots and reports in the role's round a
 without committing execution evidence into product documentation.
 
 Interaction or layout defects become normal findings for repair, or a concrete upstream return when
-an earlier input is wrong. Changed prototype content requires fresh author and evaluator observation.
+an earlier input is wrong. A defect report or upstream return keeps the observation of the preview it
+performed, so the observed evidence reaches the repair handoff; an evaluated applicability skip
+carries none. Changed prototype content requires fresh author and evaluator observation.
 An unrelated documentation commit can retain unchanged prototype content at its original observed
 revision. Missing/unusable evidence cannot produce acceptance. Preview defects are repaired by the
 author; unavailable browser/image capability or invocation faults follow execution recovery, without

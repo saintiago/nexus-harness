@@ -108,6 +108,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
               },
               question: null,
               upstream: null,
+              observation: null,
               findingResponses:
                 resolving && (stage !== 'architecture' || authorResponds)
                   ? [
@@ -133,6 +134,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
             reason: returning
               ? 'Correct the upstream input.'
               : 'The corrected input makes this work adequate.',
+            observation: null,
             findings: returning || primingRequirements ? [finding(id)] : [],
             priorFindings:
               resolving && (stage !== 'architecture' || evaluatorDisposes)

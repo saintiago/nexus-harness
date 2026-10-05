@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-sns": "^3.1138.0",
+    "sharp": "^0.35.5",
     "string-width": "^8.2.2",
     "strip-ansi": "^7.2.0",
     "xstate": "^5.33.2",

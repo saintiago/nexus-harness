@@ -118,6 +118,9 @@ export const skipProposalSchema = z.object({
   references: z.array(z.string().trim().min(1)).min(1),
 });
 
+/** One reference to a saved artifact file, such as a prototype observation record or screenshot. */
+export const artifactReferenceSchema = z.object({ path: z.string().trim().min(1) });
+
 /** One location as the evaluator reports it: an absent line is null for the strict schema. */
 const reportedLocationSchema = z.object({
   path: z.string(),
@@ -142,6 +145,12 @@ export const stageAuthorResponseSchema = z.object({
    * prototype's Storybook stories. They are stage-owned work, never authoritative documents.
    */
   sourcePaths: z.array(z.string().trim().min(1)),
+  /**
+   * The Storybook Refinement author's saved prototype observation record, or null for every other
+   * stage and outcome. The record is validated against the producer-owned observation contract
+   * before the round can be evaluated; an applicable prototype cannot be accepted without it.
+   */
+  observation: artifactReferenceSchema.nullable(),
   plan: z.array(plannedTaskSchema),
   skip: skipProposalSchema.nullable(),
   question: z.string().nullable(),
@@ -173,6 +182,13 @@ export const stageEvaluationResponseSchema = z.object({
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
+  /**
+   * The Storybook Refinement evaluator's own saved prototype observation record, or null for every
+   * other stage and for an evaluated applicability skip. Accepting applicable prototype work
+   * requires it; a change request or upstream return retains it when the evaluator performed a
+   * preview, so the observed defect evidence reaches the repair handoff.
+   */
+  observation: artifactReferenceSchema.nullable(),
   findings: z.array(reportedFindingSchema),
   priorFindings: z.array(findingDispositionSchema),
   upstream: upstreamRequestSchema.nullable(),
@@ -223,6 +239,8 @@ export const stageEvaluationOutputSchema = z.object({
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
+  /** The evaluator's own saved prototype observation record the decision retains, if any. */
+  observation: artifactReferenceSchema.nullable(),
   findings: z.array(findingSchema),
   priorFindings: z.array(findingDispositionSchema),
   upstream: upstreamRequestSchema.nullable(),
@@ -275,6 +293,14 @@ export const preparationResultSchema = z.object({
     .object({ branch: z.string().min(1), revision: z.string().min(1) })
     .nullable()
     .default(null),
+  /**
+   * The prototype author's and evaluator's retained observation records, in role order. They stay
+   * empty for every other stage, for an evaluated applicability skip and for a prototype result
+   * that retained no evidence.
+   */
+  prototypeObservations: z
+    .array(z.object({ role: z.enum(['author', 'evaluator']), path: z.string().min(1) }))
+    .default([]),
 });
 
 export type PreparationResult = z.infer<typeof preparationResultSchema>;

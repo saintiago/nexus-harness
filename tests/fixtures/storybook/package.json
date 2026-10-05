@@ -1,0 +1,16 @@
+{
+  "name": "nexus-storybook-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Isolated Storybook fixture consumed by the browser/image capability check. It is test infrastructure and adds no Nexus product UI.",
+  "scripts": {
+    "storybook": "storybook dev --ci --quiet --port 6100 --host 127.0.0.1",
+    "build-storybook": "storybook build --quiet"
+  },
+  "devDependencies": {
+    "@storybook/html-vite": "10.6.1",
+    "storybook": "10.6.1",
+    "vite": "8.3.2"
+  }
+}

@@ -37,6 +37,7 @@ import {
   requireEvaluationContent,
   sourceInputIdentity,
 } from './evaluation-content.js';
+import { requireRetainedPrototypeEvidence } from './observation.js';
 
 /**
  * The evaluated preparation stages' shared storage: one checkout and branch under the preparation
@@ -313,7 +314,12 @@ export async function upstreamResultReferences(
 
 /** One stage round artifact's filepath. */
 export function roundArtifactFile(root: string, round: number, relative: string): string {
-  return path.join(root, 'artifacts', String(round), relative);
+  return path.join(roundArtifactDirectory(root, round), relative);
+}
+
+/** One stage round's artifact directory, which also holds that round's retained evidence. */
+export function roundArtifactDirectory(root: string, round: number): string {
+  return path.join(root, 'artifacts', String(round));
 }
 
 /**
@@ -338,6 +344,8 @@ export type ReusedPreparationContent = {
   readonly content: readonly AssessedContent[];
   /** The retained prototype the preceding result recorded, when this stage owns one. */
   readonly prototype: PreparationResult['prototype'];
+  /** The retained prototype observations the preceding result recorded with that prototype. */
+  readonly prototypeObservations: PreparationResult['prototypeObservations'];
 };
 
 const nothingReused: ReusedPreparationContent = {
@@ -347,6 +355,7 @@ const nothingReused: ReusedPreparationContent = {
   paths: [],
   content: [],
   prototype: null,
+  prototypeObservations: [],
 };
 
 /** Resolve the content one skip proposal's references reuse from the preceding round. */
@@ -456,6 +465,7 @@ export async function reusedPreparationContent(settings: {
     paths,
     content,
     prototype: reusesPrototype ? prototype : null,
+    prototypeObservations: reusesPrototype ? result.prototypeObservations : [],
   };
 }
 
@@ -542,6 +552,18 @@ export async function readCurrentDecision(settings: {
       worktree: preparationWorktree(issueRoot),
       content: basis.content,
     });
+    // An applicable prototype decision also relies on the retained observation records; a record
+    // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
+    if (stage === 'prototype' && (result.outcome === 'accepted' || result.prototype !== null)) {
+      await requireRetainedPrototypeEvidence({
+        git,
+        worktree: preparationWorktree(issueRoot),
+        artifactsRoot: path.join(root, 'artifacts'),
+        observations: result.prototypeObservations,
+        assessed: basis.content,
+        observedPaths: result.sourcePaths,
+      });
+    }
   } catch (error) {
     if (error instanceof Error) {
       return { kind: 'stale', reason: error.message };
