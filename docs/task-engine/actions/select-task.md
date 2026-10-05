@@ -10,6 +10,8 @@ reference for the parent. This is a parent-owned source operation, not part of a
 Follow the [action contract](architecture.md). Use project task-source settings,
 the Nexus workspace root and the [Jira adapter](../../adapters/jira.md#interface).
 Use [WorkspaceRef](../../workspace.md#layout-and-reference) to identify the selected workspace.
+Import [ImplementationInput](implementation-handoff.md#output) and the
+[completion declaration](complete-task.md#output) for linked implementation eligibility.
 
 ### Output
 
@@ -51,7 +53,7 @@ return the stage and update the record.
 
 Only selected supplies a task for subsequent actions. Source access failures are execution errors,
 not evidence of an empty queue. selected publishes the
-[action outcome event](architecture.md#action-outcome-events) referencing the saved selection file,
+[action outcome event](../architecture.md#action-outcome-events) referencing the saved selection file,
 including when it continues a retained selection without rewriting it; empty and failed save no
 selection and publish no outcome event.
 
@@ -85,3 +87,9 @@ The design assumes one queue consumer; no claim lease or distributed locking pro
 
 Stage eligibility and entry follow the [project workflow](../../project-workflow.md#entry-and-routing).
 Children receive captured inputs without importing the Jira adapter.
+
+For a linked implementation, validate its retained input and prerequisite delivery completion before
+claiming it. Defer a dependent whose prerequisite lacks confirmed merge/check and source completion;
+continue inspecting eligible work in source rank order. Source Done alone is insufficient. Malformed
+input and provider faults are not an empty queue or a completed prerequisite. Keep the implementation
+issue's own workspace pointer even when its repository will be borrowed from preparation.

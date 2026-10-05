@@ -2,16 +2,17 @@
 
 ## Responsibility
 
-Evaluate the delivered change against the task and produce an actionable review of that revision.
-Review of delivered implementation and assembled preparation documentation uses the same verdict
-rules. Completed assessments proceed to publication and either repair or gated completion;
+Evaluate the delivered change against the task and produce an actionable review of that revision,
+including preparation content carried by its implementation branch.
+Completed assessments proceed to publication and either repair or gated completion;
 unfinished assessments proceed to recovery.
 
 ## Interface
 
 Follow the [action contract](architecture.md). Import [devArtifact](develop.md#output),
 [verificationArtifact](verify.md#output) and [deliveryArtifact](deliver.md#output).
-Use [Selection](select-task.md#output), earlier-round review/development history, configured reviewer profile,
+Use [Selection](select-task.md#output), [PreparedWorkspace](prepare-workspace.md#output),
+earlier-round review/development history, configured reviewer profile,
 [AgentRuntime](../../agent-runtime/architecture.md#provided-interface), the
 [Git adapter](../../adapters/git.md#interface), [GitHub adapter](../../adapters/github.md#interface)
 and parent-supplied source input/publication acknowledgements.
@@ -54,7 +55,7 @@ Both permit only the two declared verdicts; there is no report-shaped failure re
 
 Return the recorded verdict: approved or changesRequested.
 Each outcome writes reviewArtifact before publication and publishes the
-[action outcome event](architecture.md#action-outcome-events) referencing it with the profile used.
+[action outcome event](../architecture.md#action-outcome-events) referencing it with the profile used.
 An invocation that reuses the saved report for the delivered head publishes the same reference.
 Unusable agent output is an execution error.
 An assessment that cannot finish supplies no usable verdict and follows the existing
@@ -62,6 +63,12 @@ An assessment that cannot finish supplies no usable verdict and follows the exis
 review-specific retry mechanism or open a repair round merely because review could not finish.
 
 ## Behavior
+
+Use PreparedWorkspace.repositoryWorkspace for repository inspection and the reviewer working
+directory. Review the complete contributed diff against the recorded comparison base, including
+preparation commits on the first implementation. Stage acceptance is context, not delivery approval.
+Keep review artifacts under the implementation issue; earlier stage or PR approval cannot approve
+a changed head.
 
 Confirm that the delivered head, development result, verification result and retained worktree describe
 the same revision. Read saved task conversation and round history. A parent-owned input actor supplies refreshed task

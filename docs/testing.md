@@ -192,3 +192,30 @@ parent/child journeys and stage acceptance boundaries. Test invoked machine comp
 controlled responses, restored child snapshots and resumable source handoffs. Exercise parent
 selection/publication independently of Jira-free child business actions. Preserve finite delivery's
 revision, repair, review and merge/check journeys after moving source effects.
+
+Use real temporary Git repositories to establish successive stages retaining both edits to the same
+document in one checkout/branch, path-scoped commits excluding unrelated staged work, and deletions.
+Compose actual stage bindings with AgentRuntime and a recording coding runtime to assert both roles'
+working directories; do the same for first-implementation Develop/Review and process/Git operations.
+Handcrafted WorkspaceRef values alone cannot establish that binding.
+
+Restart the real composed machines at upstream correction and reevaluation boundaries. Changed
+input/content/report identities prevent stale acceptance or skip reuse; unrelated HEAD changes retain
+valid content. Pending correction order and finite round/return allowances survive restart. Divergent
+legacy checkouts and incompatible identities request reconciliation without losing history.
+
+Exercise a two-task handoff through two PRs with real local Git and controlled source/GitHub responses.
+The first keeps the preparation repository/base; the second requires merge/check completion and a
+base including prerequisite merge revisions. Interrupted creation/link/admission/completion must
+reconcile uncertain identities, avoid duplicates and preserve human pauses. There is no preparation
+or aggregate PR and no admission based only on source Done. Existing action tests establish rejection
+of changed-head approval, failed verification/checks and missing merge/post-merge evidence.
+Recovery cannot delete the preparation continuation's donor checkout.
+
+Test prototype evidence validation and fault/repair routing with controlled responses, then run a
+real isolated Storybook fixture in Chromium through Playwright MCP and the actual assigned prototype
+profiles. Both roles interact with a state-changing journey, receive and inspect screenshot images,
+and save separate observations against the fixture commit. A broken journey/layout enters repair;
+corrected content needs fresh evidence and an applicability skip needs none. This targeted host
+integration check establishes tool/image delivery that simulated responses cannot prove. The fixture
+is consumed by tests and adds no Nexus product UI.

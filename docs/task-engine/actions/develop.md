@@ -61,7 +61,7 @@ It is not a declaration that checks passed.
 - failed: the agent produced a usable report explaining why implementation could not be completed.
 
 Both outcomes write devArtifact and publish the
-[action outcome event](architecture.md#action-outcome-events) referencing it with the profile used.
+[action outcome event](../architecture.md#action-outcome-events) referencing it with the profile used.
 An invocation that reuses the current-round report publishes the same reference. Invocation failures
 or unusable output are execution errors.
 
@@ -77,6 +77,10 @@ Invoke the agent once with the workspace reference and assembled context. The ag
 continue existing uncommitted work. It leaves local commits; publication belongs outside this action.
 It leaves the worktree ready for verification, including installing dependencies when its changes
 require them. Verification uses this same worktree.
+
+Resolve the repository and agent working directory from PreparedWorkspace.repositoryWorkspace,
+while reading/writing rounds under the selected implementation issue. The first implementation
+therefore continues the preparation branch without moving or copying stage artifacts.
 
 Interpret the returned report and inspect the resulting branch and revision. Completed work must be
 committed and ready for verification. Record failed when the turn reports incomplete work or leaves

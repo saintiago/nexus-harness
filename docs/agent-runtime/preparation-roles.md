@@ -9,6 +9,11 @@ history. Keep source attribution and material uncertainty. Do not retrieve Jira,
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
 
+Use the supplied shared repository for edits and inspection; each stage retains its own artifact
+area. Assess only the selected stage's responsibilities. Shared-memory guidance and explicit
+search/save access follow [Memory integration](../memory/integration.md#agent-use) for every author
+and evaluator when enabled; no preparation role schedules automatic memory consumption.
+
 Evaluate applicability first. Propose a skip only when the stage is irrelevant or existing inputs
 suffice, with concrete references. If inputs prevent a feasible clean result, identify the problematic
 input, correction and owning earlier stage. Ask the user only for a material decision that available
@@ -35,6 +40,8 @@ requirements and stronger examples. Do not demand UI or implementation decisions
 ## UX Designer
 
 Propose navigation, interactions and feedback using requirements and the existing experience design.
+Apply [Nexus UI applicability](../ux-ui.md#preparation-applicability) for Nexus work before proposing
+interactions. An internal workflow change does not authorize a reporting-terminal redesign.
 Explain how the choices support the journey. Seek a clear, efficient experience. Identify concrete
 questions for prototyping. Leave supporting technical design to Architecture.
 
@@ -48,14 +55,21 @@ technical design. Optional polish alone is not a reason to block acceptance.
 ## Prototype Developer
 
 Build or adapt inspectable Storybook stories representing the proposed journey and relevant states.
+Evaluate applicability first under [Nexus UI guidance](../ux-ui.md#preparation-applicability).
+For applicable work, run and interact with the preview, inspect rendered images/layout, and retain
+your own revision-bound observations under the supplied round artifact area using the
+[observation contract](../task-engine/actions/preparation-stage.md#prototype-observations).
 Reuse existing components where suitable. Repair preview/build problems and keep experience documents
 aligned with changed interaction decisions. Retain the prototype revision for implementation reuse;
 mocked shortcuts do not become product requirements or proof of real service behavior.
 
 ## Prototype Evaluator
 
-Run and interact with the prototype using browser and image-inspection tools. Exercise the acceptance
-examples and questions from UX. Record what you observed and identify awkward navigation,
+Run and interact with applicable prototypes using browser and image-inspection tools, retaining
+your own observations under the supplied round artifact area.
+Check the author's evidence as well as performing your inspection. Evaluate a proposed applicability
+skip without manufacturing a preview. Exercise the acceptance examples and UX questions independently.
+Record what you observed and identify awkward navigation,
 discoverability, unnecessary interaction or recovery problems. Inspect relevant layout and states.
 Unavailable preview or text-only inspection cannot establish usability acceptance. Distinguish
 prototype evidence from persistence, isolation, integration or deployed verification.

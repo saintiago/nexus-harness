@@ -38,7 +38,7 @@ using the command's position in the configured check list.
 - failed: at least one completed command failed, or the checks left tracked implementation changes.
 
 Both outcomes write verificationArtifact and the command output, and publish the
-[action outcome event](architecture.md#action-outcome-events) referencing the verification result
+[action outcome event](../architecture.md#action-outcome-events) referencing the verification result
 with the number of checks run. An inability to launch or complete
 a command is an execution error, not a failed assertion. So is a worktree that does not hold the
 development result's revision or that already holds tracked changes: no check runs and no verdict is
@@ -49,6 +49,10 @@ written.
 Read the current development result and confirm that its revision is the work being checked.
 Execute project-configured checks in the worktree. Stream their output and save it without requiring
 the process adapter to create artifacts.
+
+The worktree is resolved from PreparedWorkspace.repositoryWorkspace; command logs remain in the
+selected implementation issue's round. Preparation content carried by that branch participates in
+the same verification and revision checks as implementation.
 
 A developer's report does not replace these results. Preserve the command exit codes and output;
 do not reinterpret an infrastructure error as a code defect.

@@ -85,7 +85,9 @@ failures and timeouts return a fault.
 
 Use the [coding runtime adapter](../adapters/coding-runtime.md#interface) for provider communication. Supply the resolved
 model, effort, tool settings, assembled prompt, optional output schema, configured time limit and working directory. The working
-directory is worktree/ within the supplied workspace root.
+directory is worktree/ within the supplied repository workspace root. Artifact storage can belong
+to a different issue or stage area; the caller supplies those paths in context. Resolve the checkout
+once, without appending another worktree/ or deriving it from the artifact area.
 
 Prompt and settings are values. Receive the provider's output and activity as data/streams.
 The adapter may use temporary files when its transport requires them; it does not choose Nexus

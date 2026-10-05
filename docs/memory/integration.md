@@ -15,9 +15,10 @@ business destinations. AgentRuntime transports the action's configured analyst i
 
 ## Agent use
 
-Developer, Reviewer, idea roles and Recovery retain explicit AMEM `memory_search` and `memory_save`
-tools through native MCP settings when memory is enabled. They search for relevant experience and
-save concrete reusable discoveries with applicability, uncertainty and evidence references. Keep
+Developer, Reviewer, idea roles, every preparation author/evaluator and Recovery retain explicit AMEM
+`memory_search` and `memory_save` tools through native MCP settings when memory is enabled.
+They search for relevant experience and save concrete reusable discoveries with applicability,
+uncertainty and evidence references. Keep
 workflow bookkeeping in provenance. Do not save whole handoffs or routine progress reports.
 
 AnalyzeExperience's analyst receives search only; the action submits its validated lessons.
