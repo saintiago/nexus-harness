@@ -5,6 +5,8 @@ import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
 import {
+  isBoundStageAuthorOutput,
+  isBoundStageEvaluationOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -29,11 +31,12 @@ import { evidenceFilePath, requireRetainedPrototypeEvidence } from '../observati
 
 /**
  * StageResult saves the terminal result envelope of one evaluated preparation stage: its outcome,
- * the assessed authored revision, its output references, the evaluation reference and a concrete
- * reason with the upstream destination when one applies. The parent publication reads this saved
- * result; the child returns only its outcome and this reference. Acceptance validates the
- * evaluation's complete basis, so changed authored reports, inputs or assessed content cannot be
- * published from a stale decision.
+ * the assessed authored revision, its output references, the evaluation reference, the
+ * action-observed reason for a question or exhaustion, and the upstream destination, correction
+ * and returning Markdown report when one applies. The parent publication reads this saved result;
+ * the child returns only its outcome and this reference. Acceptance validates the evaluation's
+ * complete basis, so changed authored reports, inputs or assessed content cannot be published
+ * from a stale decision.
  */
 
 export type StageResultSettings = {
@@ -106,7 +109,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        requireRetainedDecision({
+        await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
@@ -172,18 +175,53 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     }
     const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
     const upstream = evaluation?.upstream ?? author.upstream;
+    // The published reason is action-observed: the author's question the parent must relay, or
+    // the exhaustion the workflow retained. Assessment text lives in the Markdown reports, and a
+    // return's concrete correction travels in the return finding.
     const reason =
-      outcome === 'skipped'
-        ? (author.skip?.reason ?? evaluation?.reason ?? author.summary)
-        : outcome === 'returnUpstream'
-          ? upstream === null
-            ? author.summary
-            : `${upstream.problem}; needed correction: ${upstream.correction}`
-          : outcome === 'needsInput'
-            ? (author.question ?? author.summary)
-            : outcome === 'exhausted'
-              ? ((await readExhaustionReason(root)) ?? evaluation?.reason ?? author.summary)
-              : (evaluation?.reason ?? author.summary);
+      outcome === 'needsInput'
+        ? author.question
+        : outcome === 'exhausted'
+          ? await readExhaustionReason(root)
+          : null;
+
+    /**
+     * The returning role's Markdown report: the evaluator's when its verdict carried the upstream
+     * request, otherwise the author's. A retained combined record has no report binding and
+     * returns null; its former problem and consequence travel through the return finding instead.
+     */
+    const returningReport = (): { readonly path: string } | null => {
+      if (upstream === null) {
+        return null;
+      }
+      if (evaluation !== null && evaluation.upstream !== null) {
+        return isBoundStageEvaluationOutput(evaluation) ? evaluation.report : null;
+      }
+      return isBoundStageAuthorOutput(author) ? author.report : null;
+    };
+
+    /**
+     * A retained combined return's former problem and consequence text: a current return explains
+     * both in the returning role's Markdown report, while the legacy record has no report and
+     * keeps its text as history for the destination stage.
+     */
+    const returningHistory = (): {
+      readonly problem: string;
+      readonly consequence: string;
+    } | null => {
+      if (upstream === null) {
+        return null;
+      }
+      if (evaluation !== null && evaluation.upstream !== null) {
+        return isBoundStageEvaluationOutput(evaluation)
+          ? null
+          : { problem: evaluation.upstream.problem, consequence: evaluation.upstream.consequence };
+      }
+      if (isBoundStageAuthorOutput(author) || author.upstream === null) {
+        return null;
+      }
+      return { problem: author.upstream.problem, consequence: author.upstream.consequence };
+    };
 
     if (outcome === 'accepted' || outcome === 'skipped') {
       const verdict = outcome === 'accepted' ? 'accepted' : 'accepted-skip';
@@ -336,7 +374,15 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       evaluation: { path: evaluationRef },
       reason,
       returnStage: outcome === 'returnUpstream' ? (upstream?.stage ?? null) : null,
-      returnFinding: outcome === 'returnUpstream' ? upstream : null,
+      returnFinding:
+        outcome === 'returnUpstream' && upstream !== null
+          ? {
+              stage: upstream.stage,
+              correction: upstream.correction,
+              report: returningReport(),
+              ...(returningHistory() ?? {}),
+            }
+          : null,
       prototype,
       prototypeObservations: retainedObservations,
     };

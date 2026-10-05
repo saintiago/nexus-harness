@@ -22,6 +22,7 @@ import { project } from '../workflows/project.js';
 import { preparation } from '../workflows/preparation.js';
 import { scriptedGit, repositoryState } from './support/git.js';
 import { scriptedJira } from './support/jira.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 it('keeps nested returns and readable repair context through composed restarts', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-corrections-'));
@@ -64,19 +65,16 @@ it('keeps nested returns and readable repair context through composed restarts',
       readFileAtRevision: async (repository, _revision, file) =>
         ok(await readFile(path.join(repository, file), 'utf8')),
     });
-    const finding = {
-      title: 'An upstream input needs correction',
-      severity: 'blocking',
-      basis: 'Preparation must honor the corrected input.',
-      evidence: 'The input contradicts the intended journey.',
-      impact: 'The current work cannot be accepted.',
-      repairGuidance: 'Correct the input and reassess.',
-      locations: [],
-    };
     let primingRequirements = true;
     const routes: string[] = [];
     const runner: AgentRoleRunner = {
       async run(request) {
+        await writeAssignedReport(
+          request.context,
+          request.operation === 'stage-author'
+            ? '# Controlled author report\n'
+            : '# Controlled evaluation report\n',
+        );
         const stage = (
           JSON.parse(await readFile(selectionFile, 'utf8')) as { stage: keyof typeof statuses }
         ).stage;
@@ -92,13 +90,11 @@ it('keeps nested returns and readable repair context through composed restarts',
           routes.push(`${stage}:${String(plan.round)}:${plan.route}`);
           if (resolving) {
             expect(request.context).toContain('The previous evaluation of this work');
-            expect(request.context).toContain(finding.evidence);
             expect(request.context).not.toContain('Eligible prior finding IDs');
           }
           return ok({
             output: JSON.stringify({
               outcome: 'skip-proposed',
-              summary: 'Assess the existing work against the current input.',
               documents: [],
               sourcePaths: [],
               plan:
@@ -112,10 +108,7 @@ it('keeps nested returns and readable repair context through composed restarts',
                       },
                     ]
                   : [],
-              skip: {
-                reason: 'The existing work suffices after correction.',
-                references: ['readme.md'],
-              },
+              skip: { references: ['readme.md'] },
               question: null,
               upstream: null,
               observation: null,
@@ -124,27 +117,19 @@ it('keeps nested returns and readable repair context through composed restarts',
         }
         if (resolving) {
           expect(request.context).toContain('The previous evaluation of this work');
-          expect(request.context).toContain(finding.evidence);
           expect(request.context).not.toContain('Eligible prior finding IDs');
         }
         return ok({
           output: JSON.stringify({
-            assessedRevision: plan.round,
             verdict: primingRequirements
               ? 'changes-requested'
               : returning
                 ? 'return-upstream'
                 : 'accepted-skip',
-            reason: returning
-              ? 'Correct the upstream input.'
-              : 'The corrected input makes this work adequate.',
             observation: null,
-            findings: returning || primingRequirements ? [finding] : [],
             upstream: returning
               ? {
                   stage: stage === 'architecture' ? 'prototype' : 'requirements',
-                  problem: 'The input contradicts the journey.',
-                  consequence: 'The work cannot be accepted.',
                   correction: 'Correct the input.',
                 }
               : null,

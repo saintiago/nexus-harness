@@ -295,6 +295,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           {
             from: stage,
             to: earliest,
+            report: null,
             problem:
               `The retained ${earliest} decision no longer matches its authored report, ` +
               'relied-on inputs or assessed repository content.',
@@ -367,15 +368,16 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         {
           from: stage,
           to: target,
-          problem: finding?.problem ?? result.reason ?? `the ${stage} stage reported a problem`,
-          consequence:
-            finding?.consequence ??
-            `The ${stage} stage cannot produce a viable result until the ${target} input is corrected.`,
+          // A current return carries the returning role's Markdown report; a former combined
+          // return retains its problem and consequence text as history.
+          report: finding?.report ?? null,
+          ...(finding?.problem === undefined ? {} : { problem: finding.problem }),
+          ...(finding?.consequence === undefined ? {} : { consequence: finding.consequence }),
           correction:
             finding?.correction ?? 'Correct the named input and return it for reassessment.',
         },
         `Returning to ${target} for correction: ${
-          result.reason ?? 'an upstream input needs ' + 'correction.'
+          finding?.correction ?? 'an upstream input needs correction.'
         }`,
         awaiting,
       );

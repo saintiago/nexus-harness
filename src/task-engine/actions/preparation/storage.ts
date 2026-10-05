@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { GitAdapter } from '../../../adapters/git.js';
+import { readBoundReport } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../records.js';
 import type { Selection } from '../select-task/artifacts.js';
@@ -13,6 +14,8 @@ import {
 import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import {
   acceptanceVerdictProblem,
+  isBoundStageAuthorOutput,
+  isBoundStageEvaluationOutput,
   preparationStages,
   preparationWorkspaceDeclaration,
   stageAreas,
@@ -24,8 +27,8 @@ import {
   type AcceptanceBasis,
   type PreparationWorkspace,
   type PreparationStage,
-  type StageAuthorOutput,
-  type StageEvaluationOutput,
+  type RetainedStageAuthorOutput,
+  type RetainedStageEvaluationOutput,
   type StageRoundPlan,
   type PreparationResult,
 } from './artifacts.js';
@@ -135,7 +138,7 @@ export type PrecedingStageWork = {
   /** The round that retained the preceding authored revision. */
   readonly round: number;
   /** The authored revision the next round revises or answers. */
-  readonly author: StageAuthorOutput;
+  readonly author: RetainedStageAuthorOutput;
 };
 
 /** The upstream-return allowance file: how many returns the stage has stated so far. */
@@ -271,8 +274,8 @@ export function roundArtifactDirectory(root: string, round: number): string {
 export type CurrentStageDecision = {
   readonly round: number;
   readonly result: PreparationResult;
-  readonly evaluation: StageEvaluationOutput;
-  readonly author: StageAuthorOutput;
+  readonly evaluation: RetainedStageEvaluationOutput;
+  readonly author: RetainedStageAuthorOutput;
 };
 
 /** The state of one stage's current decision: current, missing, or stale against its basis. */
@@ -322,7 +325,7 @@ export async function readCurrentDecision(settings: {
   try {
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
-    requireRetainedDecision({
+    await requireRetainedDecision({
       issueRoot,
       stage,
       selection,
@@ -360,8 +363,8 @@ type AcceptanceSettings = {
   readonly selection: Selection;
   readonly round: number;
   readonly verdict: 'accepted' | 'accepted-skip';
-  readonly author: StageAuthorOutput;
-  readonly evaluation: StageEvaluationOutput | null;
+  readonly author: RetainedStageAuthorOutput;
+  readonly evaluation: RetainedStageEvaluationOutput | null;
   readonly git: GitAdapter;
 };
 
@@ -371,7 +374,9 @@ type AcceptanceSettings = {
  * downstream reads use this check: a producer-owned saved record keeps working, including a
  * legacy record that carries no repository observation or per-document binding.
  */
-export function requireRetainedDecision(settings: AcceptanceSettings): StageEvaluationOutput {
+export async function requireRetainedDecision(
+  settings: AcceptanceSettings,
+): Promise<RetainedStageEvaluationOutput> {
   const { issueRoot, stage, selection, round, verdict, author, evaluation } = settings;
   const root = stageRoot(issueRoot, stage);
   if (evaluation === null || evaluation.assessedRevision !== author.revision) {
@@ -398,6 +403,14 @@ export function requireRetainedDecision(settings: AcceptanceSettings): StageEval
       'The captured issue input changed since evaluation; a current decision is required.',
     );
   }
+  // A current evaluation and its authored report must stay readable with their recorded bytes; a
+  // retained combined record stays usable as history without a retroactive Markdown binding.
+  if (isBoundStageEvaluationOutput(evaluation)) {
+    await readBoundReport(evaluation, 'Stage evaluation report');
+  }
+  if (isBoundStageAuthorOutput(author)) {
+    await readBoundReport(author, 'Stage author report');
+  }
   return evaluation;
 }
 
@@ -408,7 +421,7 @@ export function requireRetainedDecision(settings: AcceptanceSettings): StageEval
  * evaluator assessed. An unobservable legacy evaluation receives normal reassessment instead.
  */
 export async function requireCurrentAcceptance(settings: AcceptanceSettings): Promise<void> {
-  const evaluation = requireRetainedDecision(settings);
+  const evaluation = await requireRetainedDecision(settings);
   const { issueRoot, stage, author, git } = settings;
   const worktree = preparationWorktree(issueRoot);
   const basis = evaluation.basis;

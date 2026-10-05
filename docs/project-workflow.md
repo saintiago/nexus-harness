@@ -91,7 +91,8 @@ project documents may satisfy inputs even when no earlier stage ran. Required in
 
 Preparation children return accepted, skipped, returnUpstream, needsInput or exhausted, plus their
 saved result reference. A return artifact names an allowed earlier stage, the problematic input,
-its consequence and the correction needed. Idea refinement retains approved, unsuitable,
+the returning role's Markdown report and the correction needed; a former combined return keeps its
+problem and consequence text as history. Idea refinement retains approved, unsuitable,
 author-decision-needed and attempts-exhausted meanings. Finite Delivery returns completed or blocked
 with its revision-specific evidence. Provider/storage faults remain execution failures.
 

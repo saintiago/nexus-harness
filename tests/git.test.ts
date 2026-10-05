@@ -45,6 +45,7 @@ import { savePrototypeObservation } from './support/prototype-observation.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 
 /**
  * Git runs with a supplied environment. Global and system configuration are disabled so the
@@ -736,18 +737,41 @@ describe('Git adapter', () => {
         profiles: { author: 'a', evaluator: 'e' },
       }),
     );
+    const authorMarkdown = `# ${settings.stage} author report\n\nThe controlled narrative.\n`;
+    const evaluatorMarkdown = `# ${settings.stage} evaluator report\n\nThe controlled assessment.\n`;
     if (settings.invokeAuthor) {
       await createStageAuthor({
         selectionFile: settings.selectionFile,
         stage: settings.stage,
         git,
         publish: () => undefined,
-        runner: { run: async () => ok({ output: JSON.stringify(settings.author) }) },
+        runner: {
+          run: async (request) => {
+            await writeAssignedReport(request.context, authorMarkdown);
+            return ok({ output: JSON.stringify(settings.author) });
+          },
+        },
       })({ task: settings.route === 'next' ? 'respond' : 'propose' });
     } else {
+      const reportFile = path.join(artifacts, 'reports', 'fixture', 'author.md');
+      await mkdir(path.dirname(reportFile), { recursive: true });
+      await writeFile(reportFile, authorMarkdown);
+      const selection = JSON.parse(await readFile(settings.selectionFile, 'utf8')) as {
+        readonly taskKey: string;
+      };
       await writeFile(
         path.join(artifacts, 'author.json'),
-        JSON.stringify({ stage: settings.stage, revision: settings.round, ...settings.author }),
+        JSON.stringify({
+          stage: settings.stage,
+          revision: settings.round,
+          ...settings.author,
+          taskKey: selection.taskKey,
+          profile: 'a',
+          role: 'author',
+          report: { path: reportFile },
+          reportIdentity: reportIdentityOf(Buffer.from(authorMarkdown, 'utf8')),
+          invocationId: 'fixture',
+        }),
       );
     }
     const evaluator = createStageEvaluator({
@@ -756,20 +780,19 @@ describe('Git adapter', () => {
       git,
       publish: () => undefined,
       runner: {
-        run: async () =>
-          ok({
+        run: async (request) => {
+          await writeAssignedReport(request.context, evaluatorMarkdown);
+          return ok({
             output: JSON.stringify({
-              assessedRevision: settings.round,
               verdict: settings.verdict ?? 'accepted',
-              reason: 'Inspected the exact retained content.',
               observation:
                 settings.evaluatorObservation === undefined
                   ? null
                   : { path: settings.evaluatorObservation },
-              findings: [],
               upstream: null,
             }),
-          }),
+          });
+        },
       },
     });
     await evaluator({ stage: settings.stage });
@@ -809,8 +832,7 @@ describe('Git adapter', () => {
       round: 1,
       author: {
         outcome: 'authored',
-        summary: 'The requirements revision.',
-        documents: [{ path: 'readme.md', description: 'the requirements' }],
+        documents: [{ path: 'readme.md' }],
         sourcePaths: [],
         plan: [],
         skip: null,
@@ -838,11 +860,7 @@ describe('Git adapter', () => {
       round: 2,
       author: {
         outcome: 'authored',
-        summary: 'The UX revision and cleanup.',
-        documents: [
-          { path: 'readme.md', description: 'the shared document' },
-          { path: 'legacy.md', description: 'a removed document' },
-        ],
+        documents: [{ path: 'readme.md' }, { path: 'legacy.md' }],
         sourcePaths: ['stories/ux.stories.ts'],
         plan: [],
         skip: null,
@@ -906,8 +924,7 @@ describe('Git adapter', () => {
       round: 3,
       author: {
         outcome: 'authored',
-        summary: 'The architecture revision.',
-        documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
+        documents: [{ path: 'docs/architecture.md' }],
         sourcePaths: [],
         plan: architecturePlan,
         skip: null,
@@ -1090,7 +1107,6 @@ describe('Git adapter', () => {
       );
       const skip = (stage: string) => ({
         outcome: 'skip-proposed',
-        summary: 'Existing content meets the current input.',
         documents: [],
         sourcePaths: [],
         plan:
@@ -1104,7 +1120,7 @@ describe('Git adapter', () => {
                 },
               ]
             : [],
-        skip: { reason: 'Existing content suffices.', references: ['readme.md'] },
+        skip: { references: ['readme.md'] },
         question: null,
         upstream: null,
         observation: null,
@@ -1296,8 +1312,7 @@ describe('Git adapter', () => {
     ];
     const authored = (plan: readonly unknown[] = []) => ({
       outcome: 'authored',
-      summary: 'Assess the current document against the ticket.',
-      documents: [{ path: 'readme.md', description: 'The stage contribution.' }],
+      documents: [{ path: 'readme.md' }],
       sourcePaths: [],
       plan,
       skip: null,
@@ -1344,11 +1359,10 @@ describe('Git adapter', () => {
       verdict: 'accepted-skip',
       author: {
         outcome: 'skip-proposed',
-        summary: 'No prototype applies.',
         documents: [],
         sourcePaths: [],
         plan: [],
-        skip: { reason: 'No changed interaction.', references: ['readme.md'] },
+        skip: { references: ['readme.md'] },
         question: null,
         upstream: null,
         observation: null,
@@ -1437,8 +1451,7 @@ describe('Git adapter', () => {
       round: 1,
       author: {
         outcome: 'authored',
-        summary: 'The prototype journey.',
-        documents: [{ path: 'docs/ux.md', description: 'the journey' }],
+        documents: [{ path: 'docs/ux.md' }],
         sourcePaths: ['stories/ux.stories.ts'],
         plan: [],
         skip: null,
@@ -1459,11 +1472,10 @@ describe('Git adapter', () => {
     const resultReference = path.join(root, 'prototype', 'artifacts', '1', 'result.json');
     const skip = (references: readonly string[]) => ({
       outcome: 'skip-proposed',
-      summary: 'No applicable interaction surface remains.',
       documents: [],
       sourcePaths: [],
       plan: [],
-      skip: { reason: 'No applicable interaction surface remains.', references: [...references] },
+      skip: { references: [...references] },
       question: null,
       upstream: null,
       observation: null,
@@ -1541,11 +1553,10 @@ describe('Git adapter', () => {
     const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
     const skip = (references: readonly string[]) => ({
       outcome: 'skip-proposed',
-      summary: 'The existing requirements suffice.',
       documents: [],
       sourcePaths: [],
       plan: [],
-      skip: { reason: 'The existing requirements suffice.', references: [...references] },
+      skip: { references: [...references] },
       question: null,
       upstream: null,
       observation: null,
@@ -1647,8 +1658,7 @@ describe('Git adapter', () => {
     await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
     const author = {
       outcome: 'authored',
-      summary: 'The requirements revision.',
-      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      documents: [{ path: 'readme.md' }],
       sourcePaths: [],
       plan: [],
       skip: null,
@@ -1661,7 +1671,12 @@ describe('Git adapter', () => {
       stage: 'requirements',
       git,
       publish: () => undefined,
-      runner: { run: async () => ok({ output: JSON.stringify(author) }) },
+      runner: {
+        run: async (request) => {
+          await writeAssignedReport(request.context, '# requirements author report\n');
+          return ok({ output: JSON.stringify(author) });
+        },
+      },
     })({ task: 'propose' });
     await createStageEvaluator({
       selectionFile,
@@ -1669,17 +1684,16 @@ describe('Git adapter', () => {
       git,
       publish: () => undefined,
       runner: {
-        run: async () =>
-          ok({
+        run: async (request) => {
+          await writeAssignedReport(request.context, '# requirements evaluator report\n');
+          return ok({
             output: JSON.stringify({
-              assessedRevision: 1,
               verdict: 'accepted',
-              reason: 'Inspected the exact retained content.',
               observation: null,
-              findings: [],
               upstream: null,
             }),
-          }),
+          });
+        },
       },
     })();
     const evaluation = stageEvaluationArtifact.schema.parse(
@@ -1761,11 +1775,7 @@ describe('Git adapter', () => {
     await rm(path.join(worktree, 'legacy.ts'));
     const author = {
       outcome: 'authored',
-      summary: 'The requirements revision retires the legacy document.',
-      documents: [
-        { path: 'readme.md', description: 'the requirements' },
-        { path: 'legacy.md', description: 'the retired document' },
-      ],
+      documents: [{ path: 'readme.md' }, { path: 'legacy.md' }],
       sourcePaths: ['legacy.ts'],
       plan: [],
       skip: null,
@@ -1808,12 +1818,10 @@ describe('Git adapter', () => {
       invokeAuthor: true,
       author: {
         outcome: 'skip-proposed',
-        summary: 'The retained requirements still suffice.',
         documents: [],
         sourcePaths: [],
         plan: [],
         skip: {
-          reason: 'The retained requirements still suffice.',
           references: [path.join(root, 'requirements', 'artifacts', '1', 'result.json')],
         },
         question: null,
@@ -1864,7 +1872,7 @@ describe('Git adapter', () => {
         invokeAuthor: true,
         author: {
           ...author,
-          documents: [{ path: 'never-existed.md', description: 'not tracked' }],
+          documents: [{ path: 'never-existed.md' }],
         },
       }),
     ).rejects.toThrow(/was not tracked before this edit/);
@@ -1895,8 +1903,7 @@ describe('Git adapter', () => {
     await writeFile(path.join(worktree, 'source.ts'), 'export const value = 2;\n');
     const author = {
       outcome: 'authored',
-      summary: 'The requirements revision and its stage-owned source.',
-      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      documents: [{ path: 'readme.md' }],
       sourcePaths: ['source.ts'],
       plan: [],
       skip: null,
@@ -1944,8 +1951,7 @@ describe('Git adapter', () => {
     await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
     const requirements = {
       outcome: 'authored',
-      summary: 'The requirements revision.',
-      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      documents: [{ path: 'readme.md' }],
       sourcePaths: [],
       plan: [],
       skip: null,
@@ -1971,8 +1977,7 @@ describe('Git adapter', () => {
       invokeAuthor: true,
       author: {
         ...requirements,
-        summary: 'The experience stage retires the stale document.',
-        documents: [{ path: 'readme.md', description: 'the retired document' }],
+        documents: [{ path: 'readme.md' }],
       },
     });
     // Requirements redeclaring the absent path must not inherit UX's deletion: its retained
@@ -1999,10 +2004,9 @@ describe('Git adapter', () => {
       publish: () => undefined,
     });
     await expect(prepare({ stage: 'requirements' })).resolves.toBe('prepared');
-    const authored = (document: string, description: string) => ({
+    const authored = (document: string) => ({
       outcome: 'authored',
-      summary: `The ${description}.`,
-      documents: [{ path: document, description }],
+      documents: [{ path: document }],
       sourcePaths: [],
       plan: [],
       skip: null,
@@ -2028,7 +2032,7 @@ describe('Git adapter', () => {
       stage: 'requirements',
       round: 1,
       invokeAuthor: true,
-      author: authored('docs/requirements.md', 'requirements revision'),
+      author: authored('docs/requirements.md'),
     });
     await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n\nThe accepted journey.\n');
     await gitCommand(['add', 'docs/ux.md'], worktree);
@@ -2039,7 +2043,7 @@ describe('Git adapter', () => {
       stage: 'ux',
       round: 1,
       invokeAuthor: true,
-      author: authored('docs/ux.md', 'ux revision'),
+      author: authored('docs/ux.md'),
     });
 
     // A later stage extends the earlier stage's owned document in the shared checkout.
@@ -2063,7 +2067,7 @@ describe('Git adapter', () => {
       round: 2,
       route: 'reassess',
       invokeAuthor: true,
-      author: authored('docs/requirements.md', 'corrected requirements'),
+      author: authored('docs/requirements.md'),
     });
     const correctedRevision = (corrected.documents as { readonly revision: string }[])[0]!.revision;
     expect(corrected.documents).toEqual([
@@ -2118,11 +2122,7 @@ describe('Git adapter', () => {
         round: 1,
         author: {
           outcome: 'authored',
-          summary: 'The inspected prototype journey.',
-          documents: [
-            { path: 'docs/journey.mdx', description: 'the rendered journey' },
-            { path: 'docs/shared.md', description: 'shared preparation input' },
-          ],
+          documents: [{ path: 'docs/journey.mdx' }, { path: 'docs/shared.md' }],
           sourcePaths: ['stories/journey.ts'],
           plan: [],
           skip: null,
@@ -2197,8 +2197,7 @@ describe('Git adapter', () => {
       invokeAuthor: true,
       author: {
         outcome: 'authored',
-        summary: 'The requirements.',
-        documents: [{ path: 'docs/requirements.md', description: 'the requirements' }],
+        documents: [{ path: 'docs/requirements.md' }],
         sourcePaths: [],
         plan: [],
         skip: null,
@@ -2215,8 +2214,7 @@ describe('Git adapter', () => {
       invokeAuthor: true,
       author: {
         outcome: 'authored',
-        summary: 'The architecture.',
-        documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
+        documents: [{ path: 'docs/architecture.md' }],
         sourcePaths: [],
         plan: [
           {

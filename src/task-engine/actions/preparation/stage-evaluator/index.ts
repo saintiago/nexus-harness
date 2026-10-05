@@ -15,7 +15,13 @@ import {
   type BoundAction,
   type EventPublisher,
 } from '../../../index.js';
-import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
+import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  parseAgentReport,
+  readAssignedReport,
+  responseFormatText,
+} from '../../agent-reports.js';
 import { readRequiredRecord } from '../../records.js';
 import {
   outstandingReportFeedback,
@@ -32,11 +38,13 @@ import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
+  stagePlanArtifact,
+  stageResultArtifact,
   stageReportScope,
-  toFindings,
   type AssessedContent,
   type PreparationStage,
-  type StageAuthorOutput,
+  type RetainedStageAuthorOutput,
+  type RetainedStageEvaluationOutput,
   type StageEvaluationOutput,
   type StageEvaluationResponse,
 } from '../artifacts.js';
@@ -63,8 +71,9 @@ import {
  * StageEvaluator assesses the exact authored revision of one evaluated preparation round. It
  * judges earlier concerns against the current content, distinguishes necessary changes from
  * optional suggestions and accepts the work, the author's skip proposal or a concrete upstream
- * return. A report that assesses another revision or invents a skip the author did not propose is
- * unusable.
+ * return, writing its complete assessment to the assigned Markdown report. The action binds the
+ * decision to the authored revision it observed; an outcome that invents a skip the author did
+ * not propose is unusable.
  */
 
 export type StageEvaluatorSettings = {
@@ -78,27 +87,20 @@ export type StageEvaluatorSettings = {
 };
 
 /**
- * Why the evaluator's report is not a usable assessment of the current revision, or null. The
- * report states a verdict its current blocking findings support; previous reports are context.
+ * Why the evaluator's outcome is not a usable assessment of the current revision, or null. The
+ * Markdown report carries the current findings; previous reports are context.
  */
 function reportProblem(
   report: z.output<typeof stageEvaluationResponseSchema>,
   settings: {
     readonly stage: PreparationStage;
-    readonly authorRevision: number;
-    readonly authorOutcome: StageAuthorOutput['outcome'];
+    readonly authorOutcome: RetainedStageAuthorOutput['outcome'];
   },
 ): string | null {
-  const { authorRevision, authorOutcome } = settings;
-  if (report.assessedRevision !== authorRevision) {
-    return (
-      `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
-      `revision is ${String(authorRevision)}`
-    );
-  }
+  const { authorOutcome } = settings;
   const acceptanceProblem = acceptanceVerdictProblem(authorOutcome, report.verdict);
   if (acceptanceProblem !== null) return acceptanceProblem;
-  const verdictProblem = evaluationVerdictProblem(report.verdict, report.findings, report.upstream);
+  const verdictProblem = evaluationVerdictProblem(report.verdict, report.upstream);
   if (verdictProblem !== null) return verdictProblem;
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
@@ -131,7 +133,7 @@ async function requirePrototypeEvidence(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
   readonly roundDirectory: string;
-  readonly author: StageAuthorOutput;
+  readonly author: RetainedStageAuthorOutput;
   readonly evaluator: { readonly path: string } | null;
   /** True when the assessed verdict relies on the evaluator's own applicable observation. */
   readonly requireEvaluator: boolean;
@@ -232,7 +234,40 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     const attribution =
       `Preparation ${settings.stage} evaluator, round ${String(plan.round)} ` +
       `(route ${plan.route}), task ${selection.taskKey}, authored revision to assess.`;
-    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
+    // The invocation's own Markdown report, assigned before it runs so the agent writes the
+    // narrative there and returns only the minimal outcome.
+    const assignedReport = await assignReportPath(
+      roundArtifactDirectory(root, plan.round),
+      invocationId,
+      'evaluator',
+    );
+
+    /**
+     * Preserve an unreadable bound producer report as that producer's rejection evidence, then
+     * fail: the responsible role receives the correction obligation instead of the evidence
+     * silently disappearing.
+     */
+    async function rejectUnreadableReport(settings: {
+      readonly role: 'author' | 'evaluator';
+      readonly round: number;
+      readonly report: { readonly path: string };
+      readonly error: Error;
+    }): Promise<never> {
+      const byAuthor = settings.role === 'author';
+      return rejectUnusableRecord({
+        areaRoot: root,
+        scope: byAuthor ? authorScope : scope,
+        invocationId,
+        operation: byAuthor ? 'stage-author' : 'stage-evaluator',
+        profile: byAuthor ? authorProfile : evaluatorProfile,
+        context: `${attribution} Reading the ${settings.role} report bound to round ${String(settings.round)}.`,
+        file: settings.report.path,
+        error: settings.error,
+        assignedReport: settings.report,
+      });
+    }
+
+    async function readAuthor(round: number): Promise<RetainedStageAuthorOutput | null> {
       try {
         return await readStageArtifact(root, round, stageAuthorArtifact);
       } catch (error) {
@@ -262,7 +297,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
      * preserved under this report responsibility, so this invocation fails on explicit evidence
      * and its next permitted invocation receives the correction obligation.
      */
-    async function readEvaluation(round: number): Promise<StageEvaluationOutput | null> {
+    async function readEvaluation(round: number): Promise<RetainedStageEvaluationOutput | null> {
       const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
       try {
         return await readStageArtifact(root, round, stageEvaluationArtifact);
@@ -284,12 +319,14 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     // A response or reassessment round judges the preceding evaluation's concerns against the
     // current revision it assesses; a fresh round was already evaluated on its own revision, if at
     // all.
-    let previous: StageEvaluationOutput | null = null;
+    let previous: RetainedStageEvaluationOutput | null = null;
+    let previousRound: number | null = null;
     if (plan.route !== 'new') {
       for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
         const retained = await readEvaluation(earlier);
         if (retained !== null) {
           previous = retained;
+          previousRound = earlier;
           break;
         }
       }
@@ -326,9 +363,13 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       stageRoot: root,
       worktree,
       author,
+      authorRound: plan.round,
       evaluation: previous,
+      evaluationRound: previousRound,
+      report: assignedReport,
       retained: retainedDecision,
       feedback: outstanding,
+      rejectUnreadableReport,
     });
     const result = await settings.runner.run({
       operation: 'stage-evaluator',
@@ -342,9 +383,11 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         `Assess the exact authored revision ${String(author.revision)} and judge whether earlier ` +
           'concerns remain. Accept adequate work, the author\u2019s evaluated skip or a concrete ' +
           'upstream return; separate necessary changes from optional suggestions.',
-        'Return the response object only; do not write or overwrite the action-owned stage records ' +
-          '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
-          'adds the observed acceptance basis and persists your decision.',
+        `Assigned Markdown report: ${assignedReport.path}`,
+        'Write the complete assessment to that path before returning: the current findings with ' +
+          'their evidence, the acceptance, skip or change explanation, any optional suggestions ' +
+          'and remaining disagreements. Return the minimal response object only; the action adds ' +
+          'the observed acceptance basis, assessed revision and report binding.',
         settings.stage === 'prototype'
           ? 'Accepting applicable prototype work needs your own saved browser observation; an ' +
             'evaluated applicability skip carries none. The observation contract above states the ' +
@@ -363,10 +406,17 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             ]),
         'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
         'Previous reports are context: judge whether their concerns were addressed and report ' +
-          'the findings present in the assessed revision. Findings have no stable IDs, response ' +
-          'arrays or disposition records.',
+          'the findings present in the assessed revision. The outcome carries only the verdict, ' +
+          'the applicable observation and any upstream destination and correction; findings have ' +
+          'no stable IDs, response arrays, disposition records or summaries.',
         'State a verdict the current findings support: accepted and accepted-skip require no ' +
-          'blocking finding, and changes-requested needs at least one.',
+          'blocking finding, and changes-requested needs at least one, explained in the report.',
+        actionOwnedRecordsText([
+          roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stagePlanArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stageEvaluationArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
+        ]),
         responseFormatText(stageEvaluationResponseSchema),
       ].join('\n\n'),
       outputSchema: z.toJSONSchema(stageEvaluationResponseSchema),
@@ -392,6 +442,26 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
           context: attribution,
           source: null,
           output: result.value.output,
+          assignedReport,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
+    const reportFile = await (async () => {
+      try {
+        return await readAssignedReport(assignedReport.path, 'Assigned evaluation report');
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-evaluator',
+          profile: evaluatorProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          assignedReport,
           reason: messageOf(error),
           cause: error,
         });
@@ -399,7 +469,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     })();
     const problem = reportProblem(report, {
       stage: settings.stage,
-      authorRevision: author.revision,
       authorOutcome: author.outcome,
     });
     if (problem !== null) {
@@ -412,6 +481,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         context: attribution,
         source: null,
         output: result.value.output,
+        assignedReport,
         reason: `The ${settings.stage} evaluator report is unusable: ${problem}.`,
       });
     }
@@ -453,6 +523,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             context: attribution,
             source: null,
             output: result.value.output,
+            assignedReport,
             reason: messageOf(error),
             cause: error,
           });
@@ -470,12 +541,17 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {
       basis,
-      assessedRevision: report.assessedRevision,
+      assessedRevision: author.revision,
       verdict: report.verdict,
-      reason: report.reason,
       observation: report.observation,
-      findings: toFindings(report.findings),
       upstream: report.upstream,
+      stage: settings.stage,
+      taskKey: selection.taskKey,
+      profile: evaluatorProfile,
+      role: 'evaluator',
+      report: assignedReport,
+      reportIdentity: reportFile.identity,
+      invocationId,
     };
     await writeStageArtifact(root, plan.round, stageEvaluationArtifact, output);
     const artifact = path.join(

@@ -460,9 +460,14 @@ export function createActionBinding(
                 handoff?.return?.to === 'idea'
                   ? {
                       from: handoff.return.from,
-                      problem: handoff.return.problem,
-                      consequence: handoff.return.consequence,
                       correction: handoff.return.correction,
+                      report: handoff.return.report,
+                      ...(handoff.return.problem === undefined
+                        ? {}
+                        : { problem: handoff.return.problem }),
+                      ...(handoff.return.consequence === undefined
+                        ? {}
+                        : { consequence: handoff.return.consequence }),
                     }
                   : null,
             },

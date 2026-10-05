@@ -55,14 +55,20 @@ export type HandoffBasis = z.infer<typeof handoffBasisSchema>;
 
 /**
  * One upstream return the parent published: the stage that returned the work, the earlier stage
- * that must correct the named input and the concrete problem, consequence and needed correction.
- * The destination stage reads it as a required input until its own publication clears it.
+ * that must correct the named input and the concrete correction it needs. The returning role's
+ * Markdown report carries the problem and consequence; former combined returns retain their
+ * problem and consequence text as history instead. The destination stage reads the record as a
+ * required input until its own publication clears it.
  */
 export const stageReturnSchema = z.object({
   from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
   to: z.enum(['idea', 'requirements', 'ux', 'prototype']),
-  problem: z.string().min(1),
-  consequence: z.string().min(1),
+  problem: z.string().min(1).optional(),
+  consequence: z.string().min(1).optional(),
+  report: z
+    .object({ path: z.string().min(1) })
+    .nullable()
+    .default(null),
   correction: z.string().min(1),
 });
 

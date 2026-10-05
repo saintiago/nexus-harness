@@ -55,12 +55,32 @@ const reportContracts: readonly ReportContract[] = [
   {
     label: 'Preparation author',
     schema: stageAuthorResponseSchema,
-    actionAdded: ['stage', 'revision'],
+    actionAdded: [
+      'stage',
+      'revision',
+      'taskKey',
+      'profile',
+      'role',
+      'report',
+      'reportIdentity',
+      'invocationId',
+    ],
   },
   {
     label: 'Preparation evaluator',
     schema: stageEvaluationResponseSchema,
-    actionAdded: ['basis'],
+    actionAdded: [
+      'stage',
+      'revision',
+      'taskKey',
+      'profile',
+      'role',
+      'report',
+      'reportIdentity',
+      'invocationId',
+      'assessedRevision',
+      'basis',
+    ],
   },
   {
     label: 'Developer',
@@ -182,17 +202,6 @@ describe('agent report contracts', () => {
   });
 });
 
-/** One current finding, as the reviewer and evaluation contracts report it. */
-const reportedFindingSample = {
-  title: 'The contract accepts a stray field',
-  severity: 'blocking',
-  basis: 'The response contract forbids unknown fields.',
-  evidence: 'A report with an unexpected field was accepted.',
-  impact: 'Invalid reports become usable artifacts.',
-  repairGuidance: 'Reject unknown fields.',
-  locations: [{ path: 'src/task-engine/actions/agent-reports.ts', line: null }],
-};
-
 /** One minimal response that satisfies each audited contract and exercises its nested objects. */
 const reportSamples: readonly {
   readonly label: string;
@@ -264,12 +273,11 @@ const reportSamples: readonly {
     schema: stageAuthorResponseSchema,
     sample: {
       outcome: 'skip-proposed',
-      summary: 'Existing inputs suffice.',
       documents: [],
       sourcePaths: [],
       observation: null,
       plan: [],
-      skip: { reason: 'Existing inputs suffice.', references: ['docs/existing.md'] },
+      skip: { references: ['docs/existing.md'] },
       question: null,
       upstream: null,
     },
@@ -278,12 +286,9 @@ const reportSamples: readonly {
     label: 'Preparation evaluator',
     schema: stageEvaluationResponseSchema,
     sample: {
-      assessedRevision: 1,
-      verdict: 'changes-requested',
-      reason: 'One finding remains.',
+      verdict: 'return-upstream',
       observation: null,
-      findings: [reportedFindingSample],
-      upstream: null,
+      upstream: { stage: 'requirements', correction: 'Correct the acceptance example.' },
     },
   },
   {

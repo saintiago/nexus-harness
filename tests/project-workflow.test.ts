@@ -48,6 +48,7 @@ import { repositoryState, scriptedGit } from './support/git.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
 import { scriptedJira } from './support/jira.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 type ActionStub = BoundAction;
 
@@ -562,8 +563,7 @@ describe('preparation binding dispatch', () => {
     const outputs: unknown[] = [
       {
         outcome: 'authored',
-        summary: 'The journey proposal.',
-        documents: [{ path: 'docs/ux.md', description: 'The proposed journey.' }],
+        documents: [{ path: 'docs/ux.md' }],
         sourcePaths: [],
         plan: [],
         skip: null,
@@ -572,11 +572,8 @@ describe('preparation binding dispatch', () => {
         observation: null,
       },
       {
-        assessedRevision: 1,
         verdict: 'accepted',
-        reason: 'The revision is adequate.',
         observation: null,
-        findings: [],
         upstream: null,
       },
     ];
@@ -588,6 +585,7 @@ describe('preparation binding dispatch', () => {
         if (output === undefined) {
           throw new Error('No scripted provider output remains for this invocation.');
         }
+        await writeAssignedReport(request.prompt, '# Controlled preparation report\n');
         return ok({ output: JSON.stringify(output) });
       },
     };
@@ -688,7 +686,6 @@ describe('preparation binding dispatch', () => {
     /** One author's controlled skip proposal over the stage's current checkout document. */
     const skipProposal = (stage: PreparationStage): unknown => ({
       outcome: 'skip-proposed',
-      summary: `The retained ${stage} documents already satisfy the stage.`,
       documents: [],
       sourcePaths: [],
       plan:
@@ -702,10 +699,7 @@ describe('preparation binding dispatch', () => {
               },
             ]
           : [],
-      skip: {
-        reason: `docs/${stage}.md states the current ${stage} intent.`,
-        references: [`docs/${stage}.md`],
-      },
+      skip: { references: [`docs/${stage}.md`] },
       question: null,
       upstream: null,
       observation: null,
@@ -742,11 +736,8 @@ describe('preparation binding dispatch', () => {
         profile: evaluators[stage],
         instructions: preparationRoleInstructions[roles.evaluator],
         output: {
-          assessedRevision: round,
           verdict: 'accepted-skip',
-          reason: 'The proposal cites the current document and needs no change.',
           observation: null,
-          findings: [],
           upstream: null,
         },
       });
@@ -762,6 +753,7 @@ describe('preparation binding dispatch', () => {
         if (planned === undefined) {
           throw new Error('No scripted provider output remains for this invocation.');
         }
+        await writeAssignedReport(request.prompt, `# Controlled ${planned.part} report\n`);
         return ok({ output: JSON.stringify(planned.output) });
       },
     };
@@ -1348,6 +1340,7 @@ describe('parent preparation publication', () => {
       problem: 'The acceptance example contradicts the requirement.',
       consequence: 'UX cannot propose one consistent journey.',
       correction: 'Correct the acceptance example.',
+      report: null,
     });
   });
 

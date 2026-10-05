@@ -363,21 +363,34 @@ export async function capturedIdeaText(
     parentInput === undefined ||
     (parentInput.question === null && parentInput.returnFinding === null)
       ? null
-      : [
-          'Retained parent correction for this selection (it governs what this refinement must ' +
-            'address):',
-          ...(parentInput.returnFinding === null
-            ? []
-            : [
-                `The ${parentInput.returnFinding.from} stage returned this idea for correction: ` +
-                  parentInput.returnFinding.problem,
-                `Consequence: ${parentInput.returnFinding.consequence}`,
-                `Required correction: ${parentInput.returnFinding.correction}`,
-              ]),
-          ...(parentInput.question === null
-            ? []
-            : [`The retained human question is: ${parentInput.question}`]),
-        ].join('\n');
+      : await (async (): Promise<string> => {
+          const lines = [
+            'Retained parent correction for this selection (it governs what this refinement must ' +
+              'address):',
+          ];
+          const returned = parentInput.returnFinding;
+          if (returned !== null) {
+            lines.push(
+              `The ${returned.from} stage returned this idea for correction.`,
+              ...(returned.problem === undefined ? [] : [`Problem: ${returned.problem}`]),
+              ...(returned.consequence === undefined
+                ? []
+                : [`Consequence: ${returned.consequence}`]),
+              `Required correction: ${returned.correction}`,
+            );
+            if (returned.report !== null) {
+              lines.push(`The returning role's Markdown report: ${returned.report.path}`);
+              const text = await readDocumentText(returned.report.path, 'Returning stage report');
+              if (text !== null) {
+                lines.push('The complete returning report:', text);
+              }
+            }
+          }
+          if (parentInput.question !== null) {
+            lines.push(`The retained human question is: ${parentInput.question}`);
+          }
+          return lines.join('\n');
+        })();
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',

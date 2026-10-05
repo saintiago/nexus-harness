@@ -31,6 +31,7 @@ import {
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
 import { repositoryState, scriptedGit } from './support/git.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -584,15 +585,11 @@ const capturedMalformedAuthor = {
 /** The conforming skip the next permitted KAN-76 author round returns. */
 const conformingSkip = {
   outcome: 'skip-proposed',
-  summary: 'The retained requirements still cover the captured outcome.',
   documents: [],
   sourcePaths: [],
   observation: null,
   plan: [],
-  skip: {
-    reason: 'The worktree requirements document covers the captured outcome.',
-    references: ['docs/requirements.md'],
-  },
+  skip: { references: ['docs/requirements.md'] },
   question: null,
   upstream: null,
 };
@@ -664,6 +661,7 @@ function authorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
   return {
     async run(request) {
       contexts.push(request.context);
+      await writeAssignedReport(request.context, '# Controlled requirements author report\n');
       return ok({ output: JSON.stringify(response) });
     },
   };
@@ -826,7 +824,7 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
   // attributable read of the record.
   await writeFile(
     path.join(root, 'artifacts', '3', 'author.json'),
-    JSON.stringify({ stage, revision: 3, ...conformingSkip }),
+    JSON.stringify({ stage, revision: 3, ...capturedMalformedAuthor }),
   );
   const evaluator = createStageEvaluator({
     selectionFile,

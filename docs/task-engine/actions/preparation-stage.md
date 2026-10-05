@@ -220,10 +220,12 @@ alter inspected prototype content.
 ## Correction and continuation
 
 An upstream return retains its correction and owning earlier stage in the functional outcome, and
-its problem and consequence in the associated Markdown. The return record references both. The
-parent records the destination and downstream stages awaiting reassessment before advancing source
-state; this pending route survives restart. The destination corrects its work in the shared
-checkout. Idea correction changes its input artifacts without replacing that checkout.
+its problem and consequence in the returning role's Markdown report. The return record references
+the returning stage, the destination stage, the concrete correction and that report; a former
+combined return keeps its problem and consequence text as history. The parent records the
+destination and downstream stages awaiting reassessment before advancing source state; this pending
+route survives restart. The destination corrects its work in the shared checkout. Idea correction
+changes its input artifacts without replacing that checkout.
 
 Proceed through pending stages in order. Each uses current input and work and obtains a current
 assessment, preserving adequate content and repairing affected content. Do not manufacture edits,

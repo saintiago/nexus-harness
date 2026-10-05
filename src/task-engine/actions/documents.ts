@@ -49,14 +49,32 @@ export function parseDocument<Schema extends z.ZodType>(
   return { kind: 'content', content: parsed.data };
 }
 
-/** One schema mismatch's issues as a `location: message` list; `rootLabel` names the document. */
+/**
+ * One schema mismatch's issues as a `location: message` list; `rootLabel` names the document. A
+ * union mismatch is expanded into the distinct issues of its branches, so a record that fits no
+ * retained variant is diagnosed by its missing or invalid fields instead of a bare "Invalid
+ * input".
+ */
 export function describeIssues(error: z.ZodError, rootLabel: string): string {
-  return error.issues
-    .map((issue) => {
-      const location = issue.path.length > 0 ? issue.path.join('.') : rootLabel;
-      return `${location}: ${issue.message}`;
-    })
-    .join('; ');
+  return error.issues.flatMap((issue) => describeIssue(issue, rootLabel, 0)).join('; ');
+}
+
+/** One issue's description, expanding a union mismatch into its branch issues once. */
+function describeIssue(issue: z.core.$ZodIssue, rootLabel: string, depth: number): string[] {
+  const location = issue.path.length > 0 ? issue.path.join('.') : rootLabel;
+  if (issue.code === 'invalid_union' && depth === 0) {
+    const branches = [
+      ...new Set(
+        issue.errors.flatMap((branch) =>
+          branch.flatMap((nested) => describeIssue(nested, rootLabel, depth + 1)),
+        ),
+      ),
+    ];
+    if (branches.length > 0) {
+      return [`${location}: ${issue.message} (${branches.join('; ')})`];
+    }
+  }
+  return [`${location}: ${issue.message}`];
 }
 
 /** Write one document as formatted JSON, named by `kind` in error messages. */

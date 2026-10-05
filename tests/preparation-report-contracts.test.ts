@@ -34,6 +34,7 @@ import {
 } from '../src/task-engine/actions/report-feedback.js';
 import { stageReportScope } from '../src/task-engine/actions/preparation/artifacts.js';
 import { scriptedGit, repositoryState } from './support/git.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -51,9 +52,6 @@ const stage = 'requirements' as const;
  * stage-owned source paths, replayed from its retained recovery evidence. */
 const capturedRejectedResponse = {
   outcome: 'skip-proposed',
-  summary:
-    'Existing requirements at revision d2fe63172d8dbdba28114194d3f658720d4bde19 satisfy this ' +
-    'stage. No edits or material product decisions are needed; documentation references resolve.',
   documents: [],
   sourcePaths: [
     'docs/requirements.md',
@@ -68,14 +66,6 @@ const capturedRejectedResponse = {
   observation: null,
   plan: [],
   skip: {
-    reason:
-      'The current delivery requirements define affected developers/Nexus agents and release ' +
-      'operators, their journey, activities, rules and observable acceptance examples. They ' +
-      'cover component ownership, public boundaries, external final assembly, complete-task-diff ' +
-      'validation, affected consumers and repository tests, shared GitHub selection, preserved ' +
-      'deployment behavior and exclusions. No material product decision remains unsettled; ' +
-      'technical mechanisms belong to Architecture. This proposal does not claim implementation ' +
-      'completion.',
     references: [
       'docs/requirements.md#purpose-categories-and-journey',
       'docs/requirements.md#activities-and-rules',
@@ -93,17 +83,11 @@ const capturedRejectedResponse = {
 /** The conforming counterpart: the same skip with its citations in skip.references only. */
 const conformingSkipResponse = {
   outcome: 'skip-proposed',
-  summary:
-    'The retained requirements documents already cover the captured outcome; no edits or ' +
-    'product decisions are needed.',
   documents: [],
   sourcePaths: [],
   observation: null,
   plan: [],
   skip: {
-    reason:
-      'The existing requirements documents already cover the captured outcome: affected ' +
-      'categories, journey, activities, rules and observable acceptance examples.',
     references: ['docs/requirements.md', 'docs/testing.md'],
   },
   question: null,
@@ -199,21 +183,32 @@ async function stageArea(selectedStage: PreparationStage = stage): Promise<{
   return { selectionFile, root, worktree };
 }
 
-/** One scripted author invocation that returns the supplied response and records its context. */
+/**
+ * One scripted author invocation that writes the assigned Markdown report, returns the supplied
+ * response and records its context.
+ */
 function authorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
   return {
     async run(request) {
       contexts.push(request.context);
+      await writeAssignedReport(request.context, '# Requirements author report\n\nNarrative.\n');
       return ok({ output: JSON.stringify(response) });
     },
   };
 }
 
-/** One scripted evaluator invocation that returns the supplied response and records its context. */
+/**
+ * One scripted evaluator invocation that writes the assigned Markdown report, returns the supplied
+ * response and records its context.
+ */
 function evaluatorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
   return {
     async run(request) {
       contexts.push(request.context);
+      await writeAssignedReport(
+        request.context,
+        '# Requirements evaluation report\n\nNarrative.\n',
+      );
       return ok({ output: JSON.stringify(response) });
     },
   };
@@ -236,15 +231,11 @@ const prototypeDocuments = [
  */
 const capturedPrototypeSkip = {
   outcome: 'skip-proposed',
-  summary: 'Storybook Refinement is not applicable to HARN-96.',
   documents: [],
   sourcePaths: [],
   observation: null,
   plan: [],
   skip: {
-    reason:
-      'The captured HARN-96 input is an internal change; docs/ux-ui.md limits Nexus UX work to ' +
-      'explicit reporting-terminal changes, and the checkout has no product preview surface.',
     references: [
       'docs/agent-runtime/report-requirements.md at revision 9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 scope: no reporting-terminal interaction.',
       'docs/ux-ui.md at revision 9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 preparation applicability: internal changes do not by themselves require a UI prototype; do not invent terminal interactions.',
@@ -258,10 +249,7 @@ const capturedPrototypeSkip = {
 /** The retained repaired report: the same skip citing the actual documents. */
 const repairedPrototypeSkip = {
   ...capturedPrototypeSkip,
-  skip: {
-    reason: capturedPrototypeSkip.skip.reason,
-    references: prototypeDocuments,
-  },
+  skip: { references: prototypeDocuments },
 };
 
 /** One prototype stage area whose checkout holds the documents the captured skip cites. */
@@ -334,7 +322,7 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   expect(authorContext).toContain('empty documents and sourcePaths');
   expect(authorContext).toContain('skip.references');
   expect(authorContext).toContain('files that were merely read');
-  expect(authorContext).toContain('do not write or overwrite the action-owned stage records');
+  expect(authorContext).toContain('do not write or overwrite action-owned author.json');
   expect(authorContext).toContain('Only the Architecture stage supplies plan entries');
 
   const conforming = createStageAuthor({
@@ -354,13 +342,11 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
     runner: {
       async run(request) {
         evaluatorContexts.push(request.context);
+        await writeAssignedReport(request.context, '# Requirements evaluation report\n');
         return ok({
           output: JSON.stringify({
-            assessedRevision: 3,
             verdict: 'accepted-skip',
-            reason: 'The existing requirements documents satisfy the stage.',
             observation: null,
-            findings: [],
             upstream: null,
           }),
         });
@@ -371,7 +357,7 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   const evaluatorContext = evaluatorContexts.join('\n');
   expect(evaluatorContext).toContain('"outcome": "skip-proposed"');
   expect(evaluatorContext).toContain('Assess the exact authored revision 3');
-  expect(evaluatorContext).toContain('do not write or overwrite the action-owned stage records');
+  expect(evaluatorContext).toContain('do not write or overwrite action-owned author.json');
   const evaluation = JSON.parse(
     await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
   ) as Record<string, unknown>;
@@ -379,7 +365,7 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   expect(worktree).toContain('worktree');
 });
 
-it('permits a repair round to propose a reason-only applicability skip', async () => {
+it('permits a repair round to propose an applicability skip with no references', async () => {
   const { selectionFile, root } = await stageArea();
   await writeFile(
     path.join(root, 'state', 'current-round.json'),
@@ -393,14 +379,7 @@ it('permits a repair round to propose a reason-only applicability skip', async (
   const { git } = scriptedGit([repositoryState()]);
   const common = { selectionFile, stage, git, publish: () => undefined };
   const contexts: string[] = [];
-  const correction = {
-    ...conformingSkipResponse,
-    summary: 'The findings show the corrected scope makes the stage irrelevant.',
-    skip: {
-      reason: 'The corrected scope leaves no requirement this stage owns.',
-      references: [],
-    },
-  };
+  const correction = { ...conformingSkipResponse, skip: { references: [] } };
   await expect(
     createStageAuthor({ ...common, runner: authorRunner(correction, contexts) })({
       task: 'respond',
@@ -413,11 +392,8 @@ it('permits a repair round to propose a reason-only applicability skip', async (
       ...common,
       runner: evaluatorRunner(
         {
-          assessedRevision: 3,
           verdict: 'accepted-skip',
-          reason: 'The corrected scope makes the stage irrelevant.',
           observation: null,
-          findings: [],
           upstream: null,
         },
         [],
@@ -435,7 +411,7 @@ it('rejects a skip proposal that carries fields its outcome does not own', async
     {
       report: {
         ...conformingSkipResponse,
-        documents: [{ path: 'docs/requirements.md', description: 'Reading citation.' }],
+        documents: [{ path: 'docs/requirements.md' }],
       },
       problem: 'only authored work may declare changed documents',
     },
@@ -461,12 +437,7 @@ it('rejects a skip proposal that carries fields its outcome does not own', async
     {
       report: {
         ...conformingSkipResponse,
-        upstream: {
-          stage: 'idea',
-          problem: 'The idea is too broad.',
-          consequence: 'Requirements cannot be bounded.',
-          correction: 'Restate the idea with one outcome.',
-        },
+        upstream: { stage: 'idea', correction: 'Restate the idea with one outcome.' },
       },
       problem: 'only a return-upstream outcome carries the upstream request',
     },
@@ -499,7 +470,7 @@ it.each(['author', 'evaluation'] as const)(
       ...conformingSkipResponse,
       outcome: 'authored',
       skip: null,
-      documents: [{ path: 'docs/requirements.md', description: 'Defines requirements.' }],
+      documents: [{ path: 'docs/requirements.md' }],
     };
     const contexts: string[] = [];
     const author = createStageAuthor({ ...common, runner: authorRunner(response, contexts) });
@@ -535,11 +506,8 @@ it.each(['author', 'evaluation'] as const)(
         ...common,
         runner: evaluatorRunner(
           {
-            assessedRevision: 3,
             verdict: 'accepted',
-            reason: 'The authored requirements satisfy the stage.',
             observation: null,
-            findings: [],
             upstream: null,
           },
           evaluatorContexts,
@@ -602,15 +570,13 @@ it('retains an author report corrupted during evaluation under the author respon
   const evaluator = createStageEvaluator({
     ...common,
     runner: {
-      async run() {
+      async run(request) {
+        await writeAssignedReport(request.context, '# Requirements evaluation report\n');
         await writeFile(file, malformed);
         return ok({
           output: JSON.stringify({
-            assessedRevision: 3,
             verdict: 'accepted-skip',
-            reason: 'The existing requirements satisfy the stage.',
             observation: null,
-            findings: [],
             upstream: null,
           }),
         });
@@ -702,11 +668,8 @@ it('evaluates a new round directly without reading a preceding result or evaluat
     ...common,
     runner: evaluatorRunner(
       {
-        assessedRevision: 3,
         verdict: 'accepted-skip',
-        reason: 'The current requirements documents satisfy the stage.',
         observation: null,
-        findings: [],
         upstream: null,
       },
       evaluatorContexts,
@@ -750,7 +713,6 @@ it.each([
     const authorContexts: string[] = [];
     const authored = {
       outcome: 'authored',
-      summary: 'The current documents already satisfy the ticket.',
       documents: [],
       sourcePaths: [],
       observation: null,
@@ -775,11 +737,8 @@ it.each([
         ...common,
         runner: evaluatorRunner(
           {
-            assessedRevision: 3,
             verdict: 'accepted',
-            reason: 'The current documents cover the captured outcome.',
             observation: null,
-            findings: [],
             upstream: null,
           },
           evaluatorContexts,
@@ -884,7 +843,16 @@ it('rejects the captured prototype prose citations while repaired references sta
   // evaluator is invoked, instead of failing to resolve the prose as a filesystem path.
   await writeFile(
     path.join(root, 'artifacts', '1', 'author.json'),
-    JSON.stringify({ ...capturedPrototypeSkip, stage: 'prototype', revision: 1 }),
+    JSON.stringify({
+      ...capturedPrototypeSkip,
+      summary: 'Storybook Refinement is not applicable to HARN-96.',
+      skip: {
+        reason: 'The captured HARN-96 input is an internal change without a product preview.',
+        references: capturedPrototypeSkip.skip.references,
+      },
+      stage: 'prototype',
+      revision: 1,
+    }),
   );
   const binding = createStageEvaluator({
     ...common,
@@ -909,11 +877,8 @@ it('rejects the captured prototype prose citations while repaired references sta
     ...common,
     runner: evaluatorRunner(
       {
-        assessedRevision: 1,
         verdict: 'accepted-skip',
-        reason: 'The existing documents establish prototype inapplicability.',
         observation: null,
-        findings: [],
         upstream: null,
       },
       [],
@@ -939,7 +904,6 @@ it('reads a section citation as evidence and keeps the completed verdict after t
       {
         ...conformingSkipResponse,
         skip: {
-          reason: conformingSkipResponse.skip.reason,
           references: ['docs/requirements.md#activities-and-rules'],
         },
       },
@@ -951,11 +915,8 @@ it('reads a section citation as evidence and keeps the completed verdict after t
     ...common,
     runner: evaluatorRunner(
       {
-        assessedRevision: 3,
         verdict: 'accepted-skip',
-        reason: 'The cited section satisfies the stage.',
         observation: null,
-        findings: [],
         upstream: null,
       },
       [],
@@ -1012,11 +973,8 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
       ),
     })({ task: 'propose' });
     const report = {
-      assessedRevision: 3,
       verdict: 'accepted',
-      reason: 'The existing documents satisfy the stage.',
       observation: null,
-      findings: [],
       upstream: null,
     };
     await expect(
@@ -1093,7 +1051,6 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
         {
           ...conformingSkipResponse,
           skip: {
-            reason: conformingSkipResponse.skip.reason,
             references: ['docs/requirements.md#activities-and-rules'],
           },
         },
@@ -1104,11 +1061,8 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
       ...common,
       runner: evaluatorRunner(
         {
-          assessedRevision: 3,
           verdict: 'accepted-skip',
-          reason: 'The cited section satisfies the stage.',
           observation: null,
-          findings: [],
           upstream: null,
         },
         [],
