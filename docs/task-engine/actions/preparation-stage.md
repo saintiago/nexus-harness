@@ -157,8 +157,9 @@ an interrupted stage. The journey is: changed cited content or owned work -> ins
 current content -> reassess citations or repair owned work -> current evaluation -> finalization ->
 confirm or repair affected downstream decisions -> handoff.
 
-Finalization must retain the current evaluation and assessed citation revisions. Changes to the
-author report, cited content, captured source/conversation or relied-on upstream inputs after that
+Finalization must retain the current evaluation and the revisions it assessed for current citations
+and newly authored corrections. Changes to the author report, assessed content, captured
+source/conversation or relied-on upstream inputs after that
 evaluation still require a new decision; an older acceptance cannot fill a missing or unreadable
 current binding. Genuinely stale,
 unassessed reuse remains rejected. Retaining an applicable prototype still requires its complete
