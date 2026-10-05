@@ -37,6 +37,7 @@ import {
   requireEvaluationContent,
   sourceInputIdentity,
 } from './evaluation-content.js';
+import { requireRetainedPrototypeEvidence } from './observation.js';
 
 /**
  * The evaluated preparation stages' shared storage: one checkout and branch under the preparation
@@ -551,6 +552,21 @@ export async function readCurrentDecision(settings: {
       worktree: preparationWorktree(issueRoot),
       content: basis.content,
     });
+    // An applicable prototype decision also relies on the retained observation records; a record
+    // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
+    if (
+      stage === 'prototype' &&
+      (result.outcome === 'accepted' || result.prototypeObservations.length > 0)
+    ) {
+      await requireRetainedPrototypeEvidence({
+        git,
+        worktree: preparationWorktree(issueRoot),
+        artifactsRoot: path.join(root, 'artifacts'),
+        observations: result.prototypeObservations,
+        assessed: basis.content,
+        observedPaths: result.sourcePaths,
+      });
+    }
   } catch (error) {
     if (error instanceof Error) {
       return { kind: 'stale', reason: error.message };

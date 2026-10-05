@@ -184,7 +184,9 @@ export const stageEvaluationResponseSchema = z.object({
   reason: z.string(),
   /**
    * The Storybook Refinement evaluator's own saved prototype observation record, or null for every
-   * other stage, outcome and verdict. Accepting applicable prototype work requires it.
+   * other stage and for an evaluated applicability skip. Accepting applicable prototype work
+   * requires it; a change request or upstream return retains it when the evaluator performed a
+   * preview, so the observed defect evidence reaches the repair handoff.
    */
   observation: artifactReferenceSchema.nullable(),
   findings: z.array(reportedFindingSchema),
@@ -237,7 +239,7 @@ export const stageEvaluationOutputSchema = z.object({
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
-  /** The evaluator's own saved prototype observation record, when its decision requires one. */
+  /** The evaluator's own saved prototype observation record the decision retains, if any. */
   observation: artifactReferenceSchema.nullable(),
   findings: z.array(findingSchema),
   priorFindings: z.array(findingDispositionSchema),

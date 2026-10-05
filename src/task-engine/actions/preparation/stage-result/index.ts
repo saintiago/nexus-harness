@@ -26,7 +26,7 @@ import {
   stageRoot,
   writeStageArtifact,
 } from '../storage.js';
-import { evidenceFilePath } from '../observation.js';
+import { evidenceFilePath, requireRetainedPrototypeEvidence } from '../observation.js';
 
 /**
  * StageResult saves the terminal result envelope of one evaluated preparation stage: its outcome,
@@ -218,6 +218,19 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         }
         retainedObservations.push({ role, path: file });
       }
+      if (evaluation === null) {
+        throw new Error('An accepted prototype must retain the evaluated decision it relies on.');
+      }
+      // Retained references are not enough: the records and screenshots must still be readable and
+      // bound to the assessed content when the acceptance is finalized.
+      await requireRetainedPrototypeEvidence({
+        git: settings.git,
+        worktree,
+        artifactsRoot: path.join(root, 'artifacts'),
+        observations: retainedObservations,
+        assessed: evaluation.basis.content,
+        observedPaths: author.sourcePaths,
+      });
     }
 
     /** The accepted changed documents with the revision each was retained at. */
@@ -301,6 +314,18 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       prototype = reuse.prototype;
       retainedObservations.length = 0;
       retainedObservations.push(...reuse.prototypeObservations);
+      if (retainedObservations.length > 0) {
+        // Reuse copies references; the retained records themselves must still be readable evidence
+        // for the acceptance they came from, or the skip cannot keep authorizing the prototype.
+        await requireRetainedPrototypeEvidence({
+          git: settings.git,
+          worktree,
+          artifactsRoot: path.join(root, 'artifacts'),
+          observations: retainedObservations,
+          assessed: reuse.content,
+          observedPaths: reuse.sourcePaths,
+        });
+      }
     }
 
     const documents: PreparationResult['documents'] = [...authoredDocuments, ...reuse.documents];

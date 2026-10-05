@@ -162,7 +162,9 @@ when they explain a failure. Store screenshots and reports in the role's round a
 without committing execution evidence into product documentation.
 
 Interaction or layout defects become normal findings for repair, or a concrete upstream return when
-an earlier input is wrong. Changed prototype content requires fresh author and evaluator observation.
+an earlier input is wrong. A defect report or upstream return keeps the observation of the preview it
+performed, so the observed evidence reaches the repair handoff; an evaluated applicability skip
+carries none. Changed prototype content requires fresh author and evaluator observation.
 An unrelated documentation commit can retain unchanged prototype content at its original observed
 revision. Missing/unusable evidence cannot produce acceptance. Preview defects are repaired by the
 author; unavailable browser/image capability or invocation faults follow execution recovery, without

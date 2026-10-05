@@ -37,6 +37,7 @@ import {
 import { project } from '../workflows/project.js';
 import { preparation } from '../workflows/preparation.js';
 import { repositoryState, scriptedGit } from './support/git.js';
+import { savePrototypeObservation } from './support/prototype-observation.js';
 import { scriptedJira } from './support/jira.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
@@ -1077,6 +1078,10 @@ async function handoff(options: {
     readonly outcome: 'accepted' | 'skipped';
     readonly documents: readonly { readonly path: string; readonly revision: string | null }[];
     readonly prototype?: { readonly branch: string; readonly revision: string } | null;
+    /** Stage-owned prototype paths the decision assessed, for an applicable prototype. */
+    readonly sourcePaths?: readonly string[];
+    /** Whether to save the roles' observation evidence an applicable acceptance requires. */
+    readonly observations?: boolean;
   }): Promise<void> {
     const area = stageRoot(root, settings.stage);
     const artifacts = path.join(area, 'artifacts', '1');
@@ -1091,6 +1096,7 @@ async function handoff(options: {
         profiles: { author: 'a', evaluator: 'e' },
       }),
     );
+    const sourcePaths = settings.sourcePaths ?? [];
     const author = {
       stage: settings.stage,
       revision: 1,
@@ -1100,7 +1106,7 @@ async function handoff(options: {
         path: document.path,
         description: 'the changed document',
       })),
-      sourcePaths: [],
+      sourcePaths: [...sourcePaths],
       plan: [],
       skip:
         settings.outcome === 'skipped'
@@ -1129,6 +1135,11 @@ async function handoff(options: {
                 revision: document.revision as string,
                 exists: true,
               })),
+            ...sourcePaths.map((source) => ({
+              path: source,
+              revision: settings.prototype?.revision ?? 'e'.repeat(40),
+              exists: true,
+            })),
             ...(settings.outcome === 'skipped'
               ? [{ path: 'docs/existing.md', revision: 'f'.repeat(40), exists: true }]
               : []),
@@ -1155,7 +1166,7 @@ async function handoff(options: {
         settings.outcome === 'skipped'
           ? [{ path: path.join(worktree, 'docs/existing.md'), revision: 'f'.repeat(40) }]
           : [],
-      sourcePaths: [],
+      sourcePaths: [...sourcePaths],
       skipReferences: settings.outcome === 'skipped' ? ['docs/existing.md'] : [],
       outputs: [],
       evaluation: { path: path.join(artifacts, 'evaluation.json') },
@@ -1163,7 +1174,26 @@ async function handoff(options: {
       returnStage: null,
       returnFinding: null,
       prototype: settings.prototype ?? null,
+      prototypeObservations: [] as {
+        readonly role: 'author' | 'evaluator';
+        readonly path: string;
+      }[],
     };
+    if (settings.observations === true) {
+      for (const role of ['author', 'evaluator'] as const) {
+        result.prototypeObservations.push({
+          role,
+          path: await savePrototypeObservation({
+            roundDirectory: artifacts,
+            role,
+            content: sourcePaths.map((source) => ({
+              path: source,
+              revision: settings.prototype?.revision ?? 'e'.repeat(40),
+            })),
+          }),
+        });
+      }
+    }
     await writeFile(path.join(artifacts, 'result.json'), JSON.stringify(result));
     upstream.push({
       result: { path: path.join(artifacts, 'result.json') },
@@ -1181,10 +1211,14 @@ async function handoff(options: {
     await writeFile(path.join(worktree, 'docs/requirements.md'), '# Requirements\n');
   }
   if (options.prototype != null) {
+    await mkdir(path.join(worktree, 'prototype'), { recursive: true });
+    await writeFile(path.join(worktree, 'prototype/journey.js'), 'export const journey = 1;\n');
     await writeStageDecision({
       stage: 'prototype',
       outcome: 'accepted',
       documents: [],
+      sourcePaths: ['prototype/journey.js'],
+      observations: true,
       prototype: options.prototype,
     });
   }

@@ -97,6 +97,10 @@ function reportProblem(
     if (report.observation !== null) {
       return 'only the Storybook Refinement stage retains a prototype observation';
     }
+  } else if (report.verdict === 'accepted-skip') {
+    if (report.observation !== null) {
+      return 'an evaluated applicability skip carries no observation; it needs no preview evidence';
+    }
   } else if (report.verdict === 'accepted') {
     if (authorProposedSkip) {
       return (
@@ -110,12 +114,9 @@ function reportProblem(
         'observation'
       );
     }
-  } else if (report.observation !== null) {
-    return (
-      'only an accepted applicable prototype carries an evaluator observation; a skip decision, ' +
-      'change request or upstream return carries null'
-    );
   }
+  // A change request or upstream return may retain the observation of the preview it performed;
+  // the declared record is validated with the rest of the report either way.
 
   const current = new Set<string>();
   for (const finding of report.findings) {
@@ -184,24 +185,27 @@ async function requirePrototypeEvidence(settings: {
   readonly roundDirectory: string;
   readonly author: StageAuthorOutput;
   readonly evaluator: { readonly path: string } | null;
+  /** True when the assessed verdict relies on the evaluator's own applicable observation. */
+  readonly requireEvaluator: boolean;
   readonly assessed: readonly AssessedContent[];
 }): Promise<void> {
-  if (settings.author.observation === null) {
+  const declared: (readonly [PrototypeObservationRole, string])[] = [];
+  if (settings.author.observation !== null) {
+    declared.push(['author', settings.author.observation.path]);
+  } else if (settings.author.outcome === 'authored') {
     throw new Error(
-      'The prototype author report carries no observation; an accepted applicable prototype needs ' +
-        'the author\u2019s own browser evidence.',
+      'The prototype author report carries no observation; applicable prototype work needs the ' +
+        'author\u2019s own browser evidence.',
     );
   }
-  if (settings.evaluator === null) {
+  if (settings.evaluator !== null) {
+    declared.push(['evaluator', settings.evaluator.path]);
+  } else if (settings.requireEvaluator) {
     throw new Error(
       'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
         'needs the evaluator\u2019s own browser evidence.',
     );
   }
-  const declared: readonly (readonly [PrototypeObservationRole, string])[] = [
-    ['author', settings.author.observation.path],
-    ['evaluator', settings.evaluator.path],
-  ];
   for (const [role, observationPath] of declared) {
     let observation: PrototypeObservation;
     try {
@@ -352,13 +356,14 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     if (problem !== null) {
       throw new Error(`The ${settings.stage} evaluator report is unusable: ${problem}.`);
     }
-    if (settings.stage === 'prototype' && report.verdict === 'accepted') {
+    if (settings.stage === 'prototype') {
       await requirePrototypeEvidence({
         git: settings.git,
         worktree,
         roundDirectory: roundArtifactDirectory(root, plan.round),
         author,
         evaluator: report.observation,
+        requireEvaluator: report.verdict === 'accepted',
         assessed: retained.content,
       });
     }

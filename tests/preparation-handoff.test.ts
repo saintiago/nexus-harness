@@ -212,7 +212,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -253,7 +253,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -414,7 +414,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
 
@@ -485,7 +485,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'architecture',
       runner: dropping,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
     await expect(author({ stage: 'architecture', task: 'propose' })).rejects.toThrow(
@@ -755,7 +755,7 @@ describe('preparation repair rounds', () => {
       selectionFile,
       stage: 'ux',
       runner,
-      git: scriptedGit([]).git,
+      git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
     await expect(author({ stage: 'ux', task: 'propose' })).resolves.toBe('skip-proposed');
