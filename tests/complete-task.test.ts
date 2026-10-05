@@ -477,6 +477,45 @@ describe('CompleteTask', () => {
     });
   });
 
+  it('refuses a retained approval whose report carries a blocking finding', async () => {
+    const inconsistent = await workspace({ name: 'inconsistent-approval' });
+    const helpers = createArtifactHelpers({ root: inconsistent.workspaceRoot });
+    // A retained report can record an approval while carrying a blocking finding; the
+    // producer-owned reader rejects the contradiction before completion can consume it.
+    await helpers.writeOutputArtifact(reviewArtifact, {
+      profile: 'nexus-review',
+      headRevision,
+      verdict: 'approved',
+      summary: 'The change matches the task.',
+      findings: [
+        {
+          title: 'Missing retry',
+          severity: 'blocking',
+          basis: 'The design requires a retry.',
+          evidence: 'No retry exists.',
+          impact: 'Transient failures are lost.',
+          repairGuidance: 'Add the retry.',
+          locations: [],
+        },
+      ],
+    });
+    const { github, calls: githubCalls } = scriptedGitHub({});
+    await expect(
+      completeTaskAction({
+        selectionFile: inconsistent.selectionFile,
+        github,
+        jira: scriptedJira({}).jira,
+        wait: scriptedWait().wait,
+      })(),
+    ).rejects.toThrow(/approved the revision while reporting a blocking finding/);
+    // The contradiction records no completion evidence and publishes no outcome.
+    await expect(
+      stat(path.join(inconsistent.workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).rejects.toThrow(/ENOENT/);
+    expect(githubCalls).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
   it('fails a closed pull request and a failed post-merge check', async () => {
     const closed = await workspace({ name: 'closed' });
     const closedHub = scriptedGitHub({

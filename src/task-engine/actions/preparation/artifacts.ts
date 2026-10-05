@@ -3,7 +3,7 @@ import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
-import { reportedFindingSchema, retainedFindingSchema } from '../review/artifacts.js';
+import { reportedFindingSchema, retainedFindingSchema, type Finding } from '../review/artifacts.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
@@ -305,20 +305,32 @@ export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
 /**
  * The saved evaluation artifact: reported findings with their absent lines normalized away. The
  * producer-owned reader preserves former finding IDs and dispositions as retained data without
- * matching or validating them.
+ * matching or validating them, and rejects a report whose verdict contradicts its current
+ * findings or upstream request, so continuation and downstream consumers see a consistent record.
  */
-export const stageEvaluationOutputSchema = z.object({
-  /** The exact authored report, captured input and assessed content this decision is bound to. */
-  basis: acceptanceBasisSchema,
-  assessedRevision: z.number().int().positive(),
-  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
-  reason: z.string(),
-  /** The evaluator's own saved prototype observation record the decision retains, if any. */
-  observation: artifactReferenceSchema.nullable(),
-  findings: z.array(retainedFindingSchema),
-  priorFindings: z.unknown().optional(),
-  upstream: upstreamRequestSchema.nullable(),
-});
+export const stageEvaluationOutputSchema = z
+  .object({
+    /** The exact authored report, captured input and assessed content this decision is bound to. */
+    basis: acceptanceBasisSchema,
+    assessedRevision: z.number().int().positive(),
+    verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
+    reason: z.string(),
+    /** The evaluator's own saved prototype observation record the decision retains, if any. */
+    observation: artifactReferenceSchema.nullable(),
+    findings: z.array(retainedFindingSchema),
+    priorFindings: z.unknown().optional(),
+    upstream: upstreamRequestSchema.nullable(),
+  })
+  .superRefine((evaluation, context) => {
+    const problem = evaluationVerdictProblem(
+      evaluation.verdict,
+      evaluation.findings,
+      evaluation.upstream,
+    );
+    if (problem !== null) {
+      context.addIssue({ code: 'custom', path: ['verdict'], message: problem });
+    }
+  });
 
 export type StageEvaluationOutput = z.infer<typeof stageEvaluationOutputSchema>;
 
@@ -326,6 +338,32 @@ export const stageEvaluationArtifact = {
   pathFromArtifactsRoot: 'evaluation.json',
   schema: stageEvaluationOutputSchema,
 } satisfies ArtifactDeclaration<typeof stageEvaluationOutputSchema>;
+
+/**
+ * Why one evaluation verdict is unsupported by the report it carries, or null. The evaluator's
+ * response and a retained saved evaluation state a verdict their current findings and upstream
+ * request support.
+ */
+export function evaluationVerdictProblem(
+  verdict: StageEvaluationOutput['verdict'],
+  findings: readonly { readonly severity: Finding['severity'] }[],
+  upstream: UpstreamRequest | null,
+): string | null {
+  if (verdict === 'return-upstream' && upstream === null) {
+    return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+  if (upstream !== null && verdict !== 'return-upstream') {
+    return 'only a return-upstream verdict carries the upstream request';
+  }
+  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
+  if ((verdict === 'accepted' || verdict === 'accepted-skip') && blockingCount > 0) {
+    return 'the report accepts the revision while reporting a blocking finding';
+  }
+  if (verdict === 'changes-requested' && blockingCount === 0) {
+    return 'a changes-requested verdict needs at least one current blocking finding';
+  }
+  return null;
+}
 
 /** The terminal result the parent publication reads and the child returns a reference to. */
 export const preparationResultSchema = z.object({

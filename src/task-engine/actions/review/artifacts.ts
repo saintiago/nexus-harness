@@ -62,8 +62,8 @@ export const retainedFindingSchema = z.strictObject({
   ...findingSchema.shape,
 });
 
-/** The review result for one reviewed revision. */
-export const reviewOutputSchema = z.object({
+/** The review result's fields; the exported schema adds the verdict-consistency check. */
+const reviewOutputFieldsSchema = z.object({
   /** Task subject captured for this report; older reports may omit it. */
   taskSubject: z.string().optional(),
   profile: z.string().describe('The reviewer profile that produced this verdict.'),
@@ -84,6 +84,33 @@ export const reviewOutputSchema = z.object({
    * as history and is never matched, validated or answered.
    */
   priorFindings: z.unknown().optional(),
+});
+
+/** Why one review verdict is unsupported by the findings it reports, or null. */
+function verdictProblem(
+  verdict: ReviewOutput['verdict'],
+  findings: readonly { readonly severity: Finding['severity'] }[],
+): string | null {
+  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
+  if (verdict === 'approved' && blockingCount > 0) {
+    return 'approved the revision while reporting a blocking finding';
+  }
+  if (verdict === 'changesRequested' && blockingCount === 0) {
+    return 'requested changes without a current blocking finding';
+  }
+  return null;
+}
+
+/**
+ * The review result for one reviewed revision. The producer-owned reader rejects a report whose
+ * verdict contradicts its current findings, so continuation, history and downstream consumers all
+ * receive a consistent saved report; former fields stay permitted as retained data.
+ */
+export const reviewOutputSchema = reviewOutputFieldsSchema.superRefine((report, context) => {
+  const problem = verdictProblem(report.verdict, report.findings);
+  if (problem !== null) {
+    context.addIssue({ code: 'custom', path: ['verdict'], message: `the review ${problem}` });
+  }
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
@@ -116,7 +143,7 @@ export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
  * writing its output.
  */
 export const reviewResponseSchema = z.strictObject({
-  ...reviewOutputSchema.pick({ verdict: true, summary: true }).shape,
+  ...reviewOutputFieldsSchema.pick({ verdict: true, summary: true }).shape,
   findings: z
     .array(reportedFindingSchema)
     .describe('The findings present in the reviewed revision, including newly discovered ones.'),
@@ -129,28 +156,10 @@ export const reviewArtifact = {
   schema: reviewOutputSchema,
 } satisfies ArtifactDeclaration<typeof reviewOutputSchema>;
 
-/** Validate one report's shape against the shared findings and verdict contract. */
+/** Validate one agent report's verdict against its current findings. */
 export function validateReviewResponse(report: ReviewResponse): void {
-  const blockingCount = report.findings.filter((finding) => finding.severity === 'blocking').length;
-  if (report.verdict === 'approved' && blockingCount > 0) {
-    throw new Error('The reviewer approved the revision while reporting a blocking finding.');
+  const problem = verdictProblem(report.verdict, report.findings);
+  if (problem !== null) {
+    throw new Error(`The reviewer ${problem}.`);
   }
-  if (report.verdict === 'changesRequested' && blockingCount === 0) {
-    throw new Error('The reviewer requested changes without a current blocking finding.');
-  }
-}
-
-/**
- * Validate a retained saved report's verdict consistency. Shape validation happens at the
- * artifact reader; this check keeps an inconsistent retained verdict an action failure.
- */
-export function retainedReviewProblem(report: ReviewOutput): string | null {
-  const blockingCount = report.findings.filter((finding) => finding.severity === 'blocking').length;
-  if (report.verdict === 'approved' && blockingCount > 0) {
-    return 'the retained review approved the revision while reporting a blocking finding';
-  }
-  if (report.verdict === 'changesRequested' && blockingCount === 0) {
-    return 'the retained review requested changes without a blocking finding';
-  }
-  return null;
 }

@@ -578,6 +578,7 @@ describe('preparation repair rounds', () => {
         },
         verdict: 'accepted-skip',
         reason: 'The existing design still holds.',
+        findings: [],
       }),
     );
     const { git } = scriptedGit([repositoryState()], {
@@ -591,6 +592,64 @@ describe('preparation repair rounds', () => {
       publish: () => undefined,
     });
     await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(/nonempty implementation plan/);
+  });
+
+  it('rejects a retained evaluation whose accepted verdict contradicts its blocking finding', async () => {
+    const { selectionFile, issueRoot, root, selection } = await stageWithEvaluation();
+    const evaluationFile = path.join(root, 'artifacts', '1', 'evaluation.json');
+    const evaluation = JSON.parse(await readFile(evaluationFile, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(
+      evaluationFile,
+      JSON.stringify({ ...evaluation, verdict: 'accepted', reason: 'The journey is adequate.' }),
+    );
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async (_repository, _revision, file) =>
+        ok(await readFile(path.join(preparationWorktree(issueRoot), file), 'utf8')),
+    });
+
+    // Finalization reads the evaluator's saved report, so the contradiction fails before any
+    // acceptance can be persisted.
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'ux',
+      git,
+      publish: () => undefined,
+    });
+    await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(
+      /accepts the revision while reporting a blocking finding/,
+    );
+    await expect(artifact(root, 1, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(path.join(root, 'state', 'result.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    // A retained result that already recorded the acceptance cannot make the decision current
+    // downstream either.
+    await writeFile(
+      path.join(root, 'artifacts', '1', 'result.json'),
+      JSON.stringify({
+        stage: 'ux',
+        outcome: 'accepted',
+        authoredRevision: 1,
+        documents: [],
+        existingDocuments: [],
+        sourcePaths: [],
+        skipReferences: [],
+        outputs: [{ path: path.join(root, 'artifacts', '1', 'evaluation.json') }],
+        evaluation: { path: path.join(root, 'artifacts', '1', 'evaluation.json') },
+        reason: 'The journey is adequate.',
+        returnStage: null,
+        returnFinding: null,
+        prototype: null,
+        prototypeObservations: [],
+      }),
+    );
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).rejects.toThrow(/accepts the revision while reporting a blocking finding/);
   });
 
   it.each(['return-upstream', 'needs-input'] as const)(

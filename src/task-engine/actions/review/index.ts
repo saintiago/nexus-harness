@@ -45,7 +45,6 @@ import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
-  retainedReviewProblem,
   reviewArtifact,
   reviewResponseSchema,
   toFinding,
@@ -384,22 +383,9 @@ export function createReview(settings: ReviewSettings): BoundAction {
 
     // A saved report for the delivered head is the review of this revision: finish any missing
     // publication for that exact head instead of reviewing again. A report for another revision
-    // is not evidence for this one. A retained report with an inconsistent verdict is an action
-    // failure, not a report to publish.
+    // is not evidence for this one. The reader has already rejected a retained report whose
+    // verdict contradicts its findings; that failure is not a report to publish.
     if (recorded !== null && recorded.headRevision === reviewedHead) {
-      const problem = retainedReviewProblem(recorded);
-      if (problem !== null) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope,
-          invocationId,
-          operation: 'review',
-          profile: settings.reviewerProfile,
-          context: attribution,
-          file: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
-          error: new Error(`The retained review report is unusable: ${problem}.`),
-        });
-      }
       const conversation = await settings.github.readConversation(
         settings.repository,
         delivery.pullRequestNumber,
@@ -487,7 +473,11 @@ export function createReview(settings: ReviewSettings): BoundAction {
       `Reviewed revision: ${reviewedHead} (comparison base ${prepared.baseRevision})`,
       `Comparison diff ${prepared.baseRevision}..${reviewedHead} (orientation only; ` +
         `task-relevant pre-existing code outside this range is in scope):\n${diff.value}`,
-      `Development result (round ${round.number}):\n${JSON.stringify(development, null, 2)}`,
+      // The saved report is the complete developer artifact: a retained report may carry former
+      // response evidence the current typed view omits, so name its readable local file.
+      `Development result (round ${round.number}; complete retained report at ` +
+        `${roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot)}):\n` +
+        JSON.stringify(development, null, 2),
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
       ...(priorReview === null
         ? []

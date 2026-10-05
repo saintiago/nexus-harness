@@ -28,6 +28,7 @@ import {
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   acceptanceVerdictProblem,
+  evaluationVerdictProblem,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
@@ -99,12 +100,8 @@ function reportProblem(
   }
   const acceptanceProblem = acceptanceVerdictProblem(authorOutcome, report.verdict);
   if (acceptanceProblem !== null) return acceptanceProblem;
-  if (report.verdict === 'return-upstream' && report.upstream === null) {
-    return 'a return-upstream verdict needs the problematic input, consequence and correction';
-  }
-  if (report.upstream !== null && report.verdict !== 'return-upstream') {
-    return 'only a return-upstream verdict carries the upstream request';
-  }
+  const verdictProblem = evaluationVerdictProblem(report.verdict, report.findings, report.upstream);
+  if (verdictProblem !== null) return verdictProblem;
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
       return 'only the Storybook Refinement stage retains a prototype observation';
@@ -123,17 +120,6 @@ function reportProblem(
   }
   // A change request or upstream return may retain the observation of the preview it performed;
   // the declared record is validated with the rest of the report either way.
-
-  const blocking = report.findings.filter((finding) => finding.severity === 'blocking');
-  if (
-    (report.verdict === 'accepted' || report.verdict === 'accepted-skip') &&
-    blocking.length > 0
-  ) {
-    return 'the report accepts the revision while reporting a blocking finding';
-  }
-  if (report.verdict === 'changes-requested' && blocking.length === 0) {
-    return 'a changes-requested verdict needs at least one current blocking finding';
-  }
   return null;
 }
 

@@ -634,6 +634,65 @@ describe('Review', () => {
     });
   });
 
+  it('names the complete retained development report of the current repair round', async () => {
+    const { workspaceRoot, selectionFile, round } = await workspace({
+      round: 2,
+      name: 'retained-development',
+    });
+    await writeDeliveredRound(workspaceRoot);
+    // A report produced before the contract change keeps its former response evidence; the
+    // simplified typed view omits it, so the review must be able to read the complete file.
+    const developmentFile = path.join(
+      workspaceRoot,
+      'artifacts',
+      String(round),
+      devArtifact.pathFromArtifactsRoot,
+    );
+    await writeFile(
+      developmentFile,
+      `${JSON.stringify(
+        {
+          taskKey: 'NEX-1',
+          profile: 'dev-a',
+          status: 'completed',
+          baseRevision,
+          headRevision,
+          summary: 'Repaired the guard and disagreed with the earlier review.',
+          findingResponses: [
+            { findingId: 'NEX-1-1', status: 'disputed', response: 'The guard is unnecessary.' },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    const { runtime, requests } = scriptedRuntime(() =>
+      JSON.stringify({ verdict: 'approved', summary: 'The guard is present.', findings: [] }),
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/src/queue.ts b/src/queue.ts\n+retry\n'),
+    });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+    ).resolves.toBe('approved');
+
+    const context = requests[0]?.context ?? '';
+    // The typed view carries the current fields; the named file carries the complete retained
+    // report, including former response evidence the typed view omits.
+    expect(context).toContain(
+      `Development result (round ${String(round)}; complete retained report at ${developmentFile})`,
+    );
+    expect(context).toContain('Repaired the guard and disagreed with the earlier review.');
+    expect(await readFile(developmentFile, 'utf8')).toContain('The guard is unnecessary.');
+  });
+
   it.each(['malformed', 'unreadable'] as const)(
     'preserves %s development and review history under its producers',
     async (kind) => {
@@ -1181,8 +1240,8 @@ describe('Review', () => {
       formerBytes,
     );
 
-    // A retained report whose verdict contradicts its blocking findings is an action failure,
-    // not a verdict to publish.
+    // A retained report whose verdict contradicts its blocking findings fails its declared
+    // content, so the reader rejects it as an action failure rather than a verdict to publish.
     const { workspaceRoot: inconsistentRoot, selectionFile: inconsistentSelection } =
       await workspace({ name: 'inconsistent-report' });
     await writeDeliveredRound(inconsistentRoot);
@@ -1201,7 +1260,7 @@ describe('Review', () => {
         git: scriptedGit([]).git,
         github: scriptedGitHub({}).github,
       })(),
-    ).rejects.toThrow(/retained review report is unusable/);
+    ).rejects.toThrow(/approved the revision while reporting a blocking finding/);
     expect(
       await readFile(path.join(inconsistentRoot, 'artifacts', '1', 'review.json'), 'utf8'),
     ).toBe(inconsistentBytes);
