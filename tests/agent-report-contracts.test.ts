@@ -166,7 +166,6 @@ describe('agent report contracts', () => {
 
 /** One current finding, as the reviewer and evaluation contracts report it. */
 const reportedFindingSample = {
-  id: 'HARN-97-F1',
   title: 'The contract accepts a stray field',
   severity: 'blocking',
   basis: 'The response contract forbids unknown fields.',
@@ -255,7 +254,6 @@ const reportSamples: readonly {
       skip: { reason: 'Existing inputs suffice.', references: ['docs/existing.md'] },
       question: null,
       upstream: null,
-      findingResponses: [],
     },
   },
   {
@@ -267,7 +265,6 @@ const reportSamples: readonly {
       reason: 'One finding remains.',
       observation: null,
       findings: [reportedFindingSample],
-      priorFindings: [],
       upstream: null,
     },
   },
@@ -277,9 +274,6 @@ const reportSamples: readonly {
     sample: {
       status: 'completed',
       summary: 'Implemented.',
-      findingResponses: [
-        { findingId: 'HARN-97-F1', status: 'addressed', response: 'Rejected unknown fields.' },
-      ],
     },
   },
   {
@@ -289,7 +283,6 @@ const reportSamples: readonly {
       verdict: 'changesRequested',
       summary: 'One defect remains.',
       findings: [reportedFindingSample],
-      priorFindings: [],
     },
   },
   {

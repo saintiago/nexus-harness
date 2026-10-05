@@ -91,7 +91,6 @@ async function workspace(
     verdict: 'approved',
     summary: 'The change matches the task.',
     findings: [],
-    priorFindings: [],
   };
   await helpers.writeOutputArtifact(reviewArtifact, review);
   return { workspaceRoot, selectionFile };
@@ -409,7 +408,6 @@ describe('CompleteTask', () => {
       summary: 'A blocking finding remains.',
       findings: [
         {
-          id: 'NEX-1-finding-1',
           title: 'Missing retry',
           severity: 'blocking',
           basis: 'The design requires a retry.',
@@ -419,7 +417,6 @@ describe('CompleteTask', () => {
           locations: [],
         },
       ],
-      priorFindings: [],
     });
     await expect(
       completeTaskAction({
@@ -444,7 +441,6 @@ describe('CompleteTask', () => {
       verdict: 'approved',
       summary: 'Approved another revision.',
       findings: [],
-      priorFindings: [],
     });
     await expect(
       completeTaskAction({

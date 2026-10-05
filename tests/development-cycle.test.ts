@@ -15,10 +15,7 @@ import { createGitAdapter } from '../src/adapters/git.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import {
-  type DevelopmentOutput,
-  type FindingResponse,
-} from '../src/task-engine/actions/develop/artifacts.js';
+import type { DevelopmentOutput } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import { reviewArtifact, type Finding } from '../src/task-engine/actions/review/artifacts.js';
 import { createStartRound } from '../src/task-engine/actions/start-round/index.js';
@@ -146,7 +143,7 @@ async function commit(name: string, content: string, message: string): Promise<v
 
 /** One scripted development turn: what it changes and what it reports. */
 type Turn = {
-  readonly findingResponses: readonly FindingResponse[];
+  readonly summary?: string;
   readonly change: () => Promise<void>;
 };
 
@@ -170,8 +167,7 @@ function scriptedDeveloper(turns: readonly Turn[]): {
         return ok({
           output: JSON.stringify({
             status: 'completed',
-            summary: 'Implemented and committed the change.',
-            findingResponses: turn.findingResponses,
+            summary: turn.summary ?? 'Implemented and committed the change.',
           }),
         });
       },
@@ -240,7 +236,6 @@ async function readCurrentRound(): Promise<unknown> {
 describe('development cycle', () => {
   it('plans each round from the review rejection and the failed check', async () => {
     const finding: Finding = {
-      id: 'NEX-1-finding-1',
       title: 'The feature has no regression check',
       severity: 'blocking',
       basis: 'The task requires a verified feature.',
@@ -251,17 +246,10 @@ describe('development cycle', () => {
     };
     const developer = scriptedDeveloper([
       {
-        findingResponses: [],
         change: () => commit('feature.txt', 'feature\n', 'add the feature'),
       },
       {
-        findingResponses: [
-          {
-            findingId: finding.id,
-            status: 'addressed',
-            response: 'The feature is covered by the configured check.',
-          },
-        ],
+        summary: 'Covered the feature with the configured check.',
         change: async () => {
           // The first repair still fails the configured check.
           await rm(path.join(worktree, 'feature.txt'));
@@ -270,13 +258,7 @@ describe('development cycle', () => {
         },
       },
       {
-        findingResponses: [
-          {
-            findingId: finding.id,
-            status: 'addressed',
-            response: 'Restored the feature with the check passing.',
-          },
-        ],
+        summary: 'Restored the feature with the check passing.',
         change: async () => {
           await rm(path.join(worktree, 'broken.txt'));
           await writeFile(path.join(worktree, 'feature.txt'), 'feature repaired\n');
@@ -305,7 +287,6 @@ describe('development cycle', () => {
       verdict: 'changesRequested',
       summary: 'The regression check must cover the feature.',
       findings: [finding],
-      priorFindings: [],
     });
 
     // Round 2: the review requested changes, so the round policy continues the initial profile.
@@ -316,11 +297,11 @@ describe('development cycle', () => {
       reason: expect.stringContaining('continues with the initial profile "dev-a"'),
     });
 
-    // The repair answers the review's finding but fails the configured check.
+    // The repair narrates the earlier review's concern but fails the configured check.
     await expect(cycle.develop()).resolves.toBe('completed');
     expect((await readArtifact(2, 'development.json')) as DevelopmentOutput).toMatchObject({
       profile: 'dev-a',
-      findingResponses: [{ findingId: finding.id, status: 'addressed' }],
+      summary: 'Covered the feature with the configured check.',
     });
     await expect(cycle.verify()).resolves.toBe('failed');
     expect((await readArtifact(2, 'verification.json')) as VerificationOutput).toMatchObject({

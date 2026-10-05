@@ -17,7 +17,6 @@ import {
   type ArtifactHistoryValue,
 } from '../artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
-import { requireFindingResponses } from '../finding-responses.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -50,9 +49,9 @@ import {
  * worktree. It refreshes the task and conversation from the source into the selection record,
  * assembles the round's context from the earlier-round artifacts and invokes the profile the
  * current round selected once. The action records the profile and observed repository revisions;
- * the agent supplies only status, summary and finding responses. A completed turn must leave
- * committed work on the prepared branch; otherwise the recorded summary also carries the observed
- * readiness failure.
+ * the agent supplies only status and a narrative summary. A completed turn must leave committed
+ * work on the prepared branch; otherwise the recorded summary also carries the observed readiness
+ * failure.
  *
  * Source, repository and invocation failures are execution errors. Unusable agent output is an
  * execution error, not a failed report.
@@ -189,8 +188,8 @@ function checkEvidence(root: string, histories: RoundHistories): string | null {
 
 /** The report shape and identity rules; the action observes the profile and revisions itself. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
-{"status":"completed"|"failed","summary":"<what changed and why, or why implementation could not be completed>","findingResponses":[{"findingId":"<supplied finding ID>","status":"addressed"|"disputed"|"unresolved","response":"<the change, disagreement or remaining problem, with supporting evidence>"}]}
-Include exactly one findingResponses entry for every supplied finding ID and no others; use an empty array when no findings are supplied. status "completed" means the implementation is committed on the prepared branch and ready for verification; "failed" means it could not be completed.
+{"status":"completed"|"failed","summary":"<what changed and why, or why implementation could not be completed>"}
+The summary is the complete narrative: what changed, the verification performed and its results, answers to previous reviews, disagreements and remaining problems, as applicable. Previous reports provide context; there is no per-finding response or status record. status "completed" means the implementation is committed on the prepared branch and ready for verification; "failed" means it could not be completed.
 Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed task, profile and revisions and persists this report.`;
 
 /** Create Develop over the configured selection, profiles, developer runtime and adapters. */
@@ -320,7 +319,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       return existing.status;
     }
 
-    const findings = latestReview?.value.findings ?? [];
     const evidence = checkEvidence(root, histories);
     const context = [
       `Task ${selection.taskKey}`,
@@ -330,9 +328,9 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       `Prepared branch: ${prepared.branch} (comparison base ${prepared.baseRevision})`,
       `Local selection record (refreshed task and complete conversation): ${settings.selectionFile}`,
       latestReview === null
-        ? 'No review findings are supplied for this round.'
-        : `Findings to respond to (complete values from the review in round ${latestReview.number}):\n` +
-          JSON.stringify(findings, null, 2),
+        ? 'No previous review report is retained for this round.'
+        : `Most recent review report (round ${latestReview.number}; repair context, judged by the ` +
+          `next review against the current revision):\n${JSON.stringify(latestReview.value, null, 2)}`,
       ...reportFeedbackContextText(outstanding),
       historySection(root, histories),
       ...(evidence === null ? [] : [evidence]),
@@ -355,9 +353,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
 
     const response = await (async (): Promise<DevelopmentResponse> => {
       try {
-        const parsed = parseResponse(result.value.output);
-        requireFindingResponses(parsed.findingResponses, findings, 'development agent');
-        return parsed;
+        return parseResponse(result.value.output);
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -406,7 +402,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       baseRevision: prepared.baseRevision,
       headRevision: after.headRevision,
       summary,
-      findingResponses: response.findingResponses,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
     if (outstanding.length > 0) {

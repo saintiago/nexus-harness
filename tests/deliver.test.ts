@@ -165,7 +165,6 @@ async function writeVerifiedRound(
     baseRevision,
     headRevision,
     summary: 'Implemented the retry guard.',
-    findingResponses: [],
     ...overrides.development,
   });
   await helpers.writeOutputArtifact(verificationArtifact, {
@@ -1417,7 +1416,6 @@ describe('Deliver', () => {
       baseRevision,
       headRevision,
       summary: 'First implementation.',
-      findingResponses: [],
     });
     await writeRoundArtifact(workspaceRoot, 2, 'development.json', {
       taskKey: 'NEX-1',
@@ -1426,7 +1424,6 @@ describe('Deliver', () => {
       baseRevision,
       headRevision: otherRevision,
       summary: 'Incomplete repair.',
-      findingResponses: [],
     });
     await writeVerifiedRound(workspaceRoot, { development: { profile: 'dev-b' } });
     const { git } = scriptedGit([repositoryState({ headRevision })], {

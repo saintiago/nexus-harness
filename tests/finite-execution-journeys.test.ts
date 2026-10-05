@@ -698,14 +698,12 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: 'Added feature.txt with the guarded behavior.',
-          findingResponses: [],
         };
       }),
       reviewerTurn(async () => ({
         verdict: 'approved',
         summary: 'The change fulfils the task and the configured check covers it.',
         findings: [],
-        priorFindings: [],
       })),
     ]);
 
@@ -736,7 +734,6 @@ describe('finite execution journeys', () => {
       taskKey: 'NEX-1',
       profile: 'nexus-flash',
       status: 'completed',
-      findingResponses: [],
     });
     const verification = await journey.artifact<VerificationOutput>(1, 'verification.json');
     expect(verification).toMatchObject({
@@ -817,7 +814,7 @@ describe('finite execution journeys', () => {
     // The developer and the reviewer each ran once with the configured profiles, and the ticket
     // carries both reports.
     expect(journey.prompts).toHaveLength(2);
-    expect(journey.prompts[0]).toContain('No review findings are supplied for this round.');
+    expect(journey.prompts[0]).toContain('No previous review report is retained for this round.');
     expect(journey.prompts[1]).toContain(`Reviewed revision: ${development.headRevision}`);
     expect(journey.comments()).toHaveLength(2);
 
@@ -850,7 +847,6 @@ describe('finite execution journeys', () => {
   it('completes a review-requested repair with the complete finding handoff', async () => {
     const journey = await finiteJourney();
     const finding: Finding = {
-      id: 'F1',
       title: 'The feature ships unguarded',
       severity: 'blocking',
       basis: 'The task requires the guarded behavior.',
@@ -876,20 +872,17 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: 'Added the feature.',
-          findingResponses: [],
         };
       }),
       reviewerTurn(async () => ({
         verdict: 'changesRequested',
         summary: 'The feature is missing its required guard.',
         findings: [reportedFinding],
-        priorFindings: [],
       })),
       developerTurn(async (request) => {
-        // The repair round receives the preceding review's complete Finding value.
-        expect(request.prompt).toContain('Findings to respond to (complete values from the review');
+        // The repair round receives the preceding review as readable context.
+        expect(request.prompt).toContain('Most recent review report (round 1; repair context');
         for (const value of [
-          finding.id,
           finding.title,
           finding.basis,
           finding.evidence,
@@ -904,27 +897,17 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: repairResponse,
-          findingResponses: [
-            { findingId: finding.id, status: 'addressed', response: repairResponse },
-          ],
         };
       }),
       reviewerTurn(async (request) => {
-        // The next review receives the same finding and the developer's actual response.
-        expect(request.prompt).toContain(finding.id);
+        // The next review receives the earlier report and the developer's narrative.
+        expect(request.prompt).toContain('Previous review report (round 1;');
         expect(request.prompt).toContain(finding.repairGuidance);
         expect(request.prompt).toContain(repairResponse);
         return {
           verdict: 'approved',
           summary: 'The guard resolves the finding on the reviewed revision.',
           findings: [],
-          priorFindings: [
-            {
-              findingId: finding.id,
-              disposition: 'resolved',
-              reason: 'The guard is present and the developer response matches the revision.',
-            },
-          ],
         };
       }),
     ]);
@@ -954,19 +937,19 @@ describe('finite execution journeys', () => {
     // Round 1 recorded the requested repair and its complete finding.
     const firstReview = await journey.artifact<ReviewOutput>(1, 'review.json');
     expect(firstReview).toMatchObject({ verdict: 'changesRequested', findings: [finding] });
-    // Round 2 carries the developer's response and its disposition through the same values.
+    // Round 2 carries the developer's narrative for the earlier review's concern.
     const repairDevelopment = await journey.artifact<DevelopmentOutput>(2, 'development.json');
     expect(repairDevelopment).toMatchObject({
       profile: 'nexus-flash',
       status: 'completed',
-      findingResponses: [{ findingId: finding.id, status: 'addressed', response: repairResponse }],
+      summary: repairResponse,
     });
+    expect(repairDevelopment).not.toHaveProperty('findingResponses');
     expect(repairDevelopment.headRevision).not.toBe(firstReview.headRevision);
     const secondReview = await journey.artifact<ReviewOutput>(2, 'review.json');
     expect(secondReview).toMatchObject({
       verdict: 'approved',
       findings: [],
-      priorFindings: [{ findingId: finding.id, disposition: 'resolved' }],
     });
     const completion = await journey.artifact<CompletionOutput>(2, 'completion.json');
     expect(completion.reviewedHead).toBe(repairDevelopment.headRevision);
@@ -1000,14 +983,12 @@ describe('finite execution journeys', () => {
           return {
             status: 'completed',
             summary: 'Added the retained feature after the interruption.',
-            findingResponses: [],
           };
         }),
         reviewerTurn(async () => ({
           verdict: 'approved',
           summary: 'The change fulfils the task.',
           findings: [],
-          priorFindings: [],
         })),
       ],
       async (request) => {
@@ -1123,14 +1104,12 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: 'Added feature.txt for the memory journey.',
-          findingResponses: [],
         };
       }),
       reviewerTurn(async () => ({
         verdict: 'approved',
         summary: 'The change fulfils the task and the configured check covers it.',
         findings: [],
-        priorFindings: [],
       })),
     ]);
 
@@ -1283,14 +1262,12 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: 'Added feature.txt for the analysis journey.',
-          findingResponses: [],
         };
       }),
       reviewerTurn(async () => ({
         verdict: 'approved',
         summary: 'The change fulfils the task.',
         findings: [],
-        priorFindings: [],
       })),
     ]);
 
@@ -1375,14 +1352,12 @@ describe('finite execution journeys', () => {
         return {
           status: 'completed',
           summary: 'Added feature.txt without reaching the memory service.',
-          findingResponses: [],
         };
       }),
       reviewerTurn(async () => ({
         verdict: 'approved',
         summary: 'The change fulfils the task and the configured check covers it.',
         findings: [],
-        priorFindings: [],
       })),
     ]);
 

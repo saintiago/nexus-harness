@@ -11,7 +11,6 @@ import {
   type EventPublisher,
 } from '../../../index.js';
 import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
-import { requireFindingResponses } from '../../finding-responses.js';
 import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
@@ -65,7 +64,8 @@ import {
  * StageAuthor is the evaluated preparation stages' author invocation: it proposes work or a skip
  * with reasons and references, or revises the work in response to the evaluator's findings. It
  * saves the authored revision, its documents, plan, skip proposal, question or upstream request
- * and the author's finding responses. Provider and unusable-output failures are execution errors.
+ * and the narrative summary that explains repairs, disagreements and remaining problems. Provider
+ * and unusable-output failures are execution errors.
  */
 
 export type StageAuthorSettings = {
@@ -464,8 +464,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           'revise and no earlier round retains one.',
       );
     }
-    // The most recent preceding evaluation supplies the findings this round answers; an unusable
-    // record is preserved under the evaluator responsibility instead of failing without evidence.
+    // The most recent preceding evaluation supplies the repair context for this round; an
+    // unusable record is preserved under the evaluator responsibility instead of failing without
+    // evidence.
     let precedingEvaluation: StageEvaluationOutput | null = null;
     if (plan.route !== 'new') {
       for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
@@ -476,7 +477,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         }
       }
     }
-    const findings = precedingEvaluation?.findings ?? [];
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
 
     // A response round and a pending reassessment both revise the preceding authored revision
@@ -519,7 +519,8 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           ? plan.route === 'reassess'
             ? 'Propose the current decision for this reassessed work: reuse retained accepted work whose content and inputs still match, or repair what changed.'
             : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
-          : 'Revise the authored revision in answer to every current finding, or rebut with reasons.',
+          : 'Revise the authored revision in answer to the current findings, explaining ' +
+            'corrections, disagreements and remaining problems in the summary.',
         'Return the response object only; do not write or overwrite the action-owned stage records ' +
           '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
           'adds the stage and authored revision metadata and persists your report.',
@@ -541,12 +542,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             'observation contract above states the record and the round artifact area.'
           : 'The observation field is null; only the Storybook Refinement stage retains an ' +
             'observation record.',
-        findings.length === 0
-          ? 'No prior findings are supplied for this round; return an empty findingResponses array.'
-          : `Eligible prior finding IDs: ${findings
-              .map((finding) => `"${finding.id}"`)
-              .join(', ')}. Return exactly one findingResponses entry for each and none for any ` +
-            'other ID, stating what you changed, disagree with or could not resolve.',
+        'Use the supplied previous reports as context: explain what you corrected, what you ' +
+          'disagree with and any remaining problem in the narrative summary. There are no finding ' +
+          'IDs, response arrays or disposition records to answer.',
         responseFormatText(stageAuthorResponseSchema),
       ].join('\n\n'),
       outputSchema: z.toJSONSchema(stageAuthorResponseSchema),
@@ -617,23 +615,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         reason: `The ${settings.stage} author report is unusable: ${problem}.`,
       });
     }
-    try {
-      requireFindingResponses(report.findingResponses, findings, `${settings.stage} author`);
-    } catch (error) {
-      await rejectReport({
-        areaRoot: root,
-        scope,
-        invocationId,
-        operation: 'stage-author',
-        profile: authorProfile,
-        context: attribution,
-        source: null,
-        output: result.value.output,
-        reason: messageOf(error),
-        cause: error,
-      });
-    }
-
     // The retained response keeps its revision on a replay; a new revision continues the stage's
     // cumulative authored revisions.
     const revision = author?.revision ?? (preceding?.author.revision ?? 0) + 1;

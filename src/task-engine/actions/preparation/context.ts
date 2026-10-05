@@ -38,9 +38,9 @@ import {
 /**
  * The context every evaluated preparation role receives: the shared preparation instructions, the
  * captured issue input and conversation as the authoritative source, the connected project
- * worktree, references to accepted upstream outputs and the current round's revision, findings and
- * responses. Role constants come from the selected profile; this module supplies the stage
- * material and the shared guidance.
+ * worktree, references to accepted upstream outputs and the current round's authored revision and
+ * preceding evaluation as readable repair context. Role constants come from the selected profile;
+ * this module supplies the stage material and the shared guidance.
  */
 
 /**
@@ -59,9 +59,11 @@ export const preparationSharedInstructions = [
   'inputs suffice, with concrete references. If inputs prevent a feasible clean result, identify',
   'the problematic input, correction and owning earlier stage. Ask the user only for a material',
   'decision that available context cannot resolve, and do not turn a provider or tool failure into',
-  'an upstream product requirement. Authors preserve scope and respond to all supplied findings',
-  'through revision, answer or reasoned rebuttal. Evaluators inspect the exact current revision,',
-  'resolve prior findings and seek useful improvements as well as omissions, separating necessary',
+  'an upstream product requirement. Authors preserve scope and explain corrections, answers,',
+  'disagreements and remaining problems in their report narrative, using previous reports as',
+  'context without per-finding response or status records. Evaluators inspect current content,',
+  'judge whether earlier concerns remain and seek useful improvements as well as omissions. Return',
+  'actionable current findings without stable IDs or disposition records, separating necessary',
   'changes from optional suggestions and accepting adequate work. Shared-memory search/save is',
   'explicit when the invocation carries the memory tools; no preparation role schedules automatic',
   'memory consumption.',
@@ -227,8 +229,8 @@ export async function stageContextText(settings: StageContextSettings): Promise<
     settings.evaluation === null
       ? []
       : [
-          'The previous evaluation of this work (respond to every finding through revision, answer',
-          'or reasoned rebuttal):',
+          'The previous evaluation of this work (context for corrections, disagreements and',
+          'remaining problems):',
           JSON.stringify(settings.evaluation, null, 2),
         ];
   const previousAuthor =

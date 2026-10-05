@@ -24,7 +24,7 @@ import {
   type ArtifactHistoryValue,
 } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
-import { devArtifact, type DevelopmentOutput, type FindingResponse } from '../develop/artifacts.js';
+import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
 import {
   preparedWorkspaceDeclaration,
@@ -45,21 +45,21 @@ import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
+  retainedReviewProblem,
   reviewArtifact,
-  validateReviewResponse,
   reviewResponseSchema,
   toFinding,
-  type Finding,
   type ReviewOutput,
   type ReviewResponse,
+  validateReviewResponse,
 } from './artifacts.js';
 
 /**
  * Review evaluates the delivered revision against the task and produces an actionable review of
  * that revision. It refreshes the task and pull-request conversations into the local records,
- * supplies the reviewer the exact current-round prior-finding set with the matching developer
- * responses and the comparison diff, and binds the returned verdict to the revision it actually
- * observed. Only a revision Review itself published as approved can authorize merge.
+ * supplies the reviewer the task requirements, developer artifacts, verification evidence and
+ * previous reports, and binds the returned verdict to the revision it actually observed. Only a
+ * revision Review itself published as approved can authorize merge.
  *
  * Unusable agent output, worktree contradictions and adapter faults are execution errors; the
  * verdict is the action's outcome. The saved report and the remote review and check make repetition
@@ -183,37 +183,10 @@ function historySection(
   }
   const ordered = [...rounds.entries()].sort(([left], [right]) => left - right);
   return [
-    'Historical evidence (complete earlier-round reports saved in this workspace, separate from ' +
-      'the current-round disposition input; read what bears on identity or recurrence):',
+    'Historical evidence (complete earlier-round reports saved in this workspace; read what bears ' +
+      'on earlier concerns and recurrence):',
     ...ordered.flatMap(([number, lines]) => [`- Round ${number}:`, ...lines]),
   ].join('\n');
-}
-
-/**
- * The current-round disposition input: the preceding review's findings array is the exact set of
- * eligible prior findings, followed by the developer's responses to those findings. The review's
- * verdict, summary and its own dispositions stay out of this input; the saved reports remain
- * historical evidence the reviewer reads for identity and recurrence.
- */
-function dispositionInput(
-  priorRound: number | null,
-  findings: readonly Finding[],
-  responses: readonly FindingResponse[],
-): string {
-  const eligible =
-    findings.length === 0 ? 'none' : findings.map((finding) => `"${finding.id}"`).join(', ');
-  return [
-    priorRound === null
-      ? 'Current-round prior findings to dispose of: none; no review precedes this round.'
-      : 'Current-round prior findings to dispose of (complete Finding values: the findings ' +
-        `array of the round ${String(priorRound)} review):` +
-        `\n${JSON.stringify(findings, null, 2)}`,
-    `Eligible prior finding IDs: ${eligible}. Return exactly one priorFindings disposition for ` +
-      'each eligible ID and none for any other; an empty eligible set requires an empty ' +
-      'priorFindings array.',
-    'Developer responses to those findings (complete values from the current development ' +
-      `result):\n${JSON.stringify(responses, null, 2)}`,
-  ].join('\n\n');
 }
 
 /** The reviewer's report, or an error naming why its output is unusable. */
@@ -234,12 +207,12 @@ function parseResponse(output: string): ReviewResponse {
   return parsed.content;
 }
 
-/** The report shape, finding definitions and identity, disposition and verdict rules. */
+/** The report shape, current finding definition and verdict rules. */
 const responseInstructions = `Return exactly one JSON object with this shape, and nothing else:
-{"verdict":"approved"|"changesRequested","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"id":"<task-stable finding ID>","title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}],"priorFindings":[{"findingId":"<eligible prior finding ID>","disposition":"resolved"|"open"|"withdrawn","reason":"<the current implementation and developer response that support the disposition>"}]}
-Finding IDs are unique within the task and stable across rounds: reuse an ID for an existing defect, including additional occurrences of the same cause, and give a genuinely different defect a new ID. findings contains every finding still present in the reviewed revision, including retained open findings and newly discovered ones, and no resolved or withdrawn finding. Include exactly one priorFindings entry for every eligible prior finding ID and none for any other ID; an empty eligible set requires an empty priorFindings array. Earlier reports are historical evidence for identity and recurrence, not additional disposition requests: a defect shown to recur may return in findings under its stable ID without a disposition outside the eligible set. An open disposition requires the finding in findings. locations may be empty when there is no useful code location; a location's line refers to the reviewed revision, and states null when the location has no line.
+{"verdict":"approved"|"changesRequested","summary":"<what was reviewed, the inspected scope and why this verdict>","findings":[{"title":"<short title>","severity":"blocking"|"non-blocking","basis":"<the requirement or expected behavior that is violated>","evidence":"<the observed or reproducible failure, related occurrences inspected and material uncertainty>","impact":"<the consequence>","repairGuidance":"<the required correction>","locations":[{"path":"<file>","line":<line or null>}]}]}
+findings contains the defects present in the reviewed revision, including newly discovered ones; a remaining or recurring defect is a current finding with evidence, and a resolved problem needs no lifecycle record. findings have no stable IDs, responses, statuses or dispositions. Previous reviews and developer narratives are context: judge whether earlier problems remain against the current revision. locations may be empty when there is no useful code location; a location's line refers to the reviewed revision, and states null when the location has no line.
 Apply the verdict rules: approved requires sufficient evidence and no current blocking findings; changesRequested requires at least one current blocking finding with a concrete basis, evidence and impact. These are the only verdicts; when material evidence is unavailable and the assessment cannot finish, supply no verdict — do not convert missing evidence into approval, changesRequested or a fabricated blocking finding.
-Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed profile, reviewed head and prior-finding dispositions and persists this verdict.`;
+Do not write or overwrite the action-owned round records (development.json, verification.json, delivery.json, review.json); return the response object only, and the action binds the observed profile and reviewed head and persists this verdict.`;
 
 /** Create Review over the selected workspace, reviewer runtime, publication and adapters. */
 export function createReview(settings: ReviewSettings): BoundAction {
@@ -411,8 +384,22 @@ export function createReview(settings: ReviewSettings): BoundAction {
 
     // A saved report for the delivered head is the review of this revision: finish any missing
     // publication for that exact head instead of reviewing again. A report for another revision
-    // is not evidence for this one.
+    // is not evidence for this one. A retained report with an inconsistent verdict is an action
+    // failure, not a report to publish.
     if (recorded !== null && recorded.headRevision === reviewedHead) {
+      const problem = retainedReviewProblem(recorded);
+      if (problem !== null) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'review',
+          profile: settings.reviewerProfile,
+          context: attribution,
+          file: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
+          error: new Error(`The retained review report is unusable: ${problem}.`),
+        });
+      }
       const conversation = await settings.github.readConversation(
         settings.repository,
         delivery.pullRequestNumber,
@@ -483,7 +470,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       }),
     );
     const priorReview = latest(reviews);
-    const priorFindings = priorReview?.value.findings ?? [];
 
     const context = [
       `Task ${selection.taskKey}:`,
@@ -499,10 +485,17 @@ export function createReview(settings: ReviewSettings): BoundAction {
         2,
       )}`,
       `Reviewed revision: ${reviewedHead} (comparison base ${prepared.baseRevision})`,
-      `Comparison diff ${prepared.baseRevision}..${reviewedHead}:\n${diff.value}`,
+      `Comparison diff ${prepared.baseRevision}..${reviewedHead} (orientation only; ` +
+        `task-relevant pre-existing code outside this range is in scope):\n${diff.value}`,
       `Development result (round ${round.number}):\n${JSON.stringify(development, null, 2)}`,
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
-      dispositionInput(priorReview?.number ?? null, priorFindings, development.findingResponses),
+      ...(priorReview === null
+        ? []
+        : [
+            `Previous review report (round ${priorReview.number}; judge whether its concerns ` +
+              'remain against the current revision):\n' +
+              JSON.stringify(priorReview.value, null, 2),
+          ]),
       ...reportFeedbackContextText(outstanding),
       historySection(root, reviews, developments),
       responseInstructions,
@@ -525,7 +518,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const response = await (async (): Promise<ReviewResponse> => {
       try {
         const parsed = parseResponse(result.value.output);
-        validateReviewResponse(parsed, priorFindings);
+        validateReviewResponse(parsed);
         return parsed;
       } catch (error) {
         return await rejectReport({

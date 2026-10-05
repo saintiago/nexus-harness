@@ -50,7 +50,6 @@ async function entry(options: {
         baseRevision: 'base',
         headRevision: 'head',
         summary: 'retained',
-        findingResponses: [],
       }),
     );
   if (options.verification)

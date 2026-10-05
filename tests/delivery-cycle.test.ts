@@ -159,7 +159,6 @@ describe('delivery cycle', () => {
           output: JSON.stringify({
             status: 'completed',
             summary: 'Added the feature with its configured check.',
-            findingResponses: [],
           }),
         });
       },
@@ -173,7 +172,6 @@ describe('delivery cycle', () => {
             verdict: 'approved',
             summary: 'The change fulfils the task and the check covers it.',
             findings: [],
-            priorFindings: [],
           }),
         });
       },

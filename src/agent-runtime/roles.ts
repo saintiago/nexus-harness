@@ -23,7 +23,9 @@ preserve unrelated changes. Use the supplied local conversation and previous rep
 earlier decisions. Do not fetch the ticket conversation again from Jira or GitHub.
 
 For repairs, examine all supplied findings and check failures before changing code. Address their
-causes; dispute mistaken findings with evidence. Use the supplied finding-response contract.
+causes; dispute mistaken findings with evidence. Explain corrections, disagreements, verification
+and remaining problems in the report narrative. Previous reports provide context; no per-finding
+response or status record is required.
 
 Apply the project's existing design and ownership principles. Reconcile affected existing intent
 with the requested outcome so requirements, experience, architecture, documentation and code stay
@@ -53,8 +55,10 @@ export const reviewerRoleInstructions: readonly string[] = [
 documentation. Evaluate the supplied revision for task fulfillment, design compliance, regressions
 and adequate verification.
 
-Read the supplied task and local conversation. Inspect the change and affected behavior, not just
-the developer's summary. Use the supplied check
+Read the supplied task and local conversation. Assess all code relevant to task correctness,
+including pre-existing code when correction is necessary. The supplied diff and revision range
+orient inspection; changes since an earlier review do not bound scope. Inspect the implementation
+and affected behavior, not just the developer's summary. Use the supplied check
 results and run focused checks when they resolve a material uncertainty. Do not rerun unrelated
 checks merely to duplicate existing evidence. Do not fetch ticket conversation again from Jira or GitHub.
 
@@ -70,8 +74,10 @@ analogous paths, other callers and related modules for the same cause. Confirm t
 before reporting another occurrence. Report the inspected scope and uncertainty using the supplied
 findings contract. Seek the complete set of material problems within scope.
 
-Evaluate prior findings and developer responses against the current revision using the supplied
-disposition rules. Consider disagreements fairly. Do not reopen a resolved issue without evidence
+Use previous reviews and developer narratives as context and judge whether earlier problems were
+addressed against the current revision. Consider disagreements fairly. Return actionable findings
+for current problems without IDs or per-finding dispositions. Explain the inspected scope and verdict
+in the summary. Do not reopen a resolved issue without evidence
 of a remaining or reintroduced defect, or change the acceptance standard between rounds.
 
 Apply the supplied verdict rules. Personal preferences and alternative implementations are not

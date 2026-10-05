@@ -143,22 +143,6 @@ export type PrecedingStageWork = {
 };
 
 /**
- * The most recent evaluation before one round. Author-only returns and input requests carry no
- * evaluator dispositions, so its finding evidence remains applicable until a later evaluation
- * explicitly resolves or withdraws it. This lookup supplies evidence, never an acceptance to reuse.
- */
-export async function precedingStageEvaluation(
-  root: string,
-  round: number,
-): Promise<StageEvaluationOutput | null> {
-  for (let earlier = round - 1; earlier >= 1; earlier -= 1) {
-    const evaluation = await readStageArtifact(root, earlier, stageEvaluationArtifact);
-    if (evaluation !== null) return evaluation;
-  }
-  return null;
-}
-
-/**
  * The retained prototype the stage's next skip round may reuse: the immediately preceding
  * completed round's accepted prototype, or null when that round accepted none. Only that
  * immediate acceptance may supply a reuse; a later rejection, return or unfinished round
@@ -177,22 +161,6 @@ export async function retainedStagePrototype(
     return null;
   }
   return result.prototype;
-}
-
-/**
- * The prior findings one round must answer and dispose of: the findings of the evaluation the
- * current response or reassessment round revises. A "new" route opens a fresh stage visit whose
- * input is the parent's retained correction rather than an earlier round's findings, so it
- * supplies none; a re-entered stage keeps every finding its own earlier evaluation left open.
- */
-export async function priorStageFindings(
-  root: string,
-  plan: StageRoundPlan,
-): Promise<StageEvaluationOutput['findings']> {
-  if (plan.route === 'new') {
-    return [];
-  }
-  return (await precedingStageEvaluation(root, plan.round))?.findings ?? [];
 }
 
 /** The upstream-return allowance file: how many returns the stage has stated so far. */

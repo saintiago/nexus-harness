@@ -770,7 +770,6 @@ describe('Git adapter', () => {
                   ? null
                   : { path: settings.evaluatorObservation },
               findings: [],
-              priorFindings: [],
               upstream: null,
             }),
           }),
@@ -821,7 +820,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     const requirementsRevision = (requirements.documents as { revision: string }[])[0]!.revision;
@@ -854,7 +852,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     const uxRevision = (ux.documents as { revision: string }[])[0]!.revision;
@@ -919,7 +916,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     await expect(
@@ -1114,7 +1110,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       });
       // Retain earlier decisions as on feedback resumption. Later stages have not run yet.
       for (const stage of preparationStages.slice(0, preparationStages.indexOf(resumed))) {
@@ -1311,7 +1306,6 @@ describe('Git adapter', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
     await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
     const requirements = await acceptedRound({
@@ -1360,7 +1354,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     const prototypeAdvance = await publishStage({
@@ -1461,7 +1454,6 @@ describe('Git adapter', () => {
           question: null,
           upstream: null,
           observation: { path: authorObservation },
-          findingResponses: [],
         },
         evaluatorObservation,
       });
@@ -1507,7 +1499,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       });
 
       // Round 2 resolves the result reference into the complete reused content: the new acceptance
@@ -1605,7 +1596,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       });
       const reference =
         referenceForm === 'relative'
@@ -1716,7 +1706,6 @@ describe('Git adapter', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
     await acceptedRound({
       selectionFile,
@@ -1821,7 +1810,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       });
       const firstRevision = await commitFiles(worktree, documents, 'add cited documents');
       const first = await acceptedRound({
@@ -1944,7 +1932,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
 
@@ -1976,7 +1963,6 @@ describe('Git adapter', () => {
           question: null,
           upstream: null,
           observation: null,
-          findingResponses: [],
         },
       }),
     ).rejects.toThrow(/current decision is required/);
@@ -2001,7 +1987,6 @@ describe('Git adapter', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
     const skip = (citation: readonly string[]) => ({
       outcome: 'skip-proposed',
@@ -2013,7 +1998,6 @@ describe('Git adapter', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
     const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
     const decision = (stage: 'requirements' | 'ux') =>
@@ -2151,7 +2135,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: { path: authorObservation },
-        findingResponses: [],
       },
       evaluatorObservation,
     });
@@ -2179,7 +2162,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     expect(second.prototype).toEqual(first.prototype);
@@ -2209,7 +2191,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     expect(third).toMatchObject({
@@ -2271,7 +2252,6 @@ describe('Git adapter', () => {
           question: null,
           upstream: null,
           observation: { path: await observation('author') },
-          findingResponses: [],
         },
         evaluatorObservation: await observation('evaluator'),
       });
@@ -2320,7 +2300,6 @@ describe('Git adapter', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     };
     const first = await acceptedRound({
       selectionFile,
@@ -2370,7 +2349,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     expect(second.documents).toEqual(first.documents);
@@ -2487,7 +2465,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       }),
     );
     await writeFile(
@@ -2509,7 +2486,6 @@ describe('Git adapter', () => {
         reason: 'Inspected existing design.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       }),
     );
@@ -2556,7 +2532,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     expect(result.existingDocuments).toEqual([
@@ -2621,7 +2596,6 @@ describe('Git adapter', () => {
           reason: 'The retained work suffices.',
           observation: null,
           findings: [],
-          priorFindings: [],
           upstream: null,
         }),
       );
@@ -2650,7 +2624,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
       [{ path: 'readme.md', revision, exists: true }],
       'accepted',
@@ -2671,7 +2644,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
       // The reuse binds the retained document's current observation, as the evaluator's capture
       // does, so the skip cannot authorize changed content.
@@ -2706,7 +2678,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
       [],
       'accepted-skip',
@@ -2771,7 +2742,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     await acceptedRound({
@@ -2803,7 +2773,6 @@ describe('Git adapter', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     });
     const preparationBase = (
@@ -3150,7 +3119,6 @@ describe('Git adapter', () => {
             output: JSON.stringify({
               status: 'completed',
               summary: `Implemented ${settings.file}.`,
-              findingResponses: [],
             }),
           });
         },
@@ -3202,7 +3170,6 @@ describe('Git adapter', () => {
               verdict: 'approved',
               summary: 'The delivered revision is correct.',
               findings: [],
-              priorFindings: [],
             }),
           });
         },

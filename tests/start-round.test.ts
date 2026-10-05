@@ -75,7 +75,6 @@ async function writeDevelopment(
     baseRevision,
     headRevision: revision,
     summary: status === 'completed' ? 'Implemented the task.' : 'Could not complete the task.',
-    findingResponses: [],
   });
 }
 
@@ -111,7 +110,6 @@ async function writeReview(
     verdict,
     summary: `The reviewer decided "${verdict}".`,
     findings: [],
-    priorFindings: [],
   });
 }
 
@@ -192,7 +190,6 @@ describe('StartRound', () => {
       baseRevision,
       headRevision: headOf(1),
       summary: 'First round.',
-      findingResponses: [],
     });
     await expect(helpers.readInputArtifacts(devArtifact)).resolves.toMatchObject([
       { taskKey: 'NEX-1' },
@@ -302,7 +299,6 @@ describe('StartRound', () => {
         verdict: 'inconclusive',
         summary: 'The available evidence could not settle the assessment.',
         findings: [],
-        priorFindings: [],
       });
 
       // The removed verdict is neither an approval, a rejection nor an absent report: its read

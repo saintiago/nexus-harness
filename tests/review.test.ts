@@ -17,7 +17,7 @@ import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
-import { devArtifact, type FindingResponse } from '../src/task-engine/actions/develop/artifacts.js';
+import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
   outstandingReportFeedback,
   projectOfWorkspace,
@@ -172,7 +172,6 @@ async function workspace(
 async function writeDeliveredRound(
   workspaceRoot: string,
   options: {
-    readonly findingResponses?: FindingResponse[];
     readonly pullRequestNumber?: number;
   } = {},
 ): Promise<void> {
@@ -184,7 +183,6 @@ async function writeDeliveredRound(
     baseRevision,
     headRevision,
     summary: 'Implemented the retry guard.',
-    findingResponses: options.findingResponses ?? [],
   });
   await helpers.writeOutputArtifact(verificationArtifact, {
     headRevision,
@@ -229,16 +227,6 @@ async function readRoundArtifact(
   ) as unknown;
 }
 
-/** The current-round disposition input section of one review context. */
-function dispositionInputSection(context: string): string {
-  const start = context.indexOf('Current-round prior findings to dispose of');
-  if (start < 0) {
-    return '';
-  }
-  const end = context.indexOf('\n\nDeveloper responses to those findings', start);
-  return context.slice(start, end < 0 ? context.length : end);
-}
-
 const taskIssue = {
   id: '1',
   key: 'NEX-1',
@@ -250,7 +238,6 @@ const taskIssue = {
 };
 
 const blockingFinding: Finding = {
-  id: 'NEX-1-finding-1',
   title: 'Transient provider failures are not retried',
   severity: 'blocking',
   basis: 'The design requires a transient provider failure to be retried once.',
@@ -268,7 +255,6 @@ function reviewOutput(overrides: Partial<ReviewOutput> = {}): ReviewOutput {
     verdict: 'approved',
     summary: 'The change matches the task.',
     findings: [],
-    priorFindings: [],
     ...overrides,
   };
 }
@@ -355,7 +341,6 @@ describe('Review', () => {
         verdict: 'approved',
         summary: 'The change matches the task and the check covers it.',
         findings: [],
-        priorFindings: [],
       }),
     );
     const { git, calls: gitCalls } = scriptedGit([repositoryState({ headRevision })], {
@@ -399,21 +384,17 @@ describe('Review', () => {
     expect(context).toContain(
       `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
     );
-    expect(context).toContain(`Comparison diff ${baseRevision}..${headRevision}:`);
+    expect(context).toContain(
+      `Comparison diff ${baseRevision}..${headRevision} (orientation only;`,
+    );
     expect(context).toContain('+feature');
     expect(context).toContain('Implemented the retry guard.');
-    // No review precedes the first round: the disposition input states the empty eligible set and
-    // the current development result carries no responses.
-    expect(context).toContain(
-      'Current-round prior findings to dispose of: none; no review precedes this round.',
-    );
-    expect(context).toContain('Eligible prior finding IDs: none.');
-    expect(context).toContain(
-      'Developer responses to those findings (complete values from the current development ' +
-        'result):\n[]',
-    );
+    // The diff is orientation, not a scope boundary, and no previous review exists to consult.
+    expect(context).toContain('task-relevant pre-existing code outside this range is in scope');
+    expect(context).not.toContain('Previous review report');
     expect(context).toContain('Return exactly one JSON object with this shape');
-    expect(context).toContain('priorFindings');
+    expect(context).not.toContain('priorFindings');
+    expect(context).not.toContain('findingResponses');
 
     const recorded = (await readRoundArtifact(workspaceRoot, round, 'review.json')) as ReviewOutput;
     expect(recorded).toEqual({
@@ -423,7 +404,6 @@ describe('Review', () => {
       verdict: 'approved',
       summary: 'The change matches the task and the check covers it.',
       findings: [],
-      priorFindings: [],
     });
     expect(gitCalls).toEqual([
       path.join(workspaceRoot, 'worktree'),
@@ -504,7 +484,6 @@ describe('Review', () => {
         verdict: 'approved',
         summary: 'The change matches the task and the check covers it.',
         findings: [],
-        priorFindings: [],
       }),
     );
     const review = reviewAction({ selectionFile, runner, git, github, jira });
@@ -534,10 +513,7 @@ describe('Review', () => {
       `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
     );
     expect(prompt).toContain('Implemented the retry guard.');
-    expect(prompt).toContain(
-      'Current-round prior findings to dispose of: none; no review precedes',
-    );
-    expect(prompt).toContain('Eligible prior finding IDs: none.');
+    expect(prompt).toContain('task-relevant pre-existing code outside this range is in scope');
     expect(prompt).toContain('Return exactly one JSON object with this shape');
     expect(requests[0]!.directory).toBe(path.join(workspaceRoot, 'worktree'));
   });
@@ -555,7 +531,6 @@ describe('Review', () => {
             locations: [{ path: 'feature.txt', line: null }],
           },
         ],
-        priorFindings: [],
       }),
     );
     const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
@@ -581,7 +556,7 @@ describe('Review', () => {
     ]);
   });
 
-  it('evaluates the preceding findings against the complete developer responses', async () => {
+  it('carries the preceding review and developer narrative into the repair assessment', async () => {
     const { workspaceRoot, selectionFile, round } = await workspace({
       round: 2,
       name: 'repair',
@@ -603,29 +578,13 @@ describe('Review', () => {
       baseRevision,
       headRevision,
       summary: 'First implementation.',
-      findingResponses: [],
     });
-    await writeDeliveredRound(workspaceRoot, {
-      findingResponses: [
-        {
-          findingId: blockingFinding.id,
-          status: 'addressed',
-          response: 'Added the retry with a regression test.',
-        },
-      ],
-    });
+    await writeDeliveredRound(workspaceRoot);
     const { runtime, requests } = scriptedRuntime(() =>
       JSON.stringify({
         verdict: 'approved',
         summary: 'The retry guard is present now.',
         findings: [],
-        priorFindings: [
-          {
-            findingId: blockingFinding.id,
-            disposition: 'resolved',
-            reason: 'The retry and its regression test are present in the reviewed revision.',
-          },
-        ],
       }),
     );
     const { git } = scriptedGit([repositoryState({ headRevision })], {
@@ -647,13 +606,10 @@ describe('Review', () => {
     await expect(review()).resolves.toBe('approved');
 
     const context = requests[0]?.context ?? '';
-    const input = dispositionInputSection(context);
-    // The disposition input is the preceding review's findings array alone, with the exact
-    // eligible IDs; the review's verdict, summary and own dispositions stay out of it.
-    expect(input).toContain('complete Finding values: the findings array of the round 1 review');
-    expect(context).toContain(`Eligible prior finding IDs: "${blockingFinding.id}".`);
+    // The previous review's complete report is context: its verdict, summary and finding evidence
+    // reach the reviewer without an eligible-ID set, response array or disposition request.
+    expect(context).toContain('Previous review report (round 1; judge whether its concerns remain');
     for (const value of [
-      blockingFinding.id,
       blockingFinding.title,
       blockingFinding.basis,
       blockingFinding.evidence,
@@ -661,26 +617,20 @@ describe('Review', () => {
       blockingFinding.repairGuidance,
       `"path": "${blockingFinding.locations[0]?.path ?? ''}"`,
     ]) {
-      expect(input).toContain(value);
+      expect(context).toContain(value);
     }
-    expect(input).not.toContain('"verdict"');
-    expect(input).not.toContain('"priorFindings"');
-    // The matching developer responses accompany that set.
-    expect(context).toContain('Developer responses to those findings');
-    expect(context).toContain('Added the retry with a regression test.');
+    expect(context).not.toContain('Eligible prior finding IDs');
+    expect(context).not.toContain('priorFindings');
+    // The current development result carries the developer's narrative, not per-finding answers.
+    expect(context).toContain('Implemented the retry guard.');
+    expect(context).not.toContain('findingResponses');
     // The complete earlier report remains available as historical evidence.
     expect(context).toContain(path.join(workspaceRoot, 'artifacts', '1', 'review.json'));
     expect(await readRoundArtifact(workspaceRoot, round, 'review.json')).toMatchObject({
       profile: 'nexus-review',
       headRevision,
       verdict: 'approved',
-      priorFindings: [
-        {
-          findingId: blockingFinding.id,
-          disposition: 'resolved',
-          reason: 'The retry and its regression test are present in the reviewed revision.',
-        },
-      ],
+      findings: [],
     });
   });
 
@@ -785,14 +735,12 @@ describe('Review', () => {
         baseRevision,
         headRevision,
         summary: 'The repaired round-one report.',
-        findingResponses: [],
       });
       const { runtime, requests } = scriptedRuntime(() =>
         JSON.stringify({
           verdict: 'approved',
           summary: 'The change matches the task.',
           findings: [],
-          priorFindings: [],
         }),
       );
       const { git: completedGit } = scriptedGit([repositoryState({ headRevision })], {
@@ -831,12 +779,13 @@ describe('Review', () => {
     },
   );
 
-  it('treats resolved history as evidence and accepts a recurrence under the stable finding ID', async () => {
+  it('treats resolved history as evidence and reports a recurrence as a current finding', async () => {
     const { workspaceRoot, selectionFile, round } = await workspace({
       round: 3,
       name: 'recurrence',
     });
-    // Round 1 reported the defect, round 2 resolved it, and round 3's revision brings it back.
+    // Round 1 reported the defect, round 2's current findings were empty, and round 3's revision
+    // brings the same defect back.
     await writeRoundArtifact(
       workspaceRoot,
       1,
@@ -854,7 +803,6 @@ describe('Review', () => {
       baseRevision,
       headRevision,
       summary: 'First implementation.',
-      findingResponses: [],
     });
     await writeRoundArtifact(
       workspaceRoot,
@@ -864,13 +812,6 @@ describe('Review', () => {
         verdict: 'approved',
         summary: 'The guard is present.',
         findings: [],
-        priorFindings: [
-          {
-            findingId: blockingFinding.id,
-            disposition: 'resolved',
-            reason: 'The guard and its regression test are present in the reviewed revision.',
-          },
-        ],
       }),
     );
     await writeDeliveredRound(workspaceRoot);
@@ -879,7 +820,6 @@ describe('Review', () => {
         verdict: 'changesRequested',
         summary: 'The guard is missing again on the current revision.',
         findings: [blockingFinding],
-        priorFindings: [],
       }),
     );
     const { git } = scriptedGit([repositoryState({ headRevision })], {
@@ -901,24 +841,21 @@ describe('Review', () => {
     await expect(review()).resolves.toBe('changesRequested');
 
     const context = requests[0]?.context ?? '';
-    // The preceding review's findings array is empty, so no disposition is requested even though
-    // the resolved finding still appears in the retained history.
-    expect(context).toContain(
-      'Current-round prior findings to dispose of (complete Finding values: the findings array of ' +
-        'the round 2 review):\n[]',
-    );
-    expect(context).toContain('Eligible prior finding IDs: none.');
-    expect(dispositionInputSection(context)).not.toContain(blockingFinding.id);
+    // The preceding review reported no current finding, so the recurrence is judged from the
+    // current evidence with no eligible-ID set, response array or disposition request.
+    expect(context).toContain('Previous review report (round 2;');
+    expect(context).not.toContain('Eligible prior finding IDs');
+    expect(context).not.toContain('priorFindings');
+    expect(context).not.toContain('findingResponses');
     // The complete earlier reports remain available as historical evidence.
     expect(context).toContain(path.join(workspaceRoot, 'artifacts', '1', 'review.json'));
     expect(context).toContain(path.join(workspaceRoot, 'artifacts', '2', 'review.json'));
-    // The recurrent defect returns under its stable ID without an out-of-set disposition.
+    // The recurrent defect returns as a current finding without lifecycle identity.
     expect(await readRoundArtifact(workspaceRoot, round, 'review.json')).toMatchObject({
       profile: 'nexus-review',
       headRevision,
       verdict: 'changesRequested',
       findings: [blockingFinding],
-      priorFindings: [],
     });
   });
 
@@ -927,11 +864,6 @@ describe('Review', () => {
       readonly label: string;
       readonly expected: RegExp;
       readonly output: string;
-      /**
-       * 'open': the preceding review's findings still carry the blocking finding. 'resolved': an
-       * earlier review resolved it, so the preceding review's findings array is empty.
-       */
-      readonly history?: 'open' | 'resolved';
     }> = [
       {
         label: 'output that is not JSON',
@@ -950,17 +882,34 @@ describe('Review', () => {
           verdict: 'inconclusive',
           summary: 'The available evidence could not settle the assessment.',
           findings: [],
+        }),
+      },
+      {
+        label: 'a current finding carrying the removed stable ID',
+        expected: /Unrecognized key/,
+        output: JSON.stringify({
+          verdict: 'changesRequested',
+          summary: 'The guard is missing.',
+          findings: [{ ...blockingFinding, id: 'NEX-1-finding-1' }],
+        }),
+      },
+      {
+        label: 'the removed prior-finding dispositions',
+        expected: /Unrecognized key/,
+        output: JSON.stringify({
+          verdict: 'approved',
+          summary: 'Looks fine.',
+          findings: [],
           priorFindings: [],
         }),
       },
       {
         label: 'approval with a current blocking finding',
-        expected: /approved the revision while reporting blocking finding/,
+        expected: /approved the revision while reporting a blocking finding/,
         output: JSON.stringify({
           verdict: 'approved',
           summary: 'Looks fine.',
           findings: [blockingFinding],
-          priorFindings: [],
         }),
       },
       {
@@ -970,96 +919,15 @@ describe('Review', () => {
           verdict: 'changesRequested',
           summary: 'There is a problem.',
           findings: [],
-          priorFindings: [],
         }),
       },
       {
-        label: 'a missing prior disposition',
-        expected: /did not dispose of prior finding/,
+        label: 'a missing field the response shape requires',
+        expected: /does not match the response format/,
         output: JSON.stringify({
           verdict: 'approved',
-          summary: 'Looks fine.',
           findings: [],
-          priorFindings: [],
         }),
-        history: 'open',
-      },
-      {
-        label: 'an unknown prior finding',
-        expected: /unknown prior finding/,
-        output: JSON.stringify({
-          verdict: 'approved',
-          summary: 'Looks fine.',
-          findings: [],
-          priorFindings: [{ findingId: 'other', disposition: 'resolved', reason: 'Fixed.' }],
-        }),
-      },
-      {
-        label: 'an open disposition without the current finding',
-        expected: /open without reporting it/,
-        output: JSON.stringify({
-          verdict: 'approved',
-          summary: 'Looks fine.',
-          findings: [],
-          priorFindings: [
-            { findingId: blockingFinding.id, disposition: 'open', reason: 'Still present.' },
-          ],
-        }),
-        history: 'open',
-      },
-      {
-        label: 'a resolved finding still in the current findings',
-        expected: /still in findings/,
-        output: JSON.stringify({
-          verdict: 'changesRequested',
-          summary: 'Still present.',
-          findings: [blockingFinding],
-          priorFindings: [
-            { findingId: blockingFinding.id, disposition: 'resolved', reason: 'Supposedly fixed.' },
-          ],
-        }),
-        history: 'open',
-      },
-      {
-        label: 'a duplicate prior disposition',
-        expected: /more than once/,
-        output: JSON.stringify({
-          verdict: 'approved',
-          summary: 'Looks fine.',
-          findings: [],
-          priorFindings: [
-            { findingId: blockingFinding.id, disposition: 'resolved', reason: 'Fixed.' },
-            { findingId: blockingFinding.id, disposition: 'open', reason: 'Still present.' },
-          ],
-        }),
-        history: 'open',
-      },
-      {
-        label: 'the same current finding reported twice',
-        expected: /more than once/,
-        output: JSON.stringify({
-          verdict: 'changesRequested',
-          summary: 'Both occurrences are present.',
-          findings: [blockingFinding, blockingFinding],
-          priorFindings: [],
-        }),
-      },
-      {
-        label: 'a disposition for a finding resolved in an earlier round',
-        expected: /unknown prior finding/,
-        output: JSON.stringify({
-          verdict: 'approved',
-          summary: 'Looks fine.',
-          findings: [],
-          priorFindings: [
-            {
-              findingId: blockingFinding.id,
-              disposition: 'resolved',
-              reason: 'The guard is present in the reviewed revision.',
-            },
-          ],
-        }),
-        history: 'resolved',
       },
       {
         label: 'a location that leaves out the line the strict response shape requires',
@@ -1068,45 +936,14 @@ describe('Review', () => {
           verdict: 'changesRequested',
           summary: 'The guard is still missing.',
           findings: [{ ...blockingFinding, locations: [{ path: 'src/queue.ts' }] }],
-          priorFindings: [],
         }),
       },
     ];
 
     for (const testCase of cases) {
       events = [];
-      const round = testCase.history === 'open' ? 2 : testCase.history === 'resolved' ? 3 : 1;
-      const name = `case-${round}-${testCase.label.replaceAll(/[^a-z]+/giu, '-')}`;
-      const { workspaceRoot, selectionFile } = await workspace({ round, name });
-      if (testCase.history !== undefined) {
-        await writeRoundArtifact(
-          workspaceRoot,
-          1,
-          'review.json',
-          reviewOutput({
-            verdict: 'changesRequested',
-            findings: [blockingFinding],
-          }),
-        );
-      }
-      if (testCase.history === 'resolved') {
-        await writeRoundArtifact(
-          workspaceRoot,
-          2,
-          'review.json',
-          reviewOutput({
-            verdict: 'approved',
-            findings: [],
-            priorFindings: [
-              {
-                findingId: blockingFinding.id,
-                disposition: 'resolved',
-                reason: 'The guard is present in the reviewed revision.',
-              },
-            ],
-          }),
-        );
-      }
+      const name = `case-${testCase.label.replaceAll(/[^a-z]+/giu, '-')}`;
+      const { workspaceRoot, selectionFile } = await workspace({ name });
       await writeDeliveredRound(workspaceRoot);
       const { runtime, requests } = scriptedRuntime(() => testCase.output);
       const { git } = scriptedGit([repositoryState({ headRevision })], {
@@ -1127,7 +964,7 @@ describe('Review', () => {
         z.toJSONSchema(reviewResponseSchema),
       );
       await expect(
-        stat(path.join(workspaceRoot, 'artifacts', String(round), 'review.json')),
+        stat(path.join(workspaceRoot, 'artifacts', '1', 'review.json')),
         testCase.label,
       ).rejects.toThrow(/ENOENT/);
     }
@@ -1154,7 +991,6 @@ describe('Review', () => {
         verdict: 'approved',
         summary: 'Looks fine.',
         findings: [],
-        priorFindings: [],
       }),
     );
     const editedGit = scriptedGit(
@@ -1290,6 +1126,87 @@ describe('Review', () => {
     expect(differentJira.calls).toEqual([]);
   });
 
+  it('reuses a former report unchanged and rejects a retained inconsistent verdict', async () => {
+    // A retained report from the earlier contract carries finding IDs and dispositions. The
+    // reader accepts it as historical data, the verdict still binds publication, and the file is
+    // never rewritten.
+    const former = {
+      profile: 'nexus-review',
+      headRevision,
+      verdict: 'changesRequested',
+      summary: 'The retry guard is still missing.',
+      findings: [
+        {
+          id: 'NEX-1-finding-1',
+          title: blockingFinding.title,
+          severity: 'blocking',
+          basis: blockingFinding.basis,
+          evidence: blockingFinding.evidence,
+          impact: blockingFinding.impact,
+          repairGuidance: blockingFinding.repairGuidance,
+          locations: [{ path: 'src/queue.ts', line: 42 }],
+        },
+      ],
+      priorFindings: [
+        {
+          findingId: 'NEX-1-finding-1',
+          disposition: 'open',
+          reason: 'The guard was still missing in the reviewed revision.',
+        },
+      ],
+    };
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'former-report' });
+    await writeDeliveredRound(workspaceRoot);
+    await writeRoundArtifact(workspaceRoot, 1, 'review.json', former);
+    const formerBytes = await readFile(
+      path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
+      'utf8',
+    );
+    const { github, calls } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(unusedRuntime()),
+        git: scriptedGit([]).git,
+        github,
+      })(),
+    ).resolves.toBe('changesRequested');
+    expect(calls).toContain(`publishReview:7@${headRevision}:changesRequested`);
+    expect(await readFile(path.join(workspaceRoot, 'artifacts', '1', 'review.json'), 'utf8')).toBe(
+      formerBytes,
+    );
+
+    // A retained report whose verdict contradicts its blocking findings is an action failure,
+    // not a verdict to publish.
+    const { workspaceRoot: inconsistentRoot, selectionFile: inconsistentSelection } =
+      await workspace({ name: 'inconsistent-report' });
+    await writeDeliveredRound(inconsistentRoot);
+    await writeRoundArtifact(inconsistentRoot, 1, 'review.json', {
+      ...former,
+      verdict: 'approved',
+    });
+    const inconsistentBytes = await readFile(
+      path.join(inconsistentRoot, 'artifacts', '1', 'review.json'),
+      'utf8',
+    );
+    await expect(
+      reviewAction({
+        selectionFile: inconsistentSelection,
+        runner: runnerOf(unusedRuntime()),
+        git: scriptedGit([]).git,
+        github: scriptedGitHub({}).github,
+      })(),
+    ).rejects.toThrow(/retained review report is unusable/);
+    expect(
+      await readFile(path.join(inconsistentRoot, 'artifacts', '1', 'review.json'), 'utf8'),
+    ).toBe(inconsistentBytes);
+  });
+
   it('does not treat a same-name check or another author as the Nexus Lens publication', async () => {
     const saved = reviewOutput({ verdict: 'approved', summary: 'Looks fine.' });
     const otherAppCheck = lensCheck({
@@ -1352,7 +1269,6 @@ describe('Review', () => {
         verdict: 'changesRequested',
         summary: 'The later revision still misses a retry.',
         findings: [blockingFinding],
-        priorFindings: [],
       }),
     );
     const { git } = scriptedGit([repositoryState({ headRevision })], {
@@ -1392,7 +1308,6 @@ describe('Review', () => {
       verdict: 'inconclusive',
       summary: 'The provider behaviour cannot be reproduced from the available evidence.',
       findings: [],
-      priorFindings: [],
     });
 
     await expect(

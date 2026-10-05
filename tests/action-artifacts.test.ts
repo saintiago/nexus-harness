@@ -11,16 +11,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import {
   devArtifact,
-  findingResponseSchema,
+  developmentResponseSchema,
   type DevelopmentOutput,
-  type FindingResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  findingDispositionSchema,
   findingSchema,
   reviewArtifact,
+  reviewResponseSchema,
   type Finding,
-  type FindingDisposition,
   type ReviewOutput,
 } from '../src/task-engine/actions/review/artifacts.js';
 import {
@@ -38,7 +36,6 @@ const developmentOutput: DevelopmentOutput = {
   baseRevision,
   headRevision,
   summary: 'Implemented the retry guard.',
-  findingResponses: [],
 };
 
 const verificationOutput: VerificationOutput = {
@@ -55,7 +52,6 @@ const verificationOutput: VerificationOutput = {
 };
 
 const blockingFinding: Finding = {
-  id: 'NEX-1-finding-1',
   title: 'Transient provider failures are not retried',
   severity: 'blocking',
   basis: 'The design requires a transient provider failure to be retried once.',
@@ -66,7 +62,6 @@ const blockingFinding: Finding = {
 };
 
 const nonBlockingFinding: Finding = {
-  id: 'NEX-1-finding-2',
   title: 'Retry log entry omits the attempt number',
   severity: 'non-blocking',
   basis: 'The design requires a log entry to identify the attempt.',
@@ -77,7 +72,7 @@ const nonBlockingFinding: Finding = {
 };
 
 /** One review result for the reviewed head. */
-function reviewOutput(findings: Finding[], priorFindings: FindingDisposition[] = []): ReviewOutput {
+function reviewOutput(findings: Finding[]): ReviewOutput {
   return {
     profile: 'reviewer',
     headRevision,
@@ -86,7 +81,6 @@ function reviewOutput(findings: Finding[], priorFindings: FindingDisposition[] =
       : 'approved',
     summary: 'Reviewed the delivered revision.',
     findings,
-    priorFindings,
   };
 }
 
@@ -337,7 +331,7 @@ describe('artifact helpers over a workspace', () => {
 });
 
 describe('findings contract', () => {
-  it('carries review findings into development responses and back into the next review', async () => {
+  it('carries review findings into the next review input without lifecycle records', async () => {
     const root = await temporaryWorkspace();
     const helpers = createArtifactHelpers({ root });
     const findings = [blockingFinding, nonBlockingFinding];
@@ -345,49 +339,74 @@ describe('findings contract', () => {
     await startRound(root, 1);
     await helpers.writeOutputArtifact(reviewArtifact, reviewOutput(findings));
 
-    // The developer receives the actual review findings and answers every one of them.
+    // The developer's report is a narrative bound to the observed revisions, and the next review
+    // still receives the complete earlier report as readable evidence.
     await startRound(root, 2);
     const [firstReview] = await helpers.readArtifactHistory(reviewArtifact);
     expect(firstReview).toEqual({ number: 1, value: reviewOutput(findings) });
-    const findingResponses: FindingResponse[] = (firstReview?.value.findings ?? []).map(
-      (finding) => ({
-        findingId: finding.id,
-        status: 'addressed',
-        response: `Addressed "${finding.title}" in the retry path.`,
-      }),
-    );
-    await helpers.writeOutputArtifact(devArtifact, { ...developmentOutput, findingResponses });
+    await helpers.writeOutputArtifact(devArtifact, {
+      ...developmentOutput,
+      summary: 'Addressed the missing retry guard and the log entry.',
+    });
 
-    // The next reviewer receives the same findings and the complete developer responses.
     await startRound(root, 3);
     const [development] = await helpers.readArtifactHistory(devArtifact);
     const [suppliedReview] = await helpers.readArtifactHistory(reviewArtifact);
     expect(suppliedReview?.value.findings).toEqual(findings);
-    expect(development?.value.findingResponses.map((response) => response.findingId)).toEqual(
-      findings.map((finding) => finding.id),
-    );
-    expect(
-      development?.value.findingResponses.every((response) => response.response.length > 0),
-    ).toBe(true);
+    expect(development?.value).not.toHaveProperty('findingResponses');
 
-    const priorFindings: FindingDisposition[] = findings.map((finding) => ({
-      findingId: finding.id,
-      disposition: 'resolved',
-      reason: `Confirmed "${finding.title}" fixed in the current revision.`,
-    }));
-    const nextReview = reviewOutput([], priorFindings);
+    // A recurrence is a current finding again; a resolved problem needs no lifecycle record.
+    const nextReview = reviewOutput([blockingFinding]);
     await helpers.writeOutputArtifact(reviewArtifact, nextReview);
     await expect(helpers.readInputArtifacts(reviewArtifact)).resolves.toEqual([nextReview]);
   });
 
-  it('rejects values outside the shared finding shapes', () => {
+  it('reads retained former reports without lifecycle validation or a rewritten identity', async () => {
+    const root = await temporaryWorkspace();
+    const helpers = createArtifactHelpers({ root });
+    const formerReview = {
+      ...reviewOutput([blockingFinding]),
+      findings: [{ ...blockingFinding, id: 'NEX-1-finding-1' }],
+      priorFindings: [
+        {
+          findingId: 'NEX-1-finding-1',
+          disposition: 'open',
+          reason: 'The guard was still missing in the reviewed revision.',
+        },
+      ],
+    };
+    const formerDevelopment = {
+      ...developmentOutput,
+      findingResponses: [
+        { findingId: 'NEX-1-finding-1', status: 'addressed', response: 'Retried the call.' },
+      ],
+    };
+    await writeArtifactFile(root, 1, 'review.json', JSON.stringify(formerReview, null, 2));
+    await writeArtifactFile(
+      root,
+      1,
+      'development.json',
+      JSON.stringify(formerDevelopment, null, 2),
+    );
+    await startRound(root, 2);
+
+    // The producer-owned readers accept the removed fields as historical data: the review keeps
+    // its former finding identity and dispositions exactly as recorded, and the development
+    // report reads by its current fields without running a lifecycle rule.
+    const [review] = await helpers.readArtifactHistory(reviewArtifact);
+    expect(review?.value).toEqual(formerReview);
+    const [development] = await helpers.readArtifactHistory(devArtifact);
+    expect(development?.value).toEqual(developmentOutput);
+    expect(development?.value).not.toHaveProperty('findingResponses');
+  });
+
+  it('rejects values outside the shared finding and response shapes', () => {
     expect(findingSchema.safeParse(blockingFinding).success).toBe(true);
     expect(findingSchema.safeParse({ ...blockingFinding, severity: 'critical' }).success).toBe(
       false,
     );
     expect(
       findingSchema.safeParse({
-        id: 'NEX-1-finding-1',
         title: 'Missing basis',
         severity: 'blocking',
         evidence: 'Observed.',
@@ -402,25 +421,23 @@ describe('findings contract', () => {
         locations: [{ path: 'src/queue.ts', line: 0 }],
       }).success,
     ).toBe(false);
-
+    // The current contracts have no stable finding ID, response array or disposition record.
+    expect(findingSchema.safeParse({ ...blockingFinding, id: 'NEX-1-finding-1' }).success).toBe(
+      false,
+    );
     expect(
-      findingResponseSchema.safeParse({
-        findingId: 'NEX-1-finding-1',
-        status: 'fixed',
-        response: 'Done.',
+      reviewResponseSchema.safeParse({
+        verdict: 'changesRequested',
+        summary: 'The guard is missing.',
+        findings: [blockingFinding],
+        priorFindings: [],
       }).success,
     ).toBe(false);
     expect(
-      findingDispositionSchema.safeParse({
-        findingId: 'NEX-1-finding-1',
-        disposition: 'closed',
-        reason: 'No longer present.',
-      }).success,
-    ).toBe(false);
-    expect(
-      findingDispositionSchema.safeParse({
-        findingId: 'NEX-1-finding-1',
-        disposition: 'open',
+      developmentResponseSchema.safeParse({
+        status: 'completed',
+        summary: 'Fixed it.',
+        findingResponses: [],
       }).success,
     ).toBe(false);
   });
