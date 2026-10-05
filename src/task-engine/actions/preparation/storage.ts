@@ -327,21 +327,24 @@ export function roundArtifactDirectory(root: string, round: number): string {
 
 /**
  * The retained content one evaluated skip reuses from the immediately preceding completed round
- * of the same stage: the changed documents and stage-owned source paths an explicit reference
- * selects, the complete retained content an explicit preceding-result reference selects,
- * the preceding acceptance's observations of those paths, and any applicable prototype bundle
- * this stage owns. A path-only citation of a current repository document is a fresh input
- * instead, even when the preceding result recorded that path under existingDocuments: the
- * current evaluation binds its content, so no preceding revision or binding applies. Only that
- * immediate acceptance may supply reused assets; a later rejection or upstream return
- * invalidates it, so reuse never searches past an intervening unfinished or invalid round. The
- * observations carry the recorded revision and existence, so a retained deletion is validated as
- * an absence rather than unreadable file bytes.
+ * of the same stage: the result's changed documents, stage-owned source paths, the existing input
+ * documents an explicit result or applicable prototype bundle keeps, the preceding acceptance's
+ * observations of those paths, and any retained prototype this stage owns. Only that immediate
+ * acceptance may supply reused assets; a later rejection or upstream return invalidates it, so
+ * reuse never searches past an intervening unfinished or invalid round. The observations carry
+ * the recorded revision and existence, so a retained deletion is validated as an absence rather
+ * than unreadable file bytes.
+ *
+ * A current repository document cited only by path is a fresh input, even when the preceding
+ * result also recorded it under existingDocuments: the new evaluation assesses its current content
+ * and no preceding revision binds it. Changed owned documents and source paths keep their complete
+ * preceding binding, and an explicit preceding-result or applicable-prototype reference keeps the
+ * complete retained bundle; such reuse cannot be downgraded to an input citation.
  */
 export type ReusedPreparationContent = {
   /** The preceding result's changed documents the skip reuses, as the result recorded them. */
   readonly documents: readonly { readonly path: string; readonly revision: string }[];
-  /** The preceding result's existing inputs an explicit result or prototype selection keeps. */
+  /** Existing authoritative documents the preceding skip relied on, without changed ownership. */
   readonly existingDocuments: PreparationResult['existingDocuments'];
   /** The preceding result's stage-owned source paths the skip reuses, checkout-relative. */
   readonly sourcePaths: readonly string[];
@@ -439,12 +442,10 @@ export async function reusedPreparationContent(settings: {
     existingDocuments = result.existingDocuments;
     sourcePaths = result.sourcePaths;
   } else if (!reusesResult) {
-    // A path-only citation of a current repository document is a fresh input, even when the
-    // preceding result listed the same path under existingDocuments: the new evaluation assessed
-    // its current content, so the preceding revision is not a prior binding to validate. Owned
-    // documents and source paths keep their complete preceding binding above, and an explicit
-    // preceding-result reference keeps the complete retained content; a reference selecting
-    // either cannot be downgraded to an input citation to bypass stale-reuse checks.
+    // A path-only citation of a document the preceding result listed as an existing input is a
+    // fresh current input, not reuse of a prior asset: the current evaluation binds its content,
+    // so the preceding revision is not a prior binding to validate. Owned documents and source
+    // paths above still keep their complete preceding binding.
     existingDocuments = [];
   }
   for (const document of documents) {
@@ -514,12 +515,9 @@ export type CurrentDecisionState =
   | { readonly kind: 'stale'; readonly reason: string };
 
 /**
- * Read one stage's current terminal decision and validate the identities its acceptance basis
- * binds: the complete authored report, the captured source input, the relied-on upstream results
- * and the exact repository content it assessed or relied on. A changed author report, refreshed
- * input, corrected upstream result or changed assessed content — including a later stage's edit of
- * the same path or a rewritten revision — makes the decision stale and requires a current
- * evaluator decision.
+ * Read the current stage decision for the captured ticket. Later stages assess the current shared
+ * checkout and return concrete input defects upstream; their document edits do not invalidate an
+ * earlier verdict mechanically. Applicable prototype inspection remains specific to its sources.
  */
 export async function readCurrentDecision(settings: {
   readonly issueRoot: string;
@@ -557,7 +555,7 @@ export async function readCurrentDecision(settings: {
   try {
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
-    await requireCurrentAcceptance({
+    requireAcceptedReport({
       issueRoot,
       stage,
       selection,
@@ -588,12 +586,8 @@ export async function readCurrentDecision(settings: {
   return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
 }
 
-/**
- * Require a complete acceptance basis for one evaluated round: the exact authored report, the
- * captured source input, the relied-on upstream results and the assessed repository content. A
- * changed author report, refreshed input, corrected upstream result or changed path throws.
- */
-export async function requireCurrentAcceptance(settings: {
+/** The current round's report, ticket and repository context. */
+type AcceptanceSettings = {
   readonly issueRoot: string;
   readonly stage: PreparationStage;
   readonly selection: Selection;
@@ -602,8 +596,11 @@ export async function requireCurrentAcceptance(settings: {
   readonly author: StageAuthorOutput;
   readonly evaluation: StageEvaluationOutput | null;
   readonly git: GitAdapter;
-}): Promise<void> {
-  const { issueRoot, stage, selection, round, verdict, author, evaluation, git } = settings;
+};
+
+/** Validate the report and ticket association, without treating later edits as new findings. */
+function requireAcceptedReport(settings: AcceptanceSettings): StageEvaluationOutput {
+  const { issueRoot, stage, selection, round, verdict, author, evaluation } = settings;
   const root = stageRoot(issueRoot, stage);
   if (evaluation === null || evaluation.assessedRevision !== author.revision) {
     throw new Error('Acceptance requires evaluation of the exact authored revision.');
@@ -629,6 +626,15 @@ export async function requireCurrentAcceptance(settings: {
       'The captured issue input changed since evaluation; a current decision is required.',
     );
   }
+  return evaluation;
+}
+
+/** Finalize a fresh evaluation before its stage advances; no intervening edits may escape review. */
+export async function requireCurrentAcceptance(settings: AcceptanceSettings): Promise<void> {
+  const evaluation = requireAcceptedReport(settings);
+  const { issueRoot, stage, round, author, git } = settings;
+  const root = stageRoot(issueRoot, stage);
+  const basis = evaluation.basis;
   const upstream = await upstreamResultReferences(issueRoot, stage);
   const reliedOn = upstream.map((reference) => ({
     result: { path: reference.resultFile },

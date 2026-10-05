@@ -5,7 +5,7 @@ import type { GitAdapter } from '../../../adapters/git.js';
 import { messageOf } from '../../../result.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 import { assessedContentSchema, type AssessedContent } from './artifacts.js';
-import { checkoutRelative } from './evaluation-content.js';
+import { checkoutRelative, requireEvaluationContent } from './evaluation-content.js';
 import { renderedImageProblem } from './rendered-image.js';
 
 /**
@@ -438,13 +438,31 @@ export async function retainedObservationProblem(settings: {
   } catch (error) {
     return messageOf(error);
   }
-  return observationContentProblem({
+  const problem = await observationContentProblem({
     git: settings.git,
     worktree: settings.worktree,
     observation: saved,
     assessed: settings.assessed,
     observedPaths: settings.observedPaths,
   });
+  if (problem !== null) {
+    return problem;
+  }
+  // Every inspected path remains bound to the current preview, including rendered documents.
+  // Documents outside the observation can still change in a later preparation stage.
+  const inspected = new Set(
+    saved.content.map((entry) => checkoutRelative(settings.worktree, entry.path)),
+  );
+  try {
+    await requireEvaluationContent({
+      git: settings.git,
+      worktree: settings.worktree,
+      content: settings.assessed.filter((entry) => inspected.has(entry.path)),
+    });
+  } catch (error) {
+    return messageOf(error);
+  }
+  return null;
 }
 
 /**
