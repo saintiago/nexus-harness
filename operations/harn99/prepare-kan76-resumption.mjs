@@ -6,12 +6,16 @@
  * The script never starts KAN-76, never invokes an agent provider and never edits product
  * documentation. It:
  *   1. verifies the retained checkpoint, the captured rejection evidence and the merged helpers;
- *   2. reproduces both captured rejections through the real StageAuthor in disposable copies;
+ *   2. attributes each captured rejection to the violated rule the retained execution event
+ *      actually reported, reproduces both through the real StageAuthor in disposable copies and
+ *      keeps the merged validator's replay diagnostics as additional correction guidance;
  *   3. rehearses the resumption in a disposable copy: the author receives the reconciled feedback,
  *      a conforming response is validated and saved, the correction retires the rejections and the
  *      evaluator assesses the new revision;
  *   4. with --apply, writes the immutable rejection records under KAN-76's requirements area using
- *      the merged writer, then verifies artifacts, state and allowances are unchanged.
+ *      the merged writer, reconciling an already-written record whose rule the earlier round took
+ *      from the replay diagnostic (its replaced bytes are preserved as evidence), then verifies
+ *      artifacts, state and allowances are unchanged.
  *
  * Evidence is written under --evidence-dir, outside product documentation.
  *
@@ -22,8 +26,18 @@
  *     [--evidence-dir <dir>] [--expected-merge <revision>]
  */
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -177,10 +191,14 @@ async function capturedOutput(turn) {
   };
 }
 
+/** The retained execution event log one invocation's activity file belongs to. */
+function executionEventsFile(activityFile) {
+  return path.join(path.dirname(path.dirname(activityFile)), 'events.jsonl');
+}
+
 /** The recorded invocation attribution of one captured turn, from the execution event log. */
 async function capturedAttribution(turn, activityFile) {
-  const directory = path.dirname(path.dirname(activityFile));
-  const events = (await readFile(path.join(directory, 'events.jsonl'), 'utf8'))
+  const events = (await readFile(executionEventsFile(activityFile), 'utf8'))
     .trimEnd()
     .split('\n')
     .map((line) => JSON.parse(line));
@@ -208,6 +226,58 @@ async function capturedAttribution(turn, activityFile) {
     startedAtUnixMs: data.startedAtUnixMs,
     log: data.log.path,
     eventTimestamp: started.timestamp,
+  };
+}
+
+/**
+ * The violated rule the stopped invocation actually reported, from the retained execution event
+ * that followed it. The merged validator's replay of the same bytes answers a different question:
+ * it is recorded separately so the historical rule stays attributable to its own invocation.
+ */
+async function capturedHistoricalReason(turn, activityFile) {
+  const file = executionEventsFile(activityFile);
+  const bytes = await readFile(file);
+  const events = bytes
+    .toString('utf8')
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const finished = events.find(
+    (entry) =>
+      entry.event?.type === 'agent-finished' &&
+      entry.event.data?.invocationId === turn.invocationId,
+  );
+  if (finished === undefined) {
+    throw new Error(`No agent-finished event records invocation ${turn.invocationId}.`);
+  }
+  const recovering = events.find(
+    (entry) =>
+      Date.parse(entry.timestamp) > Date.parse(finished.timestamp) &&
+      entry.event?.source === 'application' &&
+      entry.event?.type === 'recovering' &&
+      typeof entry.event.data?.reason === 'string',
+  );
+  if (recovering === undefined) {
+    throw new Error(
+      `No recovering event follows invocation ${turn.invocationId}; its historical rejection ` +
+        'is absent from the retained execution log.',
+    );
+  }
+  const raw = recovering.event.data.reason;
+  const executionPrefix = 'Execution fault: Workflow execution failed: ';
+  const reason = raw.startsWith(executionPrefix) ? raw.slice(executionPrefix.length) : raw;
+  if (!reason.startsWith('The requirements author report is unusable: ')) {
+    throw new Error(
+      `The recovering event after invocation ${turn.invocationId} does not state the author ` +
+        `rejection: ${raw}`,
+    );
+  }
+  return {
+    file,
+    fileSha256: sha256(bytes),
+    eventTimestamp: recovering.timestamp,
+    raw,
+    reason,
   };
 }
 
@@ -255,6 +325,54 @@ async function disposableCheckpoint() {
     )}\n`,
   );
   return { directory, issueRoot, selectionFile, worktree: path.join(issueRoot, 'worktree') };
+}
+
+/**
+ * Keep the exact bytes one already-written record is reconciled from under the evidence directory,
+ * so the superseded content stays readable and attributable. A re-run must find the same bytes.
+ */
+async function preserveSuperseded(file, bytes) {
+  const directory = path.join(settings.evidenceDir, 'superseded');
+  await mkdir(directory, { recursive: true });
+  const preserved = path.join(directory, path.basename(file));
+  if (await exists(preserved)) {
+    const kept = await readFile(preserved);
+    if (!kept.equals(bytes)) {
+      throw new Error(
+        `The preserved copy at ${preserved} differs from the record it supersedes; review it first.`,
+      );
+    }
+    return preserved;
+  }
+  await writeFile(preserved, bytes);
+  return preserved;
+}
+
+/** Replace one retained record's content the way the merged writer publishes a new one. */
+async function writeJsonAtomic(file, content) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
+    await rename(temporary, file);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Keep the previous reconciliation evidence before a run replaces it. */
+async function preservePreviousEvidence(evidenceFile) {
+  if (!(await exists(evidenceFile))) {
+    return null;
+  }
+  const directory = path.join(settings.evidenceDir, 'superseded');
+  await mkdir(directory, { recursive: true });
+  const preserved = path.join(
+    directory,
+    `kan76-reconciliation-${new Date().toISOString().replaceAll(/[-:.]/g, '')}.json`,
+  );
+  await writeFile(preserved, await readFile(evidenceFile), { flag: 'wx' });
+  return preserved;
 }
 
 const scriptedRunner = (responses, contexts) => ({
@@ -359,6 +477,12 @@ async function main() {
         'build or activate the checked revision first.',
     );
   }
+  // The reconciliation must leave the consumed recovery allowance exactly as it found it.
+  const recoveryRecordFile = path.join(settings.executionDir, 'recovery/execution.json');
+  if (!(await exists(recoveryRecordFile))) {
+    throw new Error(`The retained recovery execution record ${recoveryRecordFile} is absent.`);
+  }
+  const retainedRecoverySha256 = sha256(await readFile(recoveryRecordFile));
   const scope = stageReportScope({
     project: reportFeedback.projectOfWorkspace(settings.workspaceRoot),
     workId: 'KAN-76',
@@ -373,6 +497,7 @@ async function main() {
     branch,
     head,
     clean: status === '',
+    recoveryExecution: { file: recoveryRecordFile, sha256: retainedRecoverySha256 },
     scope,
   });
 
@@ -381,7 +506,8 @@ async function main() {
   for (const turn of capturedTurns) {
     const capture = await capturedOutput(turn);
     const attribution = await capturedAttribution(turn, capture.file);
-    turns.push({ ...turn, ...capture, attribution });
+    const historical = await capturedHistoricalReason(turn, capture.file);
+    turns.push({ ...turn, ...capture, attribution, historical });
   }
   record('capturedTurns', turns);
   const snapshotBefore = {
@@ -392,9 +518,12 @@ async function main() {
     parentListing: (await readdir(path.join(settings.workspaceRoot, 'parent'))).sort(),
     authorRound2Sha256: sha256(await readFile(path.join(areaRoot, 'artifacts/2/author.json'))),
     planSha256: sha256(await readFile(path.join(areaRoot, 'state/current-round.json'))),
-    existingFeedback: (await reportFeedback.readReportFeedback(areaRoot)).map(
-      (entry) => entry.path,
-    ),
+    recoveryExecutionSha256: retainedRecoverySha256,
+    existingFeedback: (await reportFeedback.readReportFeedback(areaRoot)).map((entry) => ({
+      path: entry.path,
+      kind: entry.record.kind,
+      reason: entry.record.kind === 'rejection' ? entry.record.reason : null,
+    })),
   };
   record('snapshotBefore', snapshotBefore);
 
@@ -438,22 +567,36 @@ async function main() {
   }
   record('reproduction', reproduction);
 
-  const rejectionRecords = turns.map((turn, index) => ({
-    kind: 'rejection',
-    scope,
-    invocationId: turn.invocationId,
-    operation: 'stage-author',
-    profile: turn.profile,
-    context:
+  const rejectionRecords = turns.map((turn, index) => {
+    const replay = reproduction[index];
+    const attribution =
       `Preparation ${stage} author, round ${String(turn.round)} (route ${plan.route}), ` +
       `task KAN-76, task propose; original invocation ${turn.invocationId} at task/KAN-76 ` +
       `revision ${turn.capturedAtHead}, captured ${turn.startedAt}. ` +
+      `Historical rejection recorded by ${turn.historical.file} ` +
+      `(sha256 ${turn.historical.fileSha256}) at ${turn.historical.eventTimestamp}. ` +
       `Imported from the retained recovery evidence ${turn.recoveryCapture} ` +
-      `(sha256 ${turn.recoveryCaptureSha256}).`,
-    source: null,
-    output: turn.output,
-    reason: reproduction[index].reason,
-  }));
+      `(sha256 ${turn.recoveryCaptureSha256}).`;
+    // The merged validator answers a different question than the historical invocation did; its
+    // replay diagnostic is additional correction guidance, never the historical violated rule.
+    const replayDiagnostic =
+      replay.reason === turn.historical.reason
+        ? null
+        : 'Current merged StageAuthor replay diagnostic of the same returned bytes (additional ' +
+          'correction guidance; the violated rule above is the historical rejection): ' +
+          replay.reason;
+    return {
+      kind: 'rejection',
+      scope,
+      invocationId: turn.invocationId,
+      operation: 'stage-author',
+      profile: turn.profile,
+      context: [attribution, replayDiagnostic].filter((part) => part !== null).join(' '),
+      source: null,
+      output: turn.output,
+      reason: turn.historical.reason,
+    };
+  });
   for (const recordValue of rejectionRecords) {
     reportFeedback.reportFeedbackSchema.parse(recordValue);
   }
@@ -521,8 +664,14 @@ async function main() {
   ];
   for (const turn of turns) {
     const parsed = JSON.parse(turn.output);
-    const reason = reproduction.find((entry) => entry.round === turn.round).reason;
-    requiredContext.push(reason, parsed.summary, parsed.skip.reason);
+    requiredContext.push(turn.historical.reason, parsed.summary, parsed.skip.reason);
+  }
+  for (const entry of reproduction) {
+    const turn = turns.find((candidate) => candidate.round === entry.round);
+    if (turn.historical.reason !== entry.reason) {
+      // A differing replay diagnostic must reach the author as additional correction guidance.
+      requiredContext.push(entry.reason);
+    }
   }
   for (const required of requiredContext) {
     if (!authorContext.includes(required)) {
@@ -549,26 +698,52 @@ async function main() {
 
   // --- Apply the reconciliation to the retained checkpoint ------------------------------------
   let applied = [];
+  const superseded = [];
   if (apply) {
     const existing = await reportFeedback.readReportFeedback(areaRoot);
-    for (const recordValue of rejectionRecords) {
+    for (const [index, recordValue] of rejectionRecords.entries()) {
       const already = existing.find(
         (entry) =>
           entry.record.kind === 'rejection' &&
           entry.record.invocationId === recordValue.invocationId,
       );
-      if (already !== undefined) {
-        if (already.record.reason !== recordValue.reason) {
-          throw new Error(
-            `The reconciled rejection of ${recordValue.invocationId} records a different reason ` +
-              `than the merged StageAuthor reproduces; review ${already.path} before applying.`,
-          );
-        }
+      if (already === undefined) {
+        const ref = await reportFeedback.writeReportFeedbackRecord(areaRoot, recordValue);
+        applied.push({ path: ref.path, state: 'written' });
+        continue;
+      }
+      if (JSON.stringify(already.record) === JSON.stringify(recordValue)) {
         applied.push({ path: already.path, state: 'already-reconciled' });
         continue;
       }
-      const ref = await reportFeedback.writeReportFeedbackRecord(areaRoot, recordValue);
-      applied.push({ path: ref.path, state: 'written' });
+      // The earlier round applied the merged replay diagnostic as if it were the historical rule.
+      // Reconcile that record explicitly: its replaced bytes are preserved outside the owning area
+      // and its content is replaced atomically, so the next invocation receives the attributable
+      // rule without the inaccurate record staying outstanding.
+      if (already.record.output !== recordValue.output) {
+        throw new Error(
+          `The retained rejection at ${already.path} does not retain the captured rejected ` +
+            'output; review it before applying.',
+        );
+      }
+      if (already.record.reason !== reproduction[index].reason) {
+        throw new Error(
+          `The retained rejection at ${already.path} states neither the historical rule nor the ` +
+            'merged replay diagnostic this reconciliation replaces; review it before applying.',
+        );
+      }
+      const before = await readFile(already.path);
+      const preserved = await preserveSuperseded(already.path, before);
+      await writeJsonAtomic(already.path, recordValue);
+      superseded.push({
+        path: already.path,
+        preserved,
+        previousReason: already.record.reason,
+        reason: recordValue.reason,
+        beforeSha256: sha256(before),
+        afterSha256: sha256(await readFile(already.path)),
+      });
+      applied.push({ path: already.path, state: 'reconciled', preserved });
     }
     const readBack = await reportFeedback.readReportFeedback(areaRoot);
     for (const entry of readBack) {
@@ -577,15 +752,39 @@ async function main() {
       }
     }
     const outstanding = await reportFeedback.outstandingReportFeedback({ areaRoot, scope });
-    const reasons = new Set(outstanding.map((entry) => entry.record.reason));
-    if (outstanding.length !== 2 || reasons.size !== 2) {
+    if (outstanding.length !== 2) {
       throw new Error(
         'The applied reconciliation does not present the two outstanding rejections.',
       );
     }
+    for (const entry of outstanding) {
+      const expected = rejectionRecords.find(
+        (recordValue) => recordValue.invocationId === entry.record.invocationId,
+      );
+      if (expected === undefined) {
+        throw new Error(
+          `The outstanding rejection at ${entry.path} names no reconciled invocation.`,
+        );
+      }
+      if (entry.record.reason !== expected.reason) {
+        throw new Error(
+          `The outstanding rejection at ${entry.path} does not state the historical rule: ` +
+            entry.record.reason,
+        );
+      }
+      if (entry.record.output !== expected.output) {
+        throw new Error(
+          `The outstanding rejection at ${entry.path} does not retain the captured output.`,
+        );
+      }
+    }
     record(
       'readBack',
-      readBack.map((entry) => ({ path: entry.path, kind: entry.record.kind })),
+      readBack.map((entry) => ({
+        path: entry.path,
+        kind: entry.record.kind,
+        reason: entry.record.kind === 'rejection' ? entry.record.reason : null,
+      })),
     );
   }
   const snapshotAfter = {
@@ -596,6 +795,7 @@ async function main() {
     parentListing: (await readdir(path.join(settings.workspaceRoot, 'parent'))).sort(),
     authorRound2Sha256: sha256(await readFile(path.join(areaRoot, 'artifacts/2/author.json'))),
     planSha256: sha256(await readFile(path.join(areaRoot, 'state/current-round.json'))),
+    recoveryExecutionSha256: sha256(await readFile(recoveryRecordFile)),
     feedback: (await reportFeedback.readReportFeedback(areaRoot)).map((entry) => ({
       path: entry.path,
       kind: entry.record.kind,
@@ -610,23 +810,32 @@ async function main() {
     'parentListing',
     'authorRound2Sha256',
     'planSha256',
+    'recoveryExecutionSha256',
   ]) {
     if (JSON.stringify(snapshotBefore[key]) !== JSON.stringify(snapshotAfter[key])) {
       throw new Error(`The reconciliation changed the retained checkpoint (${key}).`);
     }
   }
   record('applied', applied);
+  record('superseded', superseded);
   record('snapshotAfter', snapshotAfter);
   record('finishedAt', new Date().toISOString());
 
   await mkdir(settings.evidenceDir, { recursive: true });
   const evidenceFile = path.join(settings.evidenceDir, 'kan76-reconciliation.json');
+  const previousEvidence = await preservePreviousEvidence(evidenceFile);
+  record('previousEvidence', previousEvidence);
   await writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
   const summary = {
     evidence: evidenceFile,
     apply,
     applied,
-    reasons: reproduction.map((entry) => ({ round: entry.round, reason: entry.reason })),
+    superseded,
+    reasons: turns.map((turn, index) => ({
+      round: turn.round,
+      historical: turn.historical.reason,
+      mergedReplay: reproduction[index].reason,
+    })),
     authorOutcome,
     evaluationOutcome,
     evaluationAssessedRevision: evaluationRecord.assessedRevision,
