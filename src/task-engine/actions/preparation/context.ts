@@ -55,8 +55,10 @@ export const preparationSharedInstructions = [
   'uncertainty. Do not retrieve Jira, publish source comments, change issue status or create',
   'implementation issues; source operations belong to the parent. Assess only the selected stage’s',
   'responsibilities.',
-  'Evaluate applicability first. Propose a skip only when the stage is irrelevant or existing',
-  'inputs suffice, with concrete references. If inputs prevent a feasible clean result, identify',
+  'Evaluate applicability first. Propose an applicability skip only when the stage is irrelevant,',
+  'with a reason and optional supporting references. Adequate existing documents receive direct',
+  'evaluation in the current worktree without mandatory citations or a special reuse skip. If',
+  'inputs prevent a feasible clean result, identify',
   'the problematic input, correction and owning earlier stage. Ask the user only for a material',
   'decision that available context cannot resolve, and do not turn a provider or tool failure into',
   'an upstream product requirement. Authors preserve scope and explain corrections, answers,',
@@ -84,10 +86,11 @@ export const preparationSharedInstructions = [
   'Return the response object; do not write or overwrite action-owned author.json, evaluation.json,',
   'result.json, plan.json or state records. The action adds saved-record metadata. Authors declare',
   'changed authoritative documents in documents; sourcePaths declares additional stage-owned',
-  'authored files, never files merely read. Every non-authored outcome has empty documents and',
-  'sourcePaths. Supporting existing inputs belong in skip.references, and each reference cites a',
-  'readable file in the shared checkout (a path, or a path#section citation) or an existing',
-  'retained file; explanations belong in the skip reason. Only Architecture supplies an',
+  'authored files, never files merely read. Unchanged adequate documents may leave both empty. Every',
+  'non-authored outcome has empty documents and sourcePaths. A skip needs its reason; its optional',
+  'skip.references cite readable evidence as a file in the shared checkout (a path, or a',
+  'path#section citation) or an existing retained file; explanations belong in the skip reason.',
+  'Only Architecture supplies an',
   'implementation plan, nonempty whenever it authors work or proposes a skip. Observation',
   'requirements and allowed outcomes follow the supplied stage response rules.',
 ].join('\n');
@@ -250,9 +253,9 @@ export async function stageContextText(settings: StageContextSettings): Promise<
               ? 'No retained terminal result is readable; obtain a current decision for this stage.'
               : `Retained earlier ${settings.retained.outcome} result: ` +
                 `${settings.retained.reason ?? 'no reason retained'}.`,
-            'Reuse the retained accepted work only where its content and relied-on inputs still',
-            'match, and confirm that reuse through this round’s current evaluation; changed content',
-            'must be repaired. An earlier acceptance cannot authorize changed content.',
+            'Assess the current content against the corrected input: leave adequate current',
+            'documents unchanged, repair what the correction affects and confirm the result through',
+            'this round’s current evaluation. An earlier acceptance cannot authorize changed content.',
           ].join('\n'),
         ];
   // Only the prototype stage uses browser and image-inspection tools; its roles receive the

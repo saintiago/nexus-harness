@@ -80,8 +80,7 @@ export const architectureAuthorRoleInstructions = [
   'journey. Follow the project\u2019s design principles and authoritative documents. Seek the simplest',
   'maintainable solution. Produce one or more bounded implementation tasks with dependencies and',
   'completion criteria. Return specific input constraints upstream when no feasible clean design',
-  'supports the proposed work. Your implementation plan still receives evaluation even when',
-  'existing adequate technical design permits a skip.',
+  'supports the proposed work.',
 ];
 
 /** The Architecture Evaluator's constant instructions. */
@@ -90,8 +89,8 @@ export const architectureEvaluatorRoleInstructions = [
   'and failure handling. Seek simpler responsibilities, reuse and lower coupling. Check the',
   'implementation plan collectively covers the outcome without oversized or overlapping tasks.',
   'Return work upstream only when an input needs correction; architectural difficulties that can',
-  'be cleanly solved here belong here. Accept adequate existing design when it supports a justified',
-  'skip.',
+  'be cleanly solved here belong here. Accept adequate existing design directly, while evaluating',
+  'the implementation plan.',
 ];
 
 /** The constant instructions of each preparation role. */

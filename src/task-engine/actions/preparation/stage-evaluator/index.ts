@@ -46,8 +46,6 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
-  retainedStagePrototype,
-  reusedPreparationContent,
   roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
@@ -284,8 +282,8 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
 
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
     // A response or reassessment round judges the preceding evaluation's concerns against the
-    // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
-    // at all.
+    // current revision it assesses; a fresh round was already evaluated on its own revision, if at
+    // all.
     let previous: StageEvaluationOutput | null = null;
     if (plan.route !== 'new') {
       for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
@@ -296,26 +294,10 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         }
       }
     }
-    // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
-    // the assessment so the new basis binds their complete current observation, source paths
-    // included, instead of losing them with the reference.
-    const reused =
-      author.outcome === 'skip-proposed'
-        ? await reusedPreparationContent({
-            root,
-            round: plan.round,
-            worktree,
-            stage: settings.stage,
-            references: author.skip?.references ?? [],
-            readEvaluation,
-          })
-        : null;
     const retained = await retainEvaluationContent({
       git: settings.git,
       worktree,
       author,
-      reused: reused?.paths ?? [],
-      retainedPrototype: await retainedStagePrototype(root, plan.round),
     });
     const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
     const basis = {
@@ -326,6 +308,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         result: { path: reference.resultFile },
         identity: reference.identity,
       })),
+      repositoryRevision: retained.revision,
       content: retained.content,
     };
     const retainedDecision =
@@ -368,9 +351,16 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             'record and the round artifact area.'
           : 'The observation field is null; only the Storybook Refinement stage retains an ' +
             'observation record.',
-        'The assessed repository content retained for this evaluation (path at revision, or a ' +
-          'retained deletion): ' +
-          JSON.stringify(basis.content),
+        `The repository revision this evaluation observes: ${basis.repositoryRevision}. ` +
+          'Assess the ticket against the current authoritative documents and the changed stage ' +
+          'work in the supplied shared checkout; a submission that declares no changed files ' +
+          'does not restrict your scope.',
+        ...(basis.content.length === 0
+          ? []
+          : [
+              'The applicable prototype content retained for this evaluation (path at revision, ' +
+                `or a retained deletion): ${JSON.stringify(basis.content)}`,
+            ]),
         'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
         'Previous reports are context: judge whether their concerns were addressed and report ' +
           'the findings present in the assessed revision. Findings have no stable IDs, response ' +

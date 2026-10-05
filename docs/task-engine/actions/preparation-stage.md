@@ -75,10 +75,12 @@ Identities bind complete saved reports or captured source input, including attri
 Publication acknowledgements do not themselves replace that captured input. Refreshed human input
 must be reconciled before reuse. Repository paths are canonical checkout-relative paths; a deleted
 file is represented by exists=false at its observed commit. A declaration may name a deletion when
-the path was tracked before the author invocation or this stage retained its deletion in a validated
-author observation or evaluation. An observation naming an ancestral deletion commit establishes
-absence, not ownership by the declaring stage. This permits stage-owned cleanup and replay without
-manufacturing a replacement document. Revisions must remain readable in the retained repository. Result references
+the path was tracked before the author invocation or the stage's retained authored declarations
+already recorded that deletion. A validated author observation and a former evaluation's assessed
+content remain additional ownership evidence for records written before document bindings were
+removed. An observation naming an ancestral deletion commit establishes absence, not ownership by
+the declaring stage. This permits stage-owned cleanup and replay without manufacturing a replacement
+document. Revisions must remain readable in the retained repository. Result references
 identify the evaluator decision carrying this basis; a stage name or round number alone is insufficient.
 
 ## Round storage and acceptance

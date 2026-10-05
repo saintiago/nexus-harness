@@ -271,6 +271,7 @@ describe('SelectWork admission and routing', () => {
                 authorIdentity: authoredIdentity(author),
                 sourceIdentity: sourceInputIdentity(selected.selection as never),
                 upstream: [],
+                repositoryRevision: repositoryState().headRevision,
                 content: [],
               },
               assessedRevision: 1,

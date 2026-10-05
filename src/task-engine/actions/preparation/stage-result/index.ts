@@ -4,7 +4,6 @@ import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../..
 import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
-import { requireEvaluationContent } from '../evaluation-content.js';
 import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
@@ -20,8 +19,8 @@ import {
   preparationWorktree,
   readStageArtifact,
   readStagePlan,
-  reusedPreparationContent,
   requireCurrentAcceptance,
+  requireRetainedDecision,
   roundArtifactDirectory,
   stageRoot,
   writeStageArtifact,
@@ -104,7 +103,10 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         if (author === null) {
           throw new Error('A retained acceptance must keep its authored report.');
         }
-        await requireCurrentAcceptance({
+        // A completed round is replayed, not freshly finalized: its retained decision is validated
+        // by report association and applicable prototype evidence, so later-stage document edits
+        // or a legacy record without a repository observation cannot invalidate it.
+        requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
@@ -140,7 +142,6 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               outcome,
               reason: await readExhaustionReason(root),
               documents: [],
-              existingDocuments: [],
               sourcePaths: [],
               skipReferences: [],
               outputs: [],
@@ -213,13 +214,20 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       );
     }
 
-    /** The assessed revision an authored round retained, or null for a reference-only skip. */
-    const assessedRevision = (): string | null => {
-      const revisions = new Set((evaluation?.basis.content ?? []).map((entry) => entry.revision));
-      if (revisions.size > 1) {
-        throw new Error('The evaluated content reports inconsistent repository revisions.');
+    /**
+     * The action-observed repository revision the accepted round is bound to. Finalization already
+     * required it, so a missing observation is only possible for a former saved record that must
+     * be reassessed instead of finalized.
+     */
+    const assessedRevision = (): string => {
+      const revision = evaluation?.basis.repositoryRevision;
+      if (revision === undefined) {
+        throw new Error(
+          'The retained evaluation carries no repository observation; a current decision is ' +
+            'required.',
+        );
       }
-      return [...revisions][0] ?? null;
+      return revision;
     };
 
     // The retained prototype implementation tickets reuse: the stage's evaluated revision, not
@@ -229,9 +237,6 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     const retainedObservations: PreparationResult['prototypeObservations'] = [];
     if (outcome === 'accepted' && settings.stage === 'prototype') {
       const revision = assessedRevision();
-      if (revision === null) {
-        throw new Error('An accepted prototype must declare its retained source paths.');
-      }
       const inspection = await settings.git.inspectRepository(worktree);
       if (!inspection.ok) throw new Error(inspection.fault.message);
       const branch = inspection.value.branch;
@@ -277,102 +282,38 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       });
     }
 
-    /** The accepted changed documents with the revision each was retained at. */
-    const authoredDocuments: PreparationResult['documents'] =
-      outcome === 'accepted'
-        ? author.documents.map((document) => {
-            const relative = path.relative(worktree, path.resolve(worktree, document.path));
-            const entry = (evaluation?.basis.content ?? []).find(
-              (candidate) => candidate.path === relative,
-            );
-            if (entry === undefined) {
-              throw new Error(
-                `The ${settings.stage} evaluation did not assess the declared document ` +
-                  `"${document.path}".`,
-              );
-            }
-            return { path: path.resolve(worktree, document.path), revision: entry.revision };
-          })
-        : [];
-
-    // Only the immediately preceding round may supply reused assets. A later rejection or return
-    // invalidates that acceptance; never search backwards past it for convenient work. The reused
-    // content must still match the acceptance it came from, and this round's decision must bind it.
-    const reuse = await reusedPreparationContent({
-      root,
-      round: plan.round,
-      worktree,
-      stage: settings.stage,
-      references: outcome === 'skipped' ? (author.skip?.references ?? []) : [],
-    });
-    if (outcome === 'skipped') {
-      await requireEvaluationContent({ git: settings.git, worktree, content: reuse.content });
-      const bound = new Set((evaluation?.basis.content ?? []).map((entry) => entry.path));
-      for (const relative of reuse.paths) {
-        if (!bound.has(relative)) {
+    /**
+     * The accepted changed documents. The evaluation observed one repository revision after
+     * committing the declared stage work, so every accepted document is retained at that revision;
+     * unchanged adequate documents are simply absent from the set and need no binding.
+     */
+    const authoredDocuments: PreparationResult['documents'] = [];
+    /** The stage-owned paths outside the authoritative documents that stay on the retained branch. */
+    const sourcePaths: PreparationResult['sourcePaths'] = [];
+    if (outcome === 'accepted') {
+      const revision = assessedRevision();
+      for (const document of author.documents) {
+        const relative = path.relative(worktree, path.resolve(worktree, document.path));
+        if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
           throw new Error(
-            `The ${settings.stage} evaluation does not bind the reused content "${relative}"; ` +
-              'a current decision is required.',
+            `The declared document "${document.path}" lies outside the shared preparation ` +
+              'checkout.',
           );
         }
+        authoredDocuments.push({ path: path.resolve(worktree, document.path), revision });
+      }
+      for (const value of new Set(author.sourcePaths)) {
+        const relative = path.relative(worktree, path.resolve(worktree, value));
+        if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+          throw new Error(
+            `The declared source path "${value}" lies outside the shared preparation checkout.`,
+          );
+        }
+        sourcePaths.push(relative);
       }
     }
 
-    // The stage-owned paths outside the authoritative documents stay on the retained branch: the
-    // authored source paths, plus the source paths a skip reuses from the preceding acceptance.
-    const sourcePaths: PreparationResult['sourcePaths'] =
-      outcome === 'accepted'
-        ? author.sourcePaths.map((value) => {
-            const relative = path.relative(worktree, path.resolve(worktree, value));
-            const entry = (evaluation?.basis.content ?? []).find(
-              (candidate) => candidate.path === relative,
-            );
-            if (entry === undefined) {
-              throw new Error(
-                `The ${settings.stage} evaluation did not assess the declared source path ` +
-                  `"${value}".`,
-              );
-            }
-            return relative;
-          })
-        : [...reuse.sourcePaths];
-
-    // Existing authoritative documents an evaluated skip relied on that this round does not
-    // already report as reused documents, with their saved revisions.
-    const existingDocuments: PreparationResult['existingDocuments'] = [...reuse.existingDocuments];
-    if (outcome === 'skipped') {
-      const reused = new Set(reuse.paths.map((relative) => path.resolve(worktree, relative)));
-      for (const entry of evaluation?.basis.content ?? []) {
-        if (!entry.exists) continue;
-        if (reused.has(path.resolve(worktree, entry.path))) continue;
-        existingDocuments.push({
-          path: path.resolve(worktree, entry.path),
-          revision: entry.revision,
-        });
-      }
-    }
-
-    if (outcome === 'skipped' && settings.stage === 'prototype') {
-      // A reused acceptance keeps the prototype implementation tickets reference; changed
-      // prototype content cannot pass the reuse validation above.
-      prototype = reuse.prototype;
-      retainedObservations.length = 0;
-      retainedObservations.push(...reuse.prototypeObservations);
-      if (prototype !== null) {
-        // Reuse copies references; the retained records themselves must still be readable evidence
-        // for the acceptance they came from, or the skip cannot keep authorizing the prototype.
-        await requireRetainedPrototypeEvidence({
-          git: settings.git,
-          worktree,
-          artifactsRoot: path.join(root, 'artifacts'),
-          observations: retainedObservations,
-          assessed: reuse.content,
-          observedPaths: reuse.sourcePaths,
-        });
-      }
-    }
-
-    const documents: PreparationResult['documents'] = [...authoredDocuments, ...reuse.documents];
+    const documents: PreparationResult['documents'] = authoredDocuments;
     const outputs: PreparationResult['outputs'] = documents.map((document) => ({
       path: document.path,
     }));
@@ -389,7 +330,6 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       outcome,
       authoredRevision: author.revision,
       documents,
-      existingDocuments,
       sourcePaths,
       skipReferences: outcome === 'skipped' ? (author.skip?.references ?? []) : [],
       outputs,

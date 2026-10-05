@@ -6,18 +6,14 @@ import type { JiraAdapter } from '../../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
-  stageAuthorArtifact,
-  stageEvaluationArtifact,
   type PreparationResult,
   type PreparationStage,
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
 import {
   readCurrentDecision,
-  readStageArtifact,
   readStageTerminal,
   readStagePlan,
-  requireCurrentAcceptance,
   stageRoot,
 } from '../../preparation/storage.js';
 import {
@@ -273,31 +269,16 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       );
     }
     if (outcome === 'accepted' || outcome === 'skipped') {
-      // The published decision must be current: the exact authored report, captured input, relied-on
-      // upstream results and assessed content the evaluator stood behind.
-      const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-      const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
-      if (author === null) {
-        return await failed(
-          `The ${stage} result has no authored report to validate before publication.`,
-        );
-      }
-      try {
-        await requireCurrentAcceptance({
-          issueRoot: selection.workspace.root,
-          stage,
-          selection,
-          round: plan.round,
-          verdict: outcome === 'skipped' ? 'accepted-skip' : 'accepted',
-          author,
-          evaluation,
-          git: settings.git,
-        });
-      } catch (error) {
-        return await failed(
-          `The ${stage} result is not a current decision: ` +
-            `${error instanceof Error ? error.message : String(error)}.`,
-        );
+      // Publication continues a completed decision. Use the same report/input association and
+      // applicable prototype evidence checks as downstream reads, including for legacy results.
+      const decision = await readCurrentDecision({
+        issueRoot: selection.workspace.root,
+        stage,
+        selection,
+        git: settings.git,
+      });
+      if (decision.kind !== 'current') {
+        return await failed(`The ${stage} result is not a current decision: ${decision.reason}.`);
       }
       const retained = await readHandoff(selection.workspace.root);
       const invalidated = await invalidatedStages();

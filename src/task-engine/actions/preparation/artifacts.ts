@@ -117,18 +117,13 @@ export const upstreamRequestSchema = z.strictObject({
 
 export type UpstreamRequest = z.infer<typeof upstreamRequestSchema>;
 
-/** One applicability skip the author proposes, with the existing inputs that satisfy the stage. */
+/** One applicability skip the author proposes, with an optional reason and optional evidence. */
 export const skipProposalSchema = z.strictObject({
-  reason: z
-    .string()
-    .trim()
-    .min(1)
-    .describe('Why the stage is irrelevant or its existing inputs already satisfy it.'),
+  reason: z.string().trim().min(1).describe('Why the stage is irrelevant.'),
   references: z
     .array(z.string().trim().min(1))
-    .min(1)
     .describe(
-      'The existing inputs that satisfy the stage, each citing a readable file in the shared checkout (a path, or a path#section citation) or an existing retained file; a Storybook Refinement reuse skip may instead cite the retained prototype branch, revision or checkout. Explanations belong in reason; an unresolvable reference is rejected. They stay inputs: a skip neither commits nor excludes them from evaluation.',
+      'Optional evidence supporting the reason: each reference cites a readable file in the shared checkout (a path, or a path#section citation) or an existing retained file. Explanations belong in reason; an unreadable reference is rejected and an empty list is valid. They stay evidence: a reference neither commits nor excludes anything from evaluation and creates no document binding.',
     ),
 });
 
@@ -150,7 +145,9 @@ export const stageAuthorResponseSchema = z.strictObject({
   summary: z.string().describe('What was authored, proposed or found, in one short account.'),
   documents: z
     .array(authoredDocumentSchema)
-    .describe('The authoritative documents this revision changed, each with why it changed.'),
+    .describe(
+      'The authoritative documents this revision changed, each with why it changed. Unchanged adequate documents need no entry: the evaluator inspects the current worktree regardless of authorship.',
+    ),
   /**
    * Additional non-document paths the stage owns and commits in the shared checkout, such as the
    * prototype's Storybook stories. They are stage-owned work, never authoritative documents.
@@ -173,12 +170,12 @@ export const stageAuthorResponseSchema = z.strictObject({
   plan: z
     .array(plannedTaskSchema)
     .describe(
-      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report even when an existing adequate design permits the skip; empty for every other stage and outcome.',
+      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report; empty for every other stage and outcome.',
     ),
   skip: skipProposalSchema
     .nullable()
     .describe(
-      'The applicability skip proposal, or null unless the outcome is skip-proposed. A revision round cannot propose a skip.',
+      'The applicability skip proposal, or null unless the outcome is skip-proposed. A repair round may propose an applicability skip when the corrected scope makes the stage irrelevant; evaluation decides its applicability.',
     ),
   question: z
     .string()
@@ -283,9 +280,12 @@ export type AssessedContent = z.infer<typeof assessedContentSchema>;
 
 /**
  * The evaluation's acceptance basis, observed by the stage action rather than trusted from an
- * agent: the complete authored report, the captured source input, the relied-on upstream results
- * and the exact repository content the evaluator assessed. A changed author report, input or
- * assessed content needs a current evaluator decision.
+ * agent: the complete authored report, the captured source input, the relied-on upstream results,
+ * the repository revision the evaluation observed and the applicable prototype content it
+ * assessed. A changed author report or captured input needs a current evaluator decision; later
+ * document edits below the same finalization do not bind it. Document stages keep `content`
+ * empty: they write no per-document bindings, and completed verdicts are not compared with
+ * historical file revisions.
  */
 export const acceptanceBasisSchema = z.object({
   author: z.object({ path: z.string().min(1) }),
@@ -297,6 +297,8 @@ export const acceptanceBasisSchema = z.object({
       identity: z.string().min(1),
     }),
   ),
+  /** The commit revision the action observed for the evaluation; absent on former saved records. */
+  repositoryRevision: z.string().min(1).optional(),
   content: z.array(assessedContentSchema),
 });
 
@@ -371,9 +373,11 @@ export const preparationResultSchema = z.object({
   outcome: z.enum(['accepted', 'skipped', 'returnUpstream', 'needsInput', 'exhausted']),
   authoredRevision: z.number().int().positive(),
   /**
-   * The accepted changed documents, including explicitly reused assets on a skip, with the revision that
-   * produced them when one was observed. The parent's implementation handoff references exactly
-   * this set; the broader outputs below stay available to consumers that need every artifact.
+   * The changed authoritative documents this stage currently accepted with the revision that
+   * produced them. An accepted submission may change nothing, and an evaluated skip never adds
+   * documents: unchanged adequate documents need no citation and are not inferred from earlier
+   * results. The parent's implementation handoff references exactly this set; the broader outputs
+   * below stay available to consumers that need every artifact.
    */
   documents: z.array(
     z.object({
@@ -381,9 +385,6 @@ export const preparationResultSchema = z.object({
       revision: z.string().min(1).nullable(),
     }),
   ),
-  existingDocuments: z
-    .array(z.object({ path: z.string().min(1), revision: z.string().min(1) }))
-    .default([]),
   /**
    * Stage-owned paths outside the authoritative documents that stay on the retained preparation
    * branch for implementation reuse, relative to the shared checkout.

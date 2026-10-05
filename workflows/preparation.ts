@@ -91,6 +91,7 @@ export const preparation = createMachine(
           input: ({ context }) => ({ stage: context.stage, task: 'respond' }),
           onDone: [
             { guard: ({ event }) => event.output === 'authored', target: 'evaluateResponse' },
+            { guard: ({ event }) => event.output === 'skip-proposed', target: 'evaluateResponse' },
             { guard: ({ event }) => event.output === 'needs-input', target: 'finishNeedsInput' },
             { guard: ({ event }) => event.output === 'return-upstream', target: 'recordReturn' },
             { actions: 'unexpectedOutcome' },
@@ -103,6 +104,7 @@ export const preparation = createMachine(
           input: ({ context }) => ({ stage: context.stage }),
           onDone: [
             { guard: ({ event }) => event.output === 'accepted', target: 'finishAccepted' },
+            { guard: ({ event }) => event.output === 'accepted-skip', target: 'finishSkipped' },
             { guard: ({ event }) => event.output === 'changes-requested', target: 'nextRound' },
             { guard: ({ event }) => event.output === 'return-upstream', target: 'recordReturn' },
             { actions: 'unexpectedOutcome' },
