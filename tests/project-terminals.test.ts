@@ -20,7 +20,7 @@ import {
   initialHandoff,
 } from '../src/task-engine/actions/select-work/artifacts.js';
 import { stageRoundPlanDeclaration } from '../src/task-engine/actions/preparation/artifacts.js';
-import { stageRoot, stageWorktree } from '../src/task-engine/actions/preparation/storage.js';
+import { preparationWorktree, stageRoot } from '../src/task-engine/actions/preparation/storage.js';
 import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine } from '../src/task-engine/index.js';
 import { project } from '../workflows/project.js';
@@ -177,7 +177,7 @@ describe('preparation terminal handoffs', () => {
     const stage = stageRoot(root, 'ux');
     await mkdir(path.join(stage, 'state'), { recursive: true });
     await mkdir(path.join(stage, 'artifacts', '2'), { recursive: true });
-    await mkdir(stageWorktree(root, 'ux'), { recursive: true });
+    await mkdir(preparationWorktree(root), { recursive: true });
     await writeFile(
       path.join(stage, stageRoundPlanDeclaration.file),
       JSON.stringify({

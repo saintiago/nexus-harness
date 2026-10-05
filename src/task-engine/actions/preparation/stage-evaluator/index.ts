@@ -5,6 +5,7 @@ import {
   authoredIdentity,
   retainEvaluationContent,
   requireEvaluationContent,
+  sourceInputIdentity,
 } from '../evaluation-content.js';
 import {
   actionOutcomeEvent,
@@ -25,12 +26,16 @@ import {
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
-  precedingStageWork,
+  precedingStageEvaluation,
   priorStageFindings,
+  preparationWorktree,
   readStageArtifact,
   readStagePlan,
+  readStageTerminal,
+  reusedPreparationContent,
+  roundArtifactFile,
   stageRoot,
-  stageWorktree,
+  upstreamResultReferences,
   writeStageArtifact,
 } from '../storage.js';
 
@@ -139,7 +144,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       'Selection',
     );
     const root = stageRoot(selection.workspace.root, settings.stage);
-    const worktree = stageWorktree(selection.workspace.root, settings.stage);
+    const worktree = preparationWorktree(selection.workspace.root);
     const plan = await readStagePlan(root);
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(
@@ -155,26 +160,50 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       );
     }
     const findings = await priorStageFindings(root, plan);
-    // A response round resolves the preceding evaluation's findings against the response it
-    // assesses; a fresh round was already evaluated on its own revision, if at all.
-    const previous =
-      plan.route === 'next'
-        ? ((await precedingStageWork(root, plan.round))?.evaluation ?? null)
-        : null;
+    // A response or reassessment round resolves the preceding evaluation's findings against the
+    // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
+    // at all.
+    const previous = plan.route === 'new' ? null : await precedingStageEvaluation(root, plan.round);
 
-    const contentRevision = await retainEvaluationContent({
+    // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
+    // the assessment so the new basis binds their complete current observation, source paths
+    // included, instead of losing them with the reference.
+    const reused =
+      author.outcome === 'skip-proposed'
+        ? await reusedPreparationContent({
+            root,
+            round: plan.round,
+            worktree,
+            stage: settings.stage,
+            references: author.skip?.references ?? [],
+          })
+        : null;
+    const retained = await retainEvaluationContent({
       git: settings.git,
       worktree,
-      stage: settings.stage,
       author,
+      reused: reused?.paths ?? [],
     });
-    const contentPaths = await requireEvaluationContent({
-      git: settings.git,
-      worktree,
-      stage: settings.stage,
-      author,
-      revision: contentRevision,
-    });
+    const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
+    const basis = {
+      author: { path: roundArtifactFile(root, plan.round, 'author.json') },
+      authorIdentity: authoredIdentity(author),
+      sourceIdentity: sourceInputIdentity(selection),
+      upstream: upstream.map((reference) => ({
+        result: { path: reference.resultFile },
+        identity: reference.identity,
+      })),
+      content: retained.content,
+    };
+    const retainedDecision =
+      plan.route === 'reassess'
+        ? await (async () => {
+            const terminal = await readStageTerminal(root);
+            return terminal === null
+              ? null
+              : { outcome: terminal.outcome, reason: terminal.reason };
+          })()
+        : null;
     const context = await stageContextText({
       selection,
       plan,
@@ -182,17 +211,23 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       author,
       evaluation: previous,
+      retained: retainedDecision,
     });
     const result = await settings.runner.run({
       operation: 'stage-evaluator',
       profile: plan.profiles.evaluator,
-      // The invocation's workspace is the stage area root; AgentRuntime resolves its worktree/.
-      workspace: { root },
+      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
+      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
+      workspace: { root: selection.workspace.root },
       context: [
         context,
         `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
           'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
           'return; separate necessary changes from optional suggestions.',
+        'The assessed repository content retained for this evaluation (path at revision, or a ' +
+          'retained deletion): ' +
+          JSON.stringify(basis.content),
+        'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
         findings.length === 0
           ? 'No prior findings are inherited by this round; return an empty priorFindings array.'
           : `Eligible prior finding IDs: ${findings
@@ -228,18 +263,13 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     await requireEvaluationContent({
       git: settings.git,
       worktree,
-      stage: settings.stage,
-      author,
-      revision: contentRevision,
-      paths: contentPaths,
+      content: retained.content,
     });
     const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
     if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {
-      contentRevision,
-      contentPaths,
-      authorIdentity: authoredIdentity(author),
+      basis,
       assessedRevision: report.assessedRevision,
       verdict: report.verdict,
       reason: report.reason,

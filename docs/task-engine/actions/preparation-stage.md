@@ -98,7 +98,8 @@ source input identity, and the document/prototype paths and Git revisions actual
 on. Existing-document skips have the same binding. Compare those paths with saved content before
 acceptance and before reuse; an unrelated new HEAD is not by itself a change to accepted content.
 A changed authored report, assessed content or relied-on input needs a current evaluator decision.
-Paths outside the checkout are not repository document references. Preserve source attribution.
+Resolve relative and in-checkout absolute references to canonical checkout-relative paths. Paths
+outside the checkout are not repository document references. Preserve source attribution.
 
 ## Correction and reuse
 
@@ -117,7 +118,9 @@ Before final handoff, validate every required stage's current decision and clear
 a mismatching reference routes to the earliest responsible stage, without reviving an older approval.
 
 Re-entry supplies the latest work, complete unresolved findings, responses and any return finding.
-Do not search past an intervening invalid or unfinished round. Import the existing
+Author-only returns and input requests resume as reassessment and retain the latest evaluation's
+finding evidence until a later evaluation explicitly resolves or withdraws it. Acceptance reuse
+must not search past an intervening invalid or unfinished round. Import the existing
 [findings contract](findings.md); authors may answer or rebut as well as edit, and evaluators explicitly
 resolve prior findings. Evaluated applicability skips remain valid when their basis remains valid.
 

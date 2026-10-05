@@ -1,15 +1,25 @@
 import path from 'node:path';
+import type { GitAdapter } from '../../../../adapters/git.js';
 import { preparationPublicationFailureDeclaration } from './artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import type { JiraAdapter } from '../../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
   type PreparationResult,
   type PreparationStage,
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
-import { readStageTerminal, readStagePlan, stageRoot } from '../../preparation/storage.js';
+import {
+  readCurrentDecision,
+  readStageArtifact,
+  readStageTerminal,
+  readStagePlan,
+  requireCurrentAcceptance,
+  stageRoot,
+} from '../../preparation/storage.js';
 import {
   publishComment,
   readComments,
@@ -17,15 +27,15 @@ import {
   statusNameOf,
   transitionInto,
 } from '../../source.js';
-import type { Selection, WorkflowStage } from '../../select-task/artifacts.js';
-import type { StageReturn } from '../../select-work/artifacts.js';
+import type { WorkflowStage } from '../../select-task/artifacts.js';
+import { initialHandoff, type StageReturn } from '../../select-work/artifacts.js';
 import { applyTransition } from '../../source.js';
 import {
   advanceStage,
   readHandoff,
   readSelection,
+  writeAwaitingStages,
   writeHandoff,
-  writeSelection,
 } from '../state.js';
 
 /**
@@ -51,6 +61,7 @@ export type PublishPreparationSettings = {
   /** The configured statuses the parent uses for feedback and returned ideas. */
   readonly waitingForFeedback: string;
   readonly ideaActive: string;
+  readonly git: GitAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
@@ -95,9 +106,10 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     if (result === null) {
       throw new Error(`No ${stage} result exists under "${root}" to publish.`);
     }
-    // Read the source state this publication writes from once: the human-facing comment, the
-    // expected-status validation and the refreshed capture the routed child receives all rest on
-    // the same observation.
+    // Read the source state this publication writes from once: the human-facing comment and the
+    // expected-status validation rest on the same observation. The captured source input is not
+    // rewritten here, so Nexus's own publication acknowledgement cannot invalidate a current
+    // decision's input identity.
     const issue = await readIssue(settings.jira, selection.source.issueId);
     const comments = await readComments(settings.jira, selection.source.issueId);
 
@@ -163,27 +175,18 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     }
 
     /**
-     * Refresh the retained capture after the publication: the destination child reads the human
-     * conversation this publication observed, so a later route never works from a stale snapshot.
-     */
-    async function refreshCapture(retained: Selection): Promise<void> {
-      await writeSelection(settings.selectionFile, {
-        ...retained,
-        task: issue,
-        conversation: [...comments],
-      });
-    }
-
-    /**
      * Publish one advance to a forward or upstream stage. A return supplies the concrete finding
-     * the destination stage must correct; a forward advance clears any consumed return. The status
-     * move is validated before the comment is published, so an unexpected human state preserves
-     * both the status and the conversation.
+     * the destination stage must correct; a forward advance clears any consumed return. The
+     * publication does not rewrite the captured source input: Nexus's own publication comment is
+     * not new author input, and SelectWork re-captures refreshed human input on the next
+     * selection. The status move is validated before the comment is published, so an unexpected
+     * human state preserves both the status and the conversation.
      */
     async function advanceTo(
       target: PreparationStage | 'idea',
       returnFinding: StageReturn | null,
       text: string,
+      awaitingStages: readonly PreparationStage[],
     ): Promise<'advanced' | 'failed'> {
       const status = statusOf(target);
       if (status === null) {
@@ -204,7 +207,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         target as WorkflowStage,
         returnFinding,
       );
-      await refreshCapture(updated);
+      await writeAwaitingStages(updated.workspace.root, awaitingStages);
       return 'advanced';
     }
 
@@ -225,19 +228,125 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         upstreamReturns: handoff?.upstreamReturns ?? 0,
         feedback: { stage, question },
         return: handoff?.return ?? null,
+        awaitingStages: handoff?.awaitingStages ?? [],
         tickets: handoff?.tickets ?? [],
         publications: handoff?.publications ?? [],
       });
-      await refreshCapture(selection);
       return 'waiting';
     }
 
     const outcome: PreparationResult['outcome'] = result.outcome;
+    /**
+     * Every stage whose retained acceptance basis no longer matches: refreshed source input,
+     * changed reports or repository content require a current decision, whether the affected
+     * stage stands earlier or later in the route.
+     */
+    async function invalidatedStages(): Promise<PreparationStage[]> {
+      const changed: PreparationStage[] = [];
+      for (const candidate of preparationStages) {
+        if (candidate === stage) {
+          continue;
+        }
+        const decision = await readCurrentDecision({
+          issueRoot: selection.workspace.root,
+          stage: candidate,
+          selection,
+          git: settings.git,
+        });
+        if (decision.kind === 'stale') changed.push(candidate);
+      }
+      return changed;
+    }
+    /** The stage position of one preparation stage in the route. */
+    function indexOf(candidate: PreparationStage): number {
+      return preparationStages.indexOf(candidate);
+    }
+    /** Add a correction interval without dropping any earlier unfinished correction. */
+    async function pendingCorrection(target: UpstreamStage): Promise<PreparationStage[]> {
+      const retained = await readHandoff(selection.workspace.root);
+      return preparationStages.filter(
+        (candidate) =>
+          retained?.awaitingStages.includes(candidate) ||
+          ((target === 'idea' || indexOf(candidate) >= indexOf(target)) &&
+            indexOf(candidate) <= indexOf(stage)),
+      );
+    }
     if (outcome === 'accepted' || outcome === 'skipped') {
+      // The published decision must be current: the exact authored report, captured input, relied-on
+      // upstream results and assessed content the evaluator stood behind.
+      const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+      const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+      if (author === null) {
+        return await failed(
+          `The ${stage} result has no authored report to validate before publication.`,
+        );
+      }
+      try {
+        await requireCurrentAcceptance({
+          issueRoot: selection.workspace.root,
+          stage,
+          selection,
+          round: plan.round,
+          verdict: outcome === 'skipped' ? 'accepted-skip' : 'accepted',
+          author,
+          evaluation,
+          git: settings.git,
+        });
+      } catch (error) {
+        return await failed(
+          `The ${stage} result is not a current decision: ` +
+            `${error instanceof Error ? error.message : String(error)}.`,
+        );
+      }
+      const retained = await readHandoff(selection.workspace.root);
+      const invalidated = await invalidatedStages();
+      const earliest = invalidated.find(
+        (candidate): candidate is Exclude<UpstreamStage, 'idea'> =>
+          indexOf(candidate) < indexOf(stage),
+      );
+      if (earliest !== undefined) {
+        // Return to the earliest stale decision, then reassess downstream work in order. Keep
+        // the complete pending route so refreshed input follows the same bounded correction
+        // flow as changed content, including after a restart.
+        return advanceTo(
+          earliest,
+          {
+            from: stage,
+            to: earliest,
+            problem:
+              `The retained ${earliest} decision no longer matches its authored report, ` +
+              'relied-on inputs or assessed repository content.',
+            consequence: `The route cannot advance on the stale ${earliest} decision.`,
+            correction:
+              `Reassess the ${earliest} work against the current inputs and content and confirm ` +
+              'or repair every affected downstream decision.',
+          },
+          `Returning to ${earliest} for reconsideration: its retained decision is no longer current.`,
+          [...new Set([...(await pendingCorrection(earliest)), ...invalidated])],
+        );
+      }
+      const awaiting = [
+        ...(retained?.awaitingStages ?? []).filter((candidate) => candidate !== stage),
+        ...invalidated,
+      ];
       if (stage === 'architecture') {
         if (statusNameOf(issue) !== statusOf(stage)) {
           return failed(
             `Issue ${selection.taskKey} is in status "${statusNameOf(issue)}"; Architecture handoff requires its active stage status.`,
+          );
+        }
+        // Freeze the pending work before the parent starts the handoff: Architecture's own
+        // completed reassessment is cleared while any genuinely pending stage still blocks it.
+        const pending = [...new Set(awaiting)];
+        const handoffRecord = retained ?? initialHandoff(stage);
+        await writeHandoff(selection.workspace.root, {
+          ...handoffRecord,
+          awaitingStages: pending,
+        });
+        if (pending.length > 0) {
+          return failed(
+            `Preparation is awaiting a current decision for the ${pending.join(', ')} stage(s); ` +
+              'the Architecture handoff cannot proceed.',
           );
         }
         // Architecture hands off through the parent's documentation and ticket publication.
@@ -251,6 +360,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         next,
         null,
         `Preparation ${stage} ${outcome}: ${result.reason ?? 'the stage criteria are met.'}`,
+        [...new Set(awaiting)],
       );
     }
     if (outcome === 'returnUpstream') {
@@ -267,6 +377,9 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         );
       }
       const finding = result.returnFinding;
+      // The correction invalidates the corrected stage's decision and every later decision up to
+      // the returning stage: the parent retains them as awaiting a current decision.
+      const awaiting = await pendingCorrection(target);
       return advanceTo(
         target,
         {
@@ -282,6 +395,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         `Returning to ${target} for correction: ${
           result.reason ?? 'an upstream input needs ' + 'correction.'
         }`,
+        awaiting,
       );
     }
     if (outcome === 'needsInput') {

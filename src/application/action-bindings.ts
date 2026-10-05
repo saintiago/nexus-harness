@@ -33,8 +33,8 @@ import { createDeliver } from '../task-engine/actions/deliver/index.js';
 import { createDevelop } from '../task-engine/actions/develop/index.js';
 import { createIdeaEditor } from '../task-engine/actions/idea-editor/index.js';
 import {
-  createPrepareArea,
-  type PreparationArea,
+  createPrepareRefinement,
+  createPrepareStage,
 } from '../task-engine/actions/preparation/prepare-stage/index.js';
 import { createRecordStageReturn } from '../task-engine/actions/preparation/record-stage-return/index.js';
 import { createStageAuthor } from '../task-engine/actions/preparation/stage-author/index.js';
@@ -188,43 +188,25 @@ export function createActionBinding(
       return async (input?: unknown) => actions[stageOfInput(input)](input);
     };
 
-    const prepareAreas: Readonly<Record<PreparationArea, BoundAction>> = {
-      requirements: createPrepareArea({
-        selectionFile,
-        area: 'requirements',
-        repository: project.repository,
-        git: settings.git,
-        publish,
-      }),
-      ux: createPrepareArea({
-        selectionFile,
-        area: 'ux',
-        repository: project.repository,
-        git: settings.git,
-        publish,
-      }),
-      prototype: createPrepareArea({
-        selectionFile,
-        area: 'prototype',
-        repository: project.repository,
-        git: settings.git,
-        publish,
-      }),
-      architecture: createPrepareArea({
-        selectionFile,
-        area: 'architecture',
-        repository: project.repository,
-        git: settings.git,
-        publish,
-      }),
-      refinement: createPrepareArea({
-        selectionFile,
-        area: 'refinement',
-        repository: project.repository,
-        git: settings.git,
-        publish,
-      }),
-    };
+    // One shared preparation checkout serves every evaluated stage; idea refinement keeps its
+    // separate repository.
+    const prepareStages = Object.fromEntries(
+      preparationStages.map((stage) => [
+        stage,
+        createPrepareStage({
+          selectionFile,
+          repository: project.repository,
+          git: settings.git,
+          publish,
+        }),
+      ]),
+    ) as Record<PreparationStage, BoundAction>;
+    const prepareRefinement = createPrepareRefinement({
+      selectionFile,
+      repository: project.repository,
+      git: settings.git,
+      publish,
+    });
 
     const stageRounds = Object.fromEntries(
       preparationStages.map((stage) => {
@@ -249,7 +231,13 @@ export function createActionBinding(
     const stageAuthorActions = Object.fromEntries(
       preparationStages.map((stage) => [
         stage,
-        createStageAuthor({ selectionFile, stage, runner: stageAuthors[stage], publish }),
+        createStageAuthor({
+          selectionFile,
+          stage,
+          runner: stageAuthors[stage],
+          git: settings.git,
+          publish,
+        }),
       ]),
     ) as Record<PreparationStage, BoundAction>;
 
@@ -428,6 +416,7 @@ export function createActionBinding(
         statuses: taskSource.preparation?.statuses,
         waitingForFeedback: taskSource.ideas.statuses.waitingForFeedback,
         ideaActive: taskSource.ideas.statuses.active,
+        git: settings.git,
         jira: settings.jira,
         publish,
       }),
@@ -459,7 +448,7 @@ export function createActionBinding(
         publish,
       }),
       // ---- idea refinement child ----
-      PrepareIdeaWorkspace: prepareAreas.refinement,
+      PrepareIdeaWorkspace: prepareRefinement,
       StartIdeaRound: async (input?: unknown) => {
         const selection = await selected();
         // The parent's retained correction reaches the refinement: a specific question the item
@@ -524,11 +513,7 @@ export function createActionBinding(
         publish,
       }),
       // ---- evaluated preparation child ----
-      PrepareStage: forStage(
-        Object.fromEntries(
-          preparationStages.map((stage) => [stage, prepareAreas[stage]]),
-        ) as Record<PreparationStage, BoundAction>,
-      ),
+      PrepareStage: forStage(prepareStages),
       StartStageRound: forStage(stageRounds),
       StageAuthor: forStage(stageAuthorActions),
       StageEvaluator: forStage(stageEvaluatorActions),

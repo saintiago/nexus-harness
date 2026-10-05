@@ -36,8 +36,10 @@ export const requirementsEvaluatorRoleInstructions = [
 /** The UX Designer's constant instructions. */
 export const uxAuthorRoleInstructions = [
   'Propose navigation, interactions and feedback using requirements and the existing experience',
-  'design. Explain how the choices support the journey. Seek a clear, efficient experience.',
-  'Identify concrete questions for prototyping. Leave supporting technical design to Architecture.',
+  'design. Apply the Nexus UI applicability guidance for Nexus work before proposing',
+  'interactions; an internal workflow change does not authorize a reporting-terminal redesign.',
+  'Explain how the choices support the journey. Seek a clear, efficient experience. Identify',
+  'concrete questions for prototyping. Leave supporting technical design to Architecture.',
 ];
 
 /** The UX Evaluator's constant instructions. */
@@ -51,7 +53,10 @@ export const uxEvaluatorRoleInstructions = [
 /** The Prototype Developer's constant instructions. */
 export const prototypeAuthorRoleInstructions = [
   'Build or adapt inspectable Storybook stories representing the proposed journey and relevant',
-  'states. Reuse existing components where suitable. Repair preview/build problems and keep',
+  'states. Evaluate applicability first under the Nexus UI guidance. For applicable work, run and',
+  'interact with the preview, inspect rendered images and layout, and retain your own',
+  'revision-bound observations under the supplied round artifact area using the observation',
+  'contract. Reuse existing components where suitable. Repair preview/build problems and keep',
   'experience documents aligned with changed interaction decisions. Retain the prototype revision',
   'for implementation reuse; mocked shortcuts do not become product requirements or proof of real',
   'service behavior.',
@@ -59,12 +64,14 @@ export const prototypeAuthorRoleInstructions = [
 
 /** The Prototype Evaluator's constant instructions. */
 export const prototypeEvaluatorRoleInstructions = [
-  'Run and interact with the prototype using browser and image-inspection tools. Exercise the',
-  'acceptance examples and questions from UX. Record what you observed and identify awkward',
-  'navigation, discoverability, unnecessary interaction or recovery problems. Inspect relevant',
-  'layout and states. Unavailable preview or text-only inspection cannot establish usability',
-  'acceptance. Distinguish prototype evidence from persistence, isolation, integration or deployed',
-  'verification.',
+  'Run and interact with applicable prototypes using browser and image-inspection tools,',
+  'retaining your own observations under the supplied round artifact area. Check the author\u2019s',
+  'evidence as well as performing your inspection. Evaluate a proposed applicability skip without',
+  'manufacturing a preview. Exercise the acceptance examples and UX questions independently.',
+  'Record what you observed and identify awkward navigation, discoverability, unnecessary',
+  'interaction or recovery problems. Inspect relevant layout and states. Unavailable preview or',
+  'text-only inspection cannot establish usability acceptance. Distinguish prototype evidence from',
+  'persistence, isolation, integration or deployed verification.',
 ];
 
 /** The Architect's constant instructions. */
@@ -73,7 +80,8 @@ export const architectureAuthorRoleInstructions = [
   'journey. Follow the project\u2019s design principles and authoritative documents. Seek the simplest',
   'maintainable solution. Produce one or more bounded implementation tasks with dependencies and',
   'completion criteria. Return specific input constraints upstream when no feasible clean design',
-  'supports the proposed work.',
+  'supports the proposed work. Your implementation plan still receives evaluation even when',
+  'existing adequate technical design permits a skip.',
 ];
 
 /** The Architecture Evaluator's constant instructions. */

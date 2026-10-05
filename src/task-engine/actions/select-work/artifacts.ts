@@ -72,6 +72,12 @@ export const parentHandoffSchema = z.object({
     .nullable(),
   /** The upstream return the parent published; the destination stage reads it, its own clears it. */
   return: stageReturnSchema.nullable(),
+  /**
+   * The preparation stages whose current decisions a correction invalidated: each must obtain a
+   * current decision before the route advances past it. Retained across restarts so a pending
+   * reassessment is never silently dropped or mistaken for the earlier acceptance.
+   */
+  awaitingStages: z.array(z.enum(['requirements', 'ux', 'prototype', 'architecture'])).default([]),
   /** Implementation tickets the Architecture handoff created for this issue. */
   tickets: z.array(handoffTicketSchema),
   /** Publication identities the parent observed, such as a comment or documentation pull request. */
@@ -93,6 +99,7 @@ export function initialHandoff(stage: ParentHandoff['stage']): ParentHandoff {
     upstreamReturns: 0,
     feedback: null,
     return: null,
+    awaitingStages: [],
     tickets: [],
     publications: [],
   };

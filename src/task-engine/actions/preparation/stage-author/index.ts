@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import type { GitAdapter } from '../../../../adapters/git.js';
 import { messageOf } from '../../../../result.js';
 import {
   actionOutcomeEvent,
@@ -14,19 +15,24 @@ import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   stageAuthorArtifact,
+  stageEvaluationArtifact,
   stageAuthorResponseSchema,
   type PreparationStage,
   type StageAuthorOutput,
   type StageAuthorResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
+import { checkoutRelative } from '../evaluation-content.js';
 import {
+  precedingStageEvaluation,
   precedingStageWork,
   priorStageFindings,
+  preparationWorktree,
   readStageArtifact,
   readStagePlan,
+  readStageTerminal,
   stageRoot,
-  stageWorktree,
+  stageRounds,
   writeStageArtifact,
 } from '../storage.js';
 
@@ -43,6 +49,8 @@ export type StageAuthorSettings = {
   readonly stage: PreparationStage;
   /** The author role's agent runner, which owns the invocation's identity and activity. */
   readonly runner: AgentRoleRunner;
+  /** The Git capability that observes whether a declared document is a retained deletion. */
+  readonly git: GitAdapter;
   readonly publish: EventPublisher;
 };
 
@@ -60,45 +68,118 @@ function taskOf(input: unknown): 'propose' | 'respond' {
   );
 }
 
-/** True when the document path names an existing file inside the stage worktree. */
-async function documentExists(worktree: string, relative: string): Promise<boolean> {
-  if (path.isAbsolute(relative)) {
-    return false;
-  }
-  const file = path.resolve(worktree, relative);
-  const inside = path.relative(worktree, file);
-  if (inside === '' || inside.startsWith('..') || path.isAbsolute(inside)) {
-    return false;
-  }
+/** True when the path names an existing file inside the shared preparation checkout. */
+async function fileExists(worktree: string, relative: string): Promise<boolean> {
   try {
-    return (await stat(file)).isFile();
+    return (await stat(path.join(worktree, relative))).isFile();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false;
     }
-    throw new Error(`Document "${file}" could not be read: ${messageOf(error)}`, { cause: error });
+    throw new Error(
+      `Document "${path.join(worktree, relative)}" could not be read: ${messageOf(error)}`,
+      { cause: error },
+    );
   }
+}
+
+/**
+ * Why one declared path is not usable, or null. A path must stay inside the shared checkout and
+ * either exist now, name a tracked file being deleted, or retain the stage's recorded deletion.
+ */
+async function declaredPathProblem(
+  settings: {
+    readonly git: GitAdapter;
+    readonly worktree: string;
+    readonly retainedDeletions: ReadonlySet<string>;
+  },
+  value: string,
+): Promise<string | null> {
+  const relative = checkoutRelative(settings.worktree, value);
+  if (relative === null) {
+    return `the declared path "${value}" lies outside the shared preparation checkout`;
+  }
+  if (await fileExists(settings.worktree, relative)) {
+    return null;
+  }
+  if (settings.retainedDeletions.has(relative)) {
+    return null;
+  }
+  const inspection = await settings.git.inspectRepository(settings.worktree);
+  if (!inspection.ok) {
+    throw new Error(inspection.fault.message);
+  }
+  const head = inspection.value.headRevision;
+  if (head === null) {
+    return `the declared path "${value}" does not exist and the checkout has no revision`;
+  }
+  const tracked = await settings.git.readFileAtRevision(settings.worktree, head, relative);
+  return tracked.ok
+    ? null
+    : `the declared path "${value}" does not exist and was not tracked before this edit`;
+}
+
+/**
+ * Deletions this stage actually declared and retained for evaluation. Ownership survives later
+ * repair, skip and return rounds; it does not authorize absent paths deleted by other stages.
+ * Include the current round so replay after an interrupted evaluation keeps its deletion too.
+ */
+async function retainedStageDeletions(
+  root: string,
+  round: number,
+  worktree: string,
+): Promise<ReadonlySet<string>> {
+  const deleted = new Set<string>();
+  for (const retained of await stageRounds(root)) {
+    if (retained > round) break;
+    const author = await readStageArtifact(root, retained, stageAuthorArtifact);
+    if (author?.outcome !== 'authored') continue;
+    const evaluation = await readStageArtifact(root, retained, stageEvaluationArtifact);
+    const declared = new Set(
+      [...author.documents.map((document) => document.path), ...author.sourcePaths].map((value) =>
+        checkoutRelative(worktree, value),
+      ),
+    );
+    for (const entry of evaluation?.basis.content ?? []) {
+      if (!entry.exists && declared.has(entry.path)) deleted.add(entry.path);
+    }
+  }
+  return deleted;
 }
 
 /** Why the author's report is not a usable proposal, or null. */
 async function reportProblem(
   report: StageAuthorResponse,
-  worktree: string,
+  settings: {
+    readonly git: GitAdapter;
+    readonly worktree: string;
+    readonly retainedDeletions: ReadonlySet<string>;
+  },
   task: 'propose' | 'respond',
 ): Promise<string | null> {
   if (task === 'respond' && report.outcome === 'skip-proposed') {
     return 'a revision round cannot propose a skip; the evaluator asked for changes';
   }
   if (report.outcome === 'authored') {
-    if (report.documents.length === 0) {
-      return 'authored work must name at least one document';
+    if (report.documents.length === 0 && report.sourcePaths.length === 0) {
+      return 'authored work must name at least one document or stage-owned source path';
     }
     for (const document of report.documents) {
-      if (!(await documentExists(worktree, document.path))) {
-        return `the named document "${document.path}" does not exist in the worktree`;
+      const problem = await declaredPathProblem(settings, document.path);
+      if (problem !== null) {
+        return problem;
+      }
+    }
+    for (const source of report.sourcePaths) {
+      const problem = await declaredPathProblem(settings, source);
+      if (problem !== null) {
+        return problem;
       }
     }
     return null;
+  }
+  if (report.sourcePaths.length > 0) {
+    return 'only authored work may declare stage-owned source paths';
   }
   if (report.outcome === 'skip-proposed') {
     return report.skip === null || report.skip.references.length === 0
@@ -125,7 +206,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       'Selection',
     );
     const root = stageRoot(selection.workspace.root, settings.stage);
-    const worktree = stageWorktree(selection.workspace.root, settings.stage);
+    const worktree = preparationWorktree(selection.workspace.root);
     const plan = await readStagePlan(root);
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(
@@ -144,23 +225,38 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     }
     const findings = await priorStageFindings(root, plan);
 
+    // A response round and a pending reassessment both revise the preceding authored revision
+    // rather than starting from nothing; the new round's own directory holds only its response.
+    const revising = task === 'respond' || plan.route === 'reassess';
     const context = await stageContextText({
       selection,
       plan,
       stageRoot: root,
       worktree,
-      author: task === 'respond' ? (preceding?.author ?? author) : author,
-      evaluation: task === 'respond' ? (preceding?.evaluation ?? null) : null,
+      author: revising ? (preceding?.author ?? author) : author,
+      evaluation: revising ? await precedingStageEvaluation(root, plan.round) : null,
+      retained:
+        plan.route === 'reassess'
+          ? await (async () => {
+              const terminal = await readStageTerminal(root);
+              return terminal === null
+                ? null
+                : { outcome: terminal.outcome, reason: terminal.reason };
+            })()
+          : null,
     });
     const result = await settings.runner.run({
       operation: 'stage-author',
       profile: plan.profiles.author,
-      // The invocation's workspace is the stage area root; AgentRuntime resolves its worktree/.
-      workspace: { root },
+      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
+      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
+      workspace: { root: selection.workspace.root },
       context: [
         context,
         task === 'propose'
-          ? 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
+          ? plan.route === 'reassess'
+            ? 'Propose the current decision for this reassessed work: reuse retained accepted work whose content and inputs still match, or repair what changed.'
+            : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to every current finding, or rebut with reasons.',
         findings.length === 0
           ? 'No prior findings are supplied for this round; return an empty findingResponses array.'
@@ -181,7 +277,18 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stageAuthorResponseSchema,
       `${settings.stage} author`,
     );
-    const problem = await reportProblem(report, worktree, task);
+    const problem = await reportProblem(
+      report,
+      {
+        git: settings.git,
+        worktree,
+        retainedDeletions:
+          report.outcome === 'authored'
+            ? await retainedStageDeletions(root, plan.round, worktree)
+            : new Set(),
+      },
+      task,
+    );
     if (problem !== null) {
       throw new Error(`The ${settings.stage} author report is unusable: ${problem}.`);
     }

@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
-import { readRequiredRecord } from '../../records.js';
+import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
+import {
+  handoffFile,
+  parentAreaDirectory,
+  parentHandoffDeclaration,
+} from '../../select-work/artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import {
   stageAuthorArtifact,
@@ -126,14 +131,32 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
 
     if (route === 'new') {
       const current = await retainedPlan();
+      const previousResult = current === null ? null : await readStageResult(root, current.round);
+      // A pending reassessment opens as such: the parent retained that an upstream correction
+      // requires this stage's current decision before the route continues. An author-only exit
+      // also resumes the unfinished work, even when clarification retained no pending-stage marker.
+      const handoff = await readRecord(
+        path.join(selection.workspace.root, parentAreaDirectory, handoffFile),
+        parentHandoffDeclaration,
+      );
+      const reassessing =
+        (handoff?.awaitingStages.includes(settings.stage) ?? false) ||
+        previousResult?.outcome === 'needsInput' ||
+        previousResult?.outcome === 'returnUpstream';
       if (
         current !== null &&
         current.stage === settings.stage &&
-        (await readStageResult(root, current.round)) === null
+        previousResult === null &&
+        (await readStageArtifact(root, current.round, stageAuthorArtifact)) === null
       ) {
         // This stage visit already opened its round and has not finished it; the replay continues
         // that round instead of allocating another one.
         await ensureStageRound(root, current.round);
+        if (reassessing && current.route !== 'reassess') {
+          const plan: StageRoundPlan = { ...current, route: 'reassess' };
+          await writeStagePlan(root, plan);
+          return opened(plan);
+        }
         return opened(current);
       }
       // The stage's rounds are cumulative across its visits: a later visit continues after the
@@ -145,7 +168,7 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
       const plan: StageRoundPlan = {
         stage: settings.stage,
         round,
-        route: 'new',
+        route: reassessing ? 'reassess' : 'new',
         profiles: { author: authorOf(round), evaluator: settings.profiles.evaluator },
       };
       await ensureStageRound(root, plan.round);

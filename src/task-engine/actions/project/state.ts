@@ -13,6 +13,7 @@ import {
   type Selection,
   type WorkflowStage,
 } from '../select-task/artifacts.js';
+import type { PreparationStage } from '../preparation/artifacts.js';
 
 /**
  * The parent-owned state helpers shared by the project actions: the saved selection and the
@@ -69,8 +70,27 @@ export async function advanceStage(
     upstreamReturns: handoff?.upstreamReturns ?? 0,
     feedback: null,
     return: returnFinding,
+    awaitingStages: handoff?.awaitingStages ?? [],
     tickets: handoff?.tickets ?? [],
     publications: handoff?.publications ?? [],
   });
   return updated;
+}
+
+/**
+ * Retain the stages whose current decisions must be re-obtained after an upstream correction.
+ * The list survives restarts and is consumed stage by stage as each current decision is reached.
+ */
+export async function writeAwaitingStages(
+  issueWorkspaceRoot: string,
+  stages: readonly PreparationStage[],
+): Promise<void> {
+  const handoff = await readHandoff(issueWorkspaceRoot);
+  if (handoff === null) {
+    throw new Error(`No parent handoff record exists under "${issueWorkspaceRoot}".`);
+  }
+  await writeHandoff(issueWorkspaceRoot, {
+    ...handoff,
+    awaitingStages: [...stages],
+  });
 }
