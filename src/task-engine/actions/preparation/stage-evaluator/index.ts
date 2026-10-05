@@ -54,9 +54,9 @@ import {
   writeStageArtifact,
 } from '../storage.js';
 import {
+  evidenceFilePath,
   observationContentProblem,
   readPrototypeObservation,
-  type PrototypeObservation,
   type PrototypeObservationRole,
 } from '../observation.js';
 
@@ -195,46 +195,61 @@ async function requirePrototypeEvidence(settings: {
   /** True when the assessed verdict relies on the evaluator's own applicable observation. */
   readonly requireEvaluator: boolean;
   readonly assessed: readonly AssessedContent[];
+  /** Retain a violation under the producer whose evidence failed, then raise the failure. */
+  readonly reject: (
+    role: PrototypeObservationRole,
+    observationPath: string | null,
+    error: Error,
+  ) => Promise<never>;
 }): Promise<void> {
   const declared: (readonly [PrototypeObservationRole, string])[] = [];
   if (settings.author.observation !== null) {
     declared.push(['author', settings.author.observation.path]);
   } else if (settings.author.outcome === 'authored') {
-    throw new Error(
-      'The prototype author report carries no observation; applicable prototype work needs the ' +
-        'author\u2019s own browser evidence.',
+    await settings.reject(
+      'author',
+      null,
+      new Error(
+        'The prototype author report carries no observation; applicable prototype work needs the ' +
+          'author\u2019s own browser evidence.',
+      ),
     );
   }
   if (settings.evaluator !== null) {
     declared.push(['evaluator', settings.evaluator.path]);
   } else if (settings.requireEvaluator) {
-    throw new Error(
-      'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
-        'needs the evaluator\u2019s own browser evidence.',
+    await settings.reject(
+      'evaluator',
+      null,
+      new Error(
+        'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
+          'needs the evaluator\u2019s own browser evidence.',
+      ),
     );
   }
   for (const [role, observationPath] of declared) {
-    let observation: PrototypeObservation;
     try {
-      observation = await readPrototypeObservation({
+      const observation = await readPrototypeObservation({
         declared: observationPath,
         roundDirectory: settings.roundDirectory,
         role,
       });
-    } catch (error) {
-      throw new Error(`The ${role} prototype observation is unusable: ${messageOf(error)}`, {
-        cause: error,
+      const problem = await observationContentProblem({
+        git: settings.git,
+        worktree: settings.worktree,
+        observation,
+        assessed: settings.assessed,
+        observedPaths: settings.author.sourcePaths,
       });
-    }
-    const problem = await observationContentProblem({
-      git: settings.git,
-      worktree: settings.worktree,
-      observation,
-      assessed: settings.assessed,
-      observedPaths: settings.author.sourcePaths,
-    });
-    if (problem !== null) {
-      throw new Error(`The ${role} prototype observation is unusable: ${problem}.`);
+      if (problem !== null) throw new Error(`${problem}.`);
+    } catch (error) {
+      await settings.reject(
+        role,
+        observationPath,
+        new Error(`The ${role} prototype observation is unusable: ${messageOf(error)}`, {
+          cause: error,
+        }),
+      );
     }
   }
 }
@@ -475,32 +490,48 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       });
     }
     if (settings.stage === 'prototype') {
-      try {
-        await requirePrototypeEvidence({
-          git: settings.git,
-          worktree,
-          roundDirectory: roundArtifactDirectory(root, plan.round),
-          author,
-          evaluator: report.observation,
-          requireEvaluator: report.verdict === 'accepted',
-          assessed: retained.content,
-        });
-      } catch (error) {
-        // The report is schema-valid but its semantic evidence is unusable: retain the exact
-        // response and violated rule so the evaluator's next permitted invocation can correct it.
-        await rejectReport({
-          areaRoot: root,
-          scope,
-          invocationId,
-          operation: 'stage-evaluator',
-          profile: evaluatorProfile,
-          context: attribution,
-          source: null,
-          output: result.value.output,
-          reason: messageOf(error),
-          cause: error,
-        });
-      }
+      const roundDirectory = roundArtifactDirectory(root, plan.round);
+      await requirePrototypeEvidence({
+        git: settings.git,
+        worktree,
+        roundDirectory,
+        author,
+        evaluator: report.observation,
+        requireEvaluator: report.verdict === 'accepted',
+        assessed: retained.content,
+        reject: async (role, observationPath, error) => {
+          if (role === 'author') {
+            // Retained author evidence belongs to the author, not the current respondent. If
+            // its declaration is absent or outside the round, retain the declaring report.
+            const observationFile =
+              observationPath === null ? null : evidenceFilePath(roundDirectory, observationPath);
+            return rejectUnusableRecord({
+              areaRoot: root,
+              scope: authorScope,
+              invocationId,
+              operation: 'stage-author',
+              profile: authorProfile,
+              context: attribution,
+              file:
+                observationFile ??
+                roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+              error,
+            });
+          }
+          return rejectReport({
+            areaRoot: root,
+            scope,
+            invocationId,
+            operation: 'stage-evaluator',
+            profile: evaluatorProfile,
+            context: attribution,
+            source: null,
+            output: result.value.output,
+            reason: messageOf(error),
+            cause: error,
+          });
+        },
+      });
     }
 
     await requireEvaluationContent({

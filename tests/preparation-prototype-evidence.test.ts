@@ -205,6 +205,141 @@ function evaluationReport(verdict: string, observation: string | null): Record<s
 }
 
 describe('prototype observation evidence', () => {
+  it.each(['malformed JSON', 'unreadable file', 'stale content', 'missing reference'])(
+    'routes retained author observation failures to the author after repair: %s',
+    async (failure) => {
+      const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+      await mkdir(path.join(worktree, 'stories'), { recursive: true });
+      const previous = await commitFile(worktree, 'stories/journey.stories.js', 'old story\n');
+      const revision = await commitFile(worktree, 'stories/journey.stories.js', 'new story\n');
+      const content = [{ path: 'stories/journey.stories.js', revision }];
+      const authorObservation = await savePrototypeObservation({
+        roundDirectory,
+        role: 'author',
+        content,
+      });
+      const evaluatorObservation = await savePrototypeObservation({
+        roundDirectory,
+        role: 'evaluator',
+        content,
+      });
+      // Relative declarations must retain the resolved observation file, not a cwd-relative path.
+      const authorReport = authoredReport(path.relative(roundDirectory, authorObservation));
+      await createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf(authorReport).runner,
+      })({ task: 'propose' });
+      const stageRoot = path.join(root, 'prototype');
+      const authorFile = path.join(roundDirectory, 'author.json');
+      const originalAuthor = await readFile(authorFile, 'utf8');
+      const originalObservation = await readFile(authorObservation, 'utf8');
+      let source = authorObservation;
+      let output: string | null;
+      let reason: string;
+      if (failure === 'unreadable file') {
+        await rm(authorObservation);
+        await mkdir(authorObservation);
+        output = null;
+        reason = 'could not be read';
+      } else if (failure === 'missing reference') {
+        source = authorFile;
+        output = JSON.stringify({ ...JSON.parse(originalAuthor), observation: null });
+        reason = 'author report carries no observation';
+        await writeFile(source, output);
+      } else {
+        output =
+          failure === 'malformed JSON'
+            ? '{broken author observation\n'
+            : JSON.stringify({
+                ...JSON.parse(originalObservation),
+                content: [{ path: 'stories/journey.stories.js', revision: previous, exists: true }],
+              });
+        reason =
+          failure === 'malformed JSON' ? 'not valid JSON' : 'differs from the evaluated revision';
+        await writeFile(source, output);
+      }
+      const evaluation = runnerOf(evaluationReport('accepted', evaluatorObservation));
+      const evaluate = createStageEvaluator({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: evaluation.runner,
+      });
+      await expect(evaluate()).rejects.toThrow(reason);
+      await expect(readStageArtifact(stageRoot, 1, stageEvaluationArtifact)).resolves.toBeNull();
+      const authorScope = stageReportScope({
+        project: path.basename(path.dirname(root)),
+        workId: 'NEX-1',
+        area: stageRoot,
+        stage: 'prototype',
+        role: 'author',
+      });
+      const feedback = await readReportFeedback(stageRoot);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        kind: 'rejection',
+        scope: authorScope,
+        operation: 'stage-author',
+        profile: 'nexus-flash',
+        source: { path: source },
+        output,
+        reason: expect.stringContaining(reason),
+      });
+
+      // Historical repair and a valid evaluator save cannot resolve another producer's rejection.
+      await rm(authorObservation, { recursive: true, force: true });
+      await writeFile(authorObservation, originalObservation);
+      await writeFile(authorFile, originalAuthor);
+      await expect(evaluate()).resolves.toBe('accepted');
+      expect(evaluation.contexts.at(-1)).not.toContain(
+        'Outstanding report rejections of this report responsibility',
+      );
+      await expect(
+        outstandingReportFeedback({ areaRoot: stageRoot, scope: authorScope }),
+      ).resolves.toHaveLength(1);
+
+      // The next author round receives the retained diagnosis and retires it only on validated save.
+      const nextDirectory = roundArtifactDirectory(stageRoot, 2);
+      const nextObservation = await savePrototypeObservation({
+        roundDirectory: nextDirectory,
+        role: 'author',
+        content,
+      });
+      await writeFile(
+        path.join(stageRoot, 'state', 'current-round.json'),
+        JSON.stringify({
+          stage: 'prototype',
+          round: 2,
+          route: 'reassess',
+          profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
+        }),
+      );
+      const correction = runnerOf(authoredReport(nextObservation));
+      await expect(
+        createStageAuthor({
+          selectionFile,
+          stage: 'prototype',
+          git,
+          publish: () => undefined,
+          runner: correction.runner,
+        })({ task: 'propose' }),
+      ).resolves.toBe('authored');
+      expect(correction.contexts[0]).toContain(reason);
+      expect(correction.contexts[0]).toContain(source);
+      if (output !== null) expect(correction.contexts[0]).toContain(output);
+      await expect(
+        outstandingReportFeedback({ areaRoot: stageRoot, scope: authorScope }),
+      ).resolves.toEqual([]);
+      expect(
+        (await readReportFeedback(stageRoot)).filter((entry) => entry.record.kind === 'rejection'),
+      ).toEqual(feedback);
+    },
+  );
+
   it('requires the author to bind a committed observation for applicable prototype work', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
