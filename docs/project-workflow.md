@@ -120,12 +120,12 @@ Architecture evaluates architecture and the implementation plan only. There is n
 documentation assembly or review after these stage evaluations.
 
 Every stage can return a concrete input problem to an allowed earlier stage, including Idea.
-Correction and reevaluation use the retained workspace. Reevaluate acceptances whose content or
-relied-on inputs changed before advancing; unchanged, still-valid work remains reusable. A later
-stage's unrelated commit does not itself invalidate an earlier acceptance. An evaluated skip cannot
-resurrect work invalidated by a correction. Restart retains the workspace, findings, revision/input
-identities, completed round history and cumulative allowances rather than starting a new approval
-history.
+Correction and reevaluation use the retained workspace. Evaluators assess the requested change
+against the current documents. Later stages may edit the same document without mechanically
+invalidating an earlier verdict; a concrete input defect requires an explicit upstream finding.
+Refreshed human intent and explicit pending corrections require reassessment. Applicable prototype
+inspection remains bound to the inspected sources. Restart retains the workspace, findings,
+completed round history and cumulative allowances.
 
 Seek improvements as well as omissions: simpler rules, clearer journeys, lower user effort, fewer
 unnecessary interactions and maintainable designs. Click count alone is not a goal; preserve clarity,

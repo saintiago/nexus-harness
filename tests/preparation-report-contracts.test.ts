@@ -940,7 +940,7 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
 );
 
 it.each(['changed', 'deleted', 'replaced by a directory'])(
-  'requires reevaluation of an unbound historical citation when its document is %s',
+  'checks unbound citations at finalization without cycling completed stages when a document is %s',
   async (mutation) => {
     const { selectionFile, root, worktree } = await stageArea();
     const savedRequirements = await readFile(path.join(worktree, 'docs/requirements.md'), 'utf8');
@@ -1001,13 +1001,7 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
       existingDocuments: [],
     });
     for (const file of resultFiles) await writeFile(file, historicalResult);
-    const stale = {
-      kind: 'stale',
-      reason: expect.stringContaining(
-        'does not bind the relied-on document "docs/requirements.md"',
-      ),
-    };
-    await expect(decision()).resolves.toMatchObject(stale);
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
     await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(
       'does not bind the relied-on document',
     );
@@ -1022,10 +1016,7 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
       mutation === 'changed'
         ? 'does not bind the relied-on document'
         : 'does not name a readable file';
-    await expect(decision()).resolves.toMatchObject({
-      kind: 'stale',
-      reason: expect.stringContaining(problem),
-    });
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
     await expect(
       requireCurrentAcceptance({
         issueRoot,
@@ -1039,7 +1030,7 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
       }),
     ).rejects.toThrow(problem);
     await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(problem);
-    // Neither path retroactively manufactures a binding or edits the retained acceptance.
+    // Reading the completed decision leaves history intact; fresh finalization still refuses the unbound citation.
     expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
     for (const file of resultFiles) expect(await readFile(file, 'utf8')).toBe(historicalResult);
 

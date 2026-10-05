@@ -515,12 +515,9 @@ export type CurrentDecisionState =
   | { readonly kind: 'stale'; readonly reason: string };
 
 /**
- * Read one stage's current terminal decision and validate the identities its acceptance basis
- * binds: the complete authored report, the captured source input, the relied-on upstream results
- * and the exact repository content it assessed or relied on. A changed author report, refreshed
- * input, corrected upstream result or changed assessed content — including a later stage's edit of
- * the same path or a rewritten revision — makes the decision stale and requires a current
- * evaluator decision.
+ * Read the current stage decision for the captured ticket. Later stages assess the current shared
+ * checkout and return concrete input defects upstream; their document edits do not invalidate an
+ * earlier verdict mechanically. Applicable prototype inspection remains specific to its sources.
  */
 export async function readCurrentDecision(settings: {
   readonly issueRoot: string;
@@ -558,7 +555,7 @@ export async function readCurrentDecision(settings: {
   try {
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
-    await requireCurrentAcceptance({
+    requireAcceptedReport({
       issueRoot,
       stage,
       selection,
@@ -589,12 +586,8 @@ export async function readCurrentDecision(settings: {
   return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
 }
 
-/**
- * Require a complete acceptance basis for one evaluated round: the exact authored report, the
- * captured source input, the relied-on upstream results and the assessed repository content. A
- * changed author report, refreshed input, corrected upstream result or changed path throws.
- */
-export async function requireCurrentAcceptance(settings: {
+/** The current round's report, ticket and repository context. */
+type AcceptanceSettings = {
   readonly issueRoot: string;
   readonly stage: PreparationStage;
   readonly selection: Selection;
@@ -603,8 +596,11 @@ export async function requireCurrentAcceptance(settings: {
   readonly author: StageAuthorOutput;
   readonly evaluation: StageEvaluationOutput | null;
   readonly git: GitAdapter;
-}): Promise<void> {
-  const { issueRoot, stage, selection, round, verdict, author, evaluation, git } = settings;
+};
+
+/** Validate the report and ticket association, without treating later edits as new findings. */
+function requireAcceptedReport(settings: AcceptanceSettings): StageEvaluationOutput {
+  const { issueRoot, stage, selection, round, verdict, author, evaluation } = settings;
   const root = stageRoot(issueRoot, stage);
   if (evaluation === null || evaluation.assessedRevision !== author.revision) {
     throw new Error('Acceptance requires evaluation of the exact authored revision.');
@@ -630,6 +626,15 @@ export async function requireCurrentAcceptance(settings: {
       'The captured issue input changed since evaluation; a current decision is required.',
     );
   }
+  return evaluation;
+}
+
+/** Finalize a fresh evaluation before its stage advances; no intervening edits may escape review. */
+export async function requireCurrentAcceptance(settings: AcceptanceSettings): Promise<void> {
+  const evaluation = requireAcceptedReport(settings);
+  const { issueRoot, stage, round, author, git } = settings;
+  const root = stageRoot(issueRoot, stage);
+  const basis = evaluation.basis;
   const upstream = await upstreamResultReferences(issueRoot, stage);
   const reliedOn = upstream.map((reference) => ({
     result: { path: reference.resultFile },

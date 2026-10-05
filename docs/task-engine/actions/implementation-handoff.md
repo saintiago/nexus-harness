@@ -52,8 +52,9 @@ identities even when creation order differs. Only the first ticket can use the p
 
 Require a current Architecture decision and nonempty evaluated plan. Validate prerequisite indices,
 duplicates, self-dependencies and cycles before source effects. Recheck current stage decisions,
-input/content identities, pending corrections and repository/branch continuity before freezing the
-handoff. Invalid acceptance routes through preparation reevaluation. An incompatible repository
+report/ticket associations, applicable prototype inspection, explicit pending corrections and
+repository/branch continuity before freezing the handoff. Later-stage document edits do not
+mechanically invalidate an earlier verdict. Invalid acceptance routes through preparation reevaluation. An incompatible repository
 requests attention without discarding work. There is no assembly or preparation-only PR gate.
 
 Save the immutable handoff basis before ticket creation. Once source effects begin, never apply
