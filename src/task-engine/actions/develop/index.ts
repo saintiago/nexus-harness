@@ -31,17 +31,18 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
-  projectOfWorkspace,
-  recordReportCorrection,
   rejectReport,
   rejectUnusableRecord,
+  retainSuppliedFeedback,
   reportFeedbackContextText,
   type ReportScope,
 } from '../report-feedback.js';
 import {
   isBoundReviewOutput,
   reviewArtifact,
+  reviewReportScope,
   type RetainedReviewOutput,
 } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
@@ -50,8 +51,10 @@ import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifa
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import {
   devArtifact,
+  developmentReportScope,
   developmentResponseSchema,
   isBoundDevelopmentOutput,
+  requireUsableDevelopmentOutcome,
   type DevelopmentOutput,
   type DevelopmentResponse,
   type RetainedDevelopmentOutput,
@@ -259,20 +262,8 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       'Current round',
     );
     const profile = round.profile;
-    const scope: ReportScope = {
-      project: projectOfWorkspace(root),
-      workId: selection.taskKey,
-      area: root,
-      role: 'developer',
-      reportKind: 'development',
-    };
-    const reviewerScope: ReportScope = {
-      project: projectOfWorkspace(root),
-      workId: selection.taskKey,
-      area: root,
-      role: 'reviewer',
-      reportKind: 'review',
-    };
+    const scope: ReportScope = developmentReportScope(root, selection.taskKey);
+    const reviewerScope: ReportScope = reviewReportScope(root, selection.taskKey);
     const invocationId = randomUUID();
     const attribution = `Development round ${String(round.number)}, profile ${profile}, task ${selection.taskKey}.`;
     const artifactFile = roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot);
@@ -401,21 +392,23 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
       if (isBoundDevelopmentOutput(existing)) {
-        try {
-          await readBoundReport(existing, 'Development report');
-        } catch (error) {
-          return await rejectUnusableRecord({
-            areaRoot: root,
-            scope,
-            invocationId,
-            operation: 'develop',
-            profile,
-            context: attribution,
-            file: artifactFile,
-            assignedReport: existing.report,
-            error,
-          });
-        }
+        await requireUsableDevelopmentOutcome({
+          areaRoot: root,
+          taskKey: selection.taskKey,
+          file: artifactFile,
+          outcome: existing,
+          invocationId,
+          context: attribution,
+        });
+        // The saved outcome already answers for the rejections its invocation was supplied; an
+        // interrupted correction write finishes here without another invocation.
+        await finishSuppliedCorrection({
+          areaRoot: root,
+          scope,
+          invocationId: existing.invocationId,
+          artifact: { path: artifactFile },
+          content: existing,
+        });
       }
       report(existing.status);
       return existing.status;
@@ -437,6 +430,16 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       ...(evidence === null ? [] : [evidence]),
       responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
+
+    if (outstanding.length > 0) {
+      // Retain which rejections this invocation answers before it runs, so an interrupted
+      // correction write can finish on replay without retiring a rejection created later.
+      await retainSuppliedFeedback({
+        areaRoot: root,
+        invocationId,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+      });
+    }
 
     const result: AgentResult = await settings.runner.run({
       operation: 'Develop',
@@ -498,9 +501,22 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
 
     const after = await inspectRepository(settings.git, worktree);
     if (after.headRevision === null) {
-      throw new Error(
-        `The development turn left the worktree at "${worktree}" without a revision.`,
-      );
+      // The turn's parsed outcome and readable Markdown stay rejected evidence: the observed
+      // worktree cannot bind them to a revision, and no outcome is saved.
+      return await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'develop',
+        profile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        assignedReport,
+        reason:
+          `The development turn left the worktree at "${worktree}" without a revision; no ` +
+          'saved outcome can bind the report to the implementation.',
+      });
     }
     const problem = readinessProblem(after, prepared);
     const readinessFailure = response.status === 'completed' ? problem : null;
@@ -533,18 +549,15 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       readinessFailure,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
-    if (outstanding.length > 0) {
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
-        areaRoot: root,
-        scope,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: { path: artifactFile },
-        content: output,
-        invocationId,
-      });
-    }
+    // The owner validated and saved the usable replacement; recording its complete identity
+    // retires exactly the rejections this invocation was supplied, preserving their history.
+    await finishSuppliedCorrection({
+      areaRoot: root,
+      scope,
+      invocationId,
+      artifact: { path: artifactFile },
+      content: output,
+    });
     report(status);
     return status;
   };

@@ -26,6 +26,7 @@ import {
   outstandingReportFeedback,
   projectOfWorkspace,
   readReportFeedback,
+  retainSuppliedFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { composedRunner, runnerOf, writeAssignedReport } from './support/agent-runner.js';
@@ -1162,5 +1163,80 @@ describe('Develop', () => {
     await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
       [],
     );
+  });
+
+  it('finishes the correction its saved outcome owes when a repetition reuses it', async () => {
+    const { taskKey, workspaceRoot, selectionFile } = await workspace();
+    // A rejected invocation leaves an outstanding rejection for the developer responsibility.
+    await expect(
+      createDevelop({
+        selectionFile,
+        runner: runnerOf(scriptedRuntime(() => 'not a JSON report').runtime),
+        git: scriptedGit([repositoryState()]).git,
+        publish: (event) => events.push(event),
+      })(),
+    ).rejects.toThrow(/unusable output/);
+    const scope = {
+      project: projectOfWorkspace(workspaceRoot),
+      workId: taskKey,
+      area: workspaceRoot,
+      role: 'developer',
+      reportKind: 'development',
+    };
+    const rejections = await outstandingReportFeedback({ areaRoot: workspaceRoot, scope });
+    expect(rejections).toHaveLength(1);
+
+    // A later invocation saved its validated replacement and was interrupted before recording the
+    // correction: the saved outcome names its invocation and the supplied evidence names the
+    // rejection it answered.
+    const markdown = 'Repaired the retry guard.';
+    const reportFile = path.join(
+      workspaceRoot,
+      'artifacts',
+      '1',
+      'reports',
+      'repair-1',
+      'developer.md',
+    );
+    await mkdir(path.dirname(reportFile), { recursive: true });
+    await writeFile(reportFile, markdown, 'utf8');
+    const saved: DevelopmentOutput = {
+      taskSubject: 'Implement the retry guard',
+      taskKey,
+      profile: 'dev-a',
+      status: 'completed',
+      baseRevision,
+      headRevision,
+      role: 'developer',
+      report: { path: reportFile },
+      reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+      invocationId: 'repair-1',
+      readinessFailure: null,
+    };
+    await writeRoundArtifact(workspaceRoot, 1, 'development.json', saved);
+    await retainSuppliedFeedback({
+      areaRoot: workspaceRoot,
+      invocationId: 'repair-1',
+      rejections: rejections.map((entry) => ({ path: entry.path })),
+    });
+
+    const unused = scriptedRuntime(() => {
+      throw new Error('The saved outcome must be reused without another invocation.');
+    });
+    await expect(
+      createDevelop({
+        selectionFile,
+        runner: runnerOf(unused.runtime),
+        git: scriptedGit([repositoryState({ headRevision })]).git,
+        publish: (event) => events.push(event),
+      })(),
+    ).resolves.toBe('completed');
+    expect(unused.requests).toHaveLength(0);
+    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
+      [],
+    );
+    const records = await readReportFeedback(workspaceRoot);
+    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
+    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
   });
 });

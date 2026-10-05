@@ -22,9 +22,11 @@ import {
   outstandingReportFeedback,
   projectOfWorkspace,
   readReportFeedback,
+  retainSuppliedFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import {
+  reviewReportScope,
   reviewResponseSchema,
   type ReviewOutput,
 } from '../src/task-engine/actions/review/artifacts.js';
@@ -993,6 +995,94 @@ describe('Review', () => {
     });
   });
 
+  it('does not reuse or publish a saved review that belongs to another task', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'foreign-review' });
+    await writeDeliveredRound(workspaceRoot);
+    const saved = await saveReview(workspaceRoot, 1, 'The change matches another task.', {
+      taskKey: 'NEX-2',
+    });
+    const { github, calls } = scriptedGitHub({});
+
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(unusedRuntime()),
+        git: scriptedGit([]).git,
+        github,
+      })(),
+    ).rejects.toThrow('is for task "NEX-2", not "NEX-1"');
+    // The foreign review is neither published nor reused as this task's assessment; it is
+    // preserved as the reviewer's rejection evidence under this task's responsibility.
+    expect(calls).toEqual([]);
+    const rejection = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: reviewReportScope(workspaceRoot, 'NEX-1'),
+      operation: 'review',
+      assignedReport: { path: saved.reportFile },
+      report: expect.objectContaining({ path: expect.stringContaining('report-feedback') }),
+    });
+  });
+
+  it('finishes the correction its saved review owes when a repetition reuses it', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'correction-replay' });
+    await writeDeliveredRound(workspaceRoot);
+    // A rejected invocation leaves an outstanding rejection for the reviewer responsibility.
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(scriptedRuntime(() => 'not a JSON report').runtime),
+        git,
+        github,
+      })(),
+    ).rejects.toThrow(/unusable output/);
+    const scope = reviewReportScope(workspaceRoot, 'NEX-1');
+    const rejections = await outstandingReportFeedback({ areaRoot: workspaceRoot, scope });
+    expect(rejections).toHaveLength(1);
+
+    // A later invocation saved its validated review and was interrupted before recording the
+    // correction: the saved outcome names its invocation and the supplied evidence names the
+    // rejection it answered.
+    const markdown = 'The retry guard is present now.';
+    await saveReview(workspaceRoot, 1, markdown, { invocationId: 'rev-repair' });
+    await retainSuppliedFeedback({
+      areaRoot: workspaceRoot,
+      invocationId: 'rev-repair',
+      rejections: rejections.map((entry) => ({ path: entry.path })),
+    });
+
+    events = [];
+    const { github: replayHub, calls } = scriptedGitHub({
+      readConversation: () =>
+        ok({ comments: [], reviews: [submittedReview(markdown)], reviewComments: [] }),
+      readChecks: () => ok([lensCheck()]),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(unusedRuntime()),
+        git: scriptedGit([]).git,
+        github: replayHub,
+      })(),
+    ).resolves.toBe('approved');
+    // The published review and check already match: only the replay's reads happened, no
+    // invocation and no duplicate publication.
+    expect(calls).toEqual(['conversation:7', `readChecks:${headRevision}`]);
+    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
+      [],
+    );
+    expect(
+      (await readReportFeedback(workspaceRoot)).filter(
+        (entry) => entry.record.kind === 'correction',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('does not review a worktree or a turn that changed the delivered revision', async () => {
     const moved = await workspace({ name: 'moved' });
     await writeDeliveredRound(moved.workspaceRoot);
@@ -1030,6 +1120,45 @@ describe('Review', () => {
     await expect(
       stat(path.join(edited.workspaceRoot, 'artifacts', '1', 'review.json')),
     ).rejects.toThrow(/ENOENT/);
+
+    events = [];
+    const rewritten = await workspace({ name: 'rewritten' });
+    await writeDeliveredRound(rewritten.workspaceRoot);
+    const { runtime: rewrittenRuntime } = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Looks fine.',
+    );
+    const rewrittenGit = scriptedGit(
+      [repositoryState({ headRevision }), repositoryState({ headRevision: otherRevision })],
+      { readDiff: () => ok('') },
+    );
+    const rewrittenReview = reviewAction({
+      selectionFile: rewritten.selectionFile,
+      runner: runnerOf(rewrittenRuntime),
+      git: rewrittenGit.git,
+      github: scriptedGitHub({
+        readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      }).github,
+      jira: scriptedJira({ readIssue: () => ok(taskIssue), readComments: () => ok([]) }).jira,
+    });
+    await expect(rewrittenReview()).rejects.toThrow(/not the reviewed/);
+    await expect(
+      stat(path.join(rewritten.workspaceRoot, 'artifacts', '1', 'review.json')),
+    ).rejects.toThrow(/ENOENT/);
+
+    // Both post-invocation binding failures retain the exact verdict and the Markdown the agent
+    // wrote as reviewer rejection evidence for the next responsible invocation.
+    for (const root of [edited.workspaceRoot, rewritten.workspaceRoot]) {
+      const rejection = (await readReportFeedback(root)).find(
+        (entry) => entry.record.kind === 'rejection',
+      );
+      expect(rejection?.record).toMatchObject({
+        operation: 'review',
+        output: JSON.stringify({ verdict: 'approved' }),
+        report: expect.objectContaining({ path: expect.stringContaining('report-feedback') }),
+        assignedReport: expect.objectContaining({ path: expect.stringContaining('reports') }),
+      });
+    }
   });
 
   it('reuses the saved report for the delivered head and publishes only the missing part', async () => {

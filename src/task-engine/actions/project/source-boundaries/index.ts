@@ -4,10 +4,16 @@ import { messageOf } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import { openingNarrativeParagraph } from '../../agent-reports.js';
 import { createArtifactHelpers, roundArtifactPath } from '../../artifacts.js';
-import { devArtifact, developmentReportText } from '../../develop/artifacts.js';
+import {
+  devArtifact,
+  developmentReportScope,
+  developmentReportText,
+  readUsableDevelopmentOutcome,
+} from '../../develop/artifacts.js';
 import { deliveryArtifact } from '../../deliver/artifacts.js';
 import { readRequiredRecord, readRecord, writeRecord } from '../../records.js';
-import { reviewArtifact, reviewReportText } from '../../review/artifacts.js';
+import { rejectUnusableRecord } from '../../report-feedback.js';
+import { readUsableReviewOutcome, reviewReportText } from '../../review/artifacts.js';
 import { selectionDeclaration, type Selection } from '../../select-task/artifacts.js';
 import {
   applyTransition,
@@ -60,7 +66,10 @@ export function createRefreshTaskInput(settings: {
 }
 
 /** The saved development and delivery evidence of the current round, when both exist. */
-async function roundEvidence(root: string): Promise<{
+async function roundEvidence(
+  root: string,
+  taskKey: string,
+): Promise<{
   readonly round: number;
   readonly development: { profile: string; narrative: string } | null;
   readonly repairsUsed: number;
@@ -75,10 +84,14 @@ async function roundEvidence(root: string): Promise<{
     currentRoundDeclaration,
     'Current round',
   );
-  const development = await readRecord(
-    roundArtifactPath(root, current.number, devArtifact.pathFromArtifactsRoot),
-    { file: devArtifact.pathFromArtifactsRoot, schema: devArtifact.schema },
-  );
+  // The concise comment carries the developer's saved Markdown under its binding; an unusable
+  // bound report is retained as the developer's rejection evidence instead of publishing.
+  const development = await readUsableDevelopmentOutcome({
+    areaRoot: root,
+    taskKey,
+    round: current.number,
+    context: `Delivery publication of task ${taskKey} reading the development report.`,
+  });
   const delivery = await readRecord(
     roundArtifactPath(root, current.number, deliveryArtifact.pathFromArtifactsRoot),
     { file: deliveryArtifact.pathFromArtifactsRoot, schema: deliveryArtifact.schema },
@@ -86,7 +99,18 @@ async function roundEvidence(root: string): Promise<{
   // Development reports after the initial round are executed repair turns; their recorded
   // profiles show whether the current round escalated from a weaker one.
   const helpers = createArtifactHelpers({ root });
-  const earlier = await helpers.readArtifactHistory(devArtifact);
+  const earlier = await helpers.readArtifactHistory(devArtifact, (file, error) =>
+    rejectUnusableRecord({
+      areaRoot: root,
+      scope: developmentReportScope(root, taskKey),
+      invocationId: null,
+      operation: 'develop',
+      profile: null,
+      context: `Delivery publication of task ${taskKey} reading retained development history.`,
+      file,
+      error,
+    }),
+  );
   const escalatedFrom =
     development === null
       ? null
@@ -140,7 +164,7 @@ export function createPublishDeliveryReport(settings: {
       selectionDeclaration,
       'Selection',
     );
-    const evidence = await roundEvidence(selection.workspace.root);
+    const evidence = await roundEvidence(selection.workspace.root, selection.taskKey);
     if (evidence.delivery === null) {
       settings.publish({
         source: 'publish-delivery',
@@ -231,14 +255,13 @@ export function createPublishReviewFeedback(settings: {
       currentRoundDeclaration,
       'Current round',
     );
-    const reviewFile = roundArtifactPath(
-      selection.workspace.root,
-      current.number,
-      reviewArtifact.pathFromArtifactsRoot,
-    );
-    const review = await readRecord(reviewFile, {
-      file: reviewArtifact.pathFromArtifactsRoot,
-      schema: reviewArtifact.schema,
+    // The concise comment carries the reviewer's saved Markdown under its binding; an unusable
+    // bound report is retained as the reviewer's rejection evidence instead of publishing.
+    const review = await readUsableReviewOutcome({
+      areaRoot: selection.workspace.root,
+      taskKey: selection.taskKey,
+      round: current.number,
+      context: `Review publication of task ${selection.taskKey} reading the review report.`,
     });
     /** Report a condition that prevents publication, retaining the reason for the terminal handoff. */
     async function failed(reason: string): Promise<'failed'> {

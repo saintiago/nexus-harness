@@ -19,6 +19,8 @@ import {
 } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { reviewReportScope } from '../src/task-engine/actions/review/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { scriptedGitHub } from './support/github.js';
@@ -303,6 +305,71 @@ describe('CompleteTask', () => {
     // The saved evidence is what the child's completed outcome event references; the parent's
     // completion event follows it.
     expect(events[0]).toEqual(completionOutcome(workspaceRoot, 'completed'));
+  });
+
+  it.each([
+    {
+      label: 'a deleted review report',
+      expected: /Review report at ".*" does not exist/,
+      damage: async (_workspaceRoot: string, review: ReviewOutput) => {
+        await rm(review.report.path);
+      },
+    },
+    {
+      label: 'a damaged review record',
+      expected: /does not match its declared content type/,
+      damage: async (workspaceRoot: string, review: ReviewOutput) => {
+        const damaged: Record<string, unknown> = { ...review };
+        delete damaged.reportIdentity;
+        await writeFile(
+          path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
+          `${JSON.stringify(damaged, null, 2)}\n`,
+          'utf8',
+        );
+      },
+    },
+    {
+      label: 'changed review bytes',
+      expected: /does not match the identity recorded for invocation/,
+      damage: async (_workspaceRoot: string, review: ReviewOutput) => {
+        await writeFile(review.report.path, 'Rewritten review bytes.\n', 'utf8');
+      },
+    },
+    {
+      label: 'a review that belongs to another task',
+      expected: /is for task "NEX-2", not "NEX-1"/,
+      damage: async (workspaceRoot: string, review: ReviewOutput) => {
+        await writeFile(
+          path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
+          `${JSON.stringify({ ...review, taskKey: 'NEX-2' }, null, 2)}\n`,
+          'utf8',
+        );
+      },
+    },
+  ])('does not complete from $label', async ({ expected, damage }) => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'unusable-review' });
+    const review = (await readRoundArtifact(workspaceRoot, 'review.json')) as ReviewOutput;
+    await damage(workspaceRoot, review);
+    const { github, calls } = scriptedGitHub({});
+    const { jira } = scriptedJira({});
+    const { wait } = scriptedWait();
+    const completeTask = completeTaskAction({ selectionFile, github, jira, wait });
+
+    await expect(completeTask()).rejects.toThrow(expected);
+    // The damaged approval authorizes nothing: no provider read, no completion evidence.
+    expect(calls).toEqual([]);
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).rejects.toThrow(/ENOENT/);
+    // The unavailable or foreign review stays attributable under the reviewer's responsibility.
+    const rejection = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: reviewReportScope(workspaceRoot, 'NEX-1'),
+      operation: 'review',
+      assignedReport: { path: review.report.path },
+    });
   });
 
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {

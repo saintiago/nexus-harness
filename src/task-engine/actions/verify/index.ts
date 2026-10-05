@@ -9,7 +9,7 @@ import type {
 import type { Command } from '../../../configuration/index.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
-import { devArtifact } from '../develop/artifacts.js';
+import { devArtifact, readUsableDevelopmentOutcome } from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -102,7 +102,8 @@ export function createVerify(settings: VerifySettings): BoundAction {
 
   return async () => {
     const helpers = createArtifactHelpers({ root });
-    const [development] = await helpers.readInputArtifacts(devArtifact);
+    const recordFile = path.join(root, currentRoundFile);
+    const round = await readRequiredRecord(recordFile, currentRoundDeclaration, 'Current round');
 
     const preparedFile = path.join(root, preparedWorkspaceFile);
     const prepared = await readRequiredRecord(
@@ -116,15 +117,24 @@ export function createVerify(settings: VerifySettings): BoundAction {
       (prepared.repositoryWorkspace ?? settings.workspace).root,
       'worktree',
     );
-    if (prepared.taskKey !== development.taskKey) {
+    // The checks run only against a usable saved outcome: it must describe the prepared task and,
+    // when bound, carry its readable report with the recorded identity. An unusable record is
+    // retained as the developer's rejection evidence instead of authorizing checks.
+    const development = await readUsableDevelopmentOutcome({
+      areaRoot: root,
+      taskKey: prepared.taskKey,
+      round: round.number,
+      context: `Verification of task ${prepared.taskKey} reading the current development result.`,
+    });
+    if (development === null) {
       throw new Error(
-        `The development result is for task "${development.taskKey}", not the prepared ` +
-          `"${prepared.taskKey}".`,
+        `Required artifact at "${roundArtifactPath(
+          root,
+          round.number,
+          devArtifact.pathFromArtifactsRoot,
+        )}" does not exist.`,
       );
     }
-
-    const recordFile = path.join(root, currentRoundFile);
-    const round = await readRequiredRecord(recordFile, currentRoundDeclaration, 'Current round');
 
     // Checks run only against the work the development result describes: another revision or
     // already uncommitted tracked work is an operational inconsistency, not a failed assertion.

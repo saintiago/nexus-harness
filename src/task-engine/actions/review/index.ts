@@ -34,6 +34,7 @@ import {
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import {
   devArtifact,
+  developmentReportScope,
   isBoundDevelopmentOutput,
   type RetainedDevelopmentOutput,
 } from '../develop/artifacts.js';
@@ -43,11 +44,11 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
-  projectOfWorkspace,
-  recordReportCorrection,
   rejectReport,
   rejectUnusableRecord,
+  retainSuppliedFeedback,
   reportFeedbackContextText,
   type ReportScope,
 } from '../report-feedback.js';
@@ -57,7 +58,9 @@ import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifa
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
   isBoundReviewOutput,
+  requireUsableReviewOutcome,
   reviewArtifact,
+  reviewReportScope,
   reviewResponseSchema,
   type RetainedReviewOutput,
   type ReviewOutput,
@@ -284,20 +287,8 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const helpers = createArtifactHelpers({ root });
     const roundFile = path.join(root, currentRoundFile);
     const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
-    const scope: ReportScope = {
-      project: projectOfWorkspace(root),
-      workId: selection.taskKey,
-      area: root,
-      role: 'reviewer',
-      reportKind: 'review',
-    };
-    const developerScope: ReportScope = {
-      project: projectOfWorkspace(root),
-      workId: selection.taskKey,
-      area: root,
-      role: 'developer',
-      reportKind: 'development',
-    };
+    const scope: ReportScope = reviewReportScope(root, selection.taskKey);
+    const developerScope: ReportScope = developmentReportScope(root, selection.taskKey);
     const invocationId = randomUUID();
     const attribution =
       `Review round ${String(round.number)}, profile ${settings.reviewerProfile}, ` +
@@ -502,6 +493,25 @@ export function createReview(settings: ReviewSettings): BoundAction {
     // is not evidence for this one. A retained combined review stays readable under its original
     // protections.
     if (recorded !== null && recorded.headRevision === reviewedHead) {
+      await requireUsableReviewOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: artifactFile,
+        outcome: recorded,
+        invocationId,
+        context: attribution,
+      });
+      if (isBoundReviewOutput(recorded)) {
+        // The saved review already answers for the rejections its invocation was supplied; an
+        // interrupted correction write finishes here without another invocation.
+        await finishSuppliedCorrection({
+          areaRoot: root,
+          scope,
+          invocationId: recorded.invocationId,
+          artifact: { path: artifactFile },
+          content: recorded,
+        });
+      }
       const body = await reviewText(recorded);
       const conversation = await settings.github.readConversation(
         settings.repository,
@@ -636,6 +646,16 @@ export function createReview(settings: ReviewSettings): BoundAction {
       responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
 
+    if (outstanding.length > 0) {
+      // Retain which rejections this invocation answers before it runs, so an interrupted
+      // correction write can finish on replay without retiring a rejection created later.
+      await retainSuppliedFeedback({
+        areaRoot: root,
+        invocationId,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+      });
+    }
+
     const result: AgentResult = await settings.runner.run({
       operation: 'Review',
       invocationId,
@@ -694,16 +714,39 @@ export function createReview(settings: ReviewSettings): BoundAction {
     // verification output do not invalidate the review.
     const after = await inspectRepository(settings.git, worktree);
     if (after.headRevision !== reviewedHead) {
-      throw new Error(
-        `The review turn left the worktree at revision ${after.headRevision ?? 'no revision'}, ` +
-          `not the reviewed ${reviewedHead}.`,
-      );
+      // The parsed verdict and its readable Markdown are rejected evidence: the observed worktree
+      // no longer binds them to the reviewed revision, and no review outcome is saved.
+      return await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'review',
+        profile: settings.reviewerProfile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        assignedReport,
+        reason:
+          `The review turn left the worktree at revision ` +
+          `${after.headRevision ?? 'no revision'}, not the reviewed ${reviewedHead}; no review ` +
+          'outcome can bind the report to that revision.',
+      });
     }
     if (after.trackedChanges) {
-      throw new Error(
-        `The review turn left tracked changes in the worktree; revision ${reviewedHead} is no ` +
-          'longer the revision under review.',
-      );
+      return await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'review',
+        profile: settings.reviewerProfile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        assignedReport,
+        reason:
+          `The review turn left tracked changes in the worktree; revision ${reviewedHead} is ` +
+          'no longer the revision under review, and no review outcome is saved.',
+      });
     }
 
     const review: ReviewOutput = {
@@ -718,18 +761,15 @@ export function createReview(settings: ReviewSettings): BoundAction {
       invocationId,
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
-    if (outstanding.length > 0) {
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
-        areaRoot: root,
-        scope,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: { path: artifactFile },
-        content: review,
-        invocationId,
-      });
-    }
+    // The owner validated and saved the usable replacement; recording its complete identity
+    // retires exactly the rejections this invocation was supplied, preserving their history.
+    await finishSuppliedCorrection({
+      areaRoot: root,
+      scope,
+      invocationId,
+      artifact: { path: artifactFile },
+      content: review,
+    });
     await publishReport(review, reportFile.text, conversation.value);
     report(review);
     return review.verdict;

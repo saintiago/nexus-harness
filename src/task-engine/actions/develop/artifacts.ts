@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { readBoundReport, reportBindingFields } from '../agent-reports.js';
-import type { ArtifactDeclaration } from '../artifacts.js';
+import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
+import { readRecord } from '../records.js';
+import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
 
 /**
  * Develop's artifact contract: the saved Markdown report bound to the observed repository
@@ -75,6 +77,104 @@ export const devArtifact = {
   pathFromArtifactsRoot: 'development.json',
   schema: retainedDevelopmentOutputSchema,
 } satisfies ArtifactDeclaration<typeof retainedDevelopmentOutputSchema>;
+
+/** The developer report responsibility of one owning area and the task it answers for. */
+export function developmentReportScope(areaRoot: string, taskKey: string): ReportScope {
+  return {
+    project: projectOfWorkspace(areaRoot),
+    workId: taskKey,
+    area: areaRoot,
+    role: 'developer',
+    reportKind: 'development',
+  };
+}
+
+/**
+ * Require one retained development outcome to be usable for a workflow decision: it must describe
+ * the expected task and, when it carries the current report binding, its assigned Markdown must be
+ * readable with the recorded identity. An unusable outcome is preserved under the developer's
+ * report responsibility as attributable rejection evidence before the read fails. A retained
+ * combined report stays readable history, and the check never makes a damaged outcome usable.
+ */
+export async function requireUsableDevelopmentOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly file: string;
+  readonly outcome: RetainedDevelopmentOutput;
+  readonly invocationId: string | null;
+  readonly context: string;
+}): Promise<void> {
+  try {
+    if (settings.outcome.taskKey !== settings.taskKey) {
+      throw new Error(
+        `The development result at "${settings.file}" is for task ` +
+          `"${settings.outcome.taskKey}", not "${settings.taskKey}".`,
+      );
+    }
+    if (isBoundDevelopmentOutput(settings.outcome)) {
+      await readBoundReport(settings.outcome, 'Development report');
+    }
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: developmentReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: settings.invocationId,
+      operation: 'develop',
+      profile: settings.outcome.profile,
+      context: settings.context,
+      file: settings.file,
+      assignedReport: isBoundDevelopmentOutput(settings.outcome) ? settings.outcome.report : null,
+      error,
+    });
+  }
+}
+
+/**
+ * Read the current round's saved development outcome for a decision outside Develop. An absent
+ * record is null; an unusable record is preserved as the developer's rejection evidence before
+ * the read fails; a returned outcome has already passed its task and report-binding checks.
+ */
+export async function readUsableDevelopmentOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly round: number;
+  readonly context: string;
+}): Promise<RetainedDevelopmentOutput | null> {
+  const file = roundArtifactPath(
+    settings.areaRoot,
+    settings.round,
+    devArtifact.pathFromArtifactsRoot,
+  );
+  let outcome: RetainedDevelopmentOutput | null;
+  try {
+    outcome = await readRecord(file, {
+      file: devArtifact.pathFromArtifactsRoot,
+      schema: devArtifact.schema,
+    });
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: developmentReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: null,
+      operation: 'develop',
+      profile: null,
+      context: settings.context,
+      file,
+      error,
+    });
+  }
+  if (outcome !== null) {
+    await requireUsableDevelopmentOutcome({
+      areaRoot: settings.areaRoot,
+      taskKey: settings.taskKey,
+      file,
+      outcome,
+      invocationId: null,
+      context: settings.context,
+    });
+  }
+  return outcome;
+}
 
 /** The agent's response: only the status its workflow consumes. */
 export const developmentResponseSchema = z.strictObject({

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { readBoundReport, reportBindingFields } from '../agent-reports.js';
-import type { ArtifactDeclaration } from '../artifacts.js';
+import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
+import { readRecord } from '../records.js';
+import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
 
 /**
  * Review's artifact contract: the saved Markdown review and the verdict it supports, bound to the
@@ -70,6 +72,104 @@ export const reviewArtifact = {
   pathFromArtifactsRoot: 'review.json',
   schema: retainedReviewOutputSchema,
 } satisfies ArtifactDeclaration<typeof retainedReviewOutputSchema>;
+
+/** The reviewer report responsibility of one owning area and the task it answers for. */
+export function reviewReportScope(areaRoot: string, taskKey: string): ReportScope {
+  return {
+    project: projectOfWorkspace(areaRoot),
+    workId: taskKey,
+    area: areaRoot,
+    role: 'reviewer',
+    reportKind: 'review',
+  };
+}
+
+/**
+ * Require one retained review outcome to be usable for a workflow decision: it must describe the
+ * expected task (when the retained record names one) and, when it carries the current report
+ * binding, its assigned Markdown must be readable with the recorded identity. An unusable outcome
+ * is preserved under the reviewer's report responsibility as attributable rejection evidence
+ * before the read fails. A retained combined review stays readable history.
+ */
+export async function requireUsableReviewOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly file: string;
+  readonly outcome: RetainedReviewOutput;
+  readonly invocationId: string | null;
+  readonly context: string;
+}): Promise<void> {
+  try {
+    if (settings.outcome.taskKey !== undefined && settings.outcome.taskKey !== settings.taskKey) {
+      throw new Error(
+        `The review result at "${settings.file}" is for task ` +
+          `"${settings.outcome.taskKey}", not "${settings.taskKey}".`,
+      );
+    }
+    if (isBoundReviewOutput(settings.outcome)) {
+      await readBoundReport(settings.outcome, 'Review report');
+    }
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: reviewReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: settings.invocationId,
+      operation: 'review',
+      profile: settings.outcome.profile,
+      context: settings.context,
+      file: settings.file,
+      assignedReport: isBoundReviewOutput(settings.outcome) ? settings.outcome.report : null,
+      error,
+    });
+  }
+}
+
+/**
+ * Read the current round's saved review outcome for a decision outside Review. An absent record
+ * is null; an unusable record is preserved as the reviewer's rejection evidence before the read
+ * fails; a returned outcome has already passed its task and report-binding checks.
+ */
+export async function readUsableReviewOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly round: number;
+  readonly context: string;
+}): Promise<RetainedReviewOutput | null> {
+  const file = roundArtifactPath(
+    settings.areaRoot,
+    settings.round,
+    reviewArtifact.pathFromArtifactsRoot,
+  );
+  let outcome: RetainedReviewOutput | null;
+  try {
+    outcome = await readRecord(file, {
+      file: reviewArtifact.pathFromArtifactsRoot,
+      schema: reviewArtifact.schema,
+    });
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: reviewReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: null,
+      operation: 'review',
+      profile: null,
+      context: settings.context,
+      file,
+      error,
+    });
+  }
+  if (outcome !== null) {
+    await requireUsableReviewOutcome({
+      areaRoot: settings.areaRoot,
+      taskKey: settings.taskKey,
+      file,
+      outcome,
+      invocationId: null,
+      context: settings.context,
+    });
+  }
+  return outcome;
+}
 
 /** The agent's response: only the verdict its workflow consumes. */
 export const reviewResponseSchema = z.strictObject({

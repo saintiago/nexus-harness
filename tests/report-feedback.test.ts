@@ -17,6 +17,7 @@ import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
   readReportFeedback,
   recordReportCorrection,
@@ -24,6 +25,7 @@ import {
   rejectUnusableRecord,
   reportFeedbackContextText,
   reportFeedbackRoot,
+  retainSuppliedFeedback,
   writeReportFeedbackRecord,
   type ReportRejection,
   type ReportScope,
@@ -255,6 +257,146 @@ it('preserves an unusable retained record and states when its bytes are unavaila
     output: null,
     reason: expect.stringContaining('The record has no readable bytes.'),
   });
+});
+
+it('reads a former rejection without Markdown references as retained evidence', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  // The shape written before report separation carried no report or assignedReport fields; the
+  // bytes stay untouched and both references read as explicitly unavailable.
+  const former = {
+    kind: 'rejection',
+    scope,
+    invocationId: 'invocation-1',
+    operation: 'Develop',
+    profile: 'dev-a',
+    context: 'Development round 1, task NEX-7.',
+    source: null,
+    output: '{"status":"completed",',
+    reason: 'Development agent returned unusable output: Unexpected end of JSON input.',
+  };
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  const file = path.join(reportFeedbackRoot(areaRoot), '000000001-legacy.json');
+  await writeFile(file, `${JSON.stringify(former, null, 2)}\n`, 'utf8');
+
+  const [readable] = await readReportFeedback(areaRoot);
+  expect(readable?.record).toEqual({ ...former, report: null, assignedReport: null });
+  const outstanding = await outstandingReportFeedback({ areaRoot, scope });
+  expect(outstanding).toHaveLength(1);
+  expect(await readFile(file, 'utf8')).toBe(`${JSON.stringify(former, null, 2)}\n`);
+});
+
+it('recovers the report reference of a damaged saved outcome for rejection evidence', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const reportFile = path.join(areaRoot, 'artifacts', '1', 'reports', 'inv-1', 'developer.md');
+  await mkdir(path.dirname(reportFile), { recursive: true });
+  await writeFile(reportFile, 'Implemented the retry guard.\n', 'utf8');
+  const record = path.join(areaRoot, 'artifacts', '1', 'development.json');
+  // The saved outcome is damaged: its reportIdentity is missing, so it must not be parsed as a
+  // legacy combined report. Its readable report still reaches the rejection evidence.
+  await writeFile(
+    record,
+    `${JSON.stringify(
+      {
+        taskKey: 'NEX-7',
+        profile: 'dev-a',
+        status: 'completed',
+        baseRevision: 'a'.repeat(40),
+        headRevision: 'b'.repeat(40),
+        role: 'developer',
+        report: { path: reportFile },
+        invocationId: 'inv-1',
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  const readError = new Error(
+    `Artifact at "${record}" does not match its declared content type: reportIdentity: Required`,
+  );
+
+  await expect(
+    rejectUnusableRecord({
+      areaRoot,
+      scope,
+      invocationId: 'inv-2',
+      operation: 'develop',
+      profile: 'dev-a',
+      context: 'Development round 2, task NEX-7.',
+      file: record,
+      error: readError,
+    }),
+  ).rejects.toThrow('reportIdentity: Required');
+
+  const [entry] = await readReportFeedback(areaRoot);
+  expect(entry?.record).toMatchObject({
+    kind: 'rejection',
+    assignedReport: { path: reportFile },
+    output: await readFile(record, 'utf8'),
+    reason: expect.stringContaining('reportIdentity: Required'),
+  });
+  const rejection = entry?.record as ReportRejection;
+  expect(rejection.report).not.toBeNull();
+  expect(await readFile(rejection.report!.path, 'utf8')).toBe('Implemented the retry guard.\n');
+});
+
+it('finishes only the supplied rejections a saved replacement answers', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const artifact = path.join(areaRoot, 'artifacts', '2', 'development.json');
+  await mkdir(path.dirname(artifact), { recursive: true });
+  await writeFile(artifact, '{"status":"completed"}', 'utf8');
+  await retainRejection(areaRoot, scope, {
+    invocationId: 'invocation-1',
+    reason: 'First violated rule.',
+    output: 'first rejected bytes',
+  });
+  await retainRejection(areaRoot, scope, {
+    invocationId: 'invocation-2',
+    reason: 'Second violated rule.',
+    output: 'second rejected bytes',
+  });
+  const retained = await readReportFeedback(areaRoot);
+  const first = retained.find(
+    (entry) => entry.record.kind === 'rejection' && entry.record.reason === 'First violated rule.',
+  )!.path;
+  const second = retained.find(
+    (entry) => entry.record.kind === 'rejection' && entry.record.reason === 'Second violated rule.',
+  )!.path;
+  // The invocation was supplied only the first rejection; the second was created later.
+  await retainSuppliedFeedback({
+    areaRoot,
+    invocationId: 'invocation-9',
+    rejections: [{ path: first }],
+  });
+
+  await expect(
+    finishSuppliedCorrection({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-9',
+      artifact: { path: artifact },
+      content: { status: 'completed' },
+    }),
+  ).resolves.toBe(true);
+  const outstanding = await outstandingReportFeedback({ areaRoot, scope });
+  expect(outstanding.map((entry) => entry.path)).toEqual([second]);
+  // Replaying the same saved replacement does not name a rejection created later or record a
+  // duplicate correction.
+  await expect(
+    finishSuppliedCorrection({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-9',
+      artifact: { path: artifact },
+      content: { status: 'completed' },
+    }),
+  ).resolves.toBe(false);
+  expect(
+    (await readReportFeedback(areaRoot)).filter((entry) => entry.record.kind === 'correction'),
+  ).toHaveLength(1);
 });
 
 it('retires only the rejections a valid matching correction names', async () => {

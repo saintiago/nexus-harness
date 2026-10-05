@@ -9,7 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
+import {
+  openingNarrativeParagraph,
+  reportIdentityOf,
+} from '../src/task-engine/actions/agent-reports.js';
 import {
   devArtifact,
   developmentReportText,
@@ -434,5 +437,21 @@ describe('retained report contracts', () => {
 
     await writeFile(reportFile, `${markdown}Edited after the fact.\n`, 'utf8');
     await expect(developmentReportText(bound)).rejects.toThrow(/does not match the identity/);
+  });
+
+  it('selects the opening narrative paragraph, not headings, code or list structure', () => {
+    expect(openingNarrativeParagraph('# Review\n\nThe retry guard works.\n\n- detail\n')).toBe(
+      'The retry guard works.',
+    );
+    expect(
+      openingNarrativeParagraph(
+        '```json\n{ "status": "completed",\n\n  "extra": true }\n```\n\nThen prose.\n',
+      ),
+    ).toBe('Then prose.');
+    expect(openingNarrativeParagraph('```json\n{ "status": "completed" }\n```\n')).toBeNull();
+    expect(openingNarrativeParagraph('# Only a heading\n')).toBeNull();
+    expect(openingNarrativeParagraph('- only\n- a list\n')).toBeNull();
+    expect(openingNarrativeParagraph('Title\n=====\n')).toBeNull();
+    expect(openingNarrativeParagraph('   ')).toBeNull();
   });
 });

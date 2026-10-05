@@ -98,15 +98,84 @@ export async function readBoundReport(
   return report;
 }
 
-/** The opening narrative paragraph of a Markdown report, or null when it has no prose. */
+/**
+ * The opening narrative paragraph of a Markdown report, or null when the report has no prose.
+ * Headings, fenced and indented code, lists, tables, block quotes, thematic breaks, link
+ * definitions and raw HTML are structure, not narrative; the first block of actual prose is
+ * returned with its Markdown text intact.
+ */
 export function openingNarrativeParagraph(markdown: string): string | null {
-  for (const block of markdown.split(/\n\s*\n/)) {
+  for (const block of markdownBlocks(markdown)) {
     const paragraph = block.trim();
-    if (paragraph !== '') {
+    if (paragraph !== '' && isNarrativeBlock(paragraph)) {
       return paragraph;
     }
   }
   return null;
+}
+
+/** One blank-line-separated block; a fenced code block stays one block. */
+function markdownBlocks(markdown: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fence: { readonly marker: string; readonly length: number } | null = null;
+  const flush = (): void => {
+    if (current.length > 0) {
+      blocks.push(current.join('\n'));
+      current = [];
+    }
+  };
+  for (const line of markdown.split('\n')) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence === null) {
+      if (match !== null) {
+        flush();
+        fence = { marker: match[1]![0]!, length: match[1]!.length };
+        current.push(line);
+      } else if (line.trim() === '') {
+        flush();
+      } else {
+        current.push(line);
+      }
+      continue;
+    }
+    current.push(line);
+    if (
+      match !== null &&
+      match[1]![0] === fence.marker &&
+      match[1]!.length >= fence.length &&
+      match[2]!.trim() === ''
+    ) {
+      fence = null;
+      flush();
+    }
+  }
+  flush();
+  return blocks;
+}
+
+/** True when one block holds prose rather than Markdown structure. */
+function isNarrativeBlock(block: string): boolean {
+  const lines = block.split('\n');
+  const first = lines[0]!.trimStart();
+  if (
+    /^#{1,6}(\s|$)/.test(first) ||
+    /^(`{3,}|~{3,})/.test(first) ||
+    /^ {4}/.test(lines[0]!) ||
+    /^>/.test(first) ||
+    /^</.test(first) ||
+    /^\s{0,3}([-*+]|\d{1,9}[.)])(\s|$)/.test(lines[0]!) ||
+    /^\s{0,3}([-*_]\s*){3,}$/.test(first) ||
+    /^\s{0,3}\[[^\]]+\]:/.test(first) ||
+    lines.some((line) => /^\s{0,3}\|/.test(line))
+  ) {
+    return false;
+  }
+  // A setext heading is a prose line underlined by a sequence of = or - characters.
+  if (lines.length > 1 && /^\s{0,3}(=+|-+)\s*$/.test(lines.at(-1)!)) {
+    return false;
+  }
+  return true;
 }
 
 /** The response-format instruction for one role's declared output schema. */

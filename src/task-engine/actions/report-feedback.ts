@@ -43,7 +43,7 @@ export type ReportScope = z.infer<typeof reportScopeSchema>;
  * when the report is unreadable or missing. `invocationId` is null only when importing
  * unattributed retained evidence.
  */
-export const reportRejectionSchema = z.strictObject({
+const reportRejectionFields = {
   kind: z.literal('rejection'),
   scope: reportScopeSchema,
   invocationId: z.string().trim().min(1).nullable(),
@@ -53,6 +53,10 @@ export const reportRejectionSchema = z.strictObject({
   source: artifactRefSchema.nullable(),
   output: z.string().nullable(),
   reason: z.string().trim().min(1),
+};
+
+export const reportRejectionSchema = z.strictObject({
+  ...reportRejectionFields,
   report: artifactRefSchema
     .nullable()
     .describe('The immutable copy of the available rejected Markdown, or null.'),
@@ -62,6 +66,29 @@ export const reportRejectionSchema = z.strictObject({
 });
 
 export type ReportRejection = z.infer<typeof reportRejectionSchema>;
+
+/**
+ * A former rejection record from before Markdown references existed. The two reference fields may
+ * be absent; they read as explicitly unavailable without rewriting the retained bytes. The strict
+ * current declaration above still governs every record a writer creates now.
+ */
+const compatibleReportRejectionSchema = z
+  .strictObject({
+    ...reportRejectionFields,
+    report: artifactRefSchema
+      .nullable()
+      .optional()
+      .describe('The immutable copy of the available rejected Markdown, or null.'),
+    assignedReport: artifactRefSchema
+      .nullable()
+      .optional()
+      .describe('The attempted report path, even when the report is unreadable or missing.'),
+  })
+  .transform((record): ReportRejection => ({
+    ...record,
+    report: record.report ?? null,
+    assignedReport: record.assignedReport ?? null,
+  }));
 
 /**
  * One recorded correction: the usable replacement a producer validated and saved, its complete
@@ -83,6 +110,12 @@ export type ReportCorrection = z.infer<typeof reportCorrectionSchema>;
 export const reportFeedbackSchema = z.discriminatedUnion('kind', [
   reportRejectionSchema,
   reportCorrectionSchema,
+]);
+
+/** The record declaration readers accept: current records plus former rejections without refs. */
+const retainedReportFeedbackSchema = z.union([
+  reportFeedbackSchema,
+  compatibleReportRejectionSchema,
 ]);
 
 export type ReportFeedbackRecord = z.infer<typeof reportFeedbackSchema>;
@@ -182,7 +215,7 @@ export async function readReportFeedback(
     if (text === null) {
       continue;
     }
-    const parsed = parseDocument(text, reportFeedbackSchema);
+    const parsed = parseDocument(text, retainedReportFeedbackSchema);
     if (parsed.kind === 'invalid-json') {
       throw new Error(
         `Report feedback at "${file}" is not valid JSON: ${messageOf(parsed.error)}`,
@@ -300,8 +333,35 @@ export async function rejectReport(settings: {
 }
 
 /**
+ * The report reference an unusable record's readable bytes name, recovered only so available
+ * rejected Markdown can be copied as evidence. Recovery is structural: it neither accepts the
+ * damaged record nor validates the outcome it holds.
+ */
+function recoverAssignedReport(output: string | null): ArtifactRef | null {
+  if (output === null) {
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(output) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const report = (value as { report?: unknown }).report;
+  if (typeof report !== 'object' || report === null) {
+    return null;
+  }
+  const candidate = (report as { path?: unknown }).path;
+  return typeof candidate === 'string' && candidate.trim() !== '' ? { path: candidate } : null;
+}
+
+/**
  * Retain an unusable retained record's readable bytes and path as rejection evidence, then fail
- * with the original read failure. Unavailable bytes stay explicit.
+ * with the original read failure. Available Markdown referenced by the damaged record is copied
+ * with its attempted path; unavailable bytes stay explicit.
  */
 export async function rejectUnusableRecord(settings: {
   readonly areaRoot: string;
@@ -335,7 +395,7 @@ export async function rejectUnusableRecord(settings: {
     source: { path: settings.file },
     output,
     reason: `${messageOf(settings.error)}${explanation}`,
-    assignedReport: settings.assignedReport ?? null,
+    assignedReport: settings.assignedReport ?? recoverAssignedReport(output),
     cause: settings.error,
   });
 }
@@ -375,6 +435,126 @@ export async function recordReportCorrection(settings: {
     artifactIdentity: recordIdentity(settings.content),
     invocationId: settings.invocationId,
   });
+}
+
+/**
+ * The evidence that one invocation was supplied a set of outstanding rejections before it ran.
+ * It attributes a saved replacement to the exact records that invocation answered, so an
+ * interrupted correction write can finish on replay without retiring a later rejection.
+ */
+export const suppliedFeedbackSchema = z.strictObject({
+  invocationId: z.string().trim().min(1),
+  rejections: z.array(artifactRefSchema).min(1),
+});
+
+export type SuppliedFeedback = z.infer<typeof suppliedFeedbackSchema>;
+
+/** One invocation's supplied-rejection evidence file under its owning area. */
+export function suppliedFeedbackFile(areaRoot: string, invocationId: string): string {
+  return path.join(reportFeedbackRoot(areaRoot), 'supplied', `${invocationId}.json`);
+}
+
+/** Retain which outstanding rejections one invocation is supplied before it runs. */
+export async function retainSuppliedFeedback(settings: {
+  readonly areaRoot: string;
+  readonly invocationId: string;
+  readonly rejections: readonly ArtifactRef[];
+}): Promise<ArtifactRef> {
+  const file = suppliedFeedbackFile(settings.areaRoot, settings.invocationId);
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  await mkdir(path.dirname(file), { recursive: true });
+  try {
+    await writeFile(
+      temporary,
+      `${JSON.stringify(
+        {
+          invocationId: settings.invocationId,
+          rejections: settings.rejections.map((reference) => ({ path: reference.path })),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    await rename(temporary, file);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw new Error(
+      `The supplied-rejection evidence at "${file}" could not be written: ${messageOf(error)}`,
+      { cause: error },
+    );
+  }
+  return { path: file };
+}
+
+/** The rejections one invocation was supplied, or null when no evidence was retained. */
+export async function readSuppliedFeedback(
+  areaRoot: string,
+  invocationId: string,
+): Promise<SuppliedFeedback | null> {
+  const file = suppliedFeedbackFile(areaRoot, invocationId);
+  const text = await readDocumentText(file, 'Supplied-rejection evidence');
+  if (text === null) {
+    return null;
+  }
+  const parsed = parseDocument(text, suppliedFeedbackSchema);
+  if (parsed.kind === 'invalid-json') {
+    throw new Error(
+      `Supplied-rejection evidence at "${file}" is not valid JSON: ${messageOf(parsed.error)}`,
+      { cause: parsed.error },
+    );
+  }
+  if (parsed.kind === 'invalid-content') {
+    throw new Error(
+      `Supplied-rejection evidence at "${file}" does not match its declared content type: ` +
+        describeIssues(parsed.error, '<evidence>'),
+      { cause: parsed.error },
+    );
+  }
+  if (parsed.content.invocationId !== invocationId) {
+    throw new Error(
+      `Supplied-rejection evidence at "${file}" belongs to invocation ` +
+        `${parsed.content.invocationId}, not ${invocationId}.`,
+    );
+  }
+  return parsed.content;
+}
+
+/**
+ * Finish recording the correction a saved outcome's invocation owes: the rejections that
+ * invocation was supplied and that no correction has resolved yet. Only the supplied records are
+ * named, so a rejection created after that invocation stays outstanding. Returns whether a
+ * correction was recorded.
+ */
+export async function finishSuppliedCorrection(settings: {
+  readonly areaRoot: string;
+  readonly scope: ReportScope;
+  readonly invocationId: string;
+  readonly artifact: ArtifactRef;
+  readonly content: unknown;
+}): Promise<boolean> {
+  const supplied = await readSuppliedFeedback(settings.areaRoot, settings.invocationId);
+  if (supplied === null) {
+    return false;
+  }
+  const suppliedPaths = new Set(supplied.rejections.map((reference) => reference.path));
+  const outstanding = await outstandingReportFeedback({
+    areaRoot: settings.areaRoot,
+    scope: settings.scope,
+  });
+  const addressed = outstanding.filter((entry) => suppliedPaths.has(entry.path));
+  if (addressed.length === 0) {
+    return false;
+  }
+  await recordReportCorrection({
+    areaRoot: settings.areaRoot,
+    scope: settings.scope,
+    rejections: addressed.map((entry) => ({ path: entry.path })),
+    artifact: settings.artifact,
+    content: settings.content,
+    invocationId: settings.invocationId,
+  });
+  return true;
 }
 
 /**
