@@ -226,8 +226,10 @@ inputs. Resolving actual reuse does require the preceding binding for every sele
 retained deletions. Reuse remains limited to the immediately preceding completed acceptance.
 
 Finalization first validates the exact current author/evaluation pair, source and upstream identities,
-usable citations and current content bindings. It then validates preceding content only for selected
-retained assets. Each reused path must also occur in the current basis. Fresh input and newly authored
+usable citations and current content bindings. The result retains that current evaluation reference;
+an earlier evaluation cannot supply revisions for fresh citations or newly authored corrections.
+It then validates preceding content only for selected retained assets. Each reused path must also
+occur in the current basis. Fresh input and newly authored
 document revisions, including owned-document corrections, come only from that basis; reused
 owned-document revisions and prototype observations retain their preceding provenance. Deduplicate
 by canonical path, with owned assets retaining their ownership.
