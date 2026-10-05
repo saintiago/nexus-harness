@@ -77,6 +77,11 @@ Success means the invocation finished and returned output. The caller still pars
 evaluates its claims, including rules a JSON Schema cannot express. The runtime transports the supplied
 schema without owning developer, reviewer or recovery schemas. It does not declare a task complete.
 
+Response field descriptions and caller-supplied semantic/ownership instructions accompany that
+schema. The caller owns parsing, rejection evidence and correction context; the runtime has no
+feedback store and does not reinterpret a rejection or start a repair invocation. A finished
+invocation event establishes only that output was returned, not that its report was accepted.
+
 Activity is emitted through the observer the caller supplies for that invocation, so concurrent
 calls keep independent observers. Observer failures do not affect the invocation. Invocation
 failures and timeouts return a fault.

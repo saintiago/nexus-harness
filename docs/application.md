@@ -110,6 +110,12 @@ directory. Include the current project configuration and recovery scope in the c
 context to AgentRuntime.run with the configured recovery profile.
 Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
 
+Import the TaskEngine-owned [report rejection declarations](task-engine/actions/architecture.md#rejection-evidence-and-continuation)
+for readable failure evidence and correction records. Supply relevant rejection references and
+their declared format to recovery, including when selection is later cleared. Application owns
+evidence for its recovery reports; action owners retain their own report feedback. The runtime
+interface and worker control protocol remain unchanged.
+
 ### Worker entry point
 
 The internal worker entry receives the absolute project filepath, the selected workflow and the
@@ -167,6 +173,14 @@ launch a repair there or update the running Nexus installation.
 A resume decision restarts the worker with the same project configuration and the state reconciled
 by recovery.
 
+Preserve report rejection evidence before reconciliation or cleanup. Repairing an old report does
+not by itself resolve the next invocation's feedback: retained continuation loads it from its owning
+area after reselection. Existing failures without this evidence require explicit reconciliation
+from available rejected output and diagnosis; unknown output or invocation identity stays unknown.
+Recovery report failures retain output and reason under the stable project recovery area, and a later
+permitted recovery invocation receives that feedback. A malformed recovery response still stops
+the execution for attention; evidence retention grants no additional invocation.
+
 For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to the configured implementation-ready status
 immediately after it. Recovery discards disposable finite delivery work and preserves preparation
 repositories and immutable handoffs, following the continuation rules in
@@ -220,6 +234,19 @@ Recovery allowance persists across worker restarts. The task source owns queue o
 
 Publish the saved recovery report. Notification failure is reported separately and does not repeat
 recovery. Provider acceptance confirms submission, not inbox delivery.
+
+## Installation activation
+
+Prepare the installed build from the merged revision whose required checks passed. Keep the
+currently running installation intact while any execution uses it; wait for active work to finish
+or reach a normal retained stop before switching the configured launch target. Preserve project
+configuration, checkouts, checkpoints, feedback and consumed allowances. Verify the resolved launch
+target corresponds to the checked revision before restarting; a build in a checkout alone is not
+activation evidence. Retained legacy failures are explicitly reconciled using their available
+diagnosis and output before continuation through the normal workflow gates.
+
+Run Nexus in WSL in a separate visible terminal attached to that session, with
+`TERM=xterm-256color` and `COLORTERM=truecolor`.
 
 ## Process completion
 

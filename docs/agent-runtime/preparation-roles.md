@@ -9,6 +9,13 @@ history. Keep source attribution and material uncertainty. Do not retrieve Jira,
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
 
+Return the response object; do not write or overwrite action-owned `author.json`, `evaluation.json`,
+`result.json`, `plan.json` or state records. The action adds saved-record metadata. Authors declare
+changed authoritative documents in `documents`; `sourcePaths` declares additional stage-owned
+authored files, never files merely read. Every non-authored outcome has empty `sourcePaths`.
+Supporting existing inputs belong in `skip.references`. Only Architecture supplies an implementation
+plan. Observation requirements and allowed outcomes follow the supplied stage response rules.
+
 Use the supplied shared repository for edits and inspection; each stage retains its own artifact
 area. Assess only the selected stage's responsibilities. Shared-memory guidance and explicit
 search/save access follow [Memory integration](../memory/integration.md#agent-use) for every author

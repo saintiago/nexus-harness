@@ -121,6 +121,12 @@ once, and submits them itself. Preserve original artifacts. Other agents retain 
 [agent-use contract](../../memory/integration.md#agent-use); these are deliberate agent calls, not
 automatic workflow hooks. No other Nexus operation adds automatic memory context.
 
+Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) within the
+durable request area to retain rejected analyst output and the validation reason. The next existing
+analysis attempt receives that request's outstanding feedback. A saved usable analysis resolves
+report feedback before submissions; receipt retries reuse that analysis rather than invoking again.
+Evidence or invocation failures remain outstanding analysis and never alter the original handoff.
+
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
 payloads, provenance, timestamps and keys after interruption or configuration changes. Durable
 acceptance is distinct from stored/searchable memory; poll accepted receipts, including blocked

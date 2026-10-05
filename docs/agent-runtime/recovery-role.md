@@ -16,6 +16,7 @@ project configuration, available failure/output, execution-state paths, issue wo
 and the RecoveryReport response format. Missing error information remains absent.
 Include the selected workflow definition and relevant state/artifact declarations so reconciliation
 uses their actual formats.
+Include relevant report-rejection references and the producer-owned feedback declarations.
 
 Run in a separate operational [workspace](../workspace.md#layout-and-reference), outside the
 issue workspace whose finite delivery attempt may be discarded. Application invokes recovery
@@ -55,6 +56,12 @@ create tickets there. If continuation requires that work, return needs-attention
 Fix operational problems directly when appropriate. Reconcile the persisted execution state using
 the supplied workflow and record formats. Return resume only when the normal queue can continue;
 do not launch a second queue yourself.
+
+Before repairing or replacing a rejected report, preserve its available output and exact rejection
+reason using the supplied feedback declaration. Keep that evidence outside disposable attempt
+directories and preserve it through selection reset. Historical repair alone does not clear the
+feedback needed by the next responsible invocation. Do not invent unavailable output or metadata,
+or convert a correction record into evaluation, review approval or completion.
 
 If project implementation work is needed to unblock execution, create or reuse a blocker ticket
 describing the problem and intended outcome. Make it eligible and rank it first. Move the interrupted

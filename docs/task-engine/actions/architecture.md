@@ -27,6 +27,96 @@ output schema derived from their owned response schema through that interface, a
 response instructions in context. They still validate the returned content and business rules before
 persisting an artifact; structured output does not establish correctness or approval.
 
+### Agent response contracts
+
+Each report owner defines its response schema separately from its saved artifact schema. Derive
+the provider schema and response-format text from the same response declaration. Field descriptions
+state meaning and ownership; caller-supplied instructions state outcome, role and invocation
+restrictions that the provider schema cannot express. Supply these rules before invocation, including
+the current eligible findings and assessed revision when relevant. Keep semantic validation with the
+owner of the rule. Shared report helpers format, parse and retain evidence; they do not choose a
+verdict, infer artifact ownership or supply a second workflow policy.
+
+The agent returns response fields and creates only explicitly assigned documents or evidence.
+The caller supplies observed identity/revision metadata and writes its declared artifacts. Identify
+the action-owned paths in invocation context and explicitly forbid the agent from writing them.
+Response nullability conversions are declared mappings, not repairs of malformed output. Reject
+unknown response fields rather than silently stripping claims outside the response contract.
+
+### Rejection evidence and continuation
+
+Report rejection is distinct from a valid negative business report and from an invocation that
+returned no output. Preserve the exact returned bytes, the specific violated rule and attributable
+context before raising the existing execution error. A malformed saved record retains its readable
+bytes and path; it does not become a usable producer artifact. When output is unavailable, record
+null and explain why. Do not manufacture a report from activity messages or guessed metadata.
+
+The report helpers own one runtime-validated rejection and correction declaration, exposed for
+consumers through the TaskEngine data interface. The validating caller owns each evidence write;
+the responsible report producer owns validation of the replacement. The boundary values are:
+
+```ts
+type ReportScope = {
+  project: string;
+  workId: string;
+  area: string; // absolute owning area, independent of the repository checkout
+  role: string;
+  reportKind: string; // distinguishes incompatible response contracts of one role
+};
+type ReportRejection = {
+  kind: 'rejection';
+  scope: ReportScope;
+  invocationId: string | null; // null only when importing unattributed retained evidence
+  operation: string;
+  profile: string | null;
+  context: string; // original round/cycle/request and relevant revision attribution
+  source: ArtifactRef | null; // malformed saved record, when applicable
+  output: string | null;
+  reason: string;
+};
+type ReportCorrection = {
+  kind: 'correction';
+  scope: ReportScope;
+  rejections: ArtifactRef[];
+  artifact: ArtifactRef; // usable replacement report, not approval of its claims
+  artifactIdentity: string; // identity of the complete saved replacement
+  invocationId: string | null;
+};
+```
+
+Store immutable rejection and correction records under the owning area's
+`report-feedback/<record-id>.json`, using unique record IDs. Derive outstanding feedback from
+rejections without a valid matching correction; no separately persisted pending pointer is needed.
+A correction references the exact rejection records it resolves. The owner validates and saves
+the replacement before recording its complete identity and those references. Readers validate the
+correction declaration and matching scope, rather than inferring correction from a file's existence.
+Later disposal of delivery artifacts does not reopen a recorded correction. It is evidence of report
+usability, not stage acceptance, review approval or task completion.
+
+Preparation uses its stage area, idea refinement its refinement area, and finite delivery the
+selected implementation issue root even when its repository belongs to a preparation issue. The
+feedback directory is outside disposable delivery `state/` and `artifacts/`. Analysis uses its
+durable request area and recovery its stable project recovery area, retaining their existing failure
+policies. Parallel roles have independent invocation identities and evidence writes.
+
+Before the next responsible invocation, load outstanding feedback matching project, work, owning
+area, role and report kind. Include the rejection reason, original invocation/context attribution and
+readable rejected output reference in context, labelled as rejected historical evidence. Current
+input, current response rules and finding obligations remain authoritative. Match the logical report
+responsibility across round advancement, profile changes, worker exit and reselection; do not require
+the old round, branch or profile to equal the new one. Incompatible variants and other roles/items
+do not inherit it. A correction retires the records it addresses, preserving their history; a later
+rejection remains outstanding independently.
+
+Resolve feedback only after the owner validates and saves the usable replacement. Replay can finish
+recording a correction without another invocation only when retained evidence attributes the
+replacement to an owner invocation supplied with those rejections. Mere reuse or a recovery-edited
+historical artifact is insufficient. Otherwise feedback remains for the next permitted invocation.
+Missing or unusable evidence is an explicit error, never an empty feedback set. A failed
+evidence write reports both the original rejection and persistence failure, and grants no acceptance.
+Report-evidence helpers add no invocation, allowance, route, escalation or retry policy. Existing
+recovery, round planning and gates decide whether another invocation is permitted.
+
 ### Artifact declarations
 
 An artifact declaration has two properties:

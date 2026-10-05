@@ -88,6 +88,17 @@ profiles and why the round opened. Cumulative round and return allowances surviv
 A terminal exhaustion record does not replace an earlier completed round. The current terminal record,
 not a search through old acceptances, determines whether the stage can advance.
 
+Author and evaluator response contracts omit action-added metadata. StageAuthor adds stage and
+authored revision; StageEvaluator adds the observed acceptance basis; result/plan persistence stays
+with the stage operations. Invocation context explicitly reserves their report and state paths.
+Non-authored responses carry empty `sourcePaths`; skip citations belong in `skip.references`.
+
+Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) in each
+stage area. The current responsible author or evaluator receives outstanding feedback even when
+recovery repaired a previous record or reselection opens another bounded round. Repaired history
+alone does not retire feedback; a usable replacement must be validated and recorded as its
+correction. Neither rejection nor correction changes evaluation bases or finding obligations.
+
 Before evaluation, commit the author's declared documents and applicable prototype source paths in
 the shared checkout. Named commits exclude unrelated staged work. The author declares prototype paths;
 committing the entire checkout would absorb work outside that stage's responsibility. Retain the
