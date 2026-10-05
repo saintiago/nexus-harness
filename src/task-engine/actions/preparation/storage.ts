@@ -36,6 +36,7 @@ import {
   recordIdentity,
   resolveSkipReference,
   requireEvaluationContent,
+  skipReferenceProblem,
   sourceInputIdentity,
   type RetainedPrototypeReference,
 } from './evaluation-content.js';
@@ -647,8 +648,9 @@ export async function requireCurrentAcceptance(settings: {
     worktree: preparationWorktree(issueRoot),
     content: basis.content,
   });
-  // A resolvable repository citation must already be bound by the saved evaluation. Historical
-  // skips with omitted bindings need reevaluation; do not invent a binding from current bytes.
+  // Citations must remain usable, and repository documents must already be bound by the saved
+  // evaluation. Historical skips need reevaluation even if their unbound document disappears;
+  // do not invent a binding from current bytes.
   const checkout = preparationWorktree(issueRoot);
   const retainedPrototype = await retainedStagePrototype(root, round);
   for (const reference of author.skip?.references ?? []) {
@@ -657,6 +659,12 @@ export async function requireCurrentAcceptance(settings: {
       reference,
       retainedPrototype,
     });
+    const problem = skipReferenceProblem(resolution);
+    if (problem !== null) {
+      throw new Error(
+        `The evaluated skip reference is unusable: ${problem}; a current decision is required.`,
+      );
+    }
     if (
       resolution.kind === 'document' &&
       !basis.content.some((entry) => entry.path === resolution.relative)

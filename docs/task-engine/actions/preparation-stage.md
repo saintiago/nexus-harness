@@ -115,9 +115,10 @@ acceptance and before reuse; an unrelated new HEAD is not by itself a change to 
 A changed authored report, assessed content or relied-on input needs a current evaluator decision.
 Resolve relative and in-checkout absolute references to canonical checkout-relative paths. Paths
 outside the checkout are not repository document references. Preserve source attribution.
-Resolvable repository skip citations missing from a retained evaluation's content basis require
-reevaluation before finalization, replay, downstream reuse or handoff. Preserve the historical
-record; current content cannot supply a retroactive binding.
+Unusable skip citations and repository citations missing from a retained evaluation's content basis
+require reevaluation before finalization, replay, downstream reuse or handoff. Removing or replacing
+a cited document cannot restore a historical acceptance with a missing binding. Preserve the
+historical record; current content cannot supply a retroactive binding.
 
 ## Correction and reuse
 

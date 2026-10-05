@@ -699,89 +699,115 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
   },
 );
 
-it('requires reevaluation of a retained fragment citation missing its content binding', async () => {
-  const { selectionFile, root, worktree } = await stageArea();
-  const savedRequirements = await readFile(path.join(worktree, 'docs/requirements.md'), 'utf8');
-  const { git } = scriptedGit([repositoryState()], {
-    readFileAtRevision: async () => ok(savedRequirements),
-  });
-  const common = { selectionFile, stage, git, publish: () => undefined };
-  await createStageAuthor({
-    ...common,
-    runner: authorRunner(
-      {
-        ...conformingSkipResponse,
-        skip: {
-          reason: conformingSkipResponse.skip.reason,
-          references: ['docs/requirements.md#activities-and-rules'],
+it.each(['changed', 'deleted', 'replaced by a directory'])(
+  'requires reevaluation of an unbound historical citation when its document is %s',
+  async (mutation) => {
+    const { selectionFile, root, worktree } = await stageArea();
+    const savedRequirements = await readFile(path.join(worktree, 'docs/requirements.md'), 'utf8');
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async () => ok(savedRequirements),
+    });
+    const common = { selectionFile, stage, git, publish: () => undefined };
+    await createStageAuthor({
+      ...common,
+      runner: authorRunner(
+        {
+          ...conformingSkipResponse,
+          skip: {
+            reason: conformingSkipResponse.skip.reason,
+            references: ['docs/requirements.md#activities-and-rules'],
+          },
         },
-      },
-      [],
-    ),
-  })({ task: 'propose' });
-  await createStageEvaluator({
-    ...common,
-    runner: evaluatorRunner(
-      {
-        assessedRevision: 3,
-        verdict: 'accepted-skip',
-        reason: 'The cited section satisfies the stage.',
-        observation: null,
-        findings: [],
-        priorFindings: [],
-        upstream: null,
-      },
-      [],
-    ),
-  })();
-  await createStageResult(common)({ outcome: 'skipped' });
-  const issueRoot = path.dirname(root);
-  const selection = selectionDeclaration.schema.parse(
-    JSON.parse(await readFile(selectionFile, 'utf8')),
-  );
-  const decision = () => readCurrentDecision({ issueRoot, stage, selection, git });
-  await expect(decision()).resolves.toMatchObject({ kind: 'current' });
+        [],
+      ),
+    })({ task: 'propose' });
+    await createStageEvaluator({
+      ...common,
+      runner: evaluatorRunner(
+        {
+          assessedRevision: 3,
+          verdict: 'accepted-skip',
+          reason: 'The cited section satisfies the stage.',
+          observation: null,
+          findings: [],
+          priorFindings: [],
+          upstream: null,
+        },
+        [],
+      ),
+    })();
+    await createStageResult(common)({ outcome: 'skipped' });
+    const issueRoot = path.dirname(root);
+    const selection = selectionDeclaration.schema.parse(
+      JSON.parse(await readFile(selectionFile, 'utf8')),
+    );
+    const decision = () => readCurrentDecision({ issueRoot, stage, selection, git });
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
 
-  // Recreate the historical parser's unbound fragment citation without changing its identity.
-  const evaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
-  const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
-  const historicalEvaluation = JSON.stringify({
-    ...evaluation,
-    basis: { ...evaluation.basis, content: [] },
-  });
-  await writeFile(evaluationFile, historicalEvaluation);
-  const resultFiles = [
-    path.join(root, 'artifacts', '3', 'result.json'),
-    path.join(root, 'state', 'result.json'),
-  ];
-  const historicalResult = JSON.stringify({
-    ...JSON.parse(await readFile(resultFiles[0]!, 'utf8')),
-    existingDocuments: [],
-  });
-  for (const file of resultFiles) await writeFile(file, historicalResult);
-  const stale = {
-    kind: 'stale',
-    reason: expect.stringContaining('does not bind the relied-on document "docs/requirements.md"'),
-  };
-  await expect(decision()).resolves.toMatchObject(stale);
-  await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(
-    'does not bind the relied-on document',
-  );
-  await writeFile(path.join(worktree, 'docs/requirements.md'), '# Requirements\n\nChanged.\n');
-  await expect(decision()).resolves.toMatchObject(stale);
-  await expect(
-    requireCurrentAcceptance({
-      issueRoot,
-      stage,
-      selection,
-      round: 3,
-      verdict: 'accepted-skip',
-      git,
-      author: (await readStageArtifact(root, 3, stageAuthorArtifact))!,
-      evaluation: await readStageArtifact(root, 3, stageEvaluationArtifact),
-    }),
-  ).rejects.toThrow('does not bind the relied-on document');
-  // Neither path retroactively manufactures a binding or edits the retained acceptance.
-  expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
-  for (const file of resultFiles) expect(await readFile(file, 'utf8')).toBe(historicalResult);
-});
+    // Recreate the historical parser's unbound fragment citation without changing its identity.
+    const evaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
+    const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
+    const historicalEvaluation = JSON.stringify({
+      ...evaluation,
+      basis: { ...evaluation.basis, content: [] },
+    });
+    await writeFile(evaluationFile, historicalEvaluation);
+    const resultFiles = [
+      path.join(root, 'artifacts', '3', 'result.json'),
+      path.join(root, 'state', 'result.json'),
+    ];
+    const historicalResult = JSON.stringify({
+      ...JSON.parse(await readFile(resultFiles[0]!, 'utf8')),
+      existingDocuments: [],
+    });
+    for (const file of resultFiles) await writeFile(file, historicalResult);
+    const stale = {
+      kind: 'stale',
+      reason: expect.stringContaining(
+        'does not bind the relied-on document "docs/requirements.md"',
+      ),
+    };
+    await expect(decision()).resolves.toMatchObject(stale);
+    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(
+      'does not bind the relied-on document',
+    );
+    const citedFile = path.join(worktree, 'docs/requirements.md');
+    if (mutation === 'changed') {
+      await writeFile(citedFile, '# Requirements\n\nChanged.\n');
+    } else {
+      await rm(citedFile);
+      if (mutation === 'replaced by a directory') await mkdir(citedFile);
+    }
+    const problem =
+      mutation === 'changed'
+        ? 'does not bind the relied-on document'
+        : 'does not name a readable file';
+    await expect(decision()).resolves.toMatchObject({
+      kind: 'stale',
+      reason: expect.stringContaining(problem),
+    });
+    await expect(
+      requireCurrentAcceptance({
+        issueRoot,
+        stage,
+        selection,
+        round: 3,
+        verdict: 'accepted-skip',
+        git,
+        author: (await readStageArtifact(root, 3, stageAuthorArtifact))!,
+        evaluation: await readStageArtifact(root, 3, stageEvaluationArtifact),
+      }),
+    ).rejects.toThrow(problem);
+    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(problem);
+    // Neither path retroactively manufactures a binding or edits the retained acceptance.
+    expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
+    for (const file of resultFiles) expect(await readFile(file, 'utf8')).toBe(historicalResult);
+
+    // The same historical evaluation cannot authorize initial finalization either.
+    await rm(resultFiles[0]!);
+    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(problem);
+    await expect(readFile(resultFiles[0]!, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
+    expect(await readFile(resultFiles[1]!, 'utf8')).toBe(historicalResult);
+  },
+);

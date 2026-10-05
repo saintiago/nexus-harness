@@ -249,7 +249,7 @@ describe('SelectWork admission and routing', () => {
               plan: [],
               skip: {
                 reason: 'Existing requirements suffice.',
-                references: ['source requirements'],
+                references: [selectionFile],
               },
               question: null,
               upstream: null,

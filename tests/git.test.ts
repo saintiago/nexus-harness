@@ -2050,14 +2050,36 @@ describe('Git adapter', () => {
       'a current decision is required',
     );
     await rm(path.join(worktree, 'source requirements'));
-    await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
-    const result = JSON.parse(
-      await readFile(path.join(area, 'artifacts/1/result.json'), 'utf8'),
-    ) as { existingDocuments: unknown; skipReferences: unknown };
+    await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(
+      'a current decision is required',
+    );
+    // Removing unbound evidence cannot restore acceptance. Correct the citation and obtain a
+    // fresh decision through the real author and evaluator before finalization can succeed.
+    const result = await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'architecture',
+      round: 2,
+      route: 'reassess',
+      invokeAuthor: true,
+      verdict: 'accepted-skip',
+      author: {
+        outcome: 'skip-proposed',
+        summary: 'The existing design document suffices.',
+        documents: [],
+        sourcePaths: [],
+        plan: architecturePlan,
+        skip: { reason: 'The existing design suffices.', references: ['readme.md'] },
+        question: null,
+        upstream: null,
+        observation: null,
+        findingResponses: [],
+      },
+    });
     expect(result.existingDocuments).toEqual([
       { path: path.join(worktree, 'readme.md'), revision },
     ]);
-    expect(result.skipReferences).toEqual(['readme.md', 'source requirements']);
+    expect(result.skipReferences).toEqual(['readme.md']);
   });
 
   it('reuses accepted assets only through the immediately preceding acceptance', async () => {
