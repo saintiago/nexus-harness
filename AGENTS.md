@@ -82,6 +82,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [AnalyzeExperience design](docs/task-engine/actions/analyze-experience.md): terminal handoffs, resumable analysis and exclusive automatic memory access.
 - [AgentRuntime design](docs/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
 - [Agent report requirements](docs/agent-runtime/report-requirements.md): contract alignment, artifact ownership and retained rejection feedback.
+- [Change coherence requirements](docs/agent-runtime/change-coherence.md): reconciliation across design and code in preparation, development and review.
 - [Native Codex profiles](docs/agent-runtime/profiles.md): repository templates and Linux installation.
 - [DevelopmentRole design](docs/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
 - [ReviewerRole design](docs/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
