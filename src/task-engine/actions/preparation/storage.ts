@@ -327,9 +327,13 @@ export function roundArtifactDirectory(root: string, round: number): string {
 
 /**
  * The retained content one evaluated skip reuses from the immediately preceding completed round
- * of the same stage: the result's changed and existing documents, stage-owned source paths, the
- * preceding acceptance's observations of those paths, and any retained prototype this stage owns.
- * Only that immediate acceptance may supply reused assets; a later rejection or upstream return
+ * of the same stage: the changed documents and stage-owned source paths an explicit reference
+ * selects, the complete retained content an explicit preceding-result reference selects,
+ * the preceding acceptance's observations of those paths, and any applicable prototype bundle
+ * this stage owns. A path-only citation of a current repository document is a fresh input
+ * instead, even when the preceding result recorded that path under existingDocuments: the
+ * current evaluation binds its content, so no preceding revision or binding applies. Only that
+ * immediate acceptance may supply reused assets; a later rejection or upstream return
  * invalidates it, so reuse never searches past an intervening unfinished or invalid round. The
  * observations carry the recorded revision and existence, so a retained deletion is validated as
  * an absence rather than unreadable file bytes.
@@ -337,7 +341,7 @@ export function roundArtifactDirectory(root: string, round: number): string {
 export type ReusedPreparationContent = {
   /** The preceding result's changed documents the skip reuses, as the result recorded them. */
   readonly documents: readonly { readonly path: string; readonly revision: string }[];
-  /** Existing authoritative documents the preceding skip relied on, without changed ownership. */
+  /** The preceding result's existing inputs an explicit result or prototype selection keeps. */
   readonly existingDocuments: PreparationResult['existingDocuments'];
   /** The preceding result's stage-owned source paths the skip reuses, checkout-relative. */
   readonly sourcePaths: readonly string[];
@@ -434,6 +438,14 @@ export async function reusedPreparationContent(settings: {
     documents = result.documents;
     existingDocuments = result.existingDocuments;
     sourcePaths = result.sourcePaths;
+  } else if (!reusesResult) {
+    // A path-only citation of a current repository document is a fresh input, even when the
+    // preceding result listed the same path under existingDocuments: the new evaluation assessed
+    // its current content, so the preceding revision is not a prior binding to validate. Owned
+    // documents and source paths keep their complete preceding binding above, and an explicit
+    // preceding-result reference keeps the complete retained content; a reference selecting
+    // either cannot be downgraded to an input citation to bypass stale-reuse checks.
+    existingDocuments = [];
   }
   for (const document of documents) {
     if (document.revision === null) {
