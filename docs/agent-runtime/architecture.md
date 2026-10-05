@@ -19,6 +19,18 @@ instructions once per invocation. Each role has one complete constant prompt.
 The recovery profile includes [RecoveryRole](recovery-role.md#constant-prompt) once per invocation,
 with its separately configured operational tools.
 
+The [preparation role contract](preparation-roles.md#shared-instructions) owns shared preparation
+guidance and each stage's specific instructions. Preparation callers supply the shared guidance
+once in their context; selected profiles carry only the invoked role's specific instructions.
+Developer and reviewer coherence obligations belong in their complete role prompts, including
+developer repairs and every selectable ladder entry. A profile reused by several roles carries
+only the invoked role's instructions. Model, effort and tool choices do not change those obligations.
+
+Application composition attaches the role instructions to caller-selected profiles. AgentRuntime
+remains a generic assembler: it neither selects business roles nor reads documentation to derive
+policy. Authoritative role documents and supplied instructions must agree; coherence guidance is
+not a Nexus-wide base instruction for unrelated roles.
+
 ### Provided interface
 
 ```ts
@@ -81,6 +93,11 @@ Response field descriptions and caller-supplied semantic/ownership instructions 
 schema. The caller owns parsing, rejection evidence and correction context; the runtime has no
 feedback store and does not reinterpret a rejection or start a repair invocation. A finished
 invocation event establishes only that output was returned, not that its report was accepted.
+
+Coherence assessment uses existing task context, current revisions, findings, responses and verdicts.
+It adds no interface fields, persistent state, scoring or automatic retries. The caller retains report
+validation, rejection feedback and workflow routing; agents judge the substance. Existing
+current-revision acceptance, finite allowances and merge/check gates remain authoritative.
 
 Activity is emitted through the observer the caller supplies for that invocation, so concurrent
 calls keep independent observers. Observer failures do not affect the invocation. Invocation

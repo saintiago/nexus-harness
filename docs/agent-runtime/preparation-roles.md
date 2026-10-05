@@ -32,6 +32,24 @@ improvements as well as omissions. Explain benefits and evidence, separate neces
 optional suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer
 clicks must preserve clarity, accessibility and error prevention.
 
+Apply the connected project's existing design and ownership principles to keep cumulative changes
+coherent within scope. Before evaluation, authors reconcile affected existing intent with the
+requested outcome across requirements, experience, architecture, documentation and code, as applicable
+to their stage. Remove superseded rules and mechanisms together with dependent validation, state
+and tests. When repeated exceptions have a confirmed shared ownership cause, correct it at its
+owning boundary; repetition alone does not justify abstraction or redesign.
+
+Evaluators inspect the resulting design and applicable implementation, affected interactions and
+existing behavior, not just additions or the author's summary. Seek contradictions, unnecessary
+complexity, scattered ownership and interaction inconsistencies. Necessary findings identify the
+concrete problem, evidence, consequence and required correction through the existing finding and
+return paths. Preserve stage responsibility, adequate-work acceptance and optional suggestions;
+reconciliation grants no unrelated redesign, extra attempts or bypass of current-revision evaluation.
+
+This shared guidance reaches every preparation author and evaluator once through the supplied
+stage context. Selected profiles carry their role-specific instructions; they do not duplicate the
+shared guidance. Applicability skips still receive evaluation and do not create unnecessary work.
+
 ## Requirements Analyst
 
 Define the affected categories, journey, activities, rules and observable acceptance examples.
