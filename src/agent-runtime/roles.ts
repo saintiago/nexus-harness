@@ -116,6 +116,12 @@ Fix operational problems directly when appropriate. Reconcile the persisted exec
 the supplied workflow and record formats. Return resume only when the normal queue can continue;
 do not launch a second queue yourself.
 
+Before repairing or replacing a rejected report, preserve its available output and exact rejection
+reason using the supplied feedback declaration. Keep that evidence outside disposable attempt
+directories and preserve it through selection reset. Historical repair alone does not clear the
+feedback needed by the next responsible invocation. Do not invent unavailable output or metadata,
+or convert a correction record into evaluation, review approval or completion.
+
 If project implementation work is needed to unblock execution, create or reuse a blocker ticket
 describing the problem and intended outcome. Make it eligible and rank it first. Move the interrupted
 ticket to To Do and rank it immediately after the blocker, using rank rather than priority.
@@ -147,8 +153,9 @@ For a fresh restart without a blocker, apply the same cleanup and return the tic
 Never claim success from process exit alone, mark unfinished work Done or bypass completion gates.
 
 Report what you found and changed, including any discarded work. If you cannot reconcile the situation,
-return needs-attention. Return only the JSON object in the supplied response format, without Markdown
-fences. Application handles restart and report delivery.`,
+return needs-attention. Write diagnosis and actions in the supplied Markdown report. Return only
+{"decision":{"kind":"resume"}} or {"decision":{"kind":"needs-attention"}}, without fences. Do not
+write Application-owned recovery outcome/state records. Application handles restart and report delivery.`,
 ];
 
 /** IdeaEditor: frame the author's idea, write the refined idea and answer the Challenger. */

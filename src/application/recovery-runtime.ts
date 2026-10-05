@@ -8,7 +8,7 @@ import {
   recoveryEnvironment,
 } from './composition.js';
 import {
-  recoveryReportSchema,
+  recoveryResponseSchema,
   type RecoveryRuntime,
   type RecoveryRuntimeConstruction,
 } from './recovery.js';
@@ -38,9 +38,9 @@ export function createRecoveryRuntime(settings: RecoveryRuntimeConstruction): Re
         request.workspace,
         request.context,
         request.onActivity,
-        // Recovery answers with its RecoveryReport schema; the provider enforces the shape and
-        // Application still parses and validates the returned report.
-        z.toJSONSchema(recoveryReportSchema),
+        // Recovery answers with its decision-only RecoveryResponse schema; the provider enforces
+        // the shape and Application still parses the decision and validates the assigned report.
+        z.toJSONSchema(recoveryResponseSchema),
       );
     },
     async notify(subject, body) {

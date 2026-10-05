@@ -507,11 +507,17 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
             ...settings,
             launchWorker,
             recovery,
-            // The controlled analyst reports no reusable lesson, so the journey spends no
-            // provider turn and submits nothing.
-            analysis: () => (request) => {
+            // The controlled analyst writes its Markdown report and reports no reusable lesson,
+            // so the journey spends no provider turn and submits nothing.
+            analysis: () => async (request) => {
               analyses.push(request);
-              return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+              expect(request.context).toContain('Assigned Markdown report:');
+              await writeFile(
+                request.reportPath,
+                'The approved idea submission held no reusable lesson.',
+                'utf8',
+              );
+              return ok({ output: JSON.stringify({ observations: [] }) });
             },
           });
           application.subscribe((event) => events.push(event));

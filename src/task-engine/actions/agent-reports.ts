@@ -29,6 +29,24 @@ export type ReportBinding = z.infer<typeof reportBindingSchema>;
 /** The report fields each owner spreads into its saved-outcome schema. */
 export const reportBindingFields = reportBindingSchema.shape;
 
+/**
+ * The report binding one saved outcome carries, or null when the record has none. Extraction is
+ * structural because a consumer holding only a retained file can associate its Markdown through
+ * this shared declaration without re-declaring the producer's complete outcome schema; a former
+ * combined record carries no binding and stays readable history on its own.
+ */
+export function reportBindingOf(value: unknown): ReportBinding | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const parsed = reportBindingSchema.safeParse({
+    report: (value as { readonly report?: unknown }).report,
+    reportIdentity: (value as { readonly reportIdentity?: unknown }).reportIdentity,
+    invocationId: (value as { readonly invocationId?: unknown }).invocationId,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 /** One readable report file: its exact bytes, UTF-8 text and byte identity. */
 export type ReportFile = {
   readonly file: string;

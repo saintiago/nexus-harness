@@ -11,7 +11,7 @@ import {
   parseAgentReport,
   readAssignedReport,
   readBoundReport,
-  reportBindingSchema,
+  reportBindingOf,
   responseFormatText,
   type ReportBinding,
   type ReportFile,
@@ -355,20 +355,6 @@ function observedTaskKeyOf(value: unknown): string | null {
   }
   const taskKey = (value as { readonly taskKey?: unknown }).taskKey;
   return typeof taskKey === 'string' && taskKey.trim() !== '' ? taskKey : null;
-}
-
-/** The report binding one saved outcome carries, or null for a retained combined record. */
-function reportBindingIn(value: unknown): ReportBinding | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  const record = value as { readonly report?: unknown };
-  const parsed = reportBindingSchema.safeParse({
-    report: record.report,
-    reportIdentity: (value as { readonly reportIdentity?: unknown }).reportIdentity,
-    invocationId: (value as { readonly invocationId?: unknown }).invocationId,
-  });
-  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -740,7 +726,7 @@ export async function readRetainedIdeaReportAtFile<
   if (value === null) {
     return null;
   }
-  const binding = reportBindingIn(value);
+  const binding = reportBindingOf(value);
   if (binding === null) {
     return {
       file,

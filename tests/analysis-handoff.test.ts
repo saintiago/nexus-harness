@@ -141,6 +141,39 @@ describe('terminal handoffs', () => {
     );
   });
 
+  it('selects the Markdown report one retained producer outcome binds', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeJson(path.join(workspace, 'state', 'current-round.json'), {
+      number: 1,
+      profile: 'nexus-flash',
+      reason: 'the implementation round',
+    });
+    // The producer's outcome is retained inside the round; the Markdown it binds sits outside
+    // the area the round scan selects, so only its exported report declaration names it.
+    const report = path.join(workspace, 'reports', 'invocation-1', 'developer.md');
+    await mkdir(path.dirname(report), { recursive: true });
+    await writeFile(report, 'The developer recorded its verification here.\n', 'utf8');
+    await writeJson(path.join(workspace, 'artifacts', '1', 'development.json'), {
+      taskKey: workId,
+      status: 'completed',
+      report: { path: report },
+      reportIdentity: 'a'.repeat(64),
+      invocationId: 'invocation-1',
+    });
+
+    const handoff = await finiteDeliveryHandoff({
+      selection: selectionFor(workspace),
+      terminal: 'deliver-failed',
+    });
+
+    const evidence = handoff.artifacts.map((artifact) => artifact.path);
+    // The outcome stays selected at its original path with its original bytes.
+    expect(evidence).toContain(path.join(workspace, 'artifacts', '1', 'development.json'));
+    // The associated Markdown is selected with it, so capture retains the narrative too.
+    expect(evidence).toContain(report);
+  });
+
   it('retains the earlier rounds of the attempt as the handoff history', async () => {
     const root = await temporaryDirectory();
     const workspace = path.join(root, 'workspaces', workId);

@@ -6,6 +6,16 @@ import type { AgentEvent, AgentResult } from '../agent-runtime/index.js';
 import type { NotificationAcceptance } from '../adapters/notifications.js';
 import type { NexusConfiguration, ProjectConfiguration } from '../configuration/index.js';
 import { messageOf, type ArtifactRef, type Result } from '../result.js';
+import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  openingNarrativeParagraph,
+  parseAgentReport,
+  readAssignedReport,
+  readBoundReport,
+  reportBindingFields,
+  responseFormatText,
+} from '../task-engine/actions/agent-reports.js';
 import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
 import { completionArtifact } from '../task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../task-engine/actions/deliver/artifacts.js';
@@ -14,11 +24,12 @@ import { implementationInputDeclaration } from '../task-engine/actions/project/i
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
-  recordReportCorrection,
+  rejectReport,
   reportFeedbackContextText,
   reportFeedbackDeclarationText,
-  writeReportFeedbackRecord,
+  retainSuppliedFeedback,
   type ReportRejection,
   type ReportScope,
   type RetainedReportFeedback,
@@ -37,7 +48,6 @@ import { currentRoundDeclaration } from '../task-engine/actions/start-round/arti
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../task-engine/index.js';
 import { beginAgentInvocation, type AgentActivityPublisher } from '../task-engine/index.js';
-import type { WorkflowName } from '../configuration/index.js';
 import { workspaceRoot, type ExecutionPaths } from './composition.js';
 import type { ExecutionRequest } from './index.js';
 import type { Workflow } from './workflow.js';
@@ -46,9 +56,10 @@ import { prepareOperationalWorktree } from './operational-worktree.js';
 /**
  * Application's recovery boundary and lifecycle. Application hands one stopped work invocation to
  * this module: it consumes the configured allowance, prepares the complete recovery context in a
- * separate operational workspace, runs the configured recovery profile, parses the returned
- * RecoveryReport, saves and publishes it and applies its decision. Recovery itself judges and
- * performs the repair; Application only consumes the decision. See docs/application.md and
+ * separate operational workspace, runs the configured recovery profile, validates the returned
+ * decision and its assigned Markdown report, saves RecoveryReport with the observed identity and
+ * report binding, publishes the Markdown report and applies the decision. Recovery itself judges
+ * and performs the repair; Application only consumes the decision. See docs/application.md and
  * docs/agent-runtime/recovery-role.md.
  */
 
@@ -58,62 +69,107 @@ export type TaskWorkspaceRef = { readonly root: string };
 /** The recovery invocation's decision: resume the queue or stop for operator attention. */
 export type RecoveryDecision = { readonly kind: 'resume' } | { readonly kind: 'needs-attention' };
 
+/** The decision one recovery invocation returns; every narrative belongs in its Markdown report. */
+const recoveryDecisionSchema = z
+  .union([
+    z.strictObject({
+      kind: z.literal('resume').describe('The normal queue can continue.'),
+    }),
+    z.strictObject({
+      kind: z.literal('needs-attention').describe('The execution cannot continue without help.'),
+    }),
+  ])
+  .describe('Resume only when the normal queue can continue; otherwise needs-attention.');
+
 /** The response format requested from the recovery agent and parsed from its output. */
+export const recoveryResponseSchema = z.strictObject({
+  decision: recoveryDecisionSchema,
+});
+
+export type RecoveryResponse = z.infer<typeof recoveryResponseSchema>;
+
+/** The execution request a saved recovery outcome answers, as Application stores it. */
+export const recoveryRequestSchema = z.strictObject({
+  projectConfigPath: z.string().trim().min(1),
+  workflow: z.string().trim().min(1),
+});
+
+/**
+ * Application's saved recovery outcome: the decision, the request it answered, the observed
+ * work/role/profile/attempt identity and the assigned Markdown report binding.
+ */
 export const recoveryReportSchema = z.strictObject({
-  summary: z
+  project: z.string().trim().min(1).describe('The configured project this recovery answered for.'),
+  workId: z
     .string()
     .trim()
     .min(1)
-    .describe(
-      'The cause or remaining uncertainty, actions taken, ticket and queue changes, discarded work, and why resumption is ready or human attention is required.',
-    ),
-  decision: z
-    .union([
-      z.strictObject({
-        kind: z.literal('resume').describe('The normal queue can continue.'),
-      }),
-      z.strictObject({
-        kind: z.literal('needs-attention').describe('The execution cannot continue without help.'),
-      }),
-    ])
-    .describe('Resume only when the normal queue can continue; otherwise needs-attention.'),
+    .nullable()
+    .describe('The selected work item, or null when no item was selected.'),
+  role: z.literal('recovery'),
+  profile: z.string().trim().min(1).describe('The recovery profile that produced this outcome.'),
+  request: recoveryRequestSchema,
+  recoveryAttempt: z.number().int().positive().describe('The recovery allowance this consumed.'),
+  decision: recoveryDecisionSchema,
+  ...reportBindingFields,
 });
 
-/** The recovery agent's report, from the Application provided interface. */
+/** The recovery report, from the Application provided interface. */
 export type RecoveryReport = z.infer<typeof recoveryReportSchema>;
 
-/** Parse the agent's output as a report; unusable output is an error naming the problem. */
-export function parseRecoveryReport(output: string): RecoveryReport {
-  let value: unknown;
-  try {
-    value = JSON.parse(output) as unknown;
-  } catch (error) {
-    throw new Error(`The recovery agent returned unusable output: ${messageOf(error)}`, {
-      cause: error,
-    });
-  }
-  const parsed = recoveryReportSchema.safeParse(value);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((issue) => {
-        const location = issue.path.length > 0 ? issue.path.join('.') : '<report>';
-        return `${location}: ${issue.message}`;
-      })
-      .join('; ');
-    throw new Error(`The recovery agent's report does not match the response format: ${issues}`, {
-      cause: parsed.error,
-    });
-  }
-  return parsed.data;
+/**
+ * A former combined recovery report from before the Markdown separation: its summary stays
+ * readable history without a report path or a new Markdown requirement imposed retroactively.
+ */
+export const legacyRecoveryReportSchema = z.strictObject({
+  summary: z.string().trim().min(1),
+  decision: recoveryDecisionSchema,
+});
+
+export type LegacyRecoveryReport = z.infer<typeof legacyRecoveryReportSchema>;
+
+/**
+ * The producer-owned reader: a current bound outcome, or a former combined report. A record
+ * carrying any binding field must satisfy the current schema; a damaged new record never falls
+ * back to the former shape.
+ */
+export const retainedRecoveryReportSchema = z.union([
+  recoveryReportSchema,
+  legacyRecoveryReportSchema,
+]);
+
+export type RetainedRecoveryReport = z.infer<typeof retainedRecoveryReportSchema>;
+
+/** True when one retained recovery report carries the current report binding. */
+export function isBoundRecoveryReport(report: RetainedRecoveryReport): report is RecoveryReport {
+  return 'report' in report;
 }
 
 /**
- * Application's recovery execution record: the retained execution request and the invocations this
- * execution has consumed. It persists the allowance across worker restarts.
+ * The readable text of one retained recovery report: the validated Markdown of a current outcome,
+ * or the former combined summary. Legacy output remains readable history and never authorizes a
+ * different execution; only the allowance and the current invocation's decision do.
+ */
+export async function recoveryReportText(report: RetainedRecoveryReport): Promise<string> {
+  return isBoundRecoveryReport(report)
+    ? (await readBoundReport(report, 'Recovery report')).text
+    : report.summary;
+}
+
+/** Parse the agent's output as its decision response; unusable output is an error naming it. */
+export function parseRecoveryResponse(output: string): RecoveryResponse {
+  return parseAgentReport(output, recoveryResponseSchema, 'recovery agent');
+}
+
+/**
+ * Application's recovery execution record: the retained execution request, the invocations this
+ * execution has consumed and the saved outcomes of those invocations, so an invocation receives
+ * its predecessors' readable reports and the allowance persists across worker restarts.
  */
 export const recoveryExecutionSchema = z.strictObject({
-  request: z.strictObject({ projectConfigPath: z.string().trim().min(1) }),
+  request: recoveryRequestSchema,
   invocations: z.number().int().nonnegative(),
+  reports: z.array(z.string().trim().min(1)).default([]),
 });
 
 type RecoveryExecution = z.infer<typeof recoveryExecutionSchema>;
@@ -126,8 +182,11 @@ const recoveryExecutionDeclaration = {
 /** Application's recovery records live in this directory under the queue execution directory. */
 const recoveryDirectoryName = 'recovery';
 
-/** Each execution's saved reports live in their own directory under this one. */
-const reportsDirectoryName = 'reports';
+/** The assigned Markdown report name of one recovery invocation. */
+const recoveryReportName = 'recovery';
+
+/** The saved outcome file of one recovery invocation beside its Markdown report. */
+const recoveryOutcomeName = 'recovery.json';
 
 /** Recovery's separate operational workspace, under the recovery directory. */
 const workspaceDirectoryName = 'workspace';
@@ -151,6 +210,8 @@ export type RecoveryInvocationRequest = {
   readonly context: string;
   /** The separate operational workspace recovery runs in, outside every task workspace. */
   readonly workspace: TaskWorkspaceRef;
+  /** The assigned Markdown report the agent writes before returning its decision. */
+  readonly reportPath: string;
   /** Receives the invocation's activity while it runs. */
   readonly onActivity: (activity: AgentEvent) => void;
 };
@@ -210,8 +271,7 @@ export type RecoverySettings = {
   readonly nexus: NexusConfiguration;
   readonly project: ProjectConfiguration;
   readonly workflow: Workflow;
-  /** The selected workflow's name and configured definition path. */
-  readonly workflowName: WorkflowName;
+  /** The selected workflow's configured definition path. */
   readonly workflowPath: string;
   readonly paths: ExecutionPaths;
   /** The execution's event log, which recovery reads to see what happened. */
@@ -241,6 +301,10 @@ type RecoveryContextSettings = {
   readonly workspace: TaskWorkspaceRef;
   readonly reports: readonly string[];
   readonly invocation: number;
+  /** The Markdown path this invocation must write before returning its decision. */
+  readonly assignedReport: string;
+  /** The action-owned outcome record this invocation must leave to Application. */
+  readonly outcomeFile: string;
   readonly stop: RecoveryStop;
   /** The outstanding recovery-report rejections this invocation was supplied. */
   readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
@@ -328,8 +392,43 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
   ];
 }
 
+/**
+ * The earlier saved recovery outcomes of this execution as readable context: each current bound
+ * report supplies its validated Markdown, a former combined report supplies its summary, and an
+ * unreadable one states its path and failure without blocking the invocation that may repair it.
+ */
+async function earlierReportsSection(files: readonly string[]): Promise<string> {
+  if (files.length === 0) {
+    return 'Saved reports of this execution: none yet.';
+  }
+  const lines = [
+    'Saved reports of this execution (readable history; only your own invocation decides):',
+  ];
+  for (const file of files) {
+    try {
+      const report = await readRecord(file, {
+        file,
+        schema: retainedRecoveryReportSchema,
+      });
+      if (report === null) {
+        lines.push(`- ${file}: the saved outcome is no longer present.`);
+        continue;
+      }
+      const text = await recoveryReportText(report);
+      const attribution = isBoundRecoveryReport(report)
+        ? `attempt ${String(report.recoveryAttempt)}, work ${report.workId ?? 'none selected'}, ` +
+          `profile ${report.profile}, decision ${report.decision.kind}`
+        : `former combined report, decision ${report.decision.kind}`;
+      lines.push(`- ${file} (${attribution}):`, text);
+    } catch (error) {
+      lines.push(`- ${file}: the saved outcome could not be read: ${messageOf(error)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** The complete context text one recovery invocation receives. */
-function recoveryContextText(settings: RecoveryContextSettings): string {
+async function recoveryContextText(settings: RecoveryContextSettings): Promise<string> {
   const { nexus, project, workflow, paths, logFile, activityDirectory, stop, request, invocation } =
     settings;
   const selection = stop.selection;
@@ -341,9 +440,11 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `stays within project "${project.taskSource.project}". Cross-project repair and changes to ` +
       'the Nexus installation are outside this capability: when continuation requires either, ' +
       'return the needs-attention decision with the diagnosis.',
-    ['Original execution request', `Project configuration file: ${request.projectConfigPath}`].join(
-      '\n',
-    ),
+    [
+      'Original execution request',
+      `Project configuration file: ${request.projectConfigPath}`,
+      `Workflow: ${request.workflow}`,
+    ].join('\n'),
     ['Why the execution stopped', stop.failure].join('\n'),
     [
       'Worker output',
@@ -364,11 +465,10 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `Recovery directory: ${settings.recoveryDirectory}`,
       `Recovery report feedback: ${path.join(settings.recoveryDirectory, 'report-feedback')} ` +
         '(immutable rejection and correction records of earlier recovery reports)',
-      'Saved reports of this execution: ' +
-        (settings.reports.length === 0 ? 'none yet' : settings.reports.join(', ')),
       `Your operational workspace: ${settings.workspace.root} (worktree/ is your working ` +
         'directory and is outside every task workspace)',
     ].join('\n'),
+    await earlierReportsSection(settings.reports),
     [
       'Producer-owned record and artifact declarations',
       'Paths are relative to the shared issue workspace root unless absolute. Finite delivery ' +
@@ -408,16 +508,17 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
     ['Current project configuration', JSON.stringify(project, null, 2)].join('\n'),
     [
       'Response format',
-      'Return only one JSON object, without Markdown fences and without other text:',
-      '{"summary": "<cause or remaining uncertainty, actions taken, ticket and queue changes, ' +
-        'discarded work, and why resumption is ready or human attention is required>", ' +
-        '"decision": {"kind": "resume"}}',
-      'Use {"kind": "needs-attention"} as the decision when the execution cannot continue. ' +
+      responseFormatText(recoveryResponseSchema),
+      'Use {"decision":{"kind":"needs-attention"}} when the execution cannot continue. ' +
         'Application saves and publishes the report and restarts the worker only after a resume ' +
         'decision.',
-      'Return the response object only; do not write the report file. Application parses your ' +
-        'response, saves the report and publishes it.',
-    ].join('\n'),
+      `Assigned Markdown report: ${settings.assignedReport}`,
+      'Write your complete recovery report to that path before returning: the cause or remaining ' +
+        'uncertainty, the actions you took, the ticket and queue changes, any discarded work and ' +
+        'why resumption is ready or human attention is required. Do not return narrative or ' +
+        'observed identity metadata in the response.',
+      actionOwnedRecordsText([settings.outcomeFile]),
+    ].join('\n\n'),
     [
       'Report rejection and correction declarations',
       'Before repairing or replacing a rejected report of another role, preserve its available ' +
@@ -438,15 +539,25 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
   ].join('\n\n');
 }
 
-/** The subject and body Application publishes for one saved report. */
+/**
+ * The subject and body Application publishes for one saved report: the observed identity and
+ * decision, then the associated Markdown recovery report itself. Outcome JSON is never the
+ * narrative.
+ */
 function reportNotification(settings: {
   readonly project: ProjectConfiguration;
   readonly report: RecoveryReport;
+  readonly markdown: string;
   readonly failure: string;
   readonly reportPath: string;
   readonly executionDirectory: string;
 }): { readonly subject: string; readonly body: string } {
   const decision = settings.report.decision.kind;
+  const identity =
+    `project ${settings.report.project}, ` +
+    `work ${settings.report.workId ?? 'no selected work item'}, role recovery, ` +
+    `profile ${settings.report.profile}, attempt ${String(settings.report.recoveryAttempt)}, ` +
+    `invocation ${settings.report.invocationId}`;
   return {
     subject:
       `Nexus recovery report (${settings.project.taskSource.project}): ` +
@@ -456,14 +567,15 @@ function reportNotification(settings: {
         'recovery agent reported.',
       `Execution directory: ${settings.executionDirectory}`,
       `Decision: ${decision}`,
+      `Recovery identity: ${identity}`,
       '',
       'Failure:',
       settings.failure,
       '',
-      'Summary:',
-      settings.report.summary,
+      'Report:',
+      settings.markdown,
       '',
-      `Saved report: ${settings.reportPath}`,
+      `Saved outcome: ${settings.reportPath}`,
     ].join('\n'),
   };
 }
@@ -473,10 +585,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
   const { nexus, project, workflow, paths, runtime, publish } = settings;
   const directory = path.join(paths.directory, recoveryDirectoryName);
   const executionFile = path.join(directory, recoveryExecutionDeclaration.file);
-  // One Recovery instance manages one execute call, so a unique report directory per execution
-  // keeps a later execute call from overwriting reports earlier ExecutionResults point to. Saved
-  // reports stay numbered by invocation within that execution.
-  const executionReports = path.join(directory, reportsDirectoryName, randomUUID());
   const workspace: TaskWorkspaceRef = { root: path.join(directory, workspaceDirectoryName) };
   const profile = nexus.executionPolicy.recoveryProfile;
   const allowance = nexus.executionPolicy.maxRecoveryAttempts;
@@ -485,21 +593,17 @@ export function createRecovery(settings: RecoverySettings): Recovery {
 
   const attention = (reason: string): RecoveryOutcome => ({ kind: 'attention', reason });
 
-  /** The report paths earlier invocations of this execution saved, in invocation order. */
-  const earlierReports = (invocation: number): string[] =>
-    Array.from({ length: invocation - 1 }, (_, index) =>
-      path.join(executionReports, `${String(index + 1)}.json`),
-    );
-
   /** Publish the saved report; a delivery failure is recorded separately and never repeated. */
   async function deliver(
     reportRef: ArtifactRef,
     report: RecoveryReport,
+    markdown: string,
     failure: string,
   ): Promise<void> {
     const { subject, body } = reportNotification({
       project,
       report,
+      markdown,
       failure,
       reportPath: reportRef.path,
       executionDirectory: paths.directory,
@@ -518,8 +622,9 @@ export function createRecovery(settings: RecoverySettings): Recovery {
     async begin(request: ExecutionRequest): Promise<void> {
       await mkdir(directory, { recursive: true });
       await writeRecord(executionFile, {
-        request: { projectConfigPath: request.projectConfigPath },
+        request: { projectConfigPath: request.projectConfigPath, workflow: request.workflow },
         invocations: 0,
+        reports: [],
       } satisfies RecoveryExecution);
     },
 
@@ -544,6 +649,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         await writeRecord(executionFile, {
           request: execution.request,
           invocations: invocation,
+          reports: execution.reports,
         } satisfies RecoveryExecution);
       } catch (error) {
         return attention(`Recovery could not record its invocation: ${messageOf(error)}`);
@@ -579,7 +685,27 @@ export function createRecovery(settings: RecoverySettings): Recovery {
           `Recovery could not read its retained report feedback: ${messageOf(error)}`,
         );
       }
-      const context = recoveryContextText({
+      const invocationId = randomUUID();
+      // One directory per invocation, named by the invocation identity, keeps a later execute
+      // call from overwriting reports earlier ExecutionResults point to.
+      const assignedReport = await assignReportPath(directory, invocationId, recoveryReportName);
+      const outcomeFile = path.join(path.dirname(assignedReport.path), recoveryOutcomeName);
+      if (feedback.length > 0) {
+        try {
+          // Retain which rejections this invocation answers before it runs, so an interrupted
+          // correction write can finish on the replay path without retiring a later rejection.
+          await retainSuppliedFeedback({
+            areaRoot: directory,
+            invocationId,
+            rejections: feedback.map((entry) => ({ path: entry.path })),
+          });
+        } catch (error) {
+          return attention(
+            `Recovery could not retain its supplied report rejection evidence: ${messageOf(error)}`,
+          );
+        }
+      }
+      const context = await recoveryContextText({
         request: execution.request,
         project,
         nexus,
@@ -590,8 +716,10 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         activityDirectory: settings.activityDirectory,
         recoveryDirectory: directory,
         workspace,
-        reports: earlierReports(invocation),
+        reports: execution.reports,
         invocation,
+        assignedReport: assignedReport.path,
+        outcomeFile,
         stop,
         feedback,
       });
@@ -600,6 +728,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       const agentInvocation = beginAgentInvocation({
         agentName: 'recovery',
         operation: 'Recovery',
+        invocationId,
         profile,
         task: stop.selection === null ? null : stop.selection.task,
         summary: stop.selection === null ? null : stop.selection.summary,
@@ -613,6 +742,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
           return await runtime.invoke({
             context,
             workspace,
+            reportPath: assignedReport.path,
             onActivity: (activity) => {
               agentInvocation.activity(activity);
             },
@@ -629,18 +759,17 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         return attention(`The recovery invocation failed: ${result.fault.message}`);
       }
 
-      let report: RecoveryReport;
-      try {
-        report = parseRecoveryReport(result.value.output);
-      } catch (error) {
-        const reason = `The recovery invocation failed: ${messageOf(error)}`;
+      /**
+       * Reject one unusable invocation with its exact returned output and available Markdown
+       * retained under the stable project recovery area; the execution needs attention.
+       */
+      const rejected = async (reason: string): Promise<RecoveryOutcome> => {
+        let failure = reason;
         try {
-          // The malformed response stays rejected: retain its exact bytes, the violated format
-          // rule and the invocation attribution under the stable project recovery area.
-          await writeReportFeedbackRecord(directory, {
-            kind: 'rejection',
+          await rejectReport({
+            areaRoot: directory,
             scope,
-            invocationId: agentInvocation.identity.invocationId,
+            invocationId,
             operation: 'Recovery',
             profile,
             context:
@@ -648,54 +777,89 @@ export function createRecovery(settings: RecoverySettings): Recovery {
               `${project.taskSource.project}, stopped because: ${stop.failure}`,
             source: null,
             output: result.value.output,
+            assignedReport,
             reason,
-            report: null,
-            assignedReport: null,
-          });
-        } catch (writeError) {
-          // A failed evidence write reports both the original rejection and the persistence
-          // failure, and grants no acceptance.
-          return attention(
-            `${reason} The rejection evidence could not be saved: ${messageOf(writeError)}`,
-          );
-        }
-        return attention(reason);
-      }
-      let reportRef: ArtifactRef;
-      try {
-        await mkdir(executionReports, { recursive: true });
-        reportRef = { path: path.join(executionReports, `${String(invocation)}.json`) };
-        await writeRecord(reportRef.path, report);
-      } catch (error) {
-        return attention(`The recovery report could not be saved: ${messageOf(error)}`);
-      }
-      if (feedback.length > 0) {
-        try {
-          // The owner validated and saved the usable replacement; recording its complete identity
-          // retires exactly the rejections this invocation was supplied, preserving their history.
-          await recordReportCorrection({
-            areaRoot: directory,
-            scope,
-            rejections: feedback.map((entry) => ({ path: entry.path })),
-            artifact: reportRef,
-            content: report,
-            invocationId: agentInvocation.identity.invocationId,
           });
         } catch (error) {
-          return attention(
-            `The recovery report was saved, but its correction evidence could not be recorded: ` +
-              messageOf(error),
-          );
+          // A failed evidence write reports both the original rejection and the persistence
+          // failure, and grants no acceptance.
+          failure = messageOf(error);
         }
+        return attention(failure);
+      };
+      let response: RecoveryResponse;
+      try {
+        response = parseRecoveryResponse(result.value.output);
+      } catch (error) {
+        return await rejected(`The recovery invocation failed: ${messageOf(error)}`);
       }
-      saved = reportRef;
+      let reportFile: { readonly identity: string; readonly text: string };
+      try {
+        reportFile = await readAssignedReport(assignedReport.path, 'Assigned recovery report');
+      } catch (error) {
+        return await rejected(`The recovery invocation failed: ${messageOf(error)}`);
+      }
+      const report: RecoveryReport = {
+        project: project.taskSource.project,
+        workId: stop.selection === null ? null : stop.selection.task,
+        role: 'recovery',
+        profile,
+        request: execution.request,
+        recoveryAttempt: invocation,
+        decision: response.decision,
+        report: assignedReport,
+        reportIdentity: reportFile.identity,
+        invocationId,
+      };
+      try {
+        await writeRecord(outcomeFile, report);
+      } catch (error) {
+        return attention(`The recovery outcome could not be saved: ${messageOf(error)}`);
+      }
+      try {
+        // Keep the saved outcome associated with this execution's request and its predecessors.
+        await writeRecord(executionFile, {
+          request: execution.request,
+          invocations: invocation,
+          reports: [...execution.reports, outcomeFile],
+        } satisfies RecoveryExecution);
+      } catch (error) {
+        return attention(
+          `The recovery outcome was saved, but its report association could not be recorded: ` +
+            messageOf(error),
+        );
+      }
+      try {
+        // The owner validated and saved the usable replacement; recording its complete identity
+        // retires exactly the rejections this invocation was supplied, preserving their history.
+        await finishSuppliedCorrection({
+          areaRoot: directory,
+          scope,
+          invocationId,
+          artifact: { path: outcomeFile },
+          content: report,
+        });
+      } catch (error) {
+        return attention(
+          `The recovery outcome was saved, but its correction evidence could not be recorded: ` +
+            messageOf(error),
+        );
+      }
+      saved = { path: outcomeFile };
       publish({
         source: 'application',
         type: 'recovered',
-        data: { decision: report.decision.kind, report: reportRef },
+        data: { decision: report.decision.kind, report: saved },
       });
-      await deliver(reportRef, report, stop.failure);
-      return report.decision.kind === 'resume' ? { kind: 'resume' } : attention(report.summary);
+      await deliver(saved, report, reportFile.text, stop.failure);
+      if (report.decision.kind === 'resume') {
+        return { kind: 'resume' };
+      }
+      return attention(
+        openingNarrativeParagraph(reportFile.text) ??
+          `The recovery invocation returned needs-attention; the saved report is at ` +
+            `${outcomeFile}.`,
+      );
     },
 
     savedReport: () => saved,

@@ -146,12 +146,20 @@ submission.
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) within the
 durable request area to retain rejected analyst output and the validation reason. The next existing
 analysis attempt receives that request's outstanding feedback. A saved usable analysis, including
-its report binding, resolves report feedback before submissions; receipt retries reuse that analysis
-rather than invoking again. Evidence or invocation failures remain outstanding analysis and never
-alter the original handoff.
+its report binding, resolves report feedback before submissions: an attributable replay correction
+finishes without another invocation, while feedback its invocation was never supplied — or that a
+former record carries no invocation identity for — leaves the next permitted invocation due. Receipt
+retries reuse a settled analysis rather than invoking again. Report correction replaces the binding
+while preserving the accepted observations, their identities, analysis time and profile; the analyst
+receives those facts as correction context. A correction returning fewer or no candidates cannot
+remove previously accepted lessons. Evidence or invocation failures remain outstanding analysis and
+never alter the original handoff.
 
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
-payloads, provenance, timestamps and keys after interruption or configuration changes. Durable
+payloads, provenance, timestamps and keys after interruption or configuration changes. Processing
+visits persisted submission identities as well as the current analysis observations, so removing or
+replacing an analysis record cannot orphan pending submissions, receipt polling or failure reporting.
+The corrected analysis must be usable and its feedback resolved before these submissions resume. Durable
 acceptance is distinct from stored/searchable memory; poll accepted receipts, including blocked
 receipts. Report outstanding work without changing the business result. Preserve existing memories
 and persisted pending requests during migration; do not delete, silently re-embed or backfill them.
