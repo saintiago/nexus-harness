@@ -38,6 +38,7 @@ import {
   type NexusConfiguration,
   type ProjectConfiguration,
 } from '../src/configuration/index.js';
+import { preparationSharedInstructions } from '../src/task-engine/actions/preparation/context.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
 const configurationDirectory = '/etc/nexus/project';
@@ -242,6 +243,151 @@ describe('AgentRuntime construction', () => {
       expect(settings.profiles.find((candidate) => candidate.id === profile)?.instructions).toEqual(
         [...preparationRoleInstructions['prototype-author'], ...configured.instructions],
       );
+    }
+  });
+
+  it('carries the developer role on every profile of its ladder', () => {
+    const configuration = nexus();
+    const ladder = configuration.executionPolicy.developerLadder;
+    // The configured ladder must actually escalate for this check to mean anything.
+    expect(ladder.length).toBeGreaterThan(1);
+    const { settings } = harness(configuration, 'developer');
+
+    for (const entry of ladder) {
+      const configured = configuration.agentRuntime.profiles.find(
+        (candidate) => candidate.id === entry.profile,
+      )!;
+      // Every selectable ladder profile carries the developer's constant instructions, so a
+      // promoted repair round never loses its role.
+      expect(
+        settings.profiles.find((candidate) => candidate.id === entry.profile)?.instructions,
+      ).toEqual([...developmentRoleInstructions, ...configured.instructions]);
+    }
+  });
+
+  it('delivers the developer and reviewer coherence obligations once', async () => {
+    const configuration = nexus();
+    const selected = [
+      {
+        role: 'developer',
+        profile: configuration.executionPolicy.developerLadder[0]!.profile,
+        obligations: [
+          "Apply the project's existing design and ownership principles",
+          'Reconcile affected existing intent',
+          'Remove superseded rules and mechanisms together with dependent validation',
+          'confirmed shared ownership cause',
+          'Complete this reconciliation before review',
+          'preserve task scope and the existing gates',
+        ],
+      },
+      {
+        role: 'reviewer',
+        profile: configuration.executionPolicy.reviewerProfile,
+        obligations: [
+          'Inspect whether the resulting',
+          'superseded rules or mechanisms',
+          'confirm any shared ownership cause',
+          'Accept adequate work and keep optional suggestions distinct',
+          'no extra attempts or bypass of revision-bound review, merge or check gates',
+        ],
+      },
+    ] as const;
+
+    for (const { role, profile, obligations } of selected) {
+      const { runtime, requests } = harness(configuration, role);
+      await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
+
+      const prompt = requests[0]!.prompt;
+      for (const obligation of obligations) {
+        expect(occurrences(prompt, obligation), `${role}: ${obligation}`).toBe(1);
+      }
+    }
+  });
+
+  it('gives every preparation role its own constant and no shared preparation guidance', async () => {
+    const configuration = nexus();
+    const profiles = configuration.preparation.profiles;
+    const selected: ReadonlyArray<{
+      readonly role: ProfileRole;
+      readonly profile: string;
+      readonly instructions: readonly string[];
+    }> = [
+      {
+        role: 'requirements-author',
+        profile: profiles.requirements.author,
+        instructions: preparationRoleInstructions['requirements-author'],
+      },
+      {
+        role: 'requirements-evaluator',
+        profile: profiles.requirements.evaluator,
+        instructions: preparationRoleInstructions['requirements-evaluator'],
+      },
+      {
+        role: 'ux-author',
+        profile: profiles.ux.author,
+        instructions: preparationRoleInstructions['ux-author'],
+      },
+      {
+        role: 'ux-evaluator',
+        profile: profiles.ux.evaluator,
+        instructions: preparationRoleInstructions['ux-evaluator'],
+      },
+      ...profiles.prototype.authors.map(
+        (
+          profile,
+        ): {
+          readonly role: ProfileRole;
+          readonly profile: string;
+          readonly instructions: readonly string[];
+        } => ({
+          role: 'prototype-author',
+          profile,
+          instructions: preparationRoleInstructions['prototype-author'],
+        }),
+      ),
+      {
+        role: 'prototype-evaluator',
+        profile: profiles.prototype.evaluator,
+        instructions: preparationRoleInstructions['prototype-evaluator'],
+      },
+      {
+        role: 'architecture-author',
+        profile: profiles.architecture.author,
+        instructions: preparationRoleInstructions['architecture-author'],
+      },
+      {
+        role: 'architecture-evaluator',
+        profile: profiles.architecture.evaluator,
+        instructions: preparationRoleInstructions['architecture-evaluator'],
+      },
+    ];
+
+    for (const { role, profile, instructions } of selected) {
+      const { runtime, settings, requests } = harness(configuration, role);
+      await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
+
+      const request = requests.at(-1)!;
+      const attached = settings.profiles.find(
+        (candidate) => candidate.id === profile,
+      )!.instructions;
+      expect(occurrences(request.prompt, instructions.join('\n\n')), `${role} role constant`).toBe(
+        1,
+      );
+      for (const instruction of instructions) {
+        expect(request.prompt, `${role}: ${instruction}`).toContain(instruction);
+      }
+      // The shared preparation guidance belongs to the action-supplied stage context, never to a
+      // selected profile: a profile carries only the invoked role's specific instructions.
+      expect(attached.join('\n')).not.toContain(preparationSharedInstructions);
+      expect(request.prompt).not.toContain(preparationSharedInstructions);
+      expect(request.prompt).toContain(context);
+      for (const other of selected) {
+        if (other.role !== role) {
+          expect(request.prompt, `${role} excludes ${other.role}`).not.toContain(
+            other.instructions[0]!,
+          );
+        }
+      }
     }
   });
 

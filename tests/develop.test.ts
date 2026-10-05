@@ -10,8 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AgentRuntime } from '../src/agent-runtime/index.js';
+import { developmentRoleInstructions, type AgentRuntime } from '../src/agent-runtime/index.js';
 import type { RepositoryState } from '../src/adapters/git.js';
+import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import {
@@ -28,13 +29,19 @@ import {
 } from '../src/task-engine/actions/report-feedback.js';
 import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { runnerOf } from './support/agent-runner.js';
+import { composedRunner, runnerOf } from './support/agent-runner.js';
+import { nexusConfiguration } from './support/configuration.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
 
 const baseRevision = '1'.repeat(40);
 const headRevision = '2'.repeat(40);
 const laterRevision = '3'.repeat(40);
+
+/** How often the text contains the part. */
+function occurrences(text: string, part: string): number {
+  return text.split(part).length - 1;
+}
 
 let root = '';
 let events: EngineEvent[] = [];
@@ -553,6 +560,128 @@ describe('Develop', () => {
       headRevision: laterRevision,
       findingResponses: responses,
     });
+  });
+
+  it('delivers the developer coherence obligations on every ladder profile and a repair', async () => {
+    const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
+    const ladder = configuration.executionPolicy.developerLadder;
+    // The configured ladder must actually escalate for this check to mean anything.
+    expect(ladder.length).toBeGreaterThan(1);
+    const obligations = [
+      "Apply the project's existing design and ownership principles",
+      'Reconcile affected existing intent',
+      'Remove superseded rules and mechanisms together with dependent validation',
+      'confirmed shared ownership cause',
+      'Complete this reconciliation before review',
+      'preserve task scope and the existing gates',
+    ];
+
+    for (const entry of ladder) {
+      const { taskKey, workspaceRoot, selectionFile } = await workspace({
+        profile: entry.profile,
+      });
+      const { git } = scriptedGit([repositoryState(), repositoryState({ headRevision })]);
+      const { runner, requests } = composedRunner(configuration, 'developer', () =>
+        JSON.stringify({
+          status: 'completed',
+          summary: 'Implemented the retry guard.',
+          findingResponses: [],
+        }),
+      );
+      const develop = createDevelop({
+        selectionFile,
+        runner,
+        git,
+        publish: (event) => events.push(event),
+      });
+
+      await expect(develop()).resolves.toBe('completed');
+
+      const prompt = requests[0]!.prompt;
+      for (const obligation of obligations) {
+        expect(occurrences(prompt, obligation), `${entry.profile}: ${obligation}`).toBe(1);
+      }
+      expect(
+        occurrences(prompt, developmentRoleInstructions.join('\n\n')),
+        `${entry.profile} role constant`,
+      ).toBe(1);
+      for (const instruction of developmentRoleInstructions) {
+        expect(prompt, `${entry.profile} role identity`).toContain(instruction);
+      }
+      // The complete task input reaches the provider alongside the role.
+      expect(prompt).toContain(`Task ${taskKey}`);
+      expect(prompt).toContain('Implement the retry guard');
+      expect(prompt).toContain(
+        `Prepared branch: task/${taskKey} (comparison base ${baseRevision})`,
+      );
+      expect(prompt).toContain('No review findings are supplied for this round.');
+      expect(prompt).toContain(
+        `Local selection record (refreshed task and complete conversation): ${selectionFile}`,
+      );
+      expect(requests[0]!.directory).toBe(path.join(workspaceRoot, 'worktree'));
+    }
+
+    // A repair invocation keeps the same obligations with the complete finding handoff.
+    const { workspaceRoot, selectionFile } = await workspace({
+      round: 2,
+      profile: ladder[1]!.profile,
+    });
+    await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
+      taskKey: 'NEX-1',
+      profile: ladder[0]!.profile,
+      status: 'completed',
+      baseRevision,
+      headRevision,
+      summary: 'First implementation.',
+      findingResponses: [],
+    });
+    await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
+    await writeRoundArtifact(workspaceRoot, 1, 'verification.json', {
+      headRevision,
+      status: 'failed',
+      checks: [
+        {
+          name: 'validate',
+          exitCode: 1,
+          stdoutPath: 'checks/0/stdout.log',
+          stderrPath: 'checks/0/stderr.log',
+        },
+      ],
+    });
+    const responses: FindingResponse[] = [blockingFinding, secondFinding].map((finding) => ({
+      findingId: finding.id,
+      status: 'addressed',
+      response: `Addressed "${finding.title}".`,
+    }));
+    const { git } = scriptedGit([
+      repositoryState({ headRevision }),
+      repositoryState({ headRevision: laterRevision }),
+    ]);
+    const { runner, requests } = composedRunner(configuration, 'developer', () =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Repaired the retry guard.',
+        findingResponses: responses,
+      }),
+    );
+    const develop = createDevelop({
+      selectionFile,
+      runner,
+      git,
+      publish: (event) => events.push(event),
+    });
+
+    await expect(develop()).resolves.toBe('completed');
+
+    const prompt = requests[0]!.prompt;
+    for (const obligation of obligations) {
+      expect(occurrences(prompt, obligation), `repair: ${obligation}`).toBe(1);
+    }
+    expect(prompt).toContain('Findings to respond to (complete values from the review in round 1)');
+    expect(prompt).toContain(blockingFinding.id);
+    expect(prompt).toContain(blockingFinding.repairGuidance);
+    expect(prompt).toContain(secondFinding.evidence);
+    expect(prompt).toContain('Latest recorded verification (round 1): failed.');
   });
 
   it('rejects a report that does not answer exactly the supplied findings', async () => {

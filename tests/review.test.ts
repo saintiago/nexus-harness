@@ -10,9 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AgentRuntime } from '../src/agent-runtime/index.js';
+import { reviewerRoleInstructions, type AgentRuntime } from '../src/agent-runtime/index.js';
 import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
 import type { JiraDocument } from '../src/adapters/jira.js';
+import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
@@ -31,7 +32,8 @@ import {
 } from '../src/task-engine/actions/review/artifacts.js';
 import { verificationArtifact } from '../src/task-engine/actions/verify/artifacts.js';
 import type { AgentRoleRunner, EngineEvent } from '../src/task-engine/index.js';
-import { runnerOf } from './support/agent-runner.js';
+import { composedRunner, runnerOf } from './support/agent-runner.js';
+import { nexusConfiguration } from './support/configuration.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
@@ -44,6 +46,11 @@ const repository = 'owner/repository';
 const reviewCheck = 'Nexus Lens review';
 const lensAppId = 5001141;
 const lensLogin = 'nexus-lens[bot]';
+
+/** How often the text contains the part. */
+function occurrences(text: string, part: string): number {
+  return text.split(part).length - 1;
+}
 
 let root = '';
 let events: EngineEvent[] = [];
@@ -463,6 +470,76 @@ describe('Review', () => {
         },
       },
     ]);
+  });
+
+  it('delivers the reviewer coherence obligations with the complete review context', async () => {
+    const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
+    const { workspaceRoot, selectionFile } = await workspace();
+    await writeDeliveredRound(workspaceRoot);
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/feature.txt b/feature.txt\n+feature\n'),
+    });
+    const { github } = scriptedGitHub({
+      readConversation: () =>
+        ok({
+          comments: [{ id: 1, body: 'Human pull-request discussion.' }],
+          reviews: [],
+          reviewComments: [],
+        }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    const { jira } = scriptedJira({
+      readIssue: () => ok(taskIssue),
+      readComments: () =>
+        ok([
+          { id: 'c1', body: 'Original request.' },
+          { id: 'c2', body: 'Human clarification.' },
+        ]),
+      addComment: (_issueId, body) => ok({ id: 'c9', body }),
+    });
+    const { runner, requests } = composedRunner(configuration, 'reviewer', () =>
+      JSON.stringify({
+        verdict: 'approved',
+        summary: 'The change matches the task and the check covers it.',
+        findings: [],
+        priorFindings: [],
+      }),
+    );
+    const review = reviewAction({ selectionFile, runner, git, github, jira });
+
+    await expect(review()).resolves.toBe('approved');
+
+    const prompt = requests[0]!.prompt;
+    for (const obligation of [
+      "Apply the project's existing design and ownership principles",
+      'Inspect whether the resulting',
+      'superseded rules or mechanisms',
+      'confirm any shared ownership cause',
+      'Accept adequate work and keep optional suggestions distinct',
+      'no extra attempts or bypass of revision-bound review, merge or check gates',
+    ]) {
+      expect(occurrences(prompt, obligation), obligation).toBe(1);
+    }
+    expect(occurrences(prompt, reviewerRoleInstructions.join('\n\n'))).toBe(1);
+    // The complete task, conversation and revision-bound evidence reach the provider once.
+    expect(prompt).toContain('Task NEX-1:');
+    expect(prompt).toContain('Implement the retry guard');
+    expect(prompt).toContain('Complete task conversation');
+    expect(prompt).toContain('Original request.');
+    expect(prompt).toContain('Complete pull-request conversation');
+    expect(prompt).toContain('Human pull-request discussion.');
+    expect(prompt).toContain(
+      `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
+    );
+    expect(prompt).toContain('Implemented the retry guard.');
+    expect(prompt).toContain(
+      'Current-round prior findings to dispose of: none; no review precedes',
+    );
+    expect(prompt).toContain('Eligible prior finding IDs: none.');
+    expect(prompt).toContain('Return exactly one JSON object with this shape');
+    expect(requests[0]!.directory).toBe(path.join(workspaceRoot, 'worktree'));
   });
 
   it('saves a reported location whose strict-shape null line means the location has no line', async () => {

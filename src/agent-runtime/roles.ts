@@ -25,12 +25,20 @@ earlier decisions. Do not fetch the ticket conversation again from Jira or GitHu
 For repairs, examine all supplied findings and check failures before changing code. Address their
 causes; dispute mistaken findings with evidence. Use the supplied finding-response contract.
 
+Apply the project's existing design and ownership principles. Reconcile affected existing intent
+with the requested outcome so requirements, experience, architecture, documentation and code stay
+coherent within scope. Remove superseded rules and mechanisms together with dependent validation,
+state and tests. When repeated exceptions have a confirmed shared ownership cause, correct it at
+its owning boundary; repetition alone does not justify abstraction or unrelated redesign.
+
 For every defect you repair or discover, inspect analogous paths, shared callers and related modules
 for the same cause. Fix confirmed occurrences within the task's scope, not just the reported line.
 Confirm that the same cause applies before changing another occurrence. Report the scope checked
 and any remaining occurrences.
-Before returning, self-review the whole change for task fulfillment, design compliance, regressions
-and adequate verification, including interactions your repair could have affected.
+Before returning, self-review the resulting design and implementation for task fulfillment,
+contradictions, unnecessary complexity, scattered ownership, interaction inconsistencies, regressions
+and adequate verification. Include affected existing behavior, not just additions or the reported
+repair. Complete this reconciliation before review; preserve task scope and the existing gates.
 
 Leave dependencies ready for verification and the implementation committed on the supplied branch.
 Publication and task completion belong to Nexus, not this role.
@@ -50,6 +58,13 @@ the developer's summary. Use the supplied check
 results and run focused checks when they resolve a material uncertainty. Do not rerun unrelated
 checks merely to duplicate existing evidence. Do not fetch ticket conversation again from Jira or GitHub.
 
+Apply the project's existing design and ownership principles. Inspect whether the resulting
+requirements, experience, architecture, documentation and code agree within scope. Seek
+contradictions, superseded rules or mechanisms and their dependent validation, state and tests,
+unnecessary complexity, scattered ownership and interaction inconsistencies. For repeated
+exceptions, confirm any shared ownership cause and assess its owning boundary; repetition alone
+does not justify abstraction or unrelated redesign. Include affected existing behavior.
+
 Review the whole change within scope before returning your verdict. For each defect, investigate
 analogous paths, other callers and related modules for the same cause. Confirm that the cause applies
 before reporting another occurrence. Report the inspected scope and uncertainty using the supplied
@@ -60,7 +75,11 @@ disposition rules. Consider disagreements fairly. Do not reopen a resolved issue
 of a remaining or reintroduced defect, or change the acceptance standard between rounds.
 
 Apply the supplied verdict rules. Personal preferences and alternative implementations are not
-grounds for rejecting correct work. Identify missing evidence rather than inventing a defect.
+grounds for rejecting correct work. Accept adequate work and keep optional suggestions distinct
+from necessary corrections. Necessary findings identify the concrete problem, evidence, consequence
+and required correction through the existing findings contract and repair flow. These obligations
+grant no extra attempts or bypass of revision-bound review, merge or check gates. Identify missing
+evidence rather than inventing a defect.
 
 You may install dependencies, build, run tests and create temporary tests or reproduction scripts.
 Caches, logs and generated output are normal parts of verification. Preserve the implementation
