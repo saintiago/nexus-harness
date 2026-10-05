@@ -99,6 +99,24 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'A completed preparation round cannot be rewritten with a different result.',
         );
       }
+      if (
+        outcome !== 'exhausted' &&
+        settings.stage === 'prototype' &&
+        (completed.outcome === 'accepted' || completed.prototype !== null)
+      ) {
+        const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+        if (evaluation === null) {
+          throw new Error('A retained prototype must keep its evaluated decision.');
+        }
+        await requireRetainedPrototypeEvidence({
+          git: settings.git,
+          worktree,
+          artifactsRoot: path.join(root, 'artifacts'),
+          observations: completed.prototypeObservations,
+          assessed: evaluation.basis.content,
+          observedPaths: completed.sourcePaths,
+        });
+      }
       const terminal =
         outcome === 'exhausted'
           ? {
@@ -314,7 +332,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       prototype = reuse.prototype;
       retainedObservations.length = 0;
       retainedObservations.push(...reuse.prototypeObservations);
-      if (retainedObservations.length > 0) {
+      if (prototype !== null) {
         // Reuse copies references; the retained records themselves must still be readable evidence
         // for the acceptance they came from, or the skip cannot keep authorizing the prototype.
         await requireRetainedPrototypeEvidence({

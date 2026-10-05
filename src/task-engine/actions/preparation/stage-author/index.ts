@@ -11,7 +11,7 @@ import {
 } from '../../../index.js';
 import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
 import { requireFindingResponses } from '../../finding-responses.js';
-import { readRequiredRecord } from '../../records.js';
+import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   stageAuthorArtifact,
@@ -24,8 +24,10 @@ import {
 import { stageContextText } from '../context.js';
 import { checkoutRelative } from '../evaluation-content.js';
 import {
+  evidenceFilePath,
   observationScopeProblem,
   observationSubmissionProblem,
+  prototypeObservationSchema,
   readPrototypeObservation,
   type PrototypeObservation,
 } from '../observation.js';
@@ -93,10 +95,9 @@ async function fileExists(worktree: string, relative: string): Promise<boolean> 
 /**
  * Why one declared path is not usable, or null. A path must stay inside the shared checkout and
  * either exist now, name a deletion attributable to this work, or retain the stage's recorded
- * deletion. An absent path is attributable when the stage already declared it, when the author's
- * validated observation binds its committed deletion, when the checkout still tracks it (an
- * uncommitted deletion) or when the pre-invocation revision tracked it (a deletion this
- * invocation committed, which the post-invocation head no longer holds).
+ * deletion. An absent path is attributable when the stage already retained its deletion, when
+ * the checkout still tracks it (an uncommitted deletion) or when the pre-invocation revision
+ * tracked it (a deletion this invocation committed, which the post-invocation head no longer holds).
  */
 async function declaredPathProblem(
   settings: {
@@ -159,8 +160,22 @@ async function retainedStageDeletions(
         checkoutRelative(worktree, value),
       ),
     );
-    for (const entry of evaluation?.basis.content ?? []) {
-      if (!entry.exists && declared.has(entry.path)) deleted.add(entry.path);
+    // A validated author's observation also retains ownership before evaluation is saved. Read
+    // its declaration without requiring old screenshots: a repair may replace damaged evidence.
+    let content = evaluation?.basis.content ?? [];
+    if (evaluation === null && author.observation !== null) {
+      const file = evidenceFilePath(
+        roundArtifactDirectory(root, retained),
+        author.observation.path,
+      );
+      if (file !== null) {
+        const observation = await readRecord(file, { file, schema: prototypeObservationSchema });
+        if (observation?.role === 'author') content = observation.content;
+      }
+    }
+    for (const entry of content) {
+      const relative = checkoutRelative(worktree, entry.path);
+      if (!entry.exists && relative !== null && declared.has(relative)) deleted.add(relative);
     }
   }
   return deleted;
@@ -183,7 +198,7 @@ async function reportProblem(
   if (task === 'respond' && report.outcome === 'skip-proposed') {
     return 'a revision round cannot propose a skip; the evaluator asked for changes';
   }
-  const deletions = new Set(settings.retainedDeletions);
+  const deletions = settings.retainedDeletions;
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
       return 'only the Storybook Refinement stage retains a prototype observation';
@@ -226,16 +241,6 @@ async function reportProblem(
     });
     if (submission !== null) {
       return submission;
-    }
-    // A committed deletion the author's own observation binds is attributable to this work; the
-    // submission check established that its revision is part of the submitted history.
-    for (const entry of observation.content) {
-      if (!entry.exists) {
-        const relative = checkoutRelative(settings.worktree, entry.path);
-        if (relative !== null) {
-          deletions.add(relative);
-        }
-      }
     }
   }
   if (report.outcome === 'authored') {

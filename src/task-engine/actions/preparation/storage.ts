@@ -554,10 +554,7 @@ export async function readCurrentDecision(settings: {
     });
     // An applicable prototype decision also relies on the retained observation records; a record
     // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
-    if (
-      stage === 'prototype' &&
-      (result.outcome === 'accepted' || result.prototypeObservations.length > 0)
-    ) {
+    if (stage === 'prototype' && (result.outcome === 'accepted' || result.prototype !== null)) {
       await requireRetainedPrototypeEvidence({
         git,
         worktree: preparationWorktree(issueRoot),

@@ -153,7 +153,7 @@ export async function readPrototypeObservation(settings: {
           { cause: error },
         );
       }
-      const problem = renderedImageProblem(bytes);
+      const problem = await renderedImageProblem(bytes);
       if (problem !== null) {
         throw new Error(
           `The screenshot "${image}" of journey "${journey.example}" is not readable rendered ` +
@@ -166,11 +166,10 @@ export async function readPrototypeObservation(settings: {
 }
 
 /**
- * Why one committed deletion an observation binds is not attributable to the shared checkout's
- * submitted history, or null: the named revision must be a commit on the retained branch whose
- * parent still tracked the path, so the deletion is that revision's own edit. A fabricated
- * revision, an absence that predates the submitted work and a path that was never tracked are not
- * deletion evidence.
+ * Why one committed deletion an observation binds is inconsistent with the shared checkout's
+ * history, or null: the named revision must be a commit on the retained branch whose parent
+ * still tracked the path. This checks the content binding, not stage ownership; StageAuthor
+ * establishes ownership independently from pre-invocation tracking or retained stage records.
  */
 async function deletionBindingProblem(settings: {
   readonly git: GitAdapter;
