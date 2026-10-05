@@ -528,7 +528,11 @@ export function createAnalyzeExperience(
     try {
       return await readAnalysis(request.identity);
     } catch (error) {
-      const scope = evidenceScopeOf(request);
+      // Old requests may fail this read before their evidence is copied. Use the same durable
+      // request area that retention will create, so upgrading cannot strand the feedback.
+      const scope = {
+        root: request.evidenceRoot ?? experienceEvidenceRoot(settings.directory, request.identity),
+      };
       return await rejectUnusableRecord({
         areaRoot: scope.root,
         scope: reportScopeOf(request, scope),

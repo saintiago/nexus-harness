@@ -276,23 +276,25 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     const attribution =
       `Preparation ${settings.stage} evaluator, round ${String(plan.round)} ` +
       `(route ${plan.route}), task ${selection.taskKey}, authored revision to assess.`;
-    let author: StageAuthorOutput | null;
-    try {
-      author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-    } catch (error) {
-      // The unusable record is the author's report: its evidence is retained under the author's
-      // responsibility so the next author invocation receives the correction obligation.
-      return await rejectUnusableRecord({
-        areaRoot: root,
-        scope: authorScope,
-        invocationId,
-        operation: 'stage-author',
-        profile: authorProfile,
-        context: attribution,
-        file: roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
-        error,
-      });
+    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
+      try {
+        return await readStageArtifact(root, round, stageAuthorArtifact);
+      } catch (error) {
+        // The unusable record is the author's report: its evidence is retained under the author's
+        // responsibility so the next author invocation receives the correction obligation.
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: authorScope,
+          invocationId,
+          operation: 'stage-author',
+          profile: authorProfile,
+          context: attribution,
+          file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+          error,
+        });
+      }
     }
+    const author = await readAuthor(plan.round);
     if (author === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
@@ -349,6 +351,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             worktree,
             stage: settings.stage,
             references: author.skip?.references ?? [],
+            readEvaluation,
           })
         : null;
     const retained = await retainEvaluationContent({
@@ -505,7 +508,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       content: retained.content,
     });
-    const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const currentAuthor = await readAuthor(plan.round);
     if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {

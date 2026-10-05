@@ -11,6 +11,7 @@ import {
 import { readRecord } from '../records.js';
 import {
   stageAuthorArtifact,
+  stageReportScope,
   stageResultArtifact,
   type PreparationStage,
   type StageAuthorOutput,
@@ -28,6 +29,8 @@ import {
 import { prototypeObservationContract } from './observation.js';
 import {
   reportFeedbackContextText,
+  projectOfWorkspace,
+  rejectUnusableRecord,
   type ReportRejection,
   type RetainedReportFeedback,
 } from '../report-feedback.js';
@@ -103,9 +106,10 @@ async function projectGuidanceText(worktree: string): Promise<string | null> {
 
 /** One earlier stage's retained result and author references that a later stage may read. */
 export async function upstreamReferences(
-  issueRoot: string,
+  selection: Selection,
   stage: PreparationStage,
 ): Promise<{ readonly stage: string; readonly lines: string[] }[]> {
+  const issueRoot = issueWorkspaceRootOf(selection);
   const references: { readonly stage: string; readonly lines: string[] }[] = [];
   for (const reference of await upstreamResultReferences(issueRoot, stage)) {
     if (reference.stage === 'idea') {
@@ -126,7 +130,27 @@ export async function upstreamReferences(
       if (result !== null) {
         lines.push(`${earlier} stage result (${result.outcome}): ${reference.resultFile}`);
       }
-      const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+      let author: StageAuthorOutput | null;
+      try {
+        author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: stageReportScope({
+            project: projectOfWorkspace(issueRoot),
+            workId: selection.taskKey,
+            area: root,
+            stage: earlier,
+            role: 'author',
+          }),
+          invocationId: null,
+          operation: 'stage-author',
+          profile: plan.profiles.author,
+          context: `Reading retained ${earlier} author round ${String(plan.round)} for ${stage} context.`,
+          file: roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+          error,
+        });
+      }
       if (author !== null) {
         lines.push(
           `${earlier} retained authored revision ${String(author.revision)}: ` +
@@ -159,10 +183,7 @@ export type StageContextSettings = {
 export async function stageContextText(settings: StageContextSettings): Promise<string> {
   const issues = issueSummary(settings.selection.task);
   const handoff = await readParentHandoff(settings.selection);
-  const upstream = await upstreamReferences(
-    issueWorkspaceRootOf(settings.selection),
-    settings.plan.stage,
-  );
+  const upstream = await upstreamReferences(settings.selection, settings.plan.stage);
   const guidance = await projectGuidanceText(settings.worktree);
   const feedback =
     handoff?.feedback !== null &&

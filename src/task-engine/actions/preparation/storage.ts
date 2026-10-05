@@ -368,6 +368,8 @@ export async function reusedPreparationContent(settings: {
   readonly worktree: string;
   readonly stage: PreparationStage;
   readonly references: readonly string[];
+  /** A validating caller supplies its producer-scoped reader for retained evaluation reports. */
+  readonly readEvaluation?: (round: number) => Promise<StageEvaluationOutput | null>;
 }): Promise<ReusedPreparationContent> {
   const { root, round, worktree, stage, references } = settings;
   if (references.length === 0) {
@@ -456,7 +458,10 @@ export async function reusedPreparationContent(settings: {
   if (paths.length === 0) {
     return nothingReused;
   }
-  const evaluation = await readStageArtifact(root, previousRound, stageEvaluationArtifact);
+  const evaluation =
+    settings.readEvaluation === undefined
+      ? await readStageArtifact(root, previousRound, stageEvaluationArtifact)
+      : await settings.readEvaluation(previousRound);
   const observed = new Map((evaluation?.basis.content ?? []).map((entry) => [entry.path, entry]));
   const content = paths.map((relative) => {
     const entry = observed.get(relative);

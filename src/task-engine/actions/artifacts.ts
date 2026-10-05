@@ -177,11 +177,11 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     const history: ArtifactHistoryValue<ArtifactContent<Declaration>>[] = [];
     for (let number = 1; number < round; number += 1) {
       const file = artifactFile(number, declaration.pathFromArtifactsRoot);
-      const text = await readDocumentText(file, 'Artifact');
-      if (text === null) {
-        continue;
-      }
       try {
+        const text = await readDocumentText(file, 'Artifact');
+        if (text === null) {
+          continue;
+        }
         history.push({ number, value: parseArtifact(file, declaration, text) });
       } catch (error) {
         if (onUnusable === undefined) {

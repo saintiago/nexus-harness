@@ -164,13 +164,16 @@ async function retainedStageDeletions(
   root: string,
   round: number,
   worktree: string,
+  readAuthor: (round: number) => Promise<StageAuthorOutput | null>,
+  readEvaluation: (round: number) => Promise<StageEvaluationOutput | null>,
+  readObservation: (round: number, file: string) => Promise<PrototypeObservation | null>,
 ): Promise<ReadonlySet<string>> {
   const deleted = new Set<string>();
   for (const retained of await stageRounds(root)) {
     if (retained > round) break;
-    const author = await readStageArtifact(root, retained, stageAuthorArtifact);
+    const author = await readAuthor(retained);
     if (author?.outcome !== 'authored') continue;
-    const evaluation = await readStageArtifact(root, retained, stageEvaluationArtifact);
+    const evaluation = await readEvaluation(retained);
     const declared = new Set(
       [...author.documents.map((document) => document.path), ...author.sourcePaths].map((value) =>
         checkoutRelative(worktree, value),
@@ -185,7 +188,7 @@ async function retainedStageDeletions(
         author.observation.path,
       );
       if (file !== null) {
-        const observation = await readRecord(file, { file, schema: prototypeObservationSchema });
+        const observation = await readObservation(retained, file);
         if (observation?.role === 'author') content = observation.content;
       }
     }
@@ -392,10 +395,13 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
      * Read one retained authored report. An unusable retained record is preserved as rejection
      * evidence under this report responsibility instead of silently failing its next reader.
      */
-    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
-      const file = roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot);
+    async function readAuthorRecord<Value>(
+      round: number,
+      file: string,
+      read: () => Promise<Value>,
+    ): Promise<Value> {
       try {
-        return await readStageArtifact(root, round, stageAuthorArtifact);
+        return await read();
       } catch (error) {
         return await rejectUnusableRecord({
           areaRoot: root,
@@ -403,11 +409,19 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           invocationId,
           operation: 'stage-author',
           profile: authorProfile,
-          context: attribution,
+          context: `${attribution} Reading retained author round ${String(round)}.`,
           file,
           error,
         });
       }
+    }
+
+    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
+      return readAuthorRecord(
+        round,
+        roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+        () => readStageArtifact(root, round, stageAuthorArtifact),
+      );
     }
 
     /**
@@ -573,7 +587,17 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         preEditHead: before.value.headRevision,
         retainedDeletions:
           report.outcome === 'authored'
-            ? await retainedStageDeletions(root, plan.round, worktree)
+            ? await retainedStageDeletions(
+                root,
+                plan.round,
+                worktree,
+                readAuthor,
+                readEvaluation,
+                (round, file) =>
+                  readAuthorRecord(round, file, () =>
+                    readRecord(file, { file, schema: prototypeObservationSchema }),
+                  ),
+              )
             : new Set(),
         retainedPrototype:
           settings.stage === 'prototype' ? await retainedStagePrototype(root, plan.round) : null,
