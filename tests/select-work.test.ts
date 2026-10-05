@@ -254,7 +254,6 @@ describe('SelectWork admission and routing', () => {
               question: null,
               upstream: null,
               observation: null,
-              findingResponses: [],
             }),
           );
           return 'skip-proposed';
@@ -279,7 +278,6 @@ describe('SelectWork admission and routing', () => {
               reason: 'Examples are covered.',
               observation: null,
               findings: [],
-              priorFindings: [],
               upstream: null,
             }),
           );
@@ -380,7 +378,6 @@ describe('SelectWork admission and routing', () => {
         baseRevision: 'base',
         headRevision: 'head',
         summary: 'Complete.',
-        findingResponses: [],
       }),
     );
     await writeFile(

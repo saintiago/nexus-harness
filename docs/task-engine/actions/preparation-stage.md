@@ -12,7 +12,7 @@ Inputs are the parent-selected source snapshot and attributed conversation, the 
 [WorkspaceRef](../../workspace.md#layout-and-reference), producer-owned upstream references and any
 return finding. The stage's artifact area is separate from that repository reference. Use the
 [Git adapter](../../adapters/git.md#interface) for repository observations and path-scoped commits.
-Existing authoritative documents can satisfy missing earlier artifacts; record what was relied on.
+Existing authoritative documents can supply an earlier stage's input without a mandatory citation list.
 No stage action receives Jira credentials. Consumers import these declarations rather than restating
 stage output schemas.
 
@@ -50,9 +50,9 @@ type PreparationResult = {
 };
 ```
 
-This envelope keeps references; producing declarations also retain document revisions, evaluated skip
-references, implementation plan and prototype observations when applicable. Allowed return destinations
-are earlier stages in the route. Accepted and skipped results require the evaluator's current decision;
+This envelope keeps references; producing declarations also retain changed document revisions,
+optional applicability evidence, implementation plan and prototype observations when applicable.
+Allowed return destinations are earlier stages in the route. Accepted and skipped results require the evaluator's current decision;
 provider/storage failures remain execution faults. Repository conditions can prevent preparation with
 an attributable retained failure reason.
 
@@ -66,7 +66,8 @@ type AcceptanceBasis = {
   authorIdentity: string;
   sourceIdentity: string;
   upstream: { result: ArtifactRef; identity: string }[];
-  content: AssessedContent[];
+  repositoryRevision?: string; // action-observed; absent only on former saved records
+  content: AssessedContent[]; // applicable prototype content; empty for document stages
 };
 ```
 
@@ -88,152 +89,176 @@ profiles and why the round opened. Cumulative round and return allowances surviv
 A terminal exhaustion record does not replace an earlier completed round. The current terminal record,
 not a search through old acceptances, determines whether the stage can advance.
 
-Author and evaluator response contracts omit action-added metadata. StageAuthor adds stage and
-authored revision; StageEvaluator adds the observed acceptance basis; result/plan persistence stays
-with the stage operations. Invocation context explicitly reserves their report and state paths.
-Non-authored responses carry empty `sourcePaths`; skip citations belong in `skip.references`.
-Every stage accepts authored work with `accepted` and a proposed skip with `accepted-skip`;
-incompatible outcome/verdict pairs are rejected before persistence and during retained replay.
+### Role response contracts
+
+Author and evaluator responses omit action-added metadata. StageAuthor adds stage and authored
+revision; StageEvaluator adds its observed acceptance basis. Result/plan persistence stays with the
+stage operations. Invocation context explicitly reserves their report and state paths.
+
+```ts
+type StageAuthorResponse = {
+  outcome: 'authored' | 'skip-proposed' | 'needs-input' | 'return-upstream';
+  summary: string;
+  documents: { path: string; description: string }[];
+  sourcePaths: string[];
+  observation: ArtifactRef | null;
+  plan: PlannedTask[];
+  skip: { reason: string; references: string[] } | null;
+  question: string | null;
+  upstream: UpstreamRequest | null;
+};
+
+type StageEvaluationResponse = {
+  assessedRevision: number;
+  verdict: 'accepted' | 'accepted-skip' | 'changes-requested' | 'return-upstream';
+  reason: string;
+  observation: ArtifactRef | null;
+  findings: Finding[];
+  upstream: UpstreamRequest | null;
+};
+
+type UpstreamRequest = {
+  stage: 'idea' | 'requirements' | 'ux' | 'prototype';
+  problem: string;
+  consequence: string;
+  correction: string;
+};
+```
+
+Finding is imported from the [findings contract](findings.md); strict response locations use its
+explicit-null line convention. PlannedTask has the summary, scope, completion criteria and
+prerequisite indices defined under Implementation plan below. Define each response and saved record
+once in its preparation-owned schema and derive its TypeScript type and provider response format.
+
+`authored` submits work for direct evaluation; it does not require this invocation to change a file.
+For unchanged adequate documents, `documents` and `sourcePaths` may both be empty. They declare
+changed authoritative documents and stage-owned sources, never reading citations. Non-authored
+outcomes carry empty arrays. Only Architecture supplies a nonempty plan for authored work or a
+proposed applicability skip; other stages and outcomes carry an empty plan. Only Prototype declares
+an observation, under the rules below. A question or upstream request accompanies only its matching
+outcome. Narrative summary explains changes, answers to earlier assessments, disagreements and
+remaining problems, as applicable; no finding-response array is returned.
+
+A skip proposes stage inapplicability, not existing-document adequacy or historical approval reuse.
+It requires a reason; references are optional evidence and may be empty. Only a skip proposal carries
+`skip`, and only a normally evaluated skip receives `accepted-skip`. An authored submission receives
+`accepted`, even with no changed documents. Incompatible outcome/verdict pairs remain invalid.
+An applicable prototype uses current work and observation, not a reuse skip. A repair round may
+propose an applicability skip when corrected scope makes the stage irrelevant; evaluation decides
+that applicability. Existing authored cleanup and applicability reassessment preserve obsolete-work
+reconciliation; a skip cannot commit or silently discard stage-owned work.
+
+Accepted and accepted-skip require no current blocking findings; changes-requested requires at least
+one. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Findings
+explain current problems with evidence, impact and repair guidance. There are no finding IDs,
+response/status records, dispositions or matching checks across rounds.
 
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) in each
-stage area. The current responsible author or evaluator receives outstanding feedback even when
-recovery repaired a previous record or reselection opens another bounded round. Repaired history
-alone does not retire feedback; a usable replacement must be validated and recorded as its
-correction. Neither rejection nor correction changes evaluation bases or finding obligations.
+stage area. The responsible role receives outstanding feedback after recovery or reselection.
+Repaired history alone does not retire feedback; validate and record a usable replacement as its
+correction. Rejection and correction grant no acceptance or extra allowance.
 
-Before evaluation, commit the author's declared documents and applicable prototype source paths in
-the shared checkout. Named commits exclude unrelated staged work. The author declares prototype paths;
-committing the entire checkout would absorb work outside that stage's responsibility. Retain the
-observed commit revision and the identity of the complete authored report, including plan, skip and
-finding responses. Evaluators assess only their stage's content and inputs, never a combined
-preparation publication. Architecture acceptance returns directly to handoff.
+### Current-worktree evaluation
 
-The evaluation records its input basis: immutable upstream result/report references and identities,
-source input identity, and the document/prototype paths and Git revisions actually assessed or relied
-on. Existing-document skips have the same binding. Compare those paths with saved content while
-finalizing and publishing a fresh evaluation, including replay of an interrupted finalization.
-Changes during that boundary require a fresh assessment. After the stage advances, document edits
-and upstream report revisions do not mechanically invalidate its completed verdict. Evaluators
-assess current documents against the ticket and return concrete input defects upstream.
-Resolve relative and in-checkout absolute references to canonical checkout-relative paths. Paths
-outside the checkout are not repository document references. Preserve source attribution.
-Unusable skip citations and repository citations missing from a retained evaluation's content basis
-require reevaluation before fresh finalization or its interrupted replay. Historical bindings do
-not control later-stage document adequacy. Preserve the report history; do not reconstruct a
-historical evaluation from current bytes.
+The [project workflow requirements](../../project-workflow.md#current-worktree-evaluation-requirements)
+own document-stage acceptance, compatible shared-document edits, retained continuation and examples.
+Requirements, UX/UI and Architecture assess the ticket against current authoritative documents in
+the shared worktree, regardless of authorship or commit history. Context supplies the ticket,
+attributed conversation, upstream reports, current author report, repository instructions and
+readable previous author/evaluation reports. The evaluator inspects relevant existing documents
+itself; an empty changed-document list does not restrict its scope or prevent invocation.
+Architecture also evaluates the current implementation plan.
 
-## Correction and reuse
+Before evaluation, commit declared documents and applicable prototype sources in the shared checkout.
+Named commits exclude unrelated staged work. The evaluator does not edit tracked work. Capture the
+current author identity, source identity, upstream result identities and repository revision before
+invocation. For a fresh decision and interrupted finalization, require those inputs and the
+repository revision to remain unchanged through result persistence, with declared stage work still
+committed and applicable prototype bindings valid. Preserve unrelated retained work; do not turn
+this into a worktree-wide readiness rule. Build caches and untracked diagnostic output do not
+constitute changed assessed work. A changed assessment basis requires normal reevaluation rather
+than binding an old report to current bytes.
 
-An upstream return retains the problematic input, consequence, correction and owning earlier stage.
-The parent records the destination and downstream stages awaiting validity decisions before advancing
-source state. This pending route survives restart. The destination corrects its own work in the shared
-checkout; Idea correction changes its input artifacts without replacing the preparation checkout.
+This repository observation is a short-lived finalization check, not a document-citation or dependency
+engine. Document stages write no per-document acceptance bindings in `basis.content`; that field
+retains applicable prototype content only. Once a stage advances, compatible later-stage document
+commits or upstream report replacements do not mechanically invalidate its completed verdict.
+Downstream decision reads check the completed report association and captured human intent, explicit
+pending corrections and applicable prototype evidence. They do not compare completed document
+approvals with historical file revisions or demand renewed approval of an unchanged document.
+Architecture acceptance returns directly to handoff; there is no combined preparation publication.
 
-Proceed forward through pending stages in order. Where content and relied-on inputs still match,
-reuse the accepted result and observation references explicitly. If an upstream report changed,
-the stage's evaluator can confirm that unchanged work remains adequate against the corrected input
-in a normal bounded round; the new evaluation records that basis. A proposed reuse/skip does not
-itself approve changed content. Fresh evaluation of current repository document citations can accept
-their changed content, even when an earlier accepted skip cited the same paths. Finalization uses
-that current assessment rather than requiring those citations to match the preceding skip's basis.
-This differs from reusing prior stage-owned documents, sources or a retained prototype: reuse must
-preserve their complete, still-valid content and applicable observation evidence. Repeating a
-document citation does not by itself establish reuse of a prior owned asset.
-When the changed input affects the stage, repair and reevaluate it. No
-semantic dependency engine or extra reviewer is required. Optional suggestions remain non-blocking.
-Before final handoff, require every stage's completed evaluator decision for the captured ticket,
-clear explicit pending corrections and validate applicable prototype inspection. Do not route back
-because a later stage edited a shared document or replaced an upstream report. Missing or corrupted
-reports, changed human intent and changed inspected prototype sources require reassessment.
+### Applicability references and retained data
 
-Re-entry supplies the latest work, complete unresolved findings, responses and any return finding.
-Author-only returns and input requests resume as reassessment and retain the latest evaluation's
-finding evidence until a later evaluation explicitly resolves or withdraws it. Acceptance reuse
-must not search past an intervening invalid or unfinished round. Import the existing
-[findings contract](findings.md); authors may answer or rebut as well as edit, and evaluators explicitly
-resolve prior findings. Evaluated applicability skips remain valid when their basis remains valid.
+Optional references support a skip reason but do not select historical approvals or owned assets.
+Use the existing shared reference resolver for supplied relative paths, absolute in-checkout paths
+and section citations; canonicalize repository paths consistently. An outside retained file is
+attributed evidence, not a repository path. Supplied references must be readable when assessing the
+proposal; unreadable supplied references are invalid evidence, while an empty reference list is
+valid. Completed document decisions do not depend on subsequent citation changes. No
+`existingDocuments` binding or historical content comparison is created for these citations. Keep the delivered resolver behavior
+where references remain supported, without restoring mandatory citations.
 
-### Reassessment and finalization requirements
+Results retain declared changed documents with their observed revision, stage-owned sources,
+optional skip references and current evaluator reference. They do not create `existingDocuments`
+or infer reused documents from earlier result files. Implementation handoff links the evaluated
+results and plan and can name changed documents and optional evidence without requiring citations
+for unchanged adequate documents. The retained checkout carries accumulated work into implementation.
 
-Affected categories are document-citation assessment, retained-asset reuse, stage finalization and
-retained-work continuation. Participants are preparation authors/evaluators and operators resuming
-an interrupted stage. The journey is: changed cited content -> stage reassessment -> current
-evaluation -> finalization -> normal downstream validation and handoff.
+For an applicable prototype, retain the complete assessed prototype sources, relevant input content
+and both roles' observations under the rules below. Previously built sources are ordinary current
+work; historical approval does not select or authorize them. A new applicable assessment inspects
+the current preview and records current observations. Completed observation evidence remains usable
+while its inspected content remains unchanged; an unrelated documentation commit alone does not
+alter inspected prototype content.
 
-Finalization must retain the current evaluation and assessed citation revisions. Changes to the
-author report, cited content or relied-on inputs after that evaluation still require a new decision;
-an older acceptance cannot fill a missing or unreadable current binding. Genuinely stale,
-unassessed reuse remains rejected. Retaining an applicable prototype still requires its complete
-source and both roles' current observation evidence under the rules below.
+## Correction and continuation
 
-Observable acceptance examples:
+An upstream return retains its problem, consequence, correction and owning earlier stage. The parent
+records the destination and downstream stages awaiting reassessment before advancing source state;
+this pending route survives restart. The destination corrects its work in the shared checkout. Idea
+correction changes its input artifacts without replacing that checkout.
 
-| Situation | Observable result |
-| --- | --- |
-| A non-applicable prototype previously cited a role document that a later stage changed; both roles reassess it and obtain a current accepted skip | Finalization succeeds with the newly assessed document revisions. With no retained prototype, no browser evidence is required. The old evaluation remains historical evidence. |
-| A requirements skip cites testing, CI/CD and stack documents changed by Architecture while the requirements document remains unchanged; the current evaluator accepts the reassessment | Finalization succeeds for the current citations, including section citations to the same files named by the prior skip. It does not renew downstream decisions. |
-| Cited content changes after the current evaluator assessed it, or its binding is missing or unreadable | Finalization, replay and downstream acceptance reject the stale or incomplete decision and require current evaluation. |
-| A proposal reuses a prior result or owned asset whose content changed without reassessment | The preceding acceptance cannot authorize the changed asset; stale reuse remains rejected. |
-| A skip retains an applicable prototype but its sources changed or either role's observation evidence is missing, unusable or stale | The skip cannot finalize or be reused as current acceptance. Unchanged assets with complete valid evidence remain reusable. |
+Proceed through pending stages in order. Each uses current input and work and obtains a current
+assessment, preserving adequate content and repairing affected content. Do not manufacture edits,
+existing-document skips or approval-reuse proposals to reenter a document stage. No semantic
+dependency engine or extra reviewer is required. Before handoff, require completed evaluator
+decisions for the captured ticket, clear explicit pending corrections and validate applicable
+prototype inspection. Return upstream for a concrete input defect, not a compatible shared-document
+edit. Changed human intent, missing/corrupt reports or changed inspected prototype sources require
+normal reassessment.
 
-Regression coverage must reproduce both reassessment patterns and genuinely stale, unassessed
-reuse. Deliver through normal verification, review, merge and required post-merge checks. The
-initiating task activates the checked merged runtime only after its current users exit, following
-[installation activation](../../application.md#installation-activation), then resumes the affected
-checkpoints without replacing their checkout/branch, histories, findings or consumed allowances.
-Resumption proceeds through normal gates and does not itself establish acceptance.
+Re-entry supplies previous author/evaluator reports and any upstream request as complete narrative
+context or readable local references, including the latest findings even after an author-only return
+or input request. No traversal derives an unresolved ID set or waits for disposition records. The
+next evaluator judges whether previous concerns remain and reports actionable current findings.
+A missing later evaluation is not an implicit resolution or acceptance. Current terminal records
+and pending routes govern advancement; do not search past an intervening unfinished or invalid round
+for an older approval. Preserve cumulative round and return allowances.
 
-No material product decision is unsettled. This changes no reporting-terminal interaction and adds
-no unrelated retry machinery. Evidence representation, reuse classification and activation
-mechanisms belong to Architecture and delivery.
+### Retained-record compatibility
 
-### Citation assessment and retained-asset resolution
+New responses are strict and omit removed lifecycle fields. Producer-owned saved-record readers
+accept former IDs, response/disposition arrays, `existingDocuments` and prior acceptance-basis fields
+as retained data without enforcing removed matching or citation-reuse rules. Preserve original
+reports byte-for-byte and supply readable references so their full evidence remains available.
+Reading a simplified typed view must not change the complete recorded identity used to associate
+an author with its evaluation or retire rejection feedback. Required report fields, verdict
+consistency, source association and applicable observation validity still receive validation.
 
-Preparation owns reference classification. Author validation, evaluation binding and finalization
-use the same reference resolution: relative paths, absolute in-checkout paths and section citations
-identify one canonical repository path. A section citation binds the whole file. An external retained
-file remains evidence; only a reference to the immediately preceding accepted or skipped result
-selects that result for reuse. Other historical reports do not select an older acceptance.
+Completed document-stage decisions can continue under these association and routing checks, without
+retroactive citation bindings or new report fields. An unfinished legacy document evaluation that
+lacks the fresh repository observation receives normal reevaluation before finalization; never
+invent that observation from later content. Legacy results carrying an applicable prototype still
+require complete valid prototype evidence even when their saved outcome was skipped. New
+inapplicability skips retain no applicable prototype bundle.
 
-Use the existing result distinctions to classify references; no new report field or persisted reuse
-state is needed:
-
-| Reference | Assessment and retained output |
-| --- | --- |
-| Current repository document, including a path found only in the preceding result's `existingDocuments`, with no applicable retained prototype selected | Assess current content as an input. Retain it in the new `existingDocuments` at the current evaluation's revision; do not copy the preceding revision or include it in prior-asset validation. |
-| Document or source path owned by the preceding result (`documents` or `sourcePaths`) | Retain the selected owned asset only with its complete preceding content binding and a current evaluation binding. Its content must still match the preceding acceptance. Changed owned work requires an authored correction. |
-| Immediately preceding accepted or skipped result | Select its full retained content, including `existingDocuments`, sources and any prototype evidence. Validate the complete preceding bindings as well as the current assessment. |
-| Applicable retained prototype, selected by its branch, revision, checkout or a document/source carried by its preceding result | Retain the complete prototype bundle, including all documents, input documents, sources and both observation references. A partial citation cannot discard the rest of its evidence. |
-
-The prototype rule preserves complete bundle selection, including selection through an input document
-carried with that prototype. A non-applicable prototype result has no such bundle: its repeated
-document citations are current inputs. A reference selecting an owned asset or complete result cannot
-be downgraded to an input citation to bypass stale-reuse checks.
-
-Evaluation observes all current input citations and all paths selected for asset reuse before invoking
-the evaluator, then saves the existing acceptance basis. Resolving fresh citations needs no preceding
-content binding; a missing historical binding cannot prevent a new complete assessment of those
-inputs. Resolving actual reuse does require the preceding binding for every selected path, including
-retained deletions. Reuse remains limited to the immediately preceding completed acceptance.
-
-Finalization first validates the exact current author/evaluation pair, source and upstream identities,
-usable citations and current content bindings. It then validates preceding content only for selected
-retained assets. Each reused path must also occur in the current basis. Fresh input revisions come
-only from that basis; reused owned-document revisions and prototype observations retain their
-preceding provenance. Deduplicate by canonical path, with owned assets retaining their ownership.
-An unrelated HEAD change is harmless only while the bound file content remains equal.
-
-Keep the response, evaluation and result contracts compatible with retained rounds. Reassessment
-writes a new decision; it never edits historical author reports, evaluations, results or observation
-records to make them current. Existing finalization replay and downstream current-decision validation
-continue to reject changed inputs/content or incomplete bindings. Valid fresh citation finalization
-does not renew any downstream stage's decision.
-
-An interrupted finalization with a complete current evaluation can resume at its saved checkpoint
-without opening another author/evaluator round. If that evaluation is no longer current, normal
-reassessment is required. Installation activation follows the existing Application contract above;
-the initiating task performs it after delivery and after runtime users exit, then resumes the exact
-affected checkpoints. No action gains an installation switch, checkpoint reset or retry mechanism.
+Reassessment writes a new decision and preserves historical author reports, evaluations, results
+and observations. An interrupted new finalization can resume its saved checkpoint when its current
+basis remains valid; otherwise use normal reassessment. Neither continuation nor schema compatibility
+resets allowances, replaces the checkout or branch, manufactures approval or introduces a retry
+mechanism. Installation activation follows [Application](../../application.md#installation-activation)
+after active runtime users exit; preparation owns no runtime switch or checkpoint reset.
 
 ## Prototype observations
 
@@ -249,8 +274,9 @@ questions. Agent observations remain attributed evidence, not machine proof of u
 The prototype author response declares its source paths and observation ArtifactRef; the evaluator
 response declares its separate observation ArtifactRef. Other stage responses and evaluated skips
 carry null. The prototype result retains both observation references for downstream consumers.
-Any result retaining an applicable prototype, including a reuse skip, requires both roles' readable,
-current evidence even when its saved observation references are empty or absent. Finalization, replay
+Any result retaining an applicable prototype, including a legacy result saved as a reuse skip,
+requires both roles' readable, current evidence even when its saved observation references are empty
+or absent. Finalization, replay
 and downstream current-decision checks validate these records and screenshots. Only a genuinely
 non-applicable skip with no retained prototype is exempt.
 These fields belong to the preparation response declarations, with the normal strict
@@ -291,7 +317,7 @@ preview evidence. Tool installation belongs to the [profile setup](../../agent-r
 
 Architecture produces one or more bounded tasks with summary, scope, completion criteria and
 zero-based prerequisite indices. Its evaluator checks outcome coverage, size, duplication and a valid
-acyclic graph. Existing adequate technical design permits a skip while this plan still receives
-evaluation. Source issue creation, links and ranking stay outside stage roles. The first implementation
-continues the shared checkout; prototype references remain available to all planned tasks. Preparation
+acyclic graph. Existing adequate technical design receives direct acceptance while this plan still
+receives evaluation. Source issue creation, links and ranking stay outside stage roles. The first
+implementation continues the shared checkout; prototype references remain available to all planned tasks. Preparation
 has no documentation assembly, documentation-only PR, repository reviewer or merge/check state.

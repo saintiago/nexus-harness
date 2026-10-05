@@ -33,9 +33,10 @@ evaluate or review through the existing workflow. If output is rejected, retain 
    persists its records. Instructions must identify action-owned files that agents must not write
    or overwrite, including preparation `author.json`, `evaluation.json` and `result.json`.
 4. In preparation, `sourcePaths` declares additional stage-owned authored files, not reading
-   citations. Non-authored outcomes carry an empty array. Existing inputs supporting a skip belong
-   in `skip.references`; declaring a skip does not authorize committing those inputs or bypassing
-   evaluation. Documents and applicable observations retain their existing ownership and rules.
+   citations. Non-authored outcomes carry an empty array. Existing sufficient documents receive
+   normal current-worktree evaluation without mandatory citations or a special existing-document
+   skip. An applicability skip does not authorize committing existing inputs or bypassing evaluation.
+   Documents and applicable observations retain their existing ownership and rules.
 5. Rejected reports remain rejected. Malformed output, semantic violations and unusable saved
    records must not be silently normalized into valid work, approval or completion. Preserve the
    rejected output when available and the specific rejection reason as attributable, readable
@@ -47,8 +48,9 @@ evaluate or review through the existing workflow. If output is rejected, retain 
    rejected claims remain evidence, not approved work or governing human intent. A valid correction
    must not erase the historical failure or leave it presented as an outstanding rejection.
 7. Preserve finite round, return and recovery allowances, stage ownership, unresolved findings,
-   revision/input-bound evaluation and review, and required merge/check protections. Feedback
-   retention uses normal recovery and continuation; it does not add an unrelated retry mechanism,
+   current-worktree document evaluation, revision-bound prototype inspection and implementation
+   review, and required merge/check protections. Feedback retention uses normal recovery and
+   continuation; it does not add an unrelated retry mechanism,
    grant extra attempts or convert an invocation fault into a product verdict.
 8. Reproduce the reported failures and other confirmed cases with meaningful regression tests.
    Deliver the repair through required verification, review, merge and post-merge checks. Activate
@@ -60,7 +62,7 @@ evaluate or review through the existing workflow. If output is rejected, retain 
 
 | Situation | Observable result |
 | --- | --- |
-| A requirements author proposes a skip using existing documents | Its supplied contract explains that `sourcePaths` is empty and supporting inputs go in `skip.references`. A conforming proposal reaches normal evaluation; a skip with reading citations in `sourcePaths` is still rejected with the specific reason. |
+| Existing requirements satisfy the ticket and the author leaves them unchanged | The supplied contract permits direct current-worktree evaluation without document citations, an existing-document skip or historical approval reuse. Reading citations in `sourcePaths` remain invalid. |
 | A preparation author returns a response without producer-added stage/revision metadata | The owning action persists a readable author record with its metadata. The invocation explicitly forbids writing the action-owned report files. A malformed retained record is diagnosed rather than silently accepted. |
 | A schema-valid report violates an outcome, role or evidence rule | Validation rejects it with the violated rule and preserves available output. No evaluated skip, approval or completion is manufactured. A corrected report can proceed through the existing gates. |
 | Recovery repairs an old report, clears selection and restarts retained work | The next responsible invocation receives the rejection and required correction even after a worker restart. The regression demonstrates that repairing the old record alone no longer loses the feedback. |

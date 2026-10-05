@@ -23,7 +23,7 @@ import { preparation } from '../workflows/preparation.js';
 import { scriptedGit, repositoryState } from './support/git.js';
 import { scriptedJira } from './support/jira.js';
 
-it('keeps nested returns and finding obligations through composed restarts and final reassessment', async () => {
+it('keeps nested returns and readable repair context through composed restarts', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-corrections-'));
   try {
     const root = path.join(directory, 'NEX-1');
@@ -64,8 +64,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
       readFileAtRevision: async (repository, _revision, file) =>
         ok(await readFile(path.join(repository, file), 'utf8')),
     });
-    const finding = (id: string) => ({
-      id,
+    const finding = {
       title: 'An upstream input needs correction',
       severity: 'blocking',
       basis: 'Preparation must honor the corrected input.',
@@ -73,9 +72,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
       impact: 'The current work cannot be accepted.',
       repairGuidance: 'Correct the input and reassess.',
       locations: [],
-    });
-    let authorResponds = false;
-    let evaluatorDisposes = false;
+    };
     let primingRequirements = true;
     const routes: string[] = [];
     const runner: AgentRoleRunner = {
@@ -86,7 +83,6 @@ it('keeps nested returns and finding obligations through composed restarts and f
         const plan = await readStagePlan(stageRoot(root, stage));
         if (plan === null) throw new Error('Missing plan');
         const returning = plan.round === 1 && (stage === 'architecture' || stage === 'prototype');
-        const id = stage === 'architecture' ? 'F1' : stage === 'prototype' ? 'F2' : 'R1';
         const resolving =
           !returning &&
           (stage === 'architecture' ||
@@ -94,7 +90,11 @@ it('keeps nested returns and finding obligations through composed restarts and f
             (stage === 'requirements' && !primingRequirements));
         if (request.operation === 'stage-author') {
           routes.push(`${stage}:${String(plan.round)}:${plan.route}`);
-          if (resolving) expect(request.context).toContain(`Eligible prior finding IDs: "${id}"`);
+          if (resolving) {
+            expect(request.context).toContain('The previous evaluation of this work');
+            expect(request.context).toContain(finding.evidence);
+            expect(request.context).not.toContain('Eligible prior finding IDs');
+          }
           return ok({
             output: JSON.stringify({
               outcome: 'skip-proposed',
@@ -119,20 +119,14 @@ it('keeps nested returns and finding obligations through composed restarts and f
               question: null,
               upstream: null,
               observation: null,
-              findingResponses:
-                resolving && (stage !== 'architecture' || authorResponds)
-                  ? [
-                      {
-                        findingId: id,
-                        status: 'addressed',
-                        response: 'The input correction resolves the contradiction.',
-                      },
-                    ]
-                  : [],
             }),
           });
         }
-        if (resolving) expect(request.context).toContain(`Eligible prior finding IDs: "${id}"`);
+        if (resolving) {
+          expect(request.context).toContain('The previous evaluation of this work');
+          expect(request.context).toContain(finding.evidence);
+          expect(request.context).not.toContain('Eligible prior finding IDs');
+        }
         return ok({
           output: JSON.stringify({
             assessedRevision: plan.round,
@@ -145,17 +139,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
               ? 'Correct the upstream input.'
               : 'The corrected input makes this work adequate.',
             observation: null,
-            findings: returning || primingRequirements ? [finding(id)] : [],
-            priorFindings:
-              resolving && (stage !== 'architecture' || evaluatorDisposes)
-                ? [
-                    {
-                      findingId: id,
-                      disposition: 'resolved',
-                      reason: 'The corrected input resolves it.',
-                    },
-                  ]
-                : [],
+            findings: returning || primingRequirements ? [finding] : [],
             upstream: returning
               ? {
                   stage: stage === 'architecture' ? 'prototype' : 'requirements',
@@ -296,15 +280,7 @@ it('keeps nested returns and finding obligations through composed restarts and f
       'architecture',
     ]);
     const second = await run();
-    expect(second.ok ? '' : second.fault.message).toContain('did not respond to finding "F1"');
-    expect((await readHandoff(root))?.awaitingStages).toEqual(['architecture']);
-    expect(handoffs).toBe(0);
-    authorResponds = true;
-    const third = await run();
-    expect(third.ok ? '' : third.fault.message).toContain('does not dispose of prior finding "F1"');
-    expect(handoffs).toBe(0);
-    evaluatorDisposes = true;
-    await expect(run()).resolves.toEqual({ ok: true, value: 'drained' });
+    expect(second).toEqual({ ok: true, value: 'drained' });
     expect(handoffs).toBe(1);
     expect((await readHandoff(root))?.awaitingStages).toEqual([]);
     expect(routes).toEqual([
@@ -314,7 +290,6 @@ it('keeps nested returns and finding obligations through composed restarts and f
       'requirements:2:reassess',
       'ux:1:reassess',
       'prototype:2:reassess',
-      'architecture:2:reassess',
       'architecture:2:reassess',
     ]);
     expect(publishedPending).toEqual(

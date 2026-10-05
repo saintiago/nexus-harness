@@ -385,7 +385,6 @@ const conformingSkip = {
   },
   question: null,
   upstream: null,
-  findingResponses: [],
 };
 
 /** One KAN-76-style retained requirements area whose round 2 record is the old malformed report. */

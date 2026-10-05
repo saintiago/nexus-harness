@@ -544,7 +544,6 @@ describe('preparation binding dispatch', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
       {
         assessedRevision: 1,
@@ -552,7 +551,6 @@ describe('preparation binding dispatch', () => {
         reason: 'The revision is adequate.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       },
     ];
@@ -685,7 +683,6 @@ describe('preparation binding dispatch', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
 
     /** One planned provider invocation in the order the composed actions must issue it. */
@@ -724,7 +721,6 @@ describe('preparation binding dispatch', () => {
           reason: 'The proposal cites the current document and needs no change.',
           observation: null,
           findings: [],
-          priorFindings: [],
           upstream: null,
         },
       });
@@ -850,7 +846,7 @@ describe('preparation binding dispatch', () => {
         );
       } else {
         expect(prompt).toContain(
-          `Assess the exact authored revision ${String(planned.round)} and resolve every prior`,
+          `Assess the exact authored revision ${String(planned.round)} and judge whether earlier`,
         );
       }
       // A profile reused across roles carries only the invoked role's instructions.
@@ -927,7 +923,6 @@ async function publishPreparation(options: {
     question: null,
     upstream: null,
     observation: null,
-    findingResponses: [],
   };
   const authorFile = path.join(stage, 'artifacts/1/author.json');
   await writeFile(authorFile, JSON.stringify(author));
@@ -946,7 +941,6 @@ async function publishPreparation(options: {
       reason: 'Accepted.',
       observation: null,
       findings: [],
-      priorFindings: [],
       upstream: null,
     }),
   );
@@ -1371,7 +1365,6 @@ async function handoff(options: {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     };
     const authorFile = path.join(artifacts, 'author.json');
     await writeFile(authorFile, JSON.stringify(author));
@@ -1406,7 +1399,6 @@ async function handoff(options: {
         reason: 'Assessed the exact retained content.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       }),
     );

@@ -89,7 +89,6 @@ const capturedRejectedResponse = {
   },
   question: null,
   upstream: null,
-  findingResponses: [],
 };
 
 /** The conforming counterpart: the same skip with its citations in skip.references only. */
@@ -110,7 +109,6 @@ const conformingSkipResponse = {
   },
   question: null,
   upstream: null,
-  findingResponses: [],
 };
 
 /** One requirements stage area with KAN-76's retained rounds 1 and 2 and an open round 3. */
@@ -165,7 +163,6 @@ async function stageArea(selectedStage: PreparationStage = stage): Promise<{
       skip: null,
       question: null,
       upstream: null,
-      findingResponses: [],
     }),
   );
   await mkdir(path.join(root, 'artifacts', '2'), { recursive: true });
@@ -186,7 +183,6 @@ async function stageArea(selectedStage: PreparationStage = stage): Promise<{
       },
       question: null,
       upstream: null,
-      findingResponses: [],
     }),
   );
   await mkdir(path.join(root, 'state'), { recursive: true });
@@ -258,7 +254,6 @@ const capturedPrototypeSkip = {
   },
   question: null,
   upstream: null,
-  findingResponses: [],
 };
 
 /** The retained repaired report: the same skip citing the actual documents. */
@@ -367,7 +362,6 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
             reason: 'The existing requirements documents satisfy the stage.',
             observation: null,
             findings: [],
-            priorFindings: [],
             upstream: null,
           }),
         });
@@ -499,7 +493,6 @@ it.each(['author', 'evaluation'] as const)(
             reason: 'The authored requirements satisfy the stage.',
             observation: null,
             findings: [],
-            priorFindings: [],
             upstream: null,
           },
           evaluatorContexts,
@@ -571,7 +564,6 @@ it('retains an author report corrupted during evaluation under the author respon
             reason: 'The existing requirements satisfy the stage.',
             observation: null,
             findings: [],
-            priorFindings: [],
             upstream: null,
           }),
         });
@@ -687,7 +679,6 @@ it('diagnoses a malformed retained author record without normalizing or overwrit
     skip: null,
     question: null,
     upstream: null,
-    findingResponses: [],
   };
   const record = path.join(root, 'artifacts', '2', 'author.json');
   await writeFile(record, JSON.stringify(malformed));
@@ -770,7 +761,6 @@ it('rejects the captured prototype prose citations while repaired references bin
         reason: 'The existing documents establish prototype inapplicability.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       },
       [],
@@ -819,7 +809,6 @@ it('binds a section citation to its document so a later change needs a current d
         reason: 'The cited section satisfies the stage.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       },
       [],
@@ -872,7 +861,6 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
       reason: 'The existing documents satisfy the stage.',
       observation: null,
       findings: [],
-      priorFindings: [],
       upstream: null,
     };
     await expect(
@@ -970,7 +958,6 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
           reason: 'The cited section satisfies the stage.',
           observation: null,
           findings: [],
-          priorFindings: [],
           upstream: null,
         },
         [],

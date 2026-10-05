@@ -19,7 +19,6 @@ import {
   devArtifact,
   developmentResponseSchema,
   type DevelopmentOutput,
-  type FindingResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import {
@@ -183,7 +182,6 @@ const taskIssue = {
 };
 
 const blockingFinding: Finding = {
-  id: 'NEX-1-finding-1',
   title: 'Transient provider failures are not retried',
   severity: 'blocking',
   basis: 'The design requires a transient provider failure to be retried once.',
@@ -194,7 +192,6 @@ const blockingFinding: Finding = {
 };
 
 const secondFinding: Finding = {
-  id: 'NEX-1-finding-2',
   title: 'Retry log entry omits the attempt number',
   severity: 'non-blocking',
   basis: 'The design requires a log entry to identify the attempt.',
@@ -210,7 +207,6 @@ const precedingReview: ReviewOutput = {
   verdict: 'changesRequested',
   summary: 'The retry guard is missing.',
   findings: [blockingFinding, secondFinding],
-  priorFindings: [],
 };
 
 /** The outcome event Develop publishes for a workspace's saved round-one report. */
@@ -242,7 +238,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     const develop = createDevelop({
@@ -270,11 +265,10 @@ describe('Develop', () => {
     expect(context).toContain(
       `Local selection record (refreshed task and complete conversation): ${selectionFile}`,
     );
-    expect(context).toContain('No review findings are supplied for this round.');
+    expect(context).toContain('No previous review report is retained for this round.');
     expect(context).toContain('Earlier rounds: none.');
-    expect(context).toContain(
-      'Include exactly one findingResponses entry for every supplied finding ID and no others',
-    );
+    expect(context).toContain('The summary is the complete narrative');
+    expect(context).not.toContain('findingResponses');
     // The action leaves the parent-owned selection record unchanged.
     expect(JSON.parse(await readFile(selectionFile, 'utf8'))).toEqual({
       taskKey,
@@ -298,7 +292,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision,
       summary: 'Implemented the retry guard.',
-      findingResponses: [],
     });
     // The invocation boundaries belong to the caller's agent runner, not to the action.
     expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
@@ -311,7 +304,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'failed',
         summary: 'The parser change needs a decision that is missing from the task.',
-        findingResponses: [],
       }),
     );
     const develop = createDevelop({
@@ -353,7 +345,6 @@ describe('Develop', () => {
         JSON.stringify({
           status: 'completed',
           summary: 'Implemented the retry guard.',
-          findingResponses: [],
         }),
       );
       const develop = createDevelop({
@@ -395,7 +386,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     const develop = createDevelop({
@@ -415,7 +405,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision,
       summary: 'Implemented the retry guard.',
-      findingResponses: [],
     });
     expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
   });
@@ -426,7 +415,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     const { git: firstGit } = scriptedGit([
@@ -468,7 +456,6 @@ describe('Develop', () => {
       return JSON.stringify({
         status: 'completed',
         summary: 'Committed the retained work.',
-        findingResponses: [],
       });
     });
     const { git: repairGit } = scriptedGit([
@@ -497,7 +484,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision,
       summary: 'First implementation.',
-      findingResponses: [],
     });
     await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
     await writeRoundArtifact(workspaceRoot, 1, 'verification.json', {
@@ -516,16 +502,11 @@ describe('Develop', () => {
       repositoryState({ headRevision }),
       repositoryState({ headRevision: laterRevision }),
     ]);
-    const responses: FindingResponse[] = [blockingFinding, secondFinding].map((finding) => ({
-      findingId: finding.id,
-      status: 'addressed',
-      response: `Addressed "${finding.title}".`,
-    }));
     const { runtime, requests } = scriptedRuntime(() =>
       JSON.stringify({
         status: 'completed',
-        summary: 'Repaired the retry guard.',
-        findingResponses: responses,
+        summary:
+          'Repaired the retry guard and the attempt log. The previous review was right about both.',
       }),
     );
     const develop = createDevelop({
@@ -539,12 +520,12 @@ describe('Develop', () => {
 
     expect(requests[0]?.profile).toBe('dev-b');
     const context = requests[0]?.context ?? '';
-    expect(context).toContain(
-      'Findings to respond to (complete values from the review in round 1)',
-    );
-    expect(context).toContain(blockingFinding.id);
+    // The complete preceding review report is repair context: its findings reach the developer
+    // without an eligible-ID set, response array or per-finding obligation.
+    expect(context).toContain('Most recent review report (round 1; repair context');
     expect(context).toContain(blockingFinding.repairGuidance);
     expect(context).toContain(secondFinding.evidence);
+    expect(context).not.toContain('Eligible prior finding IDs');
     expect(context).toContain(
       `- Round 1:\n  - development result (completed): ${path.join(workspaceRoot, 'artifacts', '1', 'development.json')}`,
     );
@@ -558,7 +539,8 @@ describe('Develop', () => {
       profile: 'dev-b',
       status: 'completed',
       headRevision: laterRevision,
-      findingResponses: responses,
+      summary:
+        'Repaired the retry guard and the attempt log. The previous review was right about both.',
     });
   });
 
@@ -585,7 +567,6 @@ describe('Develop', () => {
         JSON.stringify({
           status: 'completed',
           summary: 'Implemented the retry guard.',
-          findingResponses: [],
         }),
       );
       const develop = createDevelop({
@@ -614,7 +595,7 @@ describe('Develop', () => {
       expect(prompt).toContain(
         `Prepared branch: task/${taskKey} (comparison base ${baseRevision})`,
       );
-      expect(prompt).toContain('No review findings are supplied for this round.');
+      expect(prompt).toContain('No previous review report is retained for this round.');
       expect(prompt).toContain(
         `Local selection record (refreshed task and complete conversation): ${selectionFile}`,
       );
@@ -633,7 +614,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision,
       summary: 'First implementation.',
-      findingResponses: [],
     });
     await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
     await writeRoundArtifact(workspaceRoot, 1, 'verification.json', {
@@ -648,11 +628,6 @@ describe('Develop', () => {
         },
       ],
     });
-    const responses: FindingResponse[] = [blockingFinding, secondFinding].map((finding) => ({
-      findingId: finding.id,
-      status: 'addressed',
-      response: `Addressed "${finding.title}".`,
-    }));
     const { git } = scriptedGit([
       repositoryState({ headRevision }),
       repositoryState({ headRevision: laterRevision }),
@@ -661,7 +636,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Repaired the retry guard.',
-        findingResponses: responses,
       }),
     );
     const develop = createDevelop({
@@ -677,67 +651,58 @@ describe('Develop', () => {
     for (const obligation of obligations) {
       expect(occurrences(prompt, obligation), `repair: ${obligation}`).toBe(1);
     }
-    expect(prompt).toContain('Findings to respond to (complete values from the review in round 1)');
-    expect(prompt).toContain(blockingFinding.id);
+    expect(prompt).toContain('Most recent review report (round 1; repair context');
     expect(prompt).toContain(blockingFinding.repairGuidance);
     expect(prompt).toContain(secondFinding.evidence);
     expect(prompt).toContain('Latest recorded verification (round 1): failed.');
   });
 
-  it('rejects a report that does not answer exactly the supplied findings', async () => {
-    const cases: ReadonlyArray<readonly [string, FindingResponse[]]> = [
-      ['a missing response', []],
-      [
-        'an unknown response',
-        [{ findingId: 'unknown', status: 'addressed', response: 'Addressed.' }],
-      ],
-      [
-        'a repeated response',
-        [
-          { findingId: blockingFinding.id, status: 'addressed', response: 'Addressed.' },
-          { findingId: blockingFinding.id, status: 'disputed', response: 'Disputed.' },
+  it('rejects a report carrying the removed finding-response field without writing it', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ round: 2 });
+    await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
+    const { git } = scriptedGit([repositoryState({ headRevision })]);
+    const { runtime } = scriptedRuntime(() =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Repaired.',
+        findingResponses: [
+          { findingId: 'NEX-1-finding-1', status: 'addressed', response: 'Addressed.' },
         ],
-      ],
-    ];
+      }),
+    );
+    const develop = createDevelop({
+      selectionFile,
+      runner: runnerOf(runtime),
+      git,
+      publish: (event) => events.push(event),
+    });
 
-    for (const [label, responses] of cases) {
-      events = [];
-      const { workspaceRoot, selectionFile } = await workspace({ round: 2 });
-      await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
-      const { git } = scriptedGit([repositoryState({ headRevision })]);
-      const { runtime } = scriptedRuntime(() =>
-        JSON.stringify({
-          status: 'completed',
-          summary: 'Repaired.',
-          findingResponses: responses,
-        }),
-      );
-      const develop = createDevelop({
-        selectionFile,
-        runner: runnerOf(runtime),
-        git,
-        publish: (event) => events.push(event),
-      });
-
-      await expect(develop(), label).rejects.toThrow(/finding/);
-      await expect(
-        stat(path.join(workspaceRoot, 'artifacts', '2', 'development.json')),
-      ).rejects.toThrow(/ENOENT/);
-    }
+    // New responses are strict: the removed lifecycle field is unusable output, not a report to
+    // save or an answered finding set.
+    await expect(develop()).rejects.toThrow(/does not match the response format/);
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', '2', 'development.json')),
+    ).rejects.toThrow(/ENOENT/);
   });
 
   it('reuses a current-round report that still describes the current work', async () => {
     const { taskKey, workspaceRoot, selectionFile } = await workspace();
-    const helpers = createArtifactHelpers({ root: workspaceRoot });
-    await helpers.writeOutputArtifact(devArtifact, {
+    // A report retained by the earlier contract still describes this work: its former
+    // finding-response array is preserved as history and the report is reused unchanged.
+    await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
+      taskSubject: 'Implement the retry guard',
       taskKey,
       profile: 'dev-a',
       status: 'completed',
       baseRevision,
       headRevision,
       summary: 'Implemented the retry guard.',
-      findingResponses: [],
+      findingResponses: [{ findingId: 'NEX-1-finding-1', status: 'addressed', response: 'Done.' }],
     });
+    const retainedBytes = await readFile(
+      path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
+      'utf8',
+    );
     const { git } = scriptedGit([repositoryState({ headRevision })]);
     const { runtime, requests } = scriptedRuntime(() => {
       throw new Error('The agent must not be invoked again.');
@@ -754,6 +719,10 @@ describe('Develop', () => {
     expect(requests).toEqual([]);
     // The reused report stays the saved output the outcome event references.
     expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
+    // Reading the retained report never rewrites its complete recorded history.
+    expect(
+      await readFile(path.join(workspaceRoot, 'artifacts', '1', 'development.json'), 'utf8'),
+    ).toBe(retainedBytes);
   });
 
   it('binds its own metadata, rejects agent claims about it and rejects a wrong report shape', async () => {
@@ -763,7 +732,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     await expect(
@@ -783,7 +751,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision,
       summary: 'Implemented the retry guard.',
-      findingResponses: [],
     });
 
     // A report claiming the metadata the action owns violates the response contract instead of
@@ -793,7 +760,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
         profile: 'claimed-profile',
         baseRevision: laterRevision,
         headRevision: laterRevision,
@@ -813,7 +779,7 @@ describe('Develop', () => {
 
     const wrong = await workspace();
     const { runtime: wrongRuntime } = scriptedRuntime(() =>
-      JSON.stringify({ status: 'done', summary: 'Finished.', findingResponses: [] }),
+      JSON.stringify({ status: 'done', summary: 'Finished.' }),
     );
     await expect(
       createDevelop({
@@ -835,7 +801,6 @@ describe('Develop', () => {
       baseRevision,
       headRevision: laterRevision,
       summary: 'Report for another revision.',
-      findingResponses: [],
     });
     const { git } = scriptedGit([
       repositoryState({ headRevision }),
@@ -845,7 +810,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     const develop = createDevelop({
@@ -937,7 +901,6 @@ describe('Develop', () => {
         baseRevision,
         headRevision,
         summary: 'The repaired round-one report.',
-        findingResponses: [],
       });
       await expect(
         outstandingReportFeedback({ areaRoot: workspaceRoot, scope }),
@@ -955,7 +918,6 @@ describe('Develop', () => {
         JSON.stringify({
           status: 'completed',
           summary: 'Repaired the round-one report.',
-          findingResponses: [],
         }),
       );
       await expect(
@@ -1067,7 +1029,6 @@ describe('Develop', () => {
       JSON.stringify({
         status: 'completed',
         summary: 'Implemented the retry guard.',
-        findingResponses: [],
       }),
     );
     const develop = createDevelop({

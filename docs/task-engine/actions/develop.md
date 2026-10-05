@@ -19,7 +19,7 @@ for this round. Develop does not choose or escalate profiles.
 
 Each invocation uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply
 task-specific context and the response format; the profile supplies the constant role instructions.
-Use the [findings contract](findings.md) for complete finding inputs and response values.
+Use the [findings contract](findings.md) for current findings supplied within previous reports.
 Request DevelopmentResponse below. Repository revisions and
 profile identity are observed by this action rather than accepted from the agent.
 
@@ -38,22 +38,22 @@ type DevelopmentOutput = {
   baseRevision: string;
   headRevision: string;
   summary: string;
-  findingResponses: FindingResponse[];
 };
 
-type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary' | 'findingResponses'>;
+type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary'>;
 ```
 
 The action captures the refreshed task subject in taskSubject when saving a new report, retaining
 the subject for later artifact interpretation even if task selection is refreshed.
 
-Request one JSON object conforming to DevelopmentResponse as the agent's final output. Include that
-shape, FindingResponse and its response/identity rules in context. Require exactly one response per supplied finding ID; use an
-empty array when none were supplied. Parse and validate it before recording the artifact.
+Request one JSON object conforming to DevelopmentResponse as the agent's final output. Include the
+shape and field meanings in context. Parse and validate it before recording the artifact. There is
+no structured per-finding response or cross-round matching requirement.
 
-The action records the profile and observed repository revisions. The agent supplies the status, summary and
-responses. Summary explains what changed and why, or why implementation could not be completed.
-It is not a declaration that checks passed.
+The action records the profile and observed repository revisions. The agent supplies status and a
+narrative summary of changes, verification performed and its results, responses to previous reviews,
+disagreements and remaining problems, as applicable. For incomplete work, explain why it could not
+be completed. Claimed verification does not replace Verify's command evidence.
 
 ### Outcomes
 
@@ -69,9 +69,10 @@ or unusable output are execution errors.
 
 Use the profile recorded for the current round. Read the task and conversation refreshed by the
 parent-owned input boundary, preserving human changes. Read relevant repository instructions and
-complete preceding findings/responses. The parent owns the selection update; Develop supplies that
-saved input alongside the existing round history.
-Include available earlier-round history without silently truncating finding bodies.
+previous review and development reports and failed-check evidence. The parent owns the selection
+update; Develop supplies that saved input alongside the existing round history.
+Include available earlier-round history as complete reports or readable local references without
+silently truncating finding bodies. Do not derive an eligible finding set or response obligations.
 
 Invoke the agent once with the workspace reference and assembled context. The agent may inspect and
 continue existing uncommitted work. It leaves local commits; publication belongs outside this action.
@@ -95,3 +96,12 @@ Untracked files do not prevent completion. Do not classify or reject them as a r
 
 Task/conversation refresh is performed by a parent-owned input actor at the development-round
 boundary. Develop receives the saved snapshot and has no Jira capability.
+
+## Retained reports
+
+New responses and saved reports use the simplified fields above. Producer-owned saved-record readers
+also accept retained reports carrying the former finding-response field, without validating its
+removed lifecycle rules. Preserve the original file as readable history and provide its narrative
+and previous review evidence to the next invocation. Missing current required fields and unusable
+status or revision metadata still fail through normal report rejection. No history rewrite, new
+round allowance or alternative delivery path is introduced.

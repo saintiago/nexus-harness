@@ -95,8 +95,12 @@ The first implementation receives the recorded repository reference and comparis
 preparation commits and branch. Later tickets obtain their own checkout from updated merged base;
 validate that prerequisite merge revisions are included before starting. PrepareWorkspace owns
 repository preparation and retained identity checks. Delivery owns one PR per implementation ticket,
-including documents and retained prototype work carried by its branch. Review assesses the actual
-full contributed revision; stage acceptance supplies context and cannot substitute for its verdict.
+including documents and retained prototype work carried by its branch. Review assesses task correctness
+at the delivered revision; stage acceptance supplies context and cannot substitute for its verdict.
+Its scope includes relevant pre-existing code; the contributed diff is
+orientation rather than a review boundary. Changed-document references describe committed work;
+unchanged adequate documents need no citation or historical approval-reuse record. Optional
+applicability evidence remains attributed context without an `existingDocuments` binding.
 There is no final aggregate feature PR. Required verification, review, merge and post-merge gates
 apply to each ticket independently.
 

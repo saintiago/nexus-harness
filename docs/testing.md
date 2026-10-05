@@ -68,19 +68,32 @@ validate file contents.
 Verify compatibility using actual producer output. For example, run Develop with a supplied agent
 response and repository observations, let it write development.json through the real artifact helper,
 then exercise Review's real input handling against the same round. Supply its other required inputs
-and verify that its assembled review context contains the development summary, revision and finding
-responses. This requires no live agent, GitHub access or full workflow.
+and verify that its assembled review context contains the narrative development report, revision,
+task requirements, verification evidence and readable previous review reports. This requires no live
+agent, GitHub access or full workflow.
 
 Do not replace both sides with independently handcrafted fixtures. Test malformed JSON and missing
 required fields at the artifact-reading boundary without repeating that matrix for every consumer.
 Vitest runs these tests; Zod supplies runtime shape validation.
 
-For finding handoffs, carry the review's actual Finding values into development input, then its actual
-FindingResponse values into the next review. Verify preserved IDs and complete evidence. Cover missing
-or unknown response IDs, open findings without a current entry, and verdicts inconsistent with blocking
-findings at their owning action boundary. Verify that each invocation includes its selected role's
-complete constant prompt once alongside the supplied context; test prompt assembly, not the wording
-of documentation.
+For repair handoffs, carry actual review/evaluation reports into the next author/developer context,
+then the narrative response and current work into the evaluator/reviewer context. Verify that earlier
+concerns remain readable and a current defect requests repair while a corrected defect permits
+acceptance, without response arrays, dispositions or ID matching. Cover malformed required fields
+and verdicts inconsistent with current blocking findings at their owning action boundary. Verify
+retained former reports stay byte-for-byte unchanged and readable, continuation preserves allowances,
+and old approval cannot authorize a changed implementation head. Verify that each invocation includes
+its selected role's complete constant prompt once alongside the supplied context; test prompt assembly,
+not the wording of documentation.
+
+For document-stage evaluation, exercise unchanged adequate documents with empty changed-document
+lists, concrete defects, reason-only applicability skips and compatible later-stage edits. Verify
+fresh finalization and interrupted replay against the observed current assessment, without
+document-citation or historical approval-reuse requirements after the stage advances. Retain
+prototype preview/observation and upstream-correction coverage. Exercise task-relevant pre-existing
+code outside the comparison diff in review context and preserve exact-head publication and merge/check
+gate coverage. Remove tests whose sole purpose is enforcing the deleted finding lifecycle or
+document-reuse mechanism; retain resolver regressions where optional references still use it.
 
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's

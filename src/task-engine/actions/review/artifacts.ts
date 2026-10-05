@@ -2,8 +2,8 @@ import { z } from 'zod';
 import type { ArtifactDeclaration } from '../artifacts.js';
 
 /**
- * Review's artifact contract: the findings still present in the reviewed revision, the disposition
- * of every finding supplied from earlier rounds, and the verdict they support.
+ * Review's artifact contract: the findings present in the reviewed revision and the verdict they
+ * support. Findings carry no lifecycle identity; earlier reports remain readable evidence.
  */
 
 /**
@@ -33,9 +33,8 @@ const reportedLocationSchema = z.strictObject({
     .describe('The reviewed revision\u2019s line, or null when the location has no line.'),
 });
 
-/** One defect finding, identified by a task-stable ID. */
+/** One defect finding present in the assessed revision. */
 export const findingSchema = z.strictObject({
-  id: z.string().describe('The task-stable finding ID; reuse it for the same defect.'),
   title: z.string().describe('A short title for the defect.'),
   severity: z
     .enum(['blocking', 'non-blocking'])
@@ -53,21 +52,18 @@ export const findingSchema = z.strictObject({
 
 export type Finding = z.infer<typeof findingSchema>;
 
-/** The reviewer's disposition of one finding supplied from an earlier round. */
-export const findingDispositionSchema = z.strictObject({
-  findingId: z.string().describe('The eligible prior finding ID this disposition answers.'),
-  disposition: z
-    .enum(['resolved', 'open', 'withdrawn'])
-    .describe('The finding\u2019s state in the current revision.'),
-  reason: z
-    .string()
-    .describe('The implementation evidence and developer response that support the disposition.'),
+/**
+ * One finding as a retained report may still carry it: the current shape plus the removed stable
+ * ID. The producer's saved-record reader preserves it as historical data, and no current rule
+ * reads, matches or validates it.
+ */
+export const retainedFindingSchema = z.strictObject({
+  id: z.string().optional(),
+  ...findingSchema.shape,
 });
 
-export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
-
-/** The review result for one reviewed revision. */
-export const reviewOutputSchema = z.object({
+/** The review result's fields; the exported schema adds the verdict-consistency check. */
+const reviewOutputFieldsSchema = z.object({
   /** Task subject captured for this report; older reports may omit it. */
   taskSubject: z.string().optional(),
   profile: z.string().describe('The reviewer profile that produced this verdict.'),
@@ -81,13 +77,40 @@ export const reviewOutputSchema = z.object({
     .string()
     .describe('What was reviewed, the inspected scope and why this verdict is supported.'),
   findings: z
-    .array(findingSchema)
-    .describe(
-      'Every finding still present in the reviewed revision, including retained open findings.',
-    ),
-  priorFindings: z
-    .array(findingDispositionSchema)
-    .describe('One disposition for every eligible prior finding ID and none for any other ID.'),
+    .array(retainedFindingSchema)
+    .describe('The findings present in the reviewed revision, including newly discovered ones.'),
+  /**
+   * The former prior-finding disposition array a retained report may still carry. It stays stored
+   * as history and is never matched, validated or answered.
+   */
+  priorFindings: z.unknown().optional(),
+});
+
+/** Why one review verdict is unsupported by the findings it reports, or null. */
+function verdictProblem(
+  verdict: ReviewOutput['verdict'],
+  findings: readonly { readonly severity: Finding['severity'] }[],
+): string | null {
+  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
+  if (verdict === 'approved' && blockingCount > 0) {
+    return 'approved the revision while reporting a blocking finding';
+  }
+  if (verdict === 'changesRequested' && blockingCount === 0) {
+    return 'requested changes without a current blocking finding';
+  }
+  return null;
+}
+
+/**
+ * The review result for one reviewed revision. The producer-owned reader rejects a report whose
+ * verdict contradicts its current findings, so continuation, history and downstream consumers all
+ * receive a consistent saved report; former fields stay permitted as retained data.
+ */
+export const reviewOutputSchema = reviewOutputFieldsSchema.superRefine((report, context) => {
+  const problem = verdictProblem(report.verdict, report.findings);
+  if (problem !== null) {
+    context.addIssue({ code: 'custom', path: ['verdict'], message: `the review ${problem}` });
+  }
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
@@ -115,17 +138,15 @@ export const reportedFindingSchema = findingSchema.extend({
 export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
 
 /**
- * The agent's response fields: the same review fields with locations the strict provider schema
+ * The agent's response fields: the review fields with locations the strict provider schema
  * accepts. The action binds them to the configured profile and the observed reviewed head before
  * writing its output.
  */
 export const reviewResponseSchema = z.strictObject({
-  ...reviewOutputSchema.pick({ verdict: true, summary: true, priorFindings: true }).shape,
+  ...reviewOutputFieldsSchema.pick({ verdict: true, summary: true }).shape,
   findings: z
     .array(reportedFindingSchema)
-    .describe(
-      'Every finding still present in the reviewed revision, including retained open findings.',
-    ),
+    .describe('The findings present in the reviewed revision, including newly discovered ones.'),
 });
 
 export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
@@ -135,63 +156,10 @@ export const reviewArtifact = {
   schema: reviewOutputSchema,
 } satisfies ArtifactDeclaration<typeof reviewOutputSchema>;
 
-/** Validate a revision assessment against the shared findings and verdict contract. */
-export function validateReviewResponse(
-  response: ReviewResponse,
-  priorFindings: readonly Finding[],
-): void {
-  const current = new Set<string>();
-  for (const finding of response.findings) {
-    if (current.has(finding.id)) {
-      throw new Error(`The reviewer reported finding "${finding.id}" more than once.`);
-    }
-    current.add(finding.id);
-  }
-
-  const supplied = new Set(priorFindings.map((finding) => finding.id));
-  const answered = new Set<string>();
-  for (const disposition of response.priorFindings) {
-    if (!supplied.has(disposition.findingId)) {
-      throw new Error(`The reviewer disposed of unknown prior finding "${disposition.findingId}".`);
-    }
-    if (answered.has(disposition.findingId)) {
-      throw new Error(
-        `The reviewer disposed of prior finding "${disposition.findingId}" more than once.`,
-      );
-    }
-    answered.add(disposition.findingId);
-    const present = current.has(disposition.findingId);
-    if (disposition.disposition === 'open' && !present) {
-      throw new Error(
-        `The reviewer left prior finding "${disposition.findingId}" open without reporting it ` +
-          'in findings.',
-      );
-    }
-    if (disposition.disposition !== 'open' && present) {
-      throw new Error(
-        `The reviewer reported prior finding "${disposition.findingId}" as ` +
-          `"${disposition.disposition}" while it is still in findings.`,
-      );
-    }
-  }
-  const missing = priorFindings
-    .filter((finding) => !answered.has(finding.id))
-    .map((finding) => finding.id);
-  if (missing.length > 0) {
-    throw new Error(
-      `The reviewer did not dispose of prior finding${missing.length === 1 ? '' : 's'} ` +
-        `${missing.map((id) => `"${id}"`).join(', ')}.`,
-    );
-  }
-
-  const blocking = response.findings.filter((finding) => finding.severity === 'blocking');
-  if (response.verdict === 'approved' && blocking.length > 0) {
-    throw new Error(
-      `The reviewer approved the revision while reporting blocking finding` +
-        `${blocking.length === 1 ? '' : 's'} ${blocking.map((finding) => `"${finding.id}"`).join(', ')}.`,
-    );
-  }
-  if (response.verdict === 'changesRequested' && blocking.length === 0) {
-    throw new Error('The reviewer requested changes without a current blocking finding.');
+/** Validate one agent report's verdict against its current findings. */
+export function validateReviewResponse(report: ReviewResponse): void {
+  const problem = verdictProblem(report.verdict, report.findings);
+  if (problem !== null) {
+    throw new Error(`The reviewer ${problem}.`);
   }
 }

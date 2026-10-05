@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Evaluate the delivered change against the task and produce an actionable review of that revision,
+Evaluate task correctness at the delivered revision and produce an actionable review,
 including preparation content carried by its implementation branch.
 Completed assessments proceed to publication and either repair or gated completion;
 unfinished assessments proceed to recovery.
@@ -18,7 +18,7 @@ earlier-round review/development history, configured reviewer profile,
 and parent-supplied source input/publication acknowledgements.
 
 Use [ReviewerRole](../../agent-runtime/reviewer-role.md#interface). Supply the response format below
-and complete findings/responses using the [findings contract](findings.md). The profile includes
+and previous reports as context using the [findings contract](findings.md). The profile includes
 the complete reviewer instructions.
 
 ### Output
@@ -35,17 +35,16 @@ type ReviewOutput = {
   verdict: 'approved' | 'changesRequested';
   summary: string;
   findings: Finding[];
-  priorFindings: FindingDisposition[];
 };
 
-type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings' | 'priorFindings'>;
+type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings'>;
 ```
 
 The action captures the refreshed task subject in taskSubject when saving a new report, retaining
 the subject for later artifact interpretation even if task selection is refreshed.
 
 Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
-its finding definitions, identity/disposition rules and verdict rules in the context. Parse and validate the response, then add
+its current finding definition and verdict rules in context. Parse and validate the response, then add
 the configured profile and observed reviewed head to create ReviewOutput. They are not agent claims.
 
 Review owns one artifact schema and derives its response schema and TypeScript types from it.
@@ -65,35 +64,35 @@ review-specific retry mechanism or open a repair round merely because review cou
 ## Behavior
 
 Use PreparedWorkspace.repositoryWorkspace for repository inspection and the reviewer working
-directory. Review the complete contributed diff against the recorded comparison base, including
-preparation commits on the first implementation. Stage acceptance is context, not delivery approval.
+directory. Assess all code relevant to task correctness, including pre-existing code when correction
+is necessary and preparation content carried by the first implementation. The comparison base and
+diff help orient inspection; neither that range nor changes since a preceding review limit scope.
+Stage acceptance is context, not delivery approval.
 Keep review artifacts under the implementation issue; earlier stage or PR approval cannot approve
 a changed head.
 
 Confirm that the delivered head, development result, verification result and retained worktree describe
 the same revision. Read saved task conversation and round history. A parent-owned input actor supplies refreshed task
-conversation; save that input and refreshed GitHub PR conversations locally. Give the reviewer complete prior findings
-and developer responses, not shortened Jira summaries.
-
-Supply a clearly identified current-round disposition input containing only the preceding review's
-findings array, as complete Finding values, and the matching developer responses. Use this same set
-for response validation under the findings contract. Present complete earlier reports and conversations
-separately as historical evidence; do not label a whole prior review as the findings to evaluate.
-State the exact eligible IDs, including an explicit empty set on the first round. Keep rejection of
-missing, duplicate or out-of-set dispositions; do not silently remove them from returned reports.
+conversation; save that input and refreshed GitHub PR conversations locally. Supply task requirements,
+the current developer artifact and verification evidence, and complete earlier review/development
+reports or readable local references, preserving their evidence and attribution. Published Jira
+summaries do not replace these reports. Previous reports provide context; there is no eligible
+finding set, per-finding response or disposition input.
 
 Read the comparison diff for the recorded base/head and include that revision range in the review
-context. Agent claims do not change the revision this action is evaluating.
+context, explicitly identifying it as orientation rather than a scope boundary. Agent claims do not
+change the revision this action is evaluating.
 
 Use the existing worktree with the reviewer profile. Dependency installation, builds, focused checks
 and temporary reproduction tests may write files. Verify that the reviewed revision and implementation
 remain unchanged after the turn; new caches, logs or generated verification output alone do not
 invalidate a review. Implementation fixes belong to a development turn.
 
-The reviewer evaluates correctness and missing behavior, explains prior finding dispositions and
-returns a verdict. Validate finding IDs, prior dispositions and the verdict under the shared contract.
-Bind the report to the revision actually reviewed. Missing required responses or inconsistent verdicts
-are unusable output, not approval or a newly invented coding finding.
+The reviewer evaluates correctness and missing behavior and judges previous concerns and narrative
+responses against current evidence. It returns a verdict, summary and actionable current findings.
+Validate report shape and verdict consistency under the shared contract; remove ID uniqueness and
+cross-round matching checks. Bind the report to the revision actually reviewed. Missing required
+fields or inconsistent verdicts are unusable output, not approval or a newly invented coding finding.
 
 An invocation fault or unusable response fails the action before saving a new reviewArtifact or
 publishing a review/check. Retain the failure explanation through ordinary execution diagnostics;
@@ -112,9 +111,13 @@ beginning with the profile and explaining what was missed and what to improve. A
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
 
-Validate current and historical retained reports with the same artifact schema. Reuse valid reports
-for their recorded head; an existing invalid report is an action failure under the action contract,
-not an absent report or a verdict to translate. Do not rewrite history or add a compatibility verdict.
+New agent responses use the strict current response schema. The producer's saved-record reader also
+accepts former finding IDs and disposition fields in retained reports without enforcing removed
+lifecycle rules. Preserve the complete original reports as readable historical evidence. Required
+verdict, finding and revision fields still receive shape and consistency validation. An invalid
+retained report is an action failure, not an absent report or a verdict to translate. Reuse an
+otherwise valid completed report only for its recorded head under the existing publication rules;
+history does not authorize a changed revision. Do not rewrite history or add a compatibility verdict.
 
 Review has no Jira capability. GitHub Nexus Lens review/check publication remains Review-owned.
 

@@ -3,12 +3,7 @@ import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
-import { findingResponseSchema } from '../develop/artifacts.js';
-import {
-  findingDispositionSchema,
-  findingSchema,
-  reportedFindingSchema,
-} from '../review/artifacts.js';
+import { reportedFindingSchema, retainedFindingSchema, type Finding } from '../review/artifacts.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
@@ -144,7 +139,7 @@ export const artifactReferenceSchema = z.strictObject({
 
 /**
  * The author's report: the proposal or revision plus its documents, skip proposal, question or
- * upstream request. Finding responses use the shared findings contract.
+ * upstream request. Repairs, disagreements and remaining problems belong in the narrative summary.
  */
 export const stageAuthorResponseSchema = z.strictObject({
   outcome: z
@@ -194,17 +189,18 @@ export const stageAuthorResponseSchema = z.strictObject({
     .describe(
       'The problematic input, its consequence and the required correction, or null unless the outcome is return-upstream.',
     ),
-  findingResponses: z
-    .array(findingResponseSchema)
-    .describe(
-      'One entry for each eligible prior finding ID and none for any other ID; empty when the round inherits none.',
-    ),
 });
 
 export type StageAuthorResponse = z.infer<typeof stageAuthorResponseSchema>;
 
-/** The saved author artifact: the report bound to the stage and its authored revision. */
-export const stageAuthorOutputSchema = stageAuthorResponseSchema.extend({
+/**
+ * The saved author artifact: the report bound to the stage and its authored revision. The
+ * producer-owned reader preserves a former finding-response array as retained data without
+ * validating or answering it.
+ */
+export const stageAuthorOutputSchema = z.object({
+  ...stageAuthorResponseSchema.shape,
+  findingResponses: z.unknown().optional(),
   stage: z.enum(preparationStages),
   revision: z.number().int().positive(),
 });
@@ -217,9 +213,9 @@ export const stageAuthorArtifact = {
 } satisfies ArtifactDeclaration<typeof stageAuthorOutputSchema>;
 
 /**
- * The evaluator's report: the exact revision it assessed, its verdict, its findings and any
- * upstream request, plus its disposition of every finding the response round inherited. A skip may
- * only be accepted when the author proposed one.
+ * The evaluator's report: the exact revision it assessed, its verdict, the findings present in
+ * that revision and any upstream request. A skip may only be accepted when the author proposed
+ * one.
  */
 export const stageEvaluationResponseSchema = z.strictObject({
   assessedRevision: z
@@ -247,12 +243,7 @@ export const stageEvaluationResponseSchema = z.strictObject({
     ),
   findings: z
     .array(reportedFindingSchema)
-    .describe('Every finding still present in the assessed revision, each with its stable ID.'),
-  priorFindings: z
-    .array(findingDispositionSchema)
-    .describe(
-      'One disposition for each inherited finding ID and none for any other ID; an open disposition requires the finding in findings.',
-    ),
+    .describe('The findings present in the assessed revision, including newly discovered ones.'),
   upstream: upstreamRequestSchema
     .nullable()
     .describe(
@@ -312,21 +303,34 @@ export const acceptanceBasisSchema = z.object({
 export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
 
 /**
- * The saved evaluation artifact: reported findings with their absent lines normalized away, and
- * one disposition for every finding the assessed revision inherited.
+ * The saved evaluation artifact: reported findings with their absent lines normalized away. The
+ * producer-owned reader preserves former finding IDs and dispositions as retained data without
+ * matching or validating them, and rejects a report whose verdict contradicts its current
+ * findings or upstream request, so continuation and downstream consumers see a consistent record.
  */
-export const stageEvaluationOutputSchema = z.object({
-  /** The exact authored report, captured input and assessed content this decision is bound to. */
-  basis: acceptanceBasisSchema,
-  assessedRevision: z.number().int().positive(),
-  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
-  reason: z.string(),
-  /** The evaluator's own saved prototype observation record the decision retains, if any. */
-  observation: artifactReferenceSchema.nullable(),
-  findings: z.array(findingSchema),
-  priorFindings: z.array(findingDispositionSchema),
-  upstream: upstreamRequestSchema.nullable(),
-});
+export const stageEvaluationOutputSchema = z
+  .object({
+    /** The exact authored report, captured input and assessed content this decision is bound to. */
+    basis: acceptanceBasisSchema,
+    assessedRevision: z.number().int().positive(),
+    verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
+    reason: z.string(),
+    /** The evaluator's own saved prototype observation record the decision retains, if any. */
+    observation: artifactReferenceSchema.nullable(),
+    findings: z.array(retainedFindingSchema),
+    priorFindings: z.unknown().optional(),
+    upstream: upstreamRequestSchema.nullable(),
+  })
+  .superRefine((evaluation, context) => {
+    const problem = evaluationVerdictProblem(
+      evaluation.verdict,
+      evaluation.findings,
+      evaluation.upstream,
+    );
+    if (problem !== null) {
+      context.addIssue({ code: 'custom', path: ['verdict'], message: problem });
+    }
+  });
 
 export type StageEvaluationOutput = z.infer<typeof stageEvaluationOutputSchema>;
 
@@ -334,6 +338,32 @@ export const stageEvaluationArtifact = {
   pathFromArtifactsRoot: 'evaluation.json',
   schema: stageEvaluationOutputSchema,
 } satisfies ArtifactDeclaration<typeof stageEvaluationOutputSchema>;
+
+/**
+ * Why one evaluation verdict is unsupported by the report it carries, or null. The evaluator's
+ * response and a retained saved evaluation state a verdict their current findings and upstream
+ * request support.
+ */
+export function evaluationVerdictProblem(
+  verdict: StageEvaluationOutput['verdict'],
+  findings: readonly { readonly severity: Finding['severity'] }[],
+  upstream: UpstreamRequest | null,
+): string | null {
+  if (verdict === 'return-upstream' && upstream === null) {
+    return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+  if (upstream !== null && verdict !== 'return-upstream') {
+    return 'only a return-upstream verdict carries the upstream request';
+  }
+  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
+  if ((verdict === 'accepted' || verdict === 'accepted-skip') && blockingCount > 0) {
+    return 'the report accepts the revision while reporting a blocking finding';
+  }
+  if (verdict === 'changes-requested' && blockingCount === 0) {
+    return 'a changes-requested verdict needs at least one current blocking finding';
+  }
+  return null;
+}
 
 /** The terminal result the parent publication reads and the child returns a reference to. */
 export const preparationResultSchema = z.object({

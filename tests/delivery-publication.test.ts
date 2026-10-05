@@ -50,7 +50,6 @@ async function deliveryAttempt(status: string): Promise<{
       baseRevision: '1'.repeat(40),
       headRevision: '2'.repeat(40),
       summary: 'Added the feature.',
-      findingResponses: [],
     }),
   );
   await writeFile(

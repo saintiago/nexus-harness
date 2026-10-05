@@ -110,7 +110,6 @@ async function workspace(options: {
     baseRevision,
     headRevision,
     summary: 'Implemented the retry guard.',
-    findingResponses: [],
   });
   return { workspaceRoot, worktree };
 }

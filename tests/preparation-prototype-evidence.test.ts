@@ -187,7 +187,6 @@ function authoredReport(observation: string): Record<string, unknown> {
     question: null,
     upstream: null,
     observation: { path: observation },
-    findingResponses: [],
   };
 }
 
@@ -199,7 +198,6 @@ function evaluationReport(verdict: string, observation: string | null): Record<s
     reason: 'Assessed the exact retained prototype.',
     observation: observation === null ? null : { path: observation },
     findings: [],
-    priorFindings: [],
     upstream: null,
   };
 }
@@ -428,7 +426,6 @@ describe('prototype observation evidence', () => {
         question: null,
         upstream: null,
         observation: { path: record },
-        findingResponses: [],
       }),
     ).rejects.toThrow(/only authored prototype work carries an observation/);
 
@@ -460,7 +457,6 @@ describe('prototype observation evidence', () => {
           question: null,
           upstream: null,
           observation: { path: record },
-          findingResponses: [],
         }).runner,
       })({ task: 'propose' }),
     ).rejects.toThrow(/only the Storybook Refinement stage retains a prototype observation/);
@@ -663,7 +659,6 @@ describe('prototype observation evidence', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       }).runner,
     })({ task: 'propose' });
     await expect(
@@ -832,7 +827,6 @@ describe('prototype observation evidence', () => {
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     });
     await expect(
       createStageAuthor({
@@ -960,7 +954,6 @@ describe('prototype observation evidence', () => {
             question: null,
             upstream: null,
             observation: null,
-            findingResponses: [],
           }),
         });
       },
@@ -1051,7 +1044,6 @@ describe('prototype observation evidence', () => {
         runner: runnerOf(report).runner,
       })();
     const finding = {
-      id: 'F1',
       title: 'The journey skips its running state',
       severity: 'blocking',
       basis: 'The prototype must show the running state as the journey advances.',
@@ -1069,7 +1061,6 @@ describe('prototype observation evidence', () => {
         reason: 'The observed journey skips a state.',
         observation: { path: evaluatorObservation },
         findings: [finding],
-        priorFindings: [],
         upstream: null,
       }),
     ).resolves.toBe('changes-requested');
@@ -1093,7 +1084,6 @@ describe('prototype observation evidence', () => {
         reason: 'The observed journey skips a state.',
         observation: { path: stale },
         findings: [finding],
-        priorFindings: [],
         upstream: null,
       }),
     ).rejects.toThrow(/differs from the evaluated revision/);
@@ -1106,7 +1096,6 @@ describe('prototype observation evidence', () => {
         reason: 'The captured input contradicts the journey.',
         observation: { path: evaluatorObservation },
         findings: [],
-        priorFindings: [],
         upstream: {
           stage: 'requirements',
           problem: 'The captured input omits the running state.',
@@ -1302,7 +1291,6 @@ describe('prototype observation evidence', () => {
           question: null,
           upstream: null,
           observation: null,
-          findingResponses: [],
         }).runner,
       })({ task: 'propose' });
       await expect(
@@ -1317,7 +1305,6 @@ describe('prototype observation evidence', () => {
             reason: 'The accepted prototype still matches the corrected input.',
             observation: null,
             findings: [],
-            priorFindings: [],
             upstream: null,
           }).runner,
         })(),

@@ -23,7 +23,6 @@ import {
 } from '../src/task-engine/actions/preparation/evaluation-content.js';
 import {
   preparationWorktree,
-  priorStageFindings,
   readCurrentDecision,
   readStagePlan,
   reusedPreparationContent,
@@ -42,7 +41,6 @@ afterEach(async () => {
 });
 
 const finding: Finding = {
-  id: 'F1',
   title: 'The journey contradicts the requirement',
   severity: 'blocking',
   basis: 'The accepted requirement is contradicted by the proposed journey.',
@@ -111,7 +109,6 @@ async function stageWithEvaluation(
     question: null,
     upstream: null,
     observation: null,
-    findingResponses: [],
   };
   await writeFile(path.join(root, 'artifacts', '1', 'author.json'), JSON.stringify(author));
   await writeFile(
@@ -129,7 +126,6 @@ async function stageWithEvaluation(
       reason: 'The journey contradicts the requirement.',
       observation: null,
       findings: [finding],
-      priorFindings: [],
       upstream:
         options.verdict === 'return-upstream'
           ? {
@@ -190,7 +186,7 @@ async function openNextRound(selectionFile: string, root: string): Promise<void>
 }
 
 describe('preparation repair rounds', () => {
-  it('supplies the preceding revision and findings to the author response', async () => {
+  it('supplies the preceding revision and evaluation to the author repair', async () => {
     const { selectionFile, issueRoot, root } = await stageWithEvaluation();
     await openNextRound(selectionFile, root);
     const { runner, contexts, roots } = runnerOf([
@@ -204,9 +200,6 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [
-          { findingId: 'F1', status: 'addressed', response: 'Removed the forbidden path.' },
-        ],
       },
     ]);
     const author: BoundAction = createStageAuthor({
@@ -226,14 +219,18 @@ describe('preparation repair rounds', () => {
     // The response round reads the preceding revision and evaluation from history.
     expect(contexts[0]).toContain('The journey contradicts the requirement');
     expect(contexts[0]).toContain('The current authored revision is 1');
-    expect(contexts[0]).toContain('Eligible prior finding IDs: "F1"');
-    await expect(artifact(root, 2, 'author.json')).resolves.toMatchObject({
+    expect(contexts[0]).toContain('The previous evaluation of this work');
+    expect(contexts[0]).toContain(finding.evidence);
+    expect(contexts[0]).not.toContain('Eligible prior finding IDs');
+    const saved = (await artifact(root, 2, 'author.json')) as Record<string, unknown>;
+    expect(saved).toMatchObject({
       revision: 2,
-      findingResponses: [{ findingId: 'F1', status: 'addressed' }],
+      summary: 'The journey now follows the requirement.',
     });
+    expect(saved).not.toHaveProperty('findingResponses');
   });
 
-  it('rejects an author response that drops a prior finding', async () => {
+  it('rejects a current author response that carries the removed finding-response field', async () => {
     const { selectionFile, root } = await stageWithEvaluation();
     await openNextRound(selectionFile, root);
     const { runner } = runnerOf([
@@ -247,7 +244,9 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
+        findingResponses: [
+          { findingId: 'F1', status: 'addressed', response: 'Removed the forbidden path.' },
+        ],
       },
     ]);
     const author = createStageAuthor({
@@ -259,11 +258,12 @@ describe('preparation repair rounds', () => {
     });
 
     await expect(author({ stage: 'ux', task: 'respond' })).rejects.toThrow(
-      /did not respond to finding "F1"/,
+      /does not match the response format/,
     );
+    await expect(artifact(root, 2, 'author.json')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('requires the evaluator to dispose of the inherited finding and reject blocked acceptance', async () => {
+  it('judges the previous evaluation against the current revision without disposition records', async () => {
     const { selectionFile, issueRoot, root } = await stageWithEvaluation();
     await openNextRound(selectionFile, root);
     await writeFile(
@@ -280,9 +280,6 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [
-          { findingId: 'F1', status: 'addressed', response: 'Removed the forbidden path.' },
-        ],
       }),
     );
     const { runner, contexts, roots } = runnerOf([
@@ -292,27 +289,14 @@ describe('preparation repair rounds', () => {
         reason: 'Nothing further is needed.',
         observation: null,
         findings: [finding],
-        priorFindings: [{ findingId: 'F1', disposition: 'open', reason: 'It is still present.' }],
         upstream: null,
       },
       {
         assessedRevision: 2,
         verdict: 'accepted',
-        reason: 'Nothing further is needed.',
+        reason: 'The observation confirms the journey follows the requirement.',
         observation: null,
         findings: [],
-        priorFindings: [],
-        upstream: null,
-      },
-      {
-        assessedRevision: 2,
-        verdict: 'accepted',
-        reason: 'Nothing further is needed.',
-        observation: null,
-        findings: [],
-        priorFindings: [
-          { findingId: 'F1', disposition: 'resolved', reason: 'The path was removed.' },
-        ],
         upstream: null,
       },
     ]);
@@ -331,23 +315,26 @@ describe('preparation repair rounds', () => {
     await expect(evaluator({ stage: 'ux' })).rejects.toThrow(
       /accepts the revision while reporting/,
     );
-    // A report that drops the inherited finding's disposition is unusable output.
-    await expect(evaluator({ stage: 'ux' })).rejects.toThrow(
-      /does not dispose of prior finding "F1"/,
-    );
-    // A complete report resolves the finding and records its disposition.
+    // The evaluator judges the earlier concern resolved and reports no current finding.
     await expect(evaluator({ stage: 'ux' })).resolves.toBe('accepted');
     // Every evaluator invocation receives the preparation issue root, not its checkout.
-    expect(roots).toEqual([issueRoot, issueRoot, issueRoot]);
+    expect(roots).toEqual([issueRoot, issueRoot]);
     expect((await stat(path.join(roots[0]!, 'worktree'))).isDirectory()).toBe(true);
-    expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
-    await expect(artifact(root, 2, 'evaluation.json')).resolves.toMatchObject({
-      priorFindings: [{ findingId: 'F1', disposition: 'resolved' }],
+    // Both invocations read the previous evaluation as context; no IDs or dispositions are asked
+    // for or recorded.
+    expect(contexts[1]).toContain('The previous evaluation of this work');
+    expect(contexts[1]).toContain(finding.evidence);
+    expect(contexts[1]).not.toContain('Eligible prior finding IDs');
+    const saved = (await artifact(root, 2, 'evaluation.json')) as Record<string, unknown>;
+    expect(saved).toMatchObject({
+      verdict: 'accepted',
+      findings: [],
       basis: {
         authorIdentity: expect.any(String),
         content: [{ path: 'docs/ux.md', revision: '2'.repeat(40), exists: true }],
       },
     });
+    expect(saved).not.toHaveProperty('priorFindings');
   });
 
   it('supplies the parent correction and the approved idea handoff to the stage context', async () => {
@@ -408,7 +395,6 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     ]);
     const author = createStageAuthor({
@@ -425,12 +411,12 @@ describe('preparation repair rounds', () => {
     expect(contexts[0]).toContain('Propose a navigation path that supports the example.');
     // The approved idea handoff is an upstream reference, and the retained revision continues.
     expect(contexts[0]).toContain(path.join(issueRoot, 'refinement', 'artifacts', 'handoff.json'));
-    // A fresh stage visit inherits no earlier findings: only re-entry does.
-    expect(contexts[0]).toContain('No prior findings are supplied for this round');
+    // A fresh stage visit inherits no earlier evaluation: only re-entry supplies one.
+    expect(contexts[0]).not.toContain('The previous evaluation of this work');
     await expect(artifact(root, 3, 'author.json')).resolves.toMatchObject({ revision: 2 });
   });
 
-  it('resolves the findings its own earlier return left open in a reassessment round', async () => {
+  it('carries its earlier return into the reassessment context without a finding ledger', async () => {
     const { selectionFile, issueRoot, root } = await stageWithEvaluation({
       stage: 'architecture',
       verdict: 'return-upstream',
@@ -467,11 +453,12 @@ describe('preparation repair rounds', () => {
       JSON.parse(await readFile(path.join(root, 'state', 'current-round.json'), 'utf8')),
     ).toMatchObject({ round: 2, route: 'reassess' });
 
-    // The author must answer the finding the earlier return left open.
-    const { runner: dropping } = runnerOf([
+    // The author proposes the retained design with a narrative account; no per-finding response
+    // is required.
+    const { runner: proposing, contexts: authorContexts } = runnerOf([
       {
         outcome: 'skip-proposed',
-        summary: 'The retained design still holds.',
+        summary: 'The corrected input resolves the earlier concern; the retained design holds.',
         documents: [],
         sourcePaths: [],
         plan: [
@@ -486,59 +473,29 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     ]);
     const author = createStageAuthor({
       selectionFile,
       stage: 'architecture',
-      runner: dropping,
+      runner: proposing,
       git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     });
-    await expect(author({ stage: 'architecture', task: 'propose' })).rejects.toThrow(
-      /did not respond to finding "F1"/,
-    );
+    await expect(author({ stage: 'architecture', task: 'propose' })).resolves.toBe('skip-proposed');
+    expect(authorContexts[0]).toContain('The previous evaluation of this work');
+    expect(authorContexts[0]).toContain(finding.evidence);
+    expect(authorContexts[0]).not.toContain('Eligible prior finding IDs');
 
-    // The evaluator must dispose of it before the reassessed work can be accepted.
-    await writeFile(
-      path.join(root, 'artifacts', '2', 'author.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        revision: 2,
-        outcome: 'skip-proposed',
-        summary: 'The retained design still holds.',
-        documents: [],
-        sourcePaths: [],
-        plan: [],
-        skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
-        question: null,
-        upstream: null,
-        observation: null,
-        findingResponses: [
-          { findingId: 'F1', status: 'addressed', response: 'The corrected input resolves it.' },
-        ],
-      }),
-    );
+    // The evaluator judges the earlier concern against the reassessed revision and reports only
+    // current findings.
     const { runner, contexts } = runnerOf([
       {
         assessedRevision: 2,
         verdict: 'accepted-skip',
-        reason: 'The retained design still holds.',
+        reason: 'The corrected input resolves the earlier concern.',
         observation: null,
         findings: [],
-        priorFindings: [],
-        upstream: null,
-      },
-      {
-        assessedRevision: 2,
-        verdict: 'accepted-skip',
-        reason: 'The retained design still holds.',
-        observation: null,
-        findings: [],
-        priorFindings: [
-          { findingId: 'F1', disposition: 'resolved', reason: 'The corrected input resolves it.' },
-        ],
         upstream: null,
       },
     ]);
@@ -552,13 +509,13 @@ describe('preparation repair rounds', () => {
           ok(await readFile(path.join(repository, file), 'utf8')),
       }).git,
     });
-    await expect(evaluator({ stage: 'architecture' })).rejects.toThrow(
-      /does not dispose of prior finding "F1"/,
-    );
     await expect(evaluator({ stage: 'architecture' })).resolves.toBe('accepted-skip');
-    // The evaluator receives the preceding evaluation and the complete unresolved finding set.
-    expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
-    expect(contexts[1]).toContain('The previous evaluation of this work');
+    expect(contexts[0]).toContain('The previous evaluation of this work');
+    expect(contexts[0]).toContain(finding.evidence);
+    expect(contexts[0]).not.toContain('Eligible prior finding IDs');
+    const saved = (await artifact(root, 2, 'evaluation.json')) as Record<string, unknown>;
+    expect(saved).toMatchObject({ verdict: 'accepted-skip', findings: [] });
+    expect(saved).not.toHaveProperty('priorFindings');
   });
 
   it('rejects an Architecture skip that omits the plan its handoff requires', async () => {
@@ -574,7 +531,6 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       },
     ]);
     const author = createStageAuthor({
@@ -622,6 +578,7 @@ describe('preparation repair rounds', () => {
         },
         verdict: 'accepted-skip',
         reason: 'The existing design still holds.',
+        findings: [],
       }),
     );
     const { git } = scriptedGit([repositoryState()], {
@@ -637,12 +594,67 @@ describe('preparation repair rounds', () => {
     await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(/nonempty implementation plan/);
   });
 
-  it.each([
-    { exit: 'return-upstream', disposition: 'resolved' },
-    { exit: 'needs-input', disposition: 'withdrawn' },
-  ] as const)(
-    'keeps finding evidence through an author-only $exit until explicitly $disposition',
-    async ({ exit, disposition }) => {
+  it('rejects a retained evaluation whose accepted verdict contradicts its blocking finding', async () => {
+    const { selectionFile, issueRoot, root, selection } = await stageWithEvaluation();
+    const evaluationFile = path.join(root, 'artifacts', '1', 'evaluation.json');
+    const evaluation = JSON.parse(await readFile(evaluationFile, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(
+      evaluationFile,
+      JSON.stringify({ ...evaluation, verdict: 'accepted', reason: 'The journey is adequate.' }),
+    );
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async (_repository, _revision, file) =>
+        ok(await readFile(path.join(preparationWorktree(issueRoot), file), 'utf8')),
+    });
+
+    // Finalization reads the evaluator's saved report, so the contradiction fails before any
+    // acceptance can be persisted.
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'ux',
+      git,
+      publish: () => undefined,
+    });
+    await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(
+      /accepts the revision while reporting a blocking finding/,
+    );
+    await expect(artifact(root, 1, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(path.join(root, 'state', 'result.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    // A retained result that already recorded the acceptance cannot make the decision current
+    // downstream either.
+    await writeFile(
+      path.join(root, 'artifacts', '1', 'result.json'),
+      JSON.stringify({
+        stage: 'ux',
+        outcome: 'accepted',
+        authoredRevision: 1,
+        documents: [],
+        existingDocuments: [],
+        sourcePaths: [],
+        skipReferences: [],
+        outputs: [{ path: path.join(root, 'artifacts', '1', 'evaluation.json') }],
+        evaluation: { path: path.join(root, 'artifacts', '1', 'evaluation.json') },
+        reason: 'The journey is adequate.',
+        returnStage: null,
+        returnFinding: null,
+        prototype: null,
+        prototypeObservations: [],
+      }),
+    );
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).rejects.toThrow(/accepts the revision while reporting a blocking finding/);
+  });
+
+  it.each(['return-upstream', 'needs-input'] as const)(
+    'keeps the previous evaluation readable through an author-only $exit',
+    async (exit) => {
       const { selectionFile, issueRoot, root, selection } = await stageWithEvaluation();
       const common = { selectionFile, stage: 'ux' as const, publish: () => undefined };
       const { git } = scriptedGit([repositoryState()], {
@@ -673,9 +685,6 @@ describe('preparation repair rounds', () => {
               }
             : null,
         observation: null,
-        findingResponses: [
-          { findingId: 'F1', status: 'unresolved', response: 'The input needs correction.' },
-        ],
       };
       await expect(open()({ route: 'next' })).resolves.toBe('opened');
       await expect(
@@ -715,55 +724,42 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [],
       };
-      const authorReports = runnerOf([
-        proposal,
-        {
-          ...proposal,
-          findingResponses: [
-            { findingId: 'F1', status: 'addressed', response: 'The example is corrected.' },
-          ],
-        },
-      ]);
+      const authorReports = runnerOf([proposal]);
       const author = createStageAuthor({ ...common, git, runner: authorReports.runner });
-      await expect(author({ task: 'propose' })).rejects.toThrow(/did not respond to finding "F1"/);
       await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
-      expect(authorReports.contexts[1]).toContain('The current authored revision is 2');
-      expect(authorReports.contexts[1]).toContain('The previous evaluation of this work');
-      expect(authorReports.contexts[1]).toContain(finding.evidence);
-      expect(authorReports.contexts[1]).toContain('The input needs correction.');
+      expect(authorReports.contexts[0]).toContain('The current authored revision is 2');
+      expect(authorReports.contexts[0]).toContain('The previous evaluation of this work');
+      expect(authorReports.contexts[0]).toContain(finding.evidence);
+      expect(authorReports.contexts[0]).toContain('The finding still needs clarification');
+      expect(authorReports.contexts[0]).not.toContain('Eligible prior finding IDs');
       const assessment = {
         assessedRevision: 3,
         verdict: 'accepted-skip',
         reason: 'The corrected input resolves the contradiction.',
         observation: null,
         findings: [],
-        priorFindings: [],
         upstream: null,
       };
-      const evaluatorReports = runnerOf([
-        assessment,
-        {
-          ...assessment,
-          priorFindings: [
-            { findingId: 'F1', disposition, reason: 'The input correction removes the concern.' },
-          ],
-        },
-      ]);
+      const evaluatorReports = runnerOf([assessment]);
       const evaluate = createStageEvaluator({ ...common, git, runner: evaluatorReports.runner });
-      await expect(evaluate()).rejects.toThrow(/does not dispose of prior finding "F1"/);
       await expect(evaluate()).resolves.toBe('accepted-skip');
-      expect(evaluatorReports.contexts[1]).toContain(finding.evidence);
-      expect(evaluatorReports.contexts[1]).toContain('Eligible prior finding IDs: "F1"');
+      expect(evaluatorReports.contexts[0]).toContain(finding.evidence);
+      expect(evaluatorReports.contexts[0]).toContain('The previous evaluation of this work');
+      expect(evaluatorReports.contexts[0]).not.toContain('Eligible prior finding IDs');
+      await expect(artifact(root, 3, 'evaluation.json')).resolves.toMatchObject({
+        verdict: 'accepted-skip',
+        findings: [],
+      });
       await createStageResult({ ...common, git })({ outcome: 'skipped' });
 
-      // A later unevaluated exit retains the latest empty finding set, not an older resolved F1.
+      // A later author-only exit introduces no current finding; the following reassessment reads
+      // the most recent evaluation rather than an older finding ledger.
       await open()({ route: 'new' });
       await createStageAuthor({
         ...common,
         git,
-        runner: runnerOf([{ ...exiting, findingResponses: [] }]).runner,
+        runner: runnerOf([exiting]).runner,
       })({ task: 'propose' });
       await createStageResult({ ...common, git })({ outcome: resultOutcome });
       await expect(
@@ -772,7 +768,6 @@ describe('preparation repair rounds', () => {
       await open()({ route: 'new' });
       const plan = await readStagePlan(root);
       expect(plan).toMatchObject({ round: 5, route: 'reassess' });
-      await expect(priorStageFindings(root, plan!)).resolves.toEqual([]);
       await expect(
         reusedPreparationContent({
           root,
@@ -786,8 +781,9 @@ describe('preparation repair rounds', () => {
       await createStageAuthor({ ...common, git, runner: finalReports.runner })({ task: 'propose' });
       await createStageEvaluator({ ...common, git, runner: finalReports.runner })();
       await createStageResult({ ...common, git })({ outcome: 'skipped' });
-      expect(finalReports.contexts[0]).toContain('No prior findings are supplied for this round');
-      expect(finalReports.contexts[1]).toContain('No prior findings are inherited by this round');
+      expect(finalReports.contexts[0]).toContain('The corrected input resolves the contradiction.');
+      expect(finalReports.contexts[0]).not.toContain(finding.title);
+      expect(finalReports.contexts[1]).toContain('The corrected input resolves the contradiction.');
     },
   );
 
@@ -830,9 +826,6 @@ describe('preparation repair rounds', () => {
         question: null,
         upstream: null,
         observation: null,
-        findingResponses: [
-          { findingId: 'F1', status: 'addressed', response: 'The corrected input removes it.' },
-        ],
       },
     ]);
     const author = createStageAuthor({
@@ -845,8 +838,10 @@ describe('preparation repair rounds', () => {
     await expect(author({ stage: 'ux', task: 'propose' })).resolves.toBe('skip-proposed');
     expect(contexts[0]).toContain('pending reassessment');
     expect(contexts[0]).toContain('The current authored revision is 1');
-    // The reassessed stage keeps the unresolved finding its own earlier evaluation left open: the
-    // author responds to it and the evaluator must dispose of it.
-    expect(contexts[0]).toContain('Eligible prior finding IDs: "F1"');
+    // The reassessed stage reads its earlier evaluation as context, without a finding-ID set or a
+    // per-finding response record.
+    expect(contexts[0]).toContain('The previous evaluation of this work');
+    expect(contexts[0]).toContain(finding.evidence);
+    expect(contexts[0]).not.toContain('Eligible prior finding IDs');
   });
 });

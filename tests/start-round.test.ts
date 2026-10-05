@@ -12,7 +12,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
-import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
+import {
+  reviewArtifact,
+  type Finding,
+  type ReviewOutput,
+} from '../src/task-engine/actions/review/artifacts.js';
 import type { CurrentRound } from '../src/task-engine/actions/start-round/artifacts.js';
 import {
   createStartRound,
@@ -28,6 +32,17 @@ const otherRevision = '9'.repeat(40);
 function headOf(round: number): string {
   return String(round + 1).repeat(40);
 }
+
+/** The current blocking finding a changes-requested review must carry. */
+const blockingFinding: Finding = {
+  title: 'The retry guard is missing',
+  severity: 'blocking',
+  basis: 'The design requires a retry guard.',
+  evidence: 'The reviewed revision contains no retry.',
+  impact: 'Transient failures are lost.',
+  repairGuidance: 'Add the retry guard.',
+  locations: [{ path: 'src/queue.ts', line: 42 }],
+};
 
 let root = '';
 let events: EngineEvent[] = [];
@@ -75,7 +90,6 @@ async function writeDevelopment(
     baseRevision,
     headRevision: revision,
     summary: status === 'completed' ? 'Implemented the task.' : 'Could not complete the task.',
-    findingResponses: [],
   });
 }
 
@@ -110,8 +124,7 @@ async function writeReview(
     headRevision: revision,
     verdict,
     summary: `The reviewer decided "${verdict}".`,
-    findings: [],
-    priorFindings: [],
+    findings: verdict === 'changesRequested' ? [blockingFinding] : [],
   });
 }
 
@@ -192,7 +205,6 @@ describe('StartRound', () => {
       baseRevision,
       headRevision: headOf(1),
       summary: 'First round.',
-      findingResponses: [],
     });
     await expect(helpers.readInputArtifacts(devArtifact)).resolves.toMatchObject([
       { taskKey: 'NEX-1' },
@@ -302,7 +314,6 @@ describe('StartRound', () => {
         verdict: 'inconclusive',
         summary: 'The available evidence could not settle the assessment.',
         findings: [],
-        priorFindings: [],
       });
 
       // The removed verdict is neither an approval, a rejection nor an absent report: its read

@@ -28,6 +28,7 @@ import {
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   acceptanceVerdictProblem,
+  evaluationVerdictProblem,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
@@ -62,9 +63,10 @@ import {
 
 /**
  * StageEvaluator assesses the exact authored revision of one evaluated preparation round. It
- * resolves the previous round's findings, distinguishes necessary changes from optional
- * suggestions and accepts the work, the author's skip proposal or a concrete upstream return. A
- * report that assesses another revision or invents a skip the author did not propose is unusable.
+ * judges earlier concerns against the current content, distinguishes necessary changes from
+ * optional suggestions and accepts the work, the author's skip proposal or a concrete upstream
+ * return. A report that assesses another revision or invents a skip the author did not propose is
+ * unusable.
  */
 
 export type StageEvaluatorSettings = {
@@ -79,8 +81,7 @@ export type StageEvaluatorSettings = {
 
 /**
  * Why the evaluator's report is not a usable assessment of the current revision, or null. The
- * report disposes of exactly the prior findings the response round inherited, keeps open findings
- * in its current list, and states a verdict its current blocking findings support.
+ * report states a verdict its current blocking findings support; previous reports are context.
  */
 function reportProblem(
   report: z.output<typeof stageEvaluationResponseSchema>,
@@ -88,10 +89,9 @@ function reportProblem(
     readonly stage: PreparationStage;
     readonly authorRevision: number;
     readonly authorOutcome: StageAuthorOutput['outcome'];
-    readonly priorFindings: readonly { readonly id: string }[];
   },
 ): string | null {
-  const { authorRevision, authorOutcome, priorFindings } = settings;
+  const { authorRevision, authorOutcome } = settings;
   if (report.assessedRevision !== authorRevision) {
     return (
       `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
@@ -100,12 +100,8 @@ function reportProblem(
   }
   const acceptanceProblem = acceptanceVerdictProblem(authorOutcome, report.verdict);
   if (acceptanceProblem !== null) return acceptanceProblem;
-  if (report.verdict === 'return-upstream' && report.upstream === null) {
-    return 'a return-upstream verdict needs the problematic input, consequence and correction';
-  }
-  if (report.upstream !== null && report.verdict !== 'return-upstream') {
-    return 'only a return-upstream verdict carries the upstream request';
-  }
+  const verdictProblem = evaluationVerdictProblem(report.verdict, report.findings, report.upstream);
+  if (verdictProblem !== null) return verdictProblem;
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
       return 'only the Storybook Refinement stage retains a prototype observation';
@@ -124,59 +120,6 @@ function reportProblem(
   }
   // A change request or upstream return may retain the observation of the preview it performed;
   // the declared record is validated with the rest of the report either way.
-
-  const current = new Set<string>();
-  for (const finding of report.findings) {
-    if (current.has(finding.id)) {
-      return `finding "${finding.id}" is reported more than once`;
-    }
-    current.add(finding.id);
-  }
-  const supplied = new Set(priorFindings.map((finding) => finding.id));
-  const answered = new Set<string>();
-  for (const disposition of report.priorFindings) {
-    if (!supplied.has(disposition.findingId)) {
-      return `prior finding "${disposition.findingId}" is not part of the inherited set`;
-    }
-    if (answered.has(disposition.findingId)) {
-      return `prior finding "${disposition.findingId}" is disposed of more than once`;
-    }
-    answered.add(disposition.findingId);
-    const present = current.has(disposition.findingId);
-    if (disposition.disposition === 'open' && !present) {
-      return (
-        `prior finding "${disposition.findingId}" is left open without appearing in the current ` +
-        'findings'
-      );
-    }
-    if (disposition.disposition !== 'open' && present) {
-      return (
-        `prior finding "${disposition.findingId}" is reported as "${disposition.disposition}" ` +
-        'while it is still in the current findings'
-      );
-    }
-  }
-  const missing = priorFindings.map((finding) => finding.id).filter((id) => !answered.has(id));
-  if (missing.length > 0) {
-    return (
-      `the report does not dispose of prior finding${missing.length === 1 ? '' : 's'} ` +
-      `${missing.map((id) => `"${id}"`).join(', ')}`
-    );
-  }
-
-  const blocking = report.findings.filter((finding) => finding.severity === 'blocking');
-  if (
-    (report.verdict === 'accepted' || report.verdict === 'accepted-skip') &&
-    blocking.length > 0
-  ) {
-    return (
-      `the report accepts the revision while reporting blocking finding` +
-      `${blocking.length === 1 ? '' : 's'} ${blocking.map((finding) => `"${finding.id}"`).join(', ')}`
-    );
-  }
-  if (report.verdict === 'changes-requested' && blocking.length === 0) {
-    return 'a changes-requested verdict needs at least one current blocking finding';
-  }
   return null;
 }
 
@@ -340,7 +283,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     }
 
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-    // A response or reassessment round resolves the preceding evaluation's findings against the
+    // A response or reassessment round judges the preceding evaluation's concerns against the
     // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
     // at all.
     let previous: StageEvaluationOutput | null = null;
@@ -353,8 +296,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         }
       }
     }
-    const findings = previous?.findings ?? [];
-
     // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
     // the assessment so the new basis binds their complete current observation, source paths
     // included, instead of losing them with the reference.
@@ -415,9 +356,9 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       workspace: { root: selection.workspace.root },
       context: [
         context,
-        `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
-          'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
-          'return; separate necessary changes from optional suggestions.',
+        `Assess the exact authored revision ${String(author.revision)} and judge whether earlier ` +
+          'concerns remain. Accept adequate work, the author\u2019s evaluated skip or a concrete ' +
+          'upstream return; separate necessary changes from optional suggestions.',
         'Return the response object only; do not write or overwrite the action-owned stage records ' +
           '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
           'adds the observed acceptance basis and persists your decision.',
@@ -431,13 +372,9 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
           'retained deletion): ' +
           JSON.stringify(basis.content),
         'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
-        findings.length === 0
-          ? 'No prior findings are inherited by this round; return an empty priorFindings array.'
-          : `Eligible prior finding IDs: ${findings
-              .map((finding) => `"${finding.id}"`)
-              .join(', ')}. Return exactly one priorFindings disposition for each and none for ` +
-            'any other ID; an open disposition requires the finding in findings, and resolved or ' +
-            'withdrawn findings stay out of it.',
+        'Previous reports are context: judge whether their concerns were addressed and report ' +
+          'the findings present in the assessed revision. Findings have no stable IDs, response ' +
+          'arrays or disposition records.',
         'State a verdict the current findings support: accepted and accepted-skip require no ' +
           'blocking finding, and changes-requested needs at least one.',
         responseFormatText(stageEvaluationResponseSchema),
@@ -474,7 +411,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       stage: settings.stage,
       authorRevision: author.revision,
       authorOutcome: author.outcome,
-      priorFindings: findings,
     });
     if (problem !== null) {
       await rejectReport({
@@ -549,7 +485,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       reason: report.reason,
       observation: report.observation,
       findings: toFindings(report.findings),
-      priorFindings: report.priorFindings,
       upstream: report.upstream,
     };
     await writeStageArtifact(root, plan.round, stageEvaluationArtifact, output);

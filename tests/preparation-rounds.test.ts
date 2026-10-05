@@ -107,7 +107,6 @@ async function authorRound(
       question: null,
       upstream: null,
       observation: null,
-      findingResponses: [],
     }),
   );
 }

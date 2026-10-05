@@ -2,22 +2,9 @@ import { z } from 'zod';
 import type { ArtifactDeclaration } from '../artifacts.js';
 
 /**
- * Develop's artifact contract. Review owns the Finding values a response refers to; the developer
- * returns one response per supplied finding.
+ * Develop's artifact contract: the agent's narrative report bound to the observed repository
+ * revisions. Review owns the Finding values previous reports carry.
  */
-
-/** One developer answer to a supplied review finding. */
-export const findingResponseSchema = z.strictObject({
-  findingId: z.string().describe('The supplied finding ID this answer addresses.'),
-  status: z
-    .enum(['addressed', 'disputed', 'unresolved'])
-    .describe('What happened to the finding in this revision.'),
-  response: z
-    .string()
-    .describe('The change, disagreement or remaining problem, with supporting evidence.'),
-});
-
-export type FindingResponse = z.infer<typeof findingResponseSchema>;
 
 /** The development result: the agent's report bound to the observed repository revisions. */
 export const developmentOutputSchema = z.object({
@@ -35,11 +22,6 @@ export const developmentOutputSchema = z.object({
   summary: z
     .string()
     .describe('What changed and why, or why the implementation could not be completed.'),
-  findingResponses: z
-    .array(findingResponseSchema)
-    .describe(
-      'One entry for every supplied finding ID and none for any other ID; empty when no findings were supplied.',
-    ),
 });
 
 export type DevelopmentOutput = z.infer<typeof developmentOutputSchema>;
@@ -50,11 +32,13 @@ export const devArtifact = {
 } satisfies ArtifactDeclaration<typeof developmentOutputSchema>;
 
 /**
- * The agent's response fields. The action binds them to the observed task, profile and revisions
- * before writing its output.
+ * The agent's response fields: status and a narrative summary covering changes, verification,
+ * answers to earlier reviews, disagreements and remaining problems. The action binds them to the
+ * observed task, profile and revisions before writing its output. A retained report's former
+ * finding-response field is ignored by the saved-record reader.
  */
 export const developmentResponseSchema = z.strictObject(
-  developmentOutputSchema.pick({ status: true, summary: true, findingResponses: true }).shape,
+  developmentOutputSchema.pick({ status: true, summary: true }).shape,
 );
 
 export type DevelopmentResponse = z.infer<typeof developmentResponseSchema>;

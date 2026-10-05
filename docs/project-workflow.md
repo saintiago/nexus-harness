@@ -102,17 +102,19 @@ finishing only missing effects. Machine context contains control values/referenc
 
 ## Evaluation and stage applicability
 
-Each preparation stage begins with its author proposing work or a skip with reasons and existing
-input references. The evaluator checks that proposal. Accepted skips are durable results and advance
+Each preparation stage begins with its author assessing the requested change and stage applicability.
+An irrelevant stage permits a skip with reasons; adequate existing documents receive normal
+evaluation without a special existing-document skip. Accepted skips are durable results and advance
 immediately, without manufacturing a document or prototype. Missing information requires clarification
 or an upstream return.
 
 The normal loop is Author -> Evaluate -> Author response/revision -> Evaluate. Evaluate the exact
-current revision and responses; earlier approval cannot approve changed content. Authors can revise,
-answer or rebut mistaken findings. Evaluators explicitly resolve prior findings and distinguish
-necessary changes from optional suggestions.
+current content with previous reports as context; earlier approval cannot approve changed content.
+Authors can revise, answer or rebut mistaken findings in their narrative reports. Evaluators judge
+whether earlier problems remain without a tracked per-finding lifecycle, and distinguish necessary
+changes from optional suggestions.
 
-Each stage updates and commits its relevant authoritative documentation in one retained checkout
+Authors update and commit relevant authoritative documentation when needed in one retained checkout
 and branch, then passes that same workspace forward. Stage-owned round artifacts and evaluations
 remain attributable to their stage. Both author and evaluator run in the actual retained checkout.
 Requirements evaluates requirements, UX evaluates UX, Storybook evaluates the prototype, and
@@ -137,13 +139,95 @@ cannot bypass the limit. Exhaustion retains findings and requests attention, wit
 idea unsuitable. Waiting for Feedback retains the originating stage and specific question. Human
 clarifications govern intent when resumed.
 
+### Current-worktree evaluation requirements
+
+Affected categories are preparation evaluation, implementation review, role/report contracts,
+cross-round context, retained history and delivery protection. Participants are all preparation
+authors and evaluators, developers, reviewers and operators continuing retained work. The journey
+is: inspect the captured ticket, current shared documents and previous reports -> preserve adequate
+content or repair defects -> evaluate within the selected stage -> hand off implementation ->
+develop and verify -> review the task-relevant implementation -> repair current problems as needed
+-> merge and confirm required CI. Reports carry context through the existing loops without a
+tracked per-finding lifecycle.
+
+Activities and rules:
+
+1. Requirements, UX/UI and Architecture evaluators assess the ticket's requested changes against
+   the current authoritative documents in the shared worktree. Accept adequate content regardless
+   of who wrote it, whether this author changed it, or its commit history. Architecture's
+   implementation plan still receives evaluation.
+2. Existing sufficient documents need no mandatory document citations, special existing-document
+   skip proposal or historical approval reuse. Authors may leave adequate documents unchanged;
+   missing edits or citation lists alone cannot block evaluation or acceptance. An irrelevant stage
+   still permits a normally evaluated applicability skip. Applicable prototype evaluation inspects
+   the current preview and retains both roles' required observation evidence.
+3. Later-stage edits to a shared document do not mechanically invalidate completed document-stage
+   verdicts or force another cycle. Assess a concrete input defect through the existing findings
+   and upstream-return route. Changed human intent and explicit pending corrections still require
+   reassessment. Historical reports remain attributable evidence, not approval of current content.
+4. Remove the dependent document-citation and historical approval-reuse validation, state and
+   tests. Remove cross-round finding bookkeeping project-wide, including Develop/Review and every
+   preparation author/evaluator loop: stable finding IDs, mandatory `findingResponses`, per-finding
+   response/status records, `priorFindings` dispositions and cross-round matching validators, together
+   with their supporting state, prompts, documentation and tests. Previous reports supply context;
+   authors explain corrections, disagreements and remaining problems narratively, and evaluators
+   judge whether earlier problems were addressed. Keep actionable current findings with evidence,
+   consequences and repair guidance; unresolved problems do not disappear merely because tracking
+   fields are removed. Preserve stage routing and concrete upstream correction requests.
+5. The developer returns a report with status and a narrative summary of changes, verification,
+   responses to previous reviews, disagreements and remaining problems. Nexus saves it as
+   `development.json`. The reviewer receives previous reviews, developer artifacts, task requirements
+   and verification evidence, and returns a verdict, summary and actionable current findings.
+6. Implementation review scope follows task correctness. The reviewer assesses all relevant code
+   as it sees fit, including pre-existing code when correction is necessary. Neither the latest
+   diff nor changes since the last reviewed commit limit that scope. Bind the assessment to the
+   revision actually reviewed; an earlier approval cannot authorize a changed head.
+7. Retain report-shape checks and verdict consistency. Approval requires no current blocking
+   findings; optional suggestions alone do not force repair. Invalid reports and assessments that
+   cannot finish follow existing failure handling, without invented findings or approval. Align
+   authoritative documentation, role instructions, context construction, report contracts and
+   affected tests. Preserve finite allowances, action-owned artifacts, applicable prototype
+   inspection, review, merge and required CI gates.
+8. Continue against current main while preserving the delivered bounded citation and shared-document
+   loop repairs from PR139, PR140 and PR142. Retain existing reports as readable history, without
+   demanding retroactive per-finding responses or dispositions. Continue retained work without
+   replacing its checkout or branch, discarding work or history, overlooking unresolved problems,
+   or resetting allowances. Deliver through configured preparation, implementation, review, merge
+   and required CI. Preserve active runtimes; activate a changed runtime only after active users exit,
+   under [installation activation](application.md#installation-activation).
+
+Observable acceptance examples:
+
+| Situation | Observable result |
+| --- | --- |
+| Existing requirements, UX/UI or architecture documents satisfy the ticket, and the author makes no document edits or supplies no document citations | The responsible evaluator accepts them directly; authorship, commit history and absence of an existing-document skip do not block acceptance. Architecture still supplies an evaluated implementation plan. |
+| Current documents omit a requested rule or contradict the ticket | The evaluator identifies the concrete omission or contradiction and required correction through normal findings; the corrected current documents receive evaluation. |
+| Requirements and Architecture both edit the preparation-stage document, and the later edit remains compatible with the requested outcome | The route advances without returning to Requirements merely because historical file bindings differ. No citation/approval-reuse cycle is required. |
+| A later stage discovers a genuine defect in an earlier stage's input, or the human changes the requested outcome | Normal upstream correction and reassessment occur; document evaluation does not erase finding obligations or treat old approval as current assessment. |
+| A stage is irrelevant, or a prototype is applicable | The irrelevant stage receives an evaluated applicability skip without mandatory document citations. The applicable prototype receives current preview inspection with the existing required evidence; adequate prose or historical approval cannot replace it. |
+| Any preparation author/evaluator loop or Develop/Review enters a repair round | Previous reports are supplied as context. The author/developer explains corrections or disagreements narratively; the evaluator/reviewer judges the current result. No stable finding IDs, response/status records, dispositions or cross-round matching are required. |
+| A developer completes a repair, disagrees with a previous review or leaves a problem unresolved | The returned status and summary explain changes, verification, responses, disagreements and remaining problems; Nexus saves the report as `development.json`. A missing `findingResponses` array is not a rejection reason. |
+| A reviewer assesses an implementation after an earlier review | It receives previous reviews, developer artifacts, task requirements and verification evidence, and returns a verdict, summary and actionable findings for problems present at the reviewed revision. Resolved historical problems need no disposition record; unresolved problems remain grounds for current findings. |
+| Task correctness requires correcting pre-existing code outside the latest diff | The reviewer may inspect and report that defect with evidence, impact and repair guidance. Its scope follows the task rather than a commit range; unrelated cleanup is not required. |
+| Current evidence shows no blocking problems, or shows a blocking defect | Adequate work is accepted despite optional suggestions. A blocking defect requires changes with actionable current findings; report-shape and verdict-consistency checks still reject unusable or inconsistent reports without cross-round ID matching. |
+| A run resumes with reports written under the former finding contract | The reports remain readable historical context. Continuation uses the simplified current contract without rewriting history, requiring retroactive lifecycle records or resetting allowances. |
+| A retained run resumes or the change is delivered | Retained work, histories, findings and consumed allowances survive. An active runtime is not disturbed; completion still requires normal review, merge and required CI evidence. |
+
+Source: the captured HARN-103 issue description. Its project-wide findings cleanup supersedes the
+earlier limitation to Develop/Review and preserves direct evaluation of current documents.
+
+No material product decision is unsettled. This changes no reporting-terminal interaction and adds
+no new evaluation stage, dependency engine or retry mechanism. Technical design of report contracts,
+context construction, removal of the superseded mechanisms and compatibility of retained records
+belongs to Architecture within these requirements.
+
 ## Requirements
 
 Requirements Analyst defines affected categories, journey, activities, rules and observable
 acceptance examples from source intent and existing requirements. Requirements Evaluator checks
 clarity, coverage, contradictions and unnecessary scope and seeks simpler rules and stronger
-acceptance examples. Adequate existing requirements permit a skip. Product choices requiring author
-agreement remain explicit questions; an agent does not manufacture human approval. Accepted
+acceptance examples. Adequate existing requirements receive direct acceptance. Product choices
+requiring author agreement remain explicit questions; an agent does not manufacture human approval. Accepted
 requirements and evaluation supply UX and Architecture.
 
 ## UX Proposal
@@ -181,8 +265,8 @@ project's design principles. Architecture Evaluator traces required outcomes and
 ownership, failure handling, contract completeness and opportunities to simplify. If no feasible
 clean design supports the inputs, return a concrete finding to Requirements, UX or Storybook.
 After correction, proceed forward again, reevaluating affected outputs and retaining usable work.
-Existing sufficient design permits a skip of technical-design work, while the implementation plan
-still requires evaluation.
+Existing sufficient design receives direct acceptance, while the implementation plan still requires
+evaluation.
 
 Architecture also produces an evaluated implementation plan: one or more bounded tasks, dependencies
 and completion criteria that collectively deliver the accepted outcome. There is no Planner workflow,
@@ -192,10 +276,10 @@ role or Jira status.
 
 After Architecture and its implementation plan are accepted, the parent creates and links one or
 more concise implementation tickets from that plan. Architecture owns the plan; the parent retains
-all source creation and linking operations. Tickets reference the source issue, accepted document
-revisions and any retained prototype evidence. There is no preparation-only PR publication or merge
-gate before this handoff. If existing documents suffice, keep their accepted references and evaluated
-skip evidence without manufacturing changes.
+all source creation and linking operations. Tickets reference the source issue, accepted preparation
+outcomes and any retained prototype evidence. There is no preparation-only PR publication or merge
+gate before this handoff. If existing documents suffice, retain the current evaluator decision
+without manufacturing changes or an existing-document skip.
 
 The first planned implementation ticket continues the preparation checkout and branch, preserving
 its committed documents and retained prototype work. Its PR publishes the committed preparation
@@ -292,8 +376,9 @@ verdicts.
 | Given / activity | Observable result |
 | --- | --- |
 | Requirements commits a rule and UX then changes the same document | UX sees the Requirements commit in the same real Git checkout and branch. Storybook and Architecture receive that accumulated history; no cross-checkout assembly overwrites either change. Runtime author/evaluator working directories resolve to the real checkout. |
-| A stage authors work, receives findings and responds | Its evaluator assesses the current committed content and complete responses, explicitly resolves earlier findings and can accept adequate work despite optional suggestions. No combined documentation review follows Architecture. |
-| Existing inputs suffice, or no useful UX/prototype work applies | The author supplies concrete references and the evaluator accepts or rejects the skip. An accepted skip advances without an invented document, prototype or browser observation. |
+| A stage authors work, receives findings and responds | Its evaluator assesses the current content and narrative response with earlier reports as context, judges whether earlier problems remain without per-finding tracking, and accepts adequate work despite optional suggestions. No combined documentation review follows Architecture. |
+| Existing Requirements, UX/UI or Architecture documents satisfy the ticket | The evaluator accepts the current documents directly without mandatory document citations or an existing-document skip proposal. Architecture still supplies an evaluated implementation plan. |
+| No useful UX/prototype work applies | The evaluator assesses the proposed applicability skip. An accepted skip advances without an invented document, prototype or browser observation. |
 | Nexus preparation changes internal workflow without an explicit reporting-terminal change | UX and Prototype propose skips under docs/ux-ui.md and their evaluators assess applicability. The existing reporting terminal is retained; no terminal redesign or mock Jira/PR navigation is added. |
 | A stage discovers an earlier input must change | It returns the concrete problem to its owning earlier stage. Correction occurs in the same retained workspace, and affected downstream outputs are reevaluated before handoff. Old approval cannot authorize changed content or changed relied-on inputs. |
 | A human scope correction removes previously accepted UI scope from an internal Nexus task | Requirements is corrected and evaluated, then UX and Prototype reconcile their obsolete contributions and obtain evaluated skips before Architecture resumes. Historical revisions and observations remain attributable evidence; affected acceptances are invalidated and cannot authorize reuse of the removed work. |
