@@ -1857,12 +1857,16 @@ describe('Git adapter', () => {
       await gitCommand(['add', ...changed], worktree);
       await gitCommand(['commit', '--quiet', '--message', 'change cited inputs'], worktree);
       const currentRevision = await headOf(worktree);
+      // The reassessment runs the real author producer: it authors no new document, binds its
+      // fresh citations at the current revision and finalizes against that evaluation.
       const second = await acceptedRound({
         selectionFile,
         root,
         stage,
         round: 2,
+        route: 'reassess',
         verdict: 'accepted-skip',
+        invokeAuthor: true,
         author: skip(references),
       });
       expect(second.existingDocuments).toEqual(
@@ -1874,6 +1878,10 @@ describe('Git adapter', () => {
       expect(second.documents).toEqual([]);
       expect(second.skipReferences).toEqual([...references]);
       expect(second.prototype).toBeNull();
+      expect(second.prototypeObservations).toEqual([]);
+      expect(second.evaluation).toEqual({
+        path: path.join(root, stage, 'artifacts', '2', 'evaluation.json'),
+      });
 
       // Replaying the completed finalization and validating the current decision both succeed.
       const finalize = createStageResult({
@@ -1883,6 +1891,8 @@ describe('Git adapter', () => {
         publish: () => undefined,
       });
       await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
+      // Replaying the finalization leaves the checkout at the revision the evaluation assessed.
+      expect(await headOf(worktree)).toBe(currentRevision);
       const decision = async () =>
         readCurrentDecision({
           issueRoot: root,
@@ -1968,6 +1978,135 @@ describe('Git adapter', () => {
           observation: null,
           findingResponses: [],
         },
+      }),
+    ).rejects.toThrow(/current decision is required/);
+  });
+
+  it('binds an owned-document correction to the complete current file at its newly assessed revision', async () => {
+    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+    const prepare = createPrepareStage({
+      selectionFile,
+      repository: { source: origin, mainBranch: 'main' },
+      git,
+      publish: () => undefined,
+    });
+    await expect(prepare({ stage: 'requirements' })).resolves.toBe('prepared');
+    const authored = (document: string, description: string) => ({
+      outcome: 'authored',
+      summary: `The ${description}.`,
+      documents: [{ path: document, description }],
+      sourcePaths: [],
+      plan: [],
+      skip: null,
+      question: null,
+      upstream: null,
+      observation: null,
+      findingResponses: [],
+    });
+    const skip = (citation: readonly string[]) => ({
+      outcome: 'skip-proposed',
+      summary: 'The retained requirements still suffice.',
+      documents: [],
+      sourcePaths: [],
+      plan: [],
+      skip: { reason: 'The retained requirements still suffice.', references: [...citation] },
+      question: null,
+      upstream: null,
+      observation: null,
+      findingResponses: [],
+    });
+    const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
+    const decision = (stage: 'requirements' | 'ux') =>
+      readCurrentDecision({ issueRoot: root, stage, selection, git });
+
+    // Requirements owns the document, and a downstream stage accepts its own work alongside it.
+    await mkdir(path.join(worktree, 'docs'), { recursive: true });
+    await writeFile(
+      path.join(worktree, 'docs', 'requirements.md'),
+      '# Requirements\n\nThe original scope.\n',
+    );
+    await gitCommand(['add', 'docs/requirements.md'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'add the requirements document'], worktree);
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 1,
+      invokeAuthor: true,
+      author: authored('docs/requirements.md', 'requirements revision'),
+    });
+    await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n\nThe accepted journey.\n');
+    await gitCommand(['add', 'docs/ux.md'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'add the ux document'], worktree);
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'ux',
+      round: 1,
+      invokeAuthor: true,
+      author: authored('docs/ux.md', 'ux revision'),
+    });
+
+    // A later stage extends the earlier stage's owned document in the shared checkout.
+    await writeFile(
+      path.join(worktree, 'docs', 'requirements.md'),
+      '# Requirements\n\nThe original scope.\n\nA later-stage addition.\n',
+    );
+    await gitCommand(['add', 'docs/requirements.md'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'extend the shared document'], worktree);
+
+    // The owning stage corrects its authored work against the complete current file, preserving
+    // the compatible later-stage addition; its result records the revision the new evaluation
+    // assessed rather than the historical binding.
+    const correctedContent =
+      '# Requirements\n\nThe original scope.\n\nA later-stage addition.\n\nAn owned correction.\n';
+    await writeFile(path.join(worktree, 'docs', 'requirements.md'), correctedContent);
+    const corrected = await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 2,
+      route: 'reassess',
+      invokeAuthor: true,
+      author: authored('docs/requirements.md', 'corrected requirements'),
+    });
+    const correctedRevision = stageEvaluationArtifact.schema.parse(
+      JSON.parse(
+        await readFile(
+          path.join(root, 'requirements', 'artifacts', '2', 'evaluation.json'),
+          'utf8',
+        ),
+      ),
+    ).basis.content[0]!.revision;
+    expect(corrected.documents).toEqual([
+      { path: path.join(worktree, 'docs/requirements.md'), revision: correctedRevision },
+    ]);
+    expect(corrected.evaluation).toEqual({
+      path: path.join(root, 'requirements', 'artifacts', '2', 'evaluation.json'),
+    });
+    expect(
+      await git.readFileAtRevision(worktree, correctedRevision, 'docs/requirements.md'),
+    ).toEqual({ ok: true, value: correctedContent });
+
+    // The correction records a current decision without invalidating the downstream stage.
+    await expect(decision('requirements')).resolves.toMatchObject({ kind: 'current' });
+    await expect(decision('ux')).resolves.toMatchObject({ kind: 'current' });
+
+    // Repeating the owned path cannot authorize changed work; a current decision is required.
+    await writeFile(
+      path.join(worktree, 'docs', 'requirements.md'),
+      '# Requirements\n\nChanged owned work.\n',
+    );
+    await gitCommand(['add', 'docs/requirements.md'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'change the owned work'], worktree);
+    await expect(
+      acceptedRound({
+        selectionFile,
+        root,
+        stage: 'requirements',
+        round: 3,
+        verdict: 'accepted-skip',
+        author: skip(['docs/requirements.md']),
       }),
     ).rejects.toThrow(/current decision is required/);
   });
