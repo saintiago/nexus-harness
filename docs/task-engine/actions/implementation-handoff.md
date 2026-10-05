@@ -72,8 +72,10 @@ creation can land a ticket directly in the configured ready status, so a ticket 
 handoff's source identity is never selectable without its input. Selection and PrepareWorkspace
 classify such a ticket through this record: while it still owes the ticket its input, link, rank or
 admission the ticket is ineligible, and a ticket the record does not name requests attention with its
-identity. An earlier-contract record that already finished the ticket's link and admission never
-carried an input; that ticket keeps the ordinary delivery path.
+identity. The earlier-contract exception requires a source record without the current contract's
+frozen basis and with the ticket's link and admission finished; that ticket keeps the ordinary delivery
+path. Finished effects with a current-contract basis and missing input require reconciliation, since
+that input owns preparation continuation and prerequisites.
 
 Rank prerequisites before dependents using actual source rank, preserving unrelated higher-ranked
 work. After all tickets have input records and completed admission/link/rank effects, publish their

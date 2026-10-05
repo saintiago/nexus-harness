@@ -501,6 +501,7 @@ describe('SelectWork admission and routing', () => {
     workspaces: string,
     ticketKey: string,
     prerequisite: string,
+    prerequisiteRoot = path.join(workspaces, 'NEX', prerequisite),
   ): Promise<string> {
     const root = path.join(workspaces, 'NEX', ticketKey);
     await mkdir(path.join(root, 'parent'), { recursive: true });
@@ -512,9 +513,7 @@ describe('SelectWork admission and routing', () => {
         architectureResult: { path: 'architecture/artifacts/1/result.json' },
         planIdentity: 'plan-identity',
         plannedTask: 1,
-        prerequisites: [
-          { key: prerequisite, workspace: { root: path.join(workspaces, 'NEX', prerequisite) } },
-        ],
+        prerequisites: [{ key: prerequisite, workspace: { root: prerequisiteRoot } }],
         continuation: null,
       }),
     );
@@ -526,8 +525,8 @@ describe('SelectWork admission and routing', () => {
     workspaces: string,
     ticketKey: string,
     mergeRevision: string,
+    root = path.join(workspaces, 'NEX', ticketKey),
   ): Promise<void> {
-    const root = path.join(workspaces, 'NEX', ticketKey);
     await mkdir(path.join(root, 'state'), { recursive: true });
     await mkdir(path.join(root, 'artifacts', '1'), { recursive: true });
     await writeFile(
@@ -608,6 +607,7 @@ describe('SelectWork admission and routing', () => {
     workspaces: string,
     sourceKey: string,
     ticket: Record<string, unknown>,
+    basis: Record<string, unknown> | null = null,
   ): Promise<string> {
     const parent = path.join(workspaces, 'NEX', sourceKey, 'parent');
     await mkdir(parent, { recursive: true });
@@ -621,7 +621,7 @@ describe('SelectWork admission and routing', () => {
         return: null,
         awaitingStages: [],
         tickets: [ticket],
-        basis: null,
+        basis,
         publications: [],
       }),
     );
@@ -645,6 +645,7 @@ describe('SelectWork admission and routing', () => {
     });
     const selected = await select({
       issues: [
+        issue('1', 'NEX-1', 'Done'),
         issue('2', 'NEX-2', 'To Do', {
           labels: ['implementation', 'nexus-source-NEX-1-1'],
         }),
@@ -663,6 +664,7 @@ describe('SelectWork admission and routing', () => {
   it('requests attention when no source handoff record names the labelled ticket', async () => {
     const selected = await select({
       issues: [
+        issue('1', 'NEX-1', 'Done'),
         issue('2', 'NEX-2', 'To Do', {
           labels: ['implementation', 'nexus-source-NEX-1-1'],
         }),
@@ -691,6 +693,7 @@ describe('SelectWork admission and routing', () => {
     });
     const selected = await select({
       issues: [
+        issue('1', 'NEX-1', 'Done'),
         issue('2', 'NEX-2', 'To Do', {
           labels: ['implementation', 'nexus-source-NEX-1-1'],
         }),
@@ -702,6 +705,142 @@ describe('SelectWork admission and routing', () => {
     expect(selected.result).toBe('selected');
     expect(selected.selection).toMatchObject({ taskKey: 'NEX-2', stage: 'delivery' });
     expect(selected.transitions).toEqual(['11']);
+  });
+
+  it('requests reconciliation for a current-contract handoff with missing input despite finished effects', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-current-handoff-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    await writeSourceHandoff(
+      workspaces,
+      'NEX-1',
+      {
+        key: 'NEX-2',
+        issueId: '2',
+        plannedTask: 1,
+        summary: 'Work for NEX-2',
+        linked: true,
+        ranked: true,
+        admission: { initialStatus: 'To Do', completed: true },
+      },
+      { planIdentity: 'current-plan', taskCount: 1, continuationHead: 'f'.repeat(40) },
+    );
+    const selected = await select({
+      issues: [
+        issue('1', 'NEX-1', 'Done'),
+        issue('2', 'NEX-2', 'To Do', {
+          labels: ['nexus-source-NEX-1-1'],
+        }),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+    expect(selected.result).toBe('failed');
+    expect(selected.failures.at(-1)).toContain('current-contract handoff');
+    expect(selected.transitions).toEqual([]);
+  });
+
+  it.each([null, '', 'matching'])(
+    'uses carried prerequisite evidence with source pointer %s',
+    async (pointer) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-carried-prerequisite-'));
+      temporaryDirectories.push(directory);
+      const workspaces = path.join(directory, 'workspaces');
+      const recorded = path.join(directory, 'recorded-prerequisite');
+      const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1', recorded);
+      await retainCompletion(workspaces, 'NEX-1', 'f'.repeat(40), recorded);
+      const selected = await select({
+        issues: [
+          issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+          issue('1', 'NEX-1', 'Done', {
+            [pointerField]: pointer === 'matching' ? recorded : pointer,
+          }),
+        ],
+        selectionFile: path.join(directory, 'selection.json'),
+        workspaceRoot: workspaces,
+      });
+      expect(selected.result).toBe('selected');
+      expect(selected.selection).toMatchObject({ taskKey: 'NEX-2' });
+    },
+  );
+
+  it('requires reconciliation when the prerequisite pointer conflicts with the carried workspace', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-pointer-conflict-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const recorded = path.join(directory, 'recorded-prerequisite');
+    const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1', recorded);
+    await retainCompletion(workspaces, 'NEX-1', 'f'.repeat(40), recorded);
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+        issue('1', 'NEX-1', 'Done', { [pointerField]: path.join(directory, 'another-workspace') }),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+    expect(selected.result).toBe('failed');
+    expect(selected.failures.at(-1)).toContain('conflicting');
+    expect(selected.transitions).toEqual([]);
+  });
+
+  it('retains an alternate source handoff workspace for the input-less ticket', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-alternate-source-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    await mkdir(ticketRoot, { recursive: true });
+    const sourceRoot = path.join(directory, 'alternate', 'NEX', 'NEX-1');
+    await writeSourceHandoff(path.join(directory, 'alternate'), 'NEX-1', {
+      key: 'NEX-2',
+      issueId: '2',
+      summary: 'Work for NEX-2',
+      linked: true,
+      admission: { initialStatus: 'To Do', completed: true },
+    });
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', {
+          labels: ['nexus-source-NEX-1-1'],
+          [pointerField]: ticketRoot,
+        }),
+        issue('1', 'NEX-1', 'Done', { [pointerField]: sourceRoot }),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+      replays: 2,
+    });
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({
+      taskKey: 'NEX-2',
+      handoffSourceWorkspace: { root: sourceRoot },
+    });
+    const resumed = await select({
+      issues: [
+        issue('2', 'NEX-2', 'In Progress', {
+          labels: ['nexus-source-NEX-1-1'],
+          [pointerField]: ticketRoot,
+        }),
+        issue('1', 'NEX-1', 'Done', { [pointerField]: null }),
+      ],
+      selectionFile: selected.selectionFile,
+      workspaceRoot: workspaces,
+    });
+    expect(resumed.result).toBe('selected');
+    expect(resumed.selection).toMatchObject({ handoffSourceWorkspace: { root: sourceRoot } });
+    const conflicting = await select({
+      issues: [
+        issue('2', 'NEX-2', 'In Progress', {
+          labels: ['nexus-source-NEX-1-1'],
+          [pointerField]: ticketRoot,
+        }),
+        issue('1', 'NEX-1', 'Done', { [pointerField]: path.join(directory, 'other-source') }),
+      ],
+      selectionFile: selected.selectionFile,
+      workspaceRoot: workspaces,
+    });
+    expect(conflicting.result).toBe('failed');
+    expect(conflicting.failures.at(-1)).toContain('conflicting');
   });
 
   it('defers a handoff ticket whose recorded handoff effects are unfinished', async () => {

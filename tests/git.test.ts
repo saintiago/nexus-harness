@@ -2500,8 +2500,6 @@ describe('Git adapter', () => {
         repository: { source: origin, mainBranch: 'main' },
         preparation: [],
         environment,
-        project: 'NEX',
-        workspaceRoot: workspaces,
         git,
         runCommand: run,
         publish,

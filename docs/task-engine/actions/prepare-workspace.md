@@ -69,9 +69,12 @@ the branch or pull/reset the checkout. Retain preparation commits together with 
 implementation work. The implementation issue owns its own attempt, rounds and command logs. Repeat
 admission using its saved record; never infer a donor checkout from description text. A selected
 ticket that carries the handoff's source identity but retains no implementation input requests
-attention instead of preparing a fresh ordinary checkout, unless its source handoff record already
-finished the ticket's link and admission under the earlier contract, which created tickets without
-inputs.
+attention instead of preparing a fresh ordinary checkout, unless its source handoff record has no
+current-contract frozen basis and finished the ticket's link and admission under the earlier contract,
+which created tickets without inputs. Read that source handoff from Selection.handoffSourceWorkspace,
+which selection resolves through the source's authoritative workspace reference. Missing captured
+references require reconciliation through selection; never reconstruct a donor path. Finished effects
+with a current-contract basis cannot exempt missing implementation input.
 For later implementation tickets, use an updated configured base containing every prerequisite's
 confirmed merge revision, read from the workspace reference the handoff recorded for that prerequisite.
 A base that lacks it cannot produce prepared; do not manufacture inclusion through cherry-picks or

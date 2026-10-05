@@ -68,11 +68,9 @@ export function handoffSourceKey(labels: unknown): string | null {
 
 /**
  * The disposition of one implementation ticket that carries the handoff's source identity but
- * retains no implementation input, classified through the source handoff record under the source
- * issue's stable workspace. The record owns the ticket's link, rank and admission
- * acknowledgements: a record that already finished its link and admission is an earlier-contract
- * ticket that never carried an input, a record that still owes them names a partially handed-off
- * ticket, and no record at all leaves the ticket unattributed.
+ * retains no implementation input, classified through the source handoff at its recorded workspace.
+ * Only a record without the current contract's frozen basis and with finished link/admission
+ * effects establishes an earlier-contract ticket. Missing current-contract input must reconcile.
  */
 export type HandoffInputDisposition =
   | { readonly kind: 'ordinary' }
@@ -82,8 +80,7 @@ export type HandoffInputDisposition =
 
 /** Classify one input-less ticket through the source handoff record its identity label names. */
 export async function handoffInputDisposition(settings: {
-  readonly workspaceRoot: string;
-  readonly project: string;
+  readonly sourceWorkspace?: { readonly root: string } | undefined;
   readonly labels: unknown;
   readonly ticketKey: string;
 }): Promise<HandoffInputDisposition> {
@@ -91,7 +88,13 @@ export async function handoffInputDisposition(settings: {
   if (sourceKey === null) {
     return { kind: 'ordinary' };
   }
-  const file = handoffPath(path.join(settings.workspaceRoot, settings.project, sourceKey));
+  if (settings.sourceWorkspace === undefined) {
+    return {
+      kind: 'unattributed',
+      reason: `the source workspace for ${sourceKey} was not retained by selection`,
+    };
+  }
+  const file = handoffPath(settings.sourceWorkspace.root);
   let source: ParentHandoff | null;
   try {
     source = await readRecord(file, parentHandoffDeclaration);
@@ -110,9 +113,15 @@ export async function handoffInputDisposition(settings: {
         'created ticket',
     };
   }
-  return ticket.linked === true && ticket.admission?.completed === true
+  if (ticket.linked !== true || ticket.admission?.completed !== true) {
+    return { kind: 'incomplete' };
+  }
+  return source?.basis === null
     ? { kind: 'legacy' }
-    : { kind: 'incomplete' };
+    : {
+        kind: 'unattributed',
+        reason: `the current-contract handoff at "${file}" requires its missing implementation input`,
+      };
 }
 
 /** Save the parent handoff record, creating its parent area. */

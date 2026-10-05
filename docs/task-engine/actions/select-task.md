@@ -25,6 +25,8 @@ type Selection = {
   task: unknown;
   conversation: unknown[];
   workspace: WorkspaceRef;
+  /** Captured source workspace for a handoff ticket with no implementation input. */
+  handoffSourceWorkspace?: WorkspaceRef;
   /** The stage the parent routes to; the parent's publications update it. */
   stage: 'idea' | 'requirements' | 'ux' | 'prototype' | 'architecture' | 'delivery';
   /** Retained ready admission; PrepareWorkspace retires it on successful preparation. */
@@ -95,6 +97,14 @@ input and provider faults are not an empty queue or a completed prerequisite. A 
 the handoff's source identity but retains no input yet is deferred until the handoff retains it, and
 so is a ticket whose source handoff record has not recorded its link, rank and admission effects yet;
 neither is treated as an ordinary task. A ticket no source handoff record accounts for requests
-attention with its identity, while an earlier-contract record that already finished the ticket's link
-and admission keeps the ordinary delivery path. Keep the implementation issue's own workspace pointer
-even when its repository will be borrowed from preparation.
+attention with its identity. Only a source handoff without the current contract's frozen basis and
+with finished link/admission effects qualifies for the earlier-contract ordinary delivery exception.
+Finished effects with a current-contract basis and missing input require reconciliation.
+
+Read prerequisite completion at the workspace carried in the implementation input. A cleared source
+pointer does not discard that reference; a nonempty pointer conflicting with it requests reconciliation.
+For an input-less ticket, resolve the source issue's recorded workspace pointer (or stable root when
+no pointer is recorded), then capture it as handoffSourceWorkspace for PrepareWorkspace. An unavailable
+recorded source root never falls back to a different handoff. Resume with the captured reference;
+reconcile conflicting source pointers instead of replacing it. Keep the implementation issue's own
+workspace pointer even when its repository will be borrowed from preparation.

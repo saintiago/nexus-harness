@@ -64,13 +64,6 @@ export type PrepareWorkspaceSettings = {
   readonly preparation: readonly Command[];
   /** The environment preparation commands run with. */
   readonly environment: Readonly<Record<string, string>>;
-  /** The configured project identity the stable issue workspaces live under. */
-  readonly project: string;
-  /**
-   * The stable workspace root. It locates the source handoff record when a selected ticket carries
-   * the handoff's identity but retains no implementation input.
-   */
-  readonly workspaceRoot: string;
   readonly git: GitAdapter;
   readonly runCommand: CommandExecution;
   readonly publish: EventPublisher;
@@ -517,11 +510,10 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     if (input === null) {
       // A ticket created by the Architecture handoff is never prepared as fresh ordinary work: the
       // handoff must retain its input first, so its continuation and prerequisites are known. An
-      // earlier-contract record that already finished its link and admission never carried an
-      // input and keeps the ordinary path.
+      // earlier-contract record without a frozen basis and with finished link/admission effects
+      // never carried an input and keeps the ordinary path.
       const disposition = await handoffInputDisposition({
-        workspaceRoot: settings.workspaceRoot,
-        project: settings.project,
+        sourceWorkspace: selection.handoffSourceWorkspace,
         labels: capturedLabels(selection.task),
         ticketKey: selection.taskKey,
       });

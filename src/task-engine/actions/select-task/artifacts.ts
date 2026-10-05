@@ -32,6 +32,8 @@ export const selectionSchema = z.object({
   task: z.unknown(),
   conversation: z.array(z.unknown()),
   workspace: z.object({ root: z.string().min(1) }),
+  /** Captured source workspace for an input-less handoff ticket; the child never queries Jira. */
+  handoffSourceWorkspace: z.object({ root: z.string().min(1) }).optional(),
   /** The stage this selection entered; the parent invokes that stage's child. */
   stage: z.enum(workflowStages),
   /** Initial ready admission survives refreshed snapshots until preparation completes. */

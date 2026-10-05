@@ -519,8 +519,6 @@ export function createActionBinding(
         repository: project.repository,
         preparation: project.preparation,
         environment: settings.commandEnvironment,
-        project: taskSource.project,
-        workspaceRoot: workspaceRoot(nexus),
         git: settings.git,
         runCommand: settings.runCommand,
         publish,
