@@ -472,15 +472,32 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       });
     }
     if (settings.stage === 'prototype') {
-      await requirePrototypeEvidence({
-        git: settings.git,
-        worktree,
-        roundDirectory: roundArtifactDirectory(root, plan.round),
-        author,
-        evaluator: report.observation,
-        requireEvaluator: report.verdict === 'accepted',
-        assessed: retained.content,
-      });
+      try {
+        await requirePrototypeEvidence({
+          git: settings.git,
+          worktree,
+          roundDirectory: roundArtifactDirectory(root, plan.round),
+          author,
+          evaluator: report.observation,
+          requireEvaluator: report.verdict === 'accepted',
+          assessed: retained.content,
+        });
+      } catch (error) {
+        // The report is schema-valid but its semantic evidence is unusable: retain the exact
+        // response and violated rule so the evaluator's next permitted invocation can correct it.
+        await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-evaluator',
+          profile: evaluatorProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
     }
 
     await requireEvaluationContent({

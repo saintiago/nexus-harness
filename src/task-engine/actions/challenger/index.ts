@@ -3,16 +3,17 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
+  readRetainedRefinedIdea,
   responseFormatText,
   retainedHistoryText,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  latestRefinedIdea,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
@@ -80,14 +81,33 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const input = await readIdeaInput(root, plan.submission);
-    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+    const revision = await readRetainedRefinedIdea({
+      root,
+      workId: input.taskKey,
+      plan,
+      submission: plan.submission,
+      cycle: plan.cycle,
+      context:
+        `Challenger reading the refined idea revision in force for submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} of idea ${input.taskKey}.`,
+    });
     if (revision === null) {
       throw new Error(
         `No refined idea revision exists for submission ${String(plan.submission)} cycle ` +
           `${String(plan.cycle)}; the Challenger reviews a written revision.`,
       );
     }
-    const turn = await readCycleArtifact(cycleRoot, editorResponseArtifact);
+    const turn = await readRetainedIdeaReport({
+      root,
+      workId: input.taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorResponseArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `Challenger reading the editor response of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${input.taskKey}.`,
+    });
     const turnFile =
       turn === null ? null : path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
     const file = path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot);
@@ -106,7 +126,17 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       return verdict;
     }
 
-    const existing = await readCycleArtifact(cycleRoot, challengerArtifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: input.taskKey,
+      plan,
+      cycleRoot,
+      declaration: challengerArtifact,
+      contract: ideaReportContracts.challenge,
+      context:
+        `Challenger reading its retained result for submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} of idea ${input.taskKey}.`,
+    });
     if (
       existing !== null &&
       existing.refinedIdea === revision.path &&

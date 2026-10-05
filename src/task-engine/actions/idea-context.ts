@@ -5,22 +5,25 @@ import type { IdeaRole } from '../../agent-runtime/index.js';
 import type { ArtifactRef } from '../../result.js';
 import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
+import type { ArtifactContent, ArtifactDeclaration } from './artifacts.js';
 import { challengerArtifact } from './challenger/artifacts.js';
 import { readDocumentText } from './documents.js';
 import {
   framingArtifact,
   editorHelpArtifact,
   editorResponseArtifact,
+  readRefinedIdeaRevision,
   refinedIdeaArtifact,
   retainedBriefArtifactPath,
+  type RefinedIdeaRead,
 } from './idea-editor/artifacts.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
-  latestRefinedIdea,
   listIdeaCycles,
   listIdeaSubmissions,
+  readCycleArtifact,
 } from './idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
@@ -29,6 +32,7 @@ import {
   projectOfWorkspace,
   recordReportCorrection,
   rejectReport,
+  rejectUnusableRecord,
   reportFeedbackContextText,
   type ReportRejection,
   type ReportScope,
@@ -257,7 +261,16 @@ export async function capturedIdeaText(
     path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
     'Artifact',
   );
-  const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+  const revision = await readRetainedRefinedIdea({
+    root,
+    workId: input.taskKey,
+    plan,
+    submission: plan.submission,
+    cycle: plan.cycle,
+    context:
+      `Reading the refined idea revision in force for submission ${String(plan.submission)} ` +
+      `cycle ${String(plan.cycle)} of idea ${input.taskKey}.`,
+  });
   const parentInput = input.parentInput;
   const correction =
     parentInput === undefined ||
@@ -322,6 +335,161 @@ export async function projectGuidanceText(root: string): Promise<string | null> 
   ].join('\n');
 }
 
+/**
+ * The saved report contract of one idea role: the responsibility a rejection or correction is
+ * routed to and the operation whose report the artifact retains.
+ */
+export type IdeaReportContract = {
+  readonly role: IdeaRole;
+  readonly reportKind: string;
+  readonly operation: string;
+};
+
+/** The saved reports the idea actions read from one another. */
+export const ideaReportContracts = {
+  framing: { role: 'idea-editor', reportKind: 'idea-framing', operation: 'FrameIdea' },
+  editorTurn: {
+    role: 'idea-editor',
+    reportKind: 'idea-editor-turn',
+    operation: 'idea-editor-turn',
+  },
+  research: { role: 'researcher', reportKind: 'research', operation: 'Researcher' },
+  projectGuidance: {
+    role: 'project-guide',
+    reportKind: 'project-guidance',
+    operation: 'ProjectGuide',
+  },
+  challenge: { role: 'challenger', reportKind: 'challenge', operation: 'Challenger' },
+} as const satisfies Record<string, IdeaReportContract>;
+
+/**
+ * The report responsibility of one idea role's saved report: the configured project, the work
+ * item, the refinement area and the role's report contract. Feedback routes by this scope.
+ */
+export function ideaReportScope(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly role: IdeaRole;
+  readonly reportKind: string;
+}): ReportScope {
+  return {
+    project: projectOfWorkspace(path.dirname(settings.root)),
+    workId: settings.workId,
+    area: settings.root,
+    role: settings.role,
+    reportKind: settings.reportKind,
+  };
+}
+
+/**
+ * Read one cycle's retained idea report. An unusable record is preserved as rejection evidence
+ * under its producer's report responsibility, and the read fails on that explicit evidence
+ * instead of silently letting a later repair drop the correction obligation.
+ */
+export async function readRetainedIdeaReport<Declaration extends ArtifactDeclaration>(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly cycleRoot: string;
+  readonly declaration: Declaration;
+  readonly contract: IdeaReportContract;
+  readonly context: string;
+}): Promise<ArtifactContent<Declaration> | null> {
+  const file = path.join(settings.cycleRoot, settings.declaration.pathFromArtifactsRoot);
+  try {
+    return await readCycleArtifact(settings.cycleRoot, settings.declaration);
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope: ideaReportScope({
+        root: settings.root,
+        workId: settings.workId,
+        role: settings.contract.role,
+        reportKind: settings.contract.reportKind,
+      }),
+      invocationId: null,
+      operation: settings.contract.operation,
+      profile: settings.plan.profiles[settings.contract.role] ?? null,
+      context: settings.context,
+      file,
+      error,
+    });
+  }
+}
+
+/** The file one cycle's refined idea revision is stored at, whichever retained shape holds it. */
+async function refinedIdeaFile(cycleRoot: string): Promise<string> {
+  const current = path.join(cycleRoot, refinedIdeaArtifact.pathFromArtifactsRoot);
+  try {
+    return (await readDocumentText(current, 'Artifact')) !== null
+      ? current
+      : path.join(cycleRoot, retainedBriefArtifactPath);
+  } catch {
+    // Resolving the evidence's path must not mask the rejection when the current revision file
+    // exists but cannot be read; the rejection records those unreadable bytes explicitly.
+    return current;
+  }
+}
+
+/**
+ * Read one cycle's refined idea revision. An unusable retained revision is the editor's report
+ * evidence, so it is preserved under the editor's report responsibility before the read fails.
+ */
+export async function readRetainedRefinedIdeaRevision(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly cycleRoot: string;
+  readonly context: string;
+}): Promise<RefinedIdeaRead | null> {
+  try {
+    return await readRefinedIdeaRevision(settings.cycleRoot);
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope: ideaReportScope({
+        root: settings.root,
+        workId: settings.workId,
+        role: 'idea-editor',
+        reportKind: ideaReportContracts.editorTurn.reportKind,
+      }),
+      invocationId: null,
+      operation: ideaReportContracts.editorTurn.operation,
+      profile: settings.plan.profiles['idea-editor'] ?? null,
+      context: settings.context,
+      file: await refinedIdeaFile(settings.cycleRoot),
+      error,
+    });
+  }
+}
+
+/**
+ * The refined idea revision in force at or before one cycle, with an unusable retained revision
+ * preserved under the editor's report responsibility.
+ */
+export async function readRetainedRefinedIdea(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly submission: number;
+  readonly cycle: number;
+  readonly context: string;
+}): Promise<RefinedIdeaRead | null> {
+  for (let number = settings.cycle; number >= 1; number -= 1) {
+    const read = await readRetainedRefinedIdeaRevision({
+      root: settings.root,
+      workId: settings.workId,
+      plan: settings.plan,
+      cycleRoot: ideaCycleDirectory(settings.root, settings.submission, number),
+      context: settings.context,
+    });
+    if (read !== null) {
+      return read;
+    }
+  }
+  return null;
+}
+
 import { actionOwnedRecordsText, parseAgentReport } from './agent-reports.js';
 
 export { parseAgentReport, responseFormatText } from './agent-reports.js';
@@ -383,13 +551,12 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         `${String(settings.plan.cycle)}) selects no "${settings.role}" profile.`,
     );
   }
-  const scope: ReportScope = {
-    project: projectOfWorkspace(path.dirname(settings.root)),
+  const scope: ReportScope = ideaReportScope({
+    root: settings.root,
     workId: settings.input.taskKey,
-    area: settings.root,
     role: settings.role,
     reportKind: settings.reportKind,
-  };
+  });
   const invocationId = randomUUID();
   const attribution =
     `Idea refinement ${settings.role} (${settings.reportKind}), submission ` +

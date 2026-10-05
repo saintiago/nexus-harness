@@ -1092,6 +1092,55 @@ describe('experience analysis', () => {
     });
   });
 
+  it('preserves an unusable saved analysis for the next permitted attempt', async () => {
+    const first = await harness(() => ok('{}'));
+    const malformed = '{"observations":[';
+    const savedAnalysis = experienceAnalysisFile(first.directory, first.identity);
+    await mkdir(path.dirname(savedAnalysis), { recursive: true });
+    await writeFile(savedAnalysis, malformed, 'utf8');
+
+    // The saved analysis is unusable: the read fails with explicit evidence and no invocation.
+    const problems = await first.process();
+    expect(problems.join('\n')).toContain('is not valid JSON');
+    expect(first.contexts).toHaveLength(0);
+    const scope = {
+      project,
+      workId,
+      area: evidenceRootOf(first),
+      role: 'experience-analyst',
+      reportKind: 'experience-analysis',
+    };
+    const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope,
+      operation: 'analyze-experience',
+      source: { path: savedAnalysis },
+      output: malformed,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // Replacing the unusable record does not resolve the feedback by itself; the next permitted
+    // attempt receives it and its validated saved analysis records the correction.
+    await rm(savedAnalysis);
+    await first.process({ analyze: (_context, workspace) => ok(observation(workspace)) });
+    expect(first.contexts).toHaveLength(1);
+    const context = first.contexts[0] ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain(malformed);
+    expect(context).toContain('is not valid JSON');
+    await expect(
+      outstandingReportFeedback({ areaRoot: evidenceRootOf(first), scope }),
+    ).resolves.toEqual([]);
+    await expect(analysisOf(first)).resolves.toMatchObject({ workId, project, attemptId });
+    expect(
+      (await readReportFeedback(evidenceRootOf(first))).filter(
+        (entry) => entry.record.kind === 'rejection',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('retains a rejected analysis and supplies it to the next permitted attempt', async () => {
     const scope = {
       project,

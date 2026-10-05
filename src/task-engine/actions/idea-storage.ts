@@ -2,7 +2,6 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../../result.js';
 import type { ArtifactContent, ArtifactDeclaration } from './artifacts.js';
-import { challengerArtifact, type ChallengerReport } from './challenger/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText, writeDocument } from './documents.js';
 import { readRequiredRecord, writeRecord } from './records.js';
 import { ensureRoundDirectory, listNumberedHistory } from './round-storage.js';
@@ -206,36 +205,6 @@ export async function latestRefinedIdea(
     const read = await readRefinedIdeaRevision(ideaCycleDirectory(root, submission, number));
     if (read !== null) {
       return read;
-    }
-  }
-  return null;
-}
-
-/** One Challenger result and the file it was read from. */
-export type ChallengerRead = {
-  readonly path: string;
-  readonly report: ChallengerReport;
-};
-
-/**
- * The Challenger result that opened the supplied cycle: the latest one strictly before that cycle,
- * which the cycle's editor turn answers. The current cycle's Challenger runs after that turn, so
- * its result is never the one a turn of the same cycle answers; resolving the answered result by
- * cycle keeps the attribution of a saved turn stable when it is observed again later.
- */
-export async function latestChallengerBefore(
-  root: string,
-  submission: number,
-  cycle: number,
-): Promise<ChallengerRead | null> {
-  for (let number = cycle - 1; number >= 1; number -= 1) {
-    const cycleRoot = ideaCycleDirectory(root, submission, number);
-    const report = await readCycleArtifact(cycleRoot, challengerArtifact);
-    if (report !== null) {
-      return {
-        path: path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot),
-        report,
-      };
     }
   }
   return null;

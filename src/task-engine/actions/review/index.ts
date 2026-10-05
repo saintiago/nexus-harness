@@ -268,11 +268,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     const helpers = createArtifactHelpers({ root });
-    const [development, verification, delivery] = await helpers.readInputArtifacts(
-      devArtifact,
-      verificationArtifact,
-      deliveryArtifact,
-    );
     const roundFile = path.join(root, currentRoundFile);
     const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
     const scope: ReportScope = {
@@ -282,10 +277,51 @@ export function createReview(settings: ReviewSettings): BoundAction {
       role: 'reviewer',
       reportKind: 'review',
     };
+    const developerScope: ReportScope = {
+      project: projectOfWorkspace(root),
+      workId: selection.taskKey,
+      area: root,
+      role: 'developer',
+      reportKind: 'development',
+    };
     const invocationId = randomUUID();
     const attribution =
       `Review round ${String(round.number)}, profile ${settings.reviewerProfile}, ` +
       `task ${selection.taskKey}.`;
+    /** One retained report read: an unusable record is preserved under its producer's scope. */
+    const readReport = async <Value>(
+      file: string,
+      producer: {
+        readonly scope: ReportScope;
+        readonly operation: string;
+        readonly profile: string | null;
+      },
+      read: () => Promise<Value>,
+    ): Promise<Value> => {
+      try {
+        return await read();
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: producer.scope,
+          invocationId,
+          operation: producer.operation,
+          profile: producer.profile,
+          context: attribution,
+          file,
+          error,
+        });
+      }
+    };
+    const development = await readReport(
+      roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
+      { scope: developerScope, operation: 'develop', profile: null },
+      async () => (await helpers.readInputArtifacts(devArtifact))[0],
+    );
+    const [verification, delivery] = await helpers.readInputArtifacts(
+      verificationArtifact,
+      deliveryArtifact,
+    );
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
     let recorded: ReviewOutput | null;
     try {
@@ -422,8 +458,30 @@ export function createReview(settings: ReviewSettings): BoundAction {
     if (!diff.ok) {
       throw new Error(diff.fault.message);
     }
-    const reviews = await helpers.readArtifactHistory(reviewArtifact);
-    const developments = await helpers.readArtifactHistory(devArtifact);
+    const reviews = await helpers.readArtifactHistory(reviewArtifact, (file, error) =>
+      rejectUnusableRecord({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'review',
+        profile: settings.reviewerProfile,
+        context: `${attribution} Reading retained review history.`,
+        file,
+        error,
+      }),
+    );
+    const developments = await helpers.readArtifactHistory(devArtifact, (file, error) =>
+      rejectUnusableRecord({
+        areaRoot: root,
+        scope: developerScope,
+        invocationId,
+        operation: 'develop',
+        profile: null,
+        context: `${attribution} Reading retained development history.`,
+        file,
+        error,
+      }),
+    );
     const priorReview = latest(reviews);
     const priorFindings = priorReview?.value.findings ?? [];
 

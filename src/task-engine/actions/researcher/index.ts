@@ -2,15 +2,16 @@ import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
   responseFormatText,
   retainedHistoryText,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
@@ -88,7 +89,17 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
 
     let question: string | null = null;
     if (phase === 'focused') {
-      const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
+      const help = await readRetainedIdeaReport({
+        root,
+        workId: inputRecord.taskKey,
+        plan,
+        cycleRoot,
+        declaration: editorHelpArtifact,
+        contract: ideaReportContracts.editorTurn,
+        context:
+          `Researcher reading the editor help request of submission ` +
+          `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${inputRecord.taskKey}.`,
+      });
       if (help === null || help.disposition !== 'help-requested') {
         throw new Error(
           `A focused research contribution answers an editor help request; submission ` +
@@ -102,7 +113,18 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       }
     }
 
-    const existing = await readCycleArtifact(cycleRoot, artifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: inputRecord.taskKey,
+      plan,
+      cycleRoot,
+      declaration: artifact,
+      contract: ideaReportContracts.research,
+      context:
+        `Researcher reading its retained ${phase === 'initial' ? 'research' : 'focused'} ` +
+        `contribution of submission ${String(plan.submission)} cycle ${String(plan.cycle)} ` +
+        `for idea ${inputRecord.taskKey}.`,
+    });
     if (existing !== null) {
       return contributed(inputRecord.taskKey, plan.cycle, existing.sources.length, file);
     }

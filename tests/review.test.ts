@@ -17,6 +17,11 @@ import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact, type FindingResponse } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import {
   reviewArtifact,
@@ -599,6 +604,141 @@ describe('Review', () => {
           reason: 'The retry and its regression test are present in the reviewed revision.',
         },
       ],
+    });
+  });
+
+  it('preserves unusable retained development and review history under its producers', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ round: 2, name: 'retained' });
+    await writeDeliveredRound(workspaceRoot);
+    const scopeOf = (role: 'developer' | 'reviewer', reportKind: string) => ({
+      project: projectOfWorkspace(workspaceRoot),
+      workId: 'NEX-1',
+      area: workspaceRoot,
+      role,
+      reportKind,
+    });
+    const reviewerScope = scopeOf('reviewer', 'review');
+    const developerScope = scopeOf('developer', 'development');
+    const unreachable = () => {
+      throw new Error('The reviewer must not run while the retained history is unusable.');
+    };
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+
+    // Round one's review report is unusable: the malformed record is preserved under the
+    // reviewer's responsibility instead of failing without evidence.
+    const reviewFile = path.join(workspaceRoot, 'artifacts', '1', 'review.json');
+    const malformedReview = '{"verdict":"changesRequested",';
+    await mkdir(path.dirname(reviewFile), { recursive: true });
+    await writeFile(reviewFile, malformedReview, 'utf8');
+    const { git: reviewGit } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/feature.txt b/feature.txt\n+feature\n'),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf({ run: unreachable }),
+        git: reviewGit,
+        github,
+      })(),
+    ).rejects.toThrow(/is not valid JSON/);
+    const retainedReview = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection' && entry.record.scope.role === 'reviewer',
+    );
+    expect(retainedReview?.record).toMatchObject({
+      scope: reviewerScope,
+      operation: 'review',
+      source: { path: reviewFile },
+      output: malformedReview,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // Round one's development report is unusable too: it is preserved under the developer's
+    // responsibility, separately attributable from the reviewer's rejection.
+    await writeRoundArtifact(
+      workspaceRoot,
+      1,
+      'review.json',
+      reviewOutput({ verdict: 'approved', summary: 'The earlier revision looked right.' }),
+    );
+    const developmentFile = path.join(workspaceRoot, 'artifacts', '1', 'development.json');
+    const malformedDevelopment = '{"status":"completed",';
+    await writeFile(developmentFile, malformedDevelopment, 'utf8');
+    const { git: developmentGit } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/feature.txt b/feature.txt\n+feature\n'),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf({ run: unreachable }),
+        git: developmentGit,
+        github,
+      })(),
+    ).rejects.toThrow(/is not valid JSON/);
+    const retainedDevelopment = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection' && entry.record.scope.role === 'developer',
+    );
+    expect(retainedDevelopment?.record).toMatchObject({
+      scope: developerScope,
+      operation: 'develop',
+      source: { path: developmentFile },
+      output: malformedDevelopment,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // The repaired history does not resolve either rejection; the next permitted review receives
+    // both and its validated saved verdict records the corrections.
+    await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
+      taskKey: 'NEX-1',
+      profile: 'dev-a',
+      status: 'completed',
+      baseRevision,
+      headRevision,
+      summary: 'The repaired round-one report.',
+      findingResponses: [],
+    });
+    const { runtime, requests } = scriptedRuntime(() =>
+      JSON.stringify({
+        verdict: 'approved',
+        summary: 'The change matches the task.',
+        findings: [],
+        priorFindings: [],
+      }),
+    );
+    const { git: completedGit } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/feature.txt b/feature.txt\n+feature\n'),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(runtime),
+        git: completedGit,
+        github,
+      })(),
+    ).resolves.toBe('approved');
+    const context = requests[0]?.context ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain(malformedReview);
+    expect(context).toContain(reviewFile);
+    // The developer's rejection stays attributable to the developer's responsibility: this review
+    // never inherits it, and its validated verdict retires only the reviewer's rejection.
+    expect(context).not.toContain(malformedDevelopment);
+    await expect(
+      outstandingReportFeedback({ areaRoot: workspaceRoot, scope: reviewerScope }),
+    ).resolves.toEqual([]);
+    const developerOutstanding = await outstandingReportFeedback({
+      areaRoot: workspaceRoot,
+      scope: developerScope,
+    });
+    expect(developerOutstanding).toHaveLength(1);
+    expect(developerOutstanding[0]?.record).toMatchObject({
+      source: { path: developmentFile },
+      output: malformedDevelopment,
+      reason: expect.stringContaining('is not valid JSON'),
     });
   });
 

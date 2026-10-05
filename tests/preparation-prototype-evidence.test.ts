@@ -18,6 +18,7 @@ import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
+  stageReportScope,
   stageResultArtifact,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import { createPrepareStage } from '../src/task-engine/actions/preparation/prepare-stage/index.js';
@@ -29,6 +30,10 @@ import {
   readStageArtifact,
   roundArtifactDirectory,
 } from '../src/task-engine/actions/preparation/storage.js';
+import {
+  outstandingReportFeedback,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
 
 const environment = {
@@ -415,25 +420,72 @@ describe('prototype observation evidence', () => {
       name: 'stale-evaluator',
       content: [{ path: 'stories/journey.stories.js', revision: previous }],
     });
+    const staleReport = evaluationReport('accepted', stale);
     await expect(
       createStageEvaluator({
         selectionFile,
         stage: 'prototype',
         git,
         publish: () => undefined,
-        runner: runnerOf(evaluationReport('accepted', stale)).runner,
+        runner: runnerOf(staleReport).runner,
       })(),
     ).rejects.toThrow(/differs from the evaluated revision/);
 
+    // The semantic violation retains the evaluator's exact response and reason for its next
+    // permitted invocation; the earlier missing-observation rejection stays outstanding too.
+    const evaluatorScope = stageReportScope({
+      project: path.basename(path.dirname(root)),
+      workId: 'NEX-1',
+      area: stageRoot,
+      stage: 'prototype',
+      role: 'evaluator',
+    });
+    const staleRejection = (
+      await outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope })
+    ).find((entry) => entry.record.reason.includes('differs from the evaluated revision'));
+    expect(staleRejection?.record).toMatchObject({
+      scope: evaluatorScope,
+      operation: 'stage-evaluator',
+      output: JSON.stringify(staleReport),
+      source: null,
+      reason: expect.stringContaining('differs from the evaluated revision'),
+    });
+    await expect(
+      outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
+    ).resolves.toHaveLength(2);
+
+    const acceptedContexts: string[] = [];
     await expect(
       createStageEvaluator({
         selectionFile,
         stage: 'prototype',
         git,
         publish: () => undefined,
-        runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
+        runner: {
+          async run(request) {
+            acceptedContexts.push(request.context);
+            return ok({
+              output: JSON.stringify(evaluationReport('accepted', evaluatorObservation)),
+            });
+          },
+        },
       })(),
     ).resolves.toBe('accepted');
+    // The next permitted evaluator invocation received the rejected bytes and violated rule, and
+    // its validated saved replacement recorded the corrections that retired the feedback.
+    const acceptedContext = acceptedContexts.join('\n');
+    expect(acceptedContext).toContain(
+      'Outstanding report rejections of this report responsibility',
+    );
+    expect(acceptedContext).toContain('differs from the evaluated revision');
+    expect(acceptedContext).toContain('Rejected output (exact returned bytes):');
+    expect(acceptedContext).toContain(stale);
+    await expect(
+      outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
+    ).resolves.toEqual([]);
+    expect(
+      (await readReportFeedback(stageRoot)).filter((entry) => entry.record.kind === 'rejection'),
+    ).toHaveLength(2);
     await expect(readStageArtifact(stageRoot, 1, stageEvaluationArtifact)).resolves.toMatchObject({
       verdict: 'accepted',
       observation: { path: evaluatorObservation },

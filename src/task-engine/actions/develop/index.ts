@@ -13,6 +13,7 @@ import {
 import {
   createArtifactHelpers,
   roundArtifactPath,
+  type ArtifactDeclaration,
   type ArtifactHistoryValue,
 } from '../artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
@@ -215,11 +216,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     const repositoryWorkspace = prepared.repositoryWorkspace ?? selection.workspace;
     const worktree = path.join(repositoryWorkspace.root, 'worktree');
 
-    const histories: RoundHistories = {
-      development: await helpers.readArtifactHistory(devArtifact),
-      verification: await helpers.readArtifactHistory(verificationArtifact),
-      review: await helpers.readArtifactHistory(reviewArtifact),
-    };
     const round = await readRequiredRecord(
       path.join(root, currentRoundFile),
       currentRoundDeclaration,
@@ -233,8 +229,49 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       role: 'developer',
       reportKind: 'development',
     };
+    const reviewerScope: ReportScope = {
+      project: projectOfWorkspace(root),
+      workId: selection.taskKey,
+      area: root,
+      role: 'reviewer',
+      reportKind: 'review',
+    };
     const invocationId = randomUUID();
     const attribution = `Development round ${String(round.number)}, profile ${profile}, task ${selection.taskKey}.`;
+    /**
+     * One retained report's earlier rounds. An unusable retained report is preserved under its
+     * producer's responsibility before this invocation fails, so a later repair of the file
+     * cannot drop the correction obligation.
+     */
+    const readHistory = <Declaration extends ArtifactDeclaration>(
+      declaration: Declaration,
+      producer: {
+        readonly scope: ReportScope;
+        readonly operation: string;
+        readonly profile: string | null;
+      },
+    ) =>
+      helpers.readArtifactHistory(declaration, (file, error) =>
+        rejectUnusableRecord({
+          areaRoot: root,
+          scope: producer.scope,
+          invocationId,
+          operation: producer.operation,
+          profile: producer.profile,
+          context: `${attribution} Reading retained ${producer.operation} history.`,
+          file,
+          error,
+        }),
+      );
+    const histories: RoundHistories = {
+      development: await readHistory(devArtifact, { scope, operation: 'develop', profile }),
+      verification: await helpers.readArtifactHistory(verificationArtifact),
+      review: await readHistory(reviewArtifact, {
+        scope: reviewerScope,
+        operation: 'review',
+        profile: null,
+      }),
+    };
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
     let existing: DevelopmentOutput | null;
     try {

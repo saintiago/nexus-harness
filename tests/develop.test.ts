@@ -23,6 +23,7 @@ import {
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import {
   outstandingReportFeedback,
+  projectOfWorkspace,
   readReportFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
@@ -751,6 +752,95 @@ describe('Develop', () => {
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'development.json')),
     ).rejects.toThrow(/ENOENT/);
+  });
+
+  it('preserves an unusable retained development report and supplies it to the repair round', async () => {
+    const { taskKey, workspaceRoot, selectionFile } = await workspace({ round: 2 });
+    const retainedFile = path.join(workspaceRoot, 'artifacts', '1', 'development.json');
+    const malformed = '{"status":"completed",';
+    await mkdir(path.dirname(retainedFile), { recursive: true });
+    await writeFile(retainedFile, malformed, 'utf8');
+    const scope = {
+      project: projectOfWorkspace(workspaceRoot),
+      workId: taskKey,
+      area: workspaceRoot,
+      role: 'developer',
+      reportKind: 'development',
+    };
+    const unused = scriptedRuntime(() => {
+      throw new Error('The invocation must not run while the retained report is unusable.');
+    });
+    await expect(
+      createDevelop({
+        selectionFile,
+        runner: runnerOf(unused.runtime),
+        git: scriptedGit([]).git,
+        publish: (event) => events.push(event),
+      })(),
+    ).rejects.toThrow(/is not valid JSON/);
+
+    // The malformed retained report is preserved with its bytes, path and validation reason under
+    // the developer's report responsibility.
+    expect(unused.requests).toHaveLength(0);
+    const retainedRejection = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(retainedRejection?.record).toMatchObject({
+      scope,
+      operation: 'develop',
+      source: { path: retainedFile },
+      output: malformed,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // Repairing the file alone does not retire the feedback.
+    await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
+      taskKey,
+      profile: 'dev-a',
+      status: 'completed',
+      baseRevision,
+      headRevision,
+      summary: 'The repaired round-one report.',
+      findingResponses: [],
+    });
+    await expect(
+      outstandingReportFeedback({ areaRoot: workspaceRoot, scope }),
+    ).resolves.toHaveLength(1);
+    await expect(
+      readFile(
+        path.join(workspaceRoot, 'report-feedback', path.basename(retainedRejection!.path)),
+        'utf8',
+      ),
+    ).resolves.toContain('is not valid JSON');
+
+    // The next permitted invocation receives the retained rejection; its validated saved
+    // replacement records the correction that retires it.
+    const repair = scriptedRuntime(() =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Repaired the round-one report.',
+        findingResponses: [],
+      }),
+    );
+    await expect(
+      createDevelop({
+        selectionFile,
+        runner: runnerOf(repair.runtime),
+        git: scriptedGit([repositoryState(), repositoryState({ headRevision })]).git,
+        publish: (event) => events.push(event),
+      })(),
+    ).resolves.toBe('completed');
+    const context = repair.requests[0]?.context ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('is not valid JSON');
+    expect(context).toContain(malformed);
+    expect(context).toContain(retainedFile);
+    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
+      [],
+    );
+    const records = await readReportFeedback(workspaceRoot);
+    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
+    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
   });
 
   it('routes rejection feedback to the selected issue root when the repository is borrowed', async () => {

@@ -27,6 +27,7 @@ import {
   outstandingReportFeedback,
   recordReportCorrection,
   rejectReport,
+  rejectUnusableRecord,
   reportFeedbackContextText,
   type ReportRejection,
   type ReportScope,
@@ -504,6 +505,43 @@ export function createAnalyzeExperience(
     throw new Error(`The analysis output at "${file}" ${detail}.`);
   }
 
+  /** The report responsibility one request's analyst report belongs to. */
+  function reportScopeOf(request: ExperienceRequest, scope: EvidenceScope): ReportScope {
+    return {
+      project: request.project,
+      workId: request.handoff.workId,
+      area: scope.root,
+      role: 'experience-analyst',
+      reportKind: 'experience-analysis',
+    };
+  }
+
+  /**
+   * Read one request's accepted analysis. An unusable saved analysis is preserved as rejection
+   * evidence under the analyst's report responsibility before the read fails, so repairing or
+   * replacing the file cannot drop the correction obligation; the existing failure policy is
+   * unchanged.
+   */
+  async function readAcceptedAnalysis(
+    request: ExperienceRequest,
+  ): Promise<ExperienceAnalysisOutput | null> {
+    try {
+      return await readAnalysis(request.identity);
+    } catch (error) {
+      const scope = evidenceScopeOf(request);
+      return await rejectUnusableRecord({
+        areaRoot: scope.root,
+        scope: reportScopeOf(request, scope),
+        invocationId: null,
+        operation: 'analyze-experience',
+        profile,
+        context: `Reading the retained analysis of ${handoffLabel(request.handoff)}.`,
+        file: analysisFile(request.identity),
+        error,
+      });
+    }
+  }
+
   /** The durable request files of this store, in identity order. */
   async function requestFiles(): Promise<string[]> {
     let entries: string[];
@@ -602,7 +640,7 @@ export function createAnalyzeExperience(
     request: ExperienceRequest,
     problems: string[],
   ): Promise<ExperienceRequest> {
-    if (request.evidenceRoot !== null || (await readAnalysis(request.identity)) !== null) {
+    if (request.evidenceRoot !== null || (await readAcceptedAnalysis(request)) !== null) {
       return request;
     }
     const candidates =
@@ -744,7 +782,7 @@ export function createAnalyzeExperience(
     identity: string,
     problems: string[],
   ): Promise<ExperienceAnalysisOutput | null> {
-    const accepted = await readAnalysis(identity);
+    const accepted = await readAcceptedAnalysis(request);
     if (accepted !== null) {
       return accepted;
     }
@@ -759,13 +797,7 @@ export function createAnalyzeExperience(
     let activityTail: Promise<void> = Promise.resolve();
     let activityProblem: string | null = null;
     const scope = evidenceScopeOf(request);
-    const reportScope: ReportScope = {
-      project: request.project,
-      workId: request.handoff.workId,
-      area: scope.root,
-      role: 'experience-analyst',
-      reportKind: 'experience-analysis',
-    };
+    const reportScope = reportScopeOf(request, scope);
     const invocationId = randomUUID();
     const attribution =
       `Experience analysis of ${request.handoff.workId} (${request.handoff.workflow}, attempt ` +

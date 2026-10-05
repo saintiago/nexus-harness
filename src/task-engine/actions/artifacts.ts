@@ -27,6 +27,12 @@ export type ArtifactHistoryValue<Value> = {
   readonly value: Value;
 };
 
+/**
+ * The handling one read gives a document that exists but is not usable: the validating caller
+ * owns the evidence write and keeps failing on the unusable record, so the handler never returns.
+ */
+export type UnusableArtifactHandler = (file: string, error: unknown) => Promise<never>;
+
 /** The artifact helpers bound to the current workspace. */
 export type ArtifactHelpers = {
   /** The declared contents of the current round's artifacts, in argument order. */
@@ -47,9 +53,13 @@ export type ArtifactHelpers = {
     declaration: Declaration,
     content: ArtifactContent<Declaration>,
   ): Promise<void>;
-  /** The earlier rounds that produced the declared artifact, in round order. */
+  /**
+   * The earlier rounds that produced the declared artifact, in round order. An existing but
+   * unusable record is handed to the supplied handler, which owns any evidence write.
+   */
   readArtifactHistory<Declaration extends ArtifactDeclaration>(
     declaration: Declaration,
+    onUnusable?: UnusableArtifactHandler,
   ): Promise<ArtifactHistoryValue<ArtifactContent<Declaration>>[]>;
 };
 
@@ -161,6 +171,7 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
 
   async function readArtifactHistory<Declaration extends ArtifactDeclaration>(
     declaration: Declaration,
+    onUnusable?: UnusableArtifactHandler,
   ): Promise<ArtifactHistoryValue<ArtifactContent<Declaration>>[]> {
     const round = await currentRoundNumber();
     const history: ArtifactHistoryValue<ArtifactContent<Declaration>>[] = [];
@@ -170,7 +181,14 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
       if (text === null) {
         continue;
       }
-      history.push({ number, value: parseArtifact(file, declaration, text) });
+      try {
+        history.push({ number, value: parseArtifact(file, declaration, text) });
+      } catch (error) {
+        if (onUnusable === undefined) {
+          throw error;
+        }
+        return await onUnusable(file, error);
+      }
     }
     return history;
   }
