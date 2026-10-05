@@ -383,9 +383,6 @@ export async function readCurrentDecision(settings: {
         reason: `the ${stage} stage's current round retains no evaluated authored revision`,
       };
     }
-    if (author.revision !== result.authoredRevision) {
-      return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
-    }
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
     await requireRetainedDecision({
@@ -398,6 +395,9 @@ export async function readCurrentDecision(settings: {
       evaluation,
       git,
     });
+    if (author.revision !== result.authoredRevision) {
+      return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
+    }
     // An applicable prototype decision also relies on the retained observation records; a record
     // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
     if (stage === 'prototype' && (result.outcome === 'accepted' || result.prototype !== null)) {
@@ -442,6 +442,32 @@ export async function requireRetainedDecision(
 ): Promise<RetainedStageEvaluationOutput> {
   const { issueRoot, stage, selection, round, verdict, author, evaluation } = settings;
   const root = stageRoot(issueRoot, stage);
+  // Validate producer bindings before association checks can route changed records as stale and
+  // bypass rejection retention. Legacy combined records need no retroactive Markdown binding.
+  if (evaluation !== null && isBoundStageEvaluationOutput(evaluation)) {
+    await requireStageReport({
+      issueRoot,
+      stage,
+      workId: selection.taskKey,
+      role: 'evaluator',
+      binding: evaluation,
+      profile: evaluation.profile,
+      file: roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot),
+      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
+    });
+  }
+  if (isBoundStageAuthorOutput(author)) {
+    await requireStageReport({
+      issueRoot,
+      stage,
+      workId: selection.taskKey,
+      role: 'author',
+      binding: author,
+      profile: author.profile,
+      file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
+    });
+  }
   if (evaluation === null || evaluation.assessedRevision !== author.revision) {
     throw new Error('Acceptance requires evaluation of the exact authored revision.');
   }
@@ -465,32 +491,6 @@ export async function requireRetainedDecision(
     throw new Error(
       'The captured issue input changed since evaluation; a current decision is required.',
     );
-  }
-  // A current evaluation and its authored report must stay readable with their recorded bytes; a
-  // retained combined record stays usable as history without a retroactive Markdown binding.
-  if (isBoundStageEvaluationOutput(evaluation)) {
-    await requireStageReport({
-      issueRoot,
-      stage,
-      workId: selection.taskKey,
-      role: 'evaluator',
-      binding: evaluation,
-      profile: evaluation.profile,
-      file: roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot),
-      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
-    });
-  }
-  if (isBoundStageAuthorOutput(author)) {
-    await requireStageReport({
-      issueRoot,
-      stage,
-      workId: selection.taskKey,
-      role: 'author',
-      binding: author,
-      profile: author.profile,
-      file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
-      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
-    });
   }
   return evaluation;
 }
@@ -646,7 +646,7 @@ export async function requireNeedsInputReport(settings: {
     profile: plan?.profiles.author ?? null,
     context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
   });
-  if (author === null || author.revision !== settings.authoredRevision) {
+  if (author === null) {
     throw new Error('A retained question must keep its exact producing author.');
   }
   if (isBoundStageAuthorOutput(author)) {
@@ -660,5 +660,8 @@ export async function requireNeedsInputReport(settings: {
       file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
       context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
     });
+  }
+  if (author.revision !== settings.authoredRevision) {
+    throw new Error('A retained question must keep its exact producing author.');
   }
 }

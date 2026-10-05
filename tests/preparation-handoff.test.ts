@@ -1232,6 +1232,71 @@ async function boundRound(
 }
 
 describe('preparation retained outcome usability', () => {
+  it.each(['accepted', 'needsInput'] as const)(
+    'retains invalid author bindings before changed-revision checks for %s',
+    async (outcome) => {
+      const { issueRoot, root, selection, git, author, finalize } = await boundRound(
+        outcome === 'accepted' ? 'authored' : 'needs-input',
+      );
+      await expect(finalize({ outcome })).resolves.toBe('saved');
+      const file = path.join(root, 'artifacts/2/author.json');
+      const changed = { ...author, revision: author.revision + 1 };
+      await writeFile(file, JSON.stringify(changed));
+      await expect(finalize({ outcome })).rejects.toThrow(/exact/);
+      expect(await readReportFeedback(root)).toEqual([]);
+
+      await writeFile(file, JSON.stringify({ ...changed, reportIdentity: '0'.repeat(64) }));
+      await expect(finalize({ outcome })).rejects.toThrow(/does not match/);
+      if (outcome === 'accepted') {
+        await expect(
+          readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+        ).resolves.toMatchObject({
+          kind: 'stale',
+          reason: expect.stringContaining('does not match'),
+        });
+      }
+      const feedback = await readReportFeedback(root);
+      expect(feedback).toHaveLength(outcome === 'accepted' ? 2 : 1);
+      for (const entry of feedback) {
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          invocationId: author.invocationId,
+          scope: { role: 'ux-author' },
+          source: { path: file },
+          assignedReport: author.report,
+          reason: expect.stringContaining('does not match'),
+        });
+      }
+    },
+  );
+
+  it.each(['author', 'input'] as const)(
+    'routes legitimate changed %s data as stale without rejecting valid reports',
+    async (change) => {
+      const { issueRoot, root, selection, git, author, finalize } = await boundRound();
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      if (change === 'author') {
+        await writeFile(
+          path.join(root, 'artifacts/2/author.json'),
+          JSON.stringify({ ...author, documents: [{ path: 'docs/changed.md' }] }),
+        );
+      }
+      const currentSelection =
+        change === 'input'
+          ? { ...selection, conversation: [{ body: 'Changed human input.' }] }
+          : selection;
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: currentSelection as never, git }),
+      ).resolves.toMatchObject({
+        kind: 'stale',
+        reason: expect.stringContaining(
+          change === 'author' ? 'authored report changed' : 'captured issue input changed',
+        ),
+      });
+      expect(await readReportFeedback(root)).toEqual([]);
+    },
+  );
+
   it('retains a malformed author binding before round opening can advance the allowance', async () => {
     const { selectionFile, root, author } = await boundRound();
     const file = path.join(root, 'artifacts/2/author.json');
@@ -1257,9 +1322,13 @@ describe('preparation retained outcome usability', () => {
     });
   });
 
-  it.each(['author', 'evaluator'] as const)(
-    'retains malformed %s bindings before acceptance failure, stale reads and completed replay',
-    async (role) => {
+  it.each(
+    (['author', 'evaluator'] as const).flatMap((role) =>
+      (['missing', 'incorrect'] as const).map((damage) => ({ role, damage })),
+    ),
+  )(
+    'retains $damage $role bindings before acceptance failure, stale reads and completed replay',
+    async ({ role, damage }) => {
       const { issueRoot, root, selection, git, author, evaluation, finalize } = await boundRound();
       const producer = role === 'author' ? author : evaluation!;
       const file = path.join(
@@ -1268,9 +1337,14 @@ describe('preparation retained outcome usability', () => {
         role === 'author' ? 'author.json' : 'evaluation.json',
       );
       const original = await readFile(file, 'utf8');
-      const damaged = JSON.stringify({ ...producer, reportIdentity: undefined }, null, 2);
+      const damaged = JSON.stringify(
+        { ...producer, reportIdentity: damage === 'missing' ? undefined : '0'.repeat(64) },
+        null,
+        2,
+      );
+      const reason = damage === 'missing' ? 'reportIdentity' : 'does not match';
       await writeFile(file, damaged);
-      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/reportIdentity/);
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(reason);
       await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
       await writeFile(file, original);
       await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
@@ -1280,9 +1354,9 @@ describe('preparation retained outcome usability', () => {
         readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
       ).resolves.toMatchObject({
         kind: 'stale',
-        reason: expect.stringContaining('reportIdentity'),
+        reason: expect.stringContaining(reason),
       });
-      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/reportIdentity/);
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(reason);
       expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(result);
       const feedback = await readReportFeedback(root);
       expect(feedback).toHaveLength(3);
@@ -1294,7 +1368,7 @@ describe('preparation retained outcome usability', () => {
           source: { path: file },
           output: damaged,
           assignedReport: producer.report,
-          reason: expect.stringContaining('reportIdentity'),
+          reason: expect.stringContaining(reason),
         });
         if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
