@@ -73,12 +73,19 @@ export type RetainedEvaluationContent = {
  * Retain the authored report's declared repository paths in one named stage-owned commit and
  * observe their exact revision and existence, or observe the retained revision of the existing
  * repository files an evaluated skip relies on. A path-scoped commit never absorbs unrelated
- * staged work.
+ * staged work. A named deletion is committed while the checkout still tracks the path; an
+ * interrupted evaluation that already committed it is observed instead of re-staged, so a replay
+ * neither fails on the absent path nor commits anything else.
  */
 export async function retainEvaluationContent(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
   readonly author: StageAuthorOutput;
+  /**
+   * The checkout-relative paths a skip proposal reuses from the preceding accepted round. They
+   * are observed like any other relied-on content, including a retained deletion.
+   */
+  readonly reused?: readonly string[];
 }): Promise<RetainedEvaluationContent> {
   const { git, worktree, author } = settings;
   const declared = [...author.documents.map(({ path: value }) => value), ...author.sourcePaths];
@@ -92,14 +99,33 @@ export async function retainEvaluationContent(settings: {
       paths.push(relative);
     }
   }
+  const inspection = await git.inspectRepository(worktree);
+  if (!inspection.ok) throw new Error(inspection.fault.message);
+  const head = inspection.value.headRevision;
   if (author.outcome === 'authored' && paths.length > 0) {
-    const saved = await git.commitPaths(
-      worktree,
-      paths,
-      'Retain authored preparation content for evaluation',
-    );
-    if (!saved.ok) throw new Error(saved.fault.message);
-    const revision = saved.value.headRevision;
+    // An absent declared path is a deletion. It is stageable only while the checkout tracks the
+    // path; a deletion an earlier interrupted evaluation already committed is retained by
+    // observation, since Git cannot stage a path absent from both the head and the checkout.
+    const stageable: string[] = [];
+    for (const relative of paths) {
+      if (await isFile(path.join(worktree, relative))) {
+        stageable.push(relative);
+        continue;
+      }
+      if (head !== null && (await git.readFileAtRevision(worktree, head, relative)).ok) {
+        stageable.push(relative);
+      }
+    }
+    let revision = head;
+    if (stageable.length > 0) {
+      const saved = await git.commitPaths(
+        worktree,
+        stageable,
+        'Retain authored preparation content for evaluation',
+      );
+      if (!saved.ok) throw new Error(saved.fault.message);
+      revision = saved.value.headRevision;
+    }
     if (revision === null) {
       throw new Error('The prepared checkout reports no revision for the authored content.');
     }
@@ -113,11 +139,20 @@ export async function retainEvaluationContent(settings: {
     }
     return { revision, content };
   }
-  const inspection = await git.inspectRepository(worktree);
-  if (!inspection.ok) throw new Error(inspection.fault.message);
-  const revision = inspection.value.headRevision;
+  const revision = head;
   const content: AssessedContent[] = [];
   if (author.outcome === 'skip-proposed') {
+    for (const relative of settings.reused ?? []) {
+      if (revision === null) {
+        throw new Error('The prepared checkout reports no revision for the relied-on content.');
+      }
+      if (content.some((entry) => entry.path === relative)) continue;
+      content.push({
+        path: relative,
+        revision,
+        exists: await isFile(path.join(worktree, relative)),
+      });
+    }
     for (const reference of author.skip?.references ?? []) {
       const relative = checkoutRelative(worktree, reference);
       if (relative === null || content.some((entry) => entry.path === relative)) continue;
@@ -169,28 +204,5 @@ export async function requireEvaluationContent(settings: {
       throw error;
     }
     if (saved.value !== current) throw changed();
-  }
-}
-
-/**
- * Require every recorded existing revision to stay readable in the retained repository. A decision
- * is stable while its assessed content stays readable; rewriting or pruning that history requires
- * a current decision.
- */
-export async function requireContentReadable(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
-  readonly content: readonly AssessedContent[];
-}): Promise<void> {
-  for (const entry of settings.content) {
-    if (!entry.exists) continue;
-    const saved = await settings.git.readFileAtRevision(
-      settings.worktree,
-      entry.revision,
-      entry.path,
-    );
-    if (!saved.ok) {
-      throw new Error('A recorded revision is no longer readable; a current decision is required.');
-    }
   }
 }

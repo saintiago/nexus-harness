@@ -28,7 +28,7 @@ import {
   transitionInto,
 } from '../../source.js';
 import type { WorkflowStage } from '../../select-task/artifacts.js';
-import type { StageReturn } from '../../select-work/artifacts.js';
+import { initialHandoff, type StageReturn } from '../../select-work/artifacts.js';
 import { applyTransition } from '../../source.js';
 import {
   advanceStage,
@@ -237,13 +237,16 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
 
     const outcome: PreparationResult['outcome'] = result.outcome;
     /**
-     * The stages after this one whose retained decisions no longer cover the checkout content: a
-     * later stage's edit of an earlier accepted document requires that stage's current decision.
+     * Every stage whose retained decision no longer covers the checkout content this publication
+     * just accepted: an edit of a path another stage assessed requires that stage's current
+     * decision, whether the other stage stands earlier or later in the route.
      */
-    async function contentChangedStages(): Promise<PreparationStage[]> {
-      const later = preparationStages.slice(preparationStages.indexOf(stage) + 1);
+    async function invalidatedStages(): Promise<PreparationStage[]> {
       const changed: PreparationStage[] = [];
-      for (const candidate of later) {
+      for (const candidate of preparationStages) {
+        if (candidate === stage) {
+          continue;
+        }
         if (
           await decisionContentChanged({
             issueRoot: selection.workspace.root,
@@ -254,6 +257,10 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           changed.push(candidate);
       }
       return changed;
+    }
+    /** The stage position of one preparation stage in the route. */
+    function indexOf(candidate: PreparationStage): number {
+      return preparationStages.indexOf(candidate);
     }
     if (outcome === 'accepted' || outcome === 'skipped') {
       // The published decision must be current: the exact authored report, captured input, relied-on
@@ -283,14 +290,62 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         );
       }
       const retained = await readHandoff(selection.workspace.root);
+      const invalidated = await invalidatedStages();
+      const earliest = invalidated.find(
+        (candidate): candidate is Exclude<UpstreamStage, 'idea'> =>
+          indexOf(candidate) < indexOf(stage),
+      );
+      if (earliest !== undefined) {
+        // The accepted work changed content an earlier stage assessed, so the earlier decision no
+        // longer covers the retained content: the route returns to the earliest responsible stage
+        // instead of advancing past a decision that no longer holds. Every stage between it and
+        // this one re-confirms or repairs its current decision before the route continues, and a
+        // stage whose content stayed unchanged keeps a valid acceptance that its round can reuse.
+        return advanceTo(
+          earliest,
+          {
+            from: stage,
+            to: earliest,
+            problem:
+              `The accepted ${stage} work changed repository content the ${earliest} stage had ` +
+              'assessed.',
+            consequence:
+              `The retained ${earliest} decision no longer covers the current content, so the ` +
+              `route cannot advance on it.`,
+            correction:
+              `Reassess the ${earliest} work against the current retained content and confirm ` +
+              'or repair every affected downstream decision.',
+          },
+          `Returning to ${earliest} for reconsideration: the accepted ${stage} change is not ` +
+            `covered by ${earliest}'s current decision.`,
+          preparationStages.filter(
+            (candidate) =>
+              indexOf(candidate) > indexOf(earliest) && indexOf(candidate) <= indexOf(stage),
+          ),
+        );
+      }
       const awaiting = [
         ...(retained?.awaitingStages ?? []).filter((candidate) => candidate !== stage),
-        ...(await contentChangedStages()),
+        ...invalidated,
       ];
       if (stage === 'architecture') {
         if (statusNameOf(issue) !== statusOf(stage)) {
           return failed(
             `Issue ${selection.taskKey} is in status "${statusNameOf(issue)}"; Architecture handoff requires its active stage status.`,
+          );
+        }
+        // Freeze the pending work before the parent starts the handoff: Architecture's own
+        // completed reassessment is cleared while any genuinely pending stage still blocks it.
+        const pending = [...new Set(awaiting)];
+        const handoffRecord = retained ?? initialHandoff(stage);
+        await writeHandoff(selection.workspace.root, {
+          ...handoffRecord,
+          awaitingStages: pending,
+        });
+        if (pending.length > 0) {
+          return failed(
+            `Preparation is awaiting a current decision for the ${pending.join(', ')} stage(s); ` +
+              'the Architecture handoff cannot proceed.',
           );
         }
         // Architecture hands off through the parent's documentation and ticket publication.

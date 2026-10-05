@@ -45,7 +45,12 @@ const finding: Finding = {
 };
 
 /** One stage area with a completed first round: an authored revision and its evaluation. */
-async function stageWithEvaluation(): Promise<{
+async function stageWithEvaluation(
+  options: {
+    readonly stage?: 'ux' | 'architecture';
+    readonly verdict?: 'changes-requested' | 'return-upstream';
+  } = {},
+): Promise<{
   readonly selectionFile: string;
   readonly issueRoot: string;
   readonly root: string;
@@ -54,7 +59,9 @@ async function stageWithEvaluation(): Promise<{
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-preparation-handoff-'));
   temporaryDirectories.push(directory);
   const issueRoot = path.join(directory, 'NEX-1');
-  const root = path.join(issueRoot, 'ux');
+  const stage = options.stage ?? 'ux';
+  const document = stage === 'architecture' ? 'docs/architecture.md' : 'docs/ux.md';
+  const root = path.join(issueRoot, stage);
   const selectionFile = path.join(directory, 'selection.json');
   const selection = {
     taskKey: 'NEX-1',
@@ -62,28 +69,34 @@ async function stageWithEvaluation(): Promise<{
     task: { id: '1', key: 'NEX-1', fields: { summary: 'Refine the journey' } },
     conversation: [],
     workspace: { root: issueRoot },
-    stage: 'ux',
+    stage,
   };
   await writeFile(selectionFile, JSON.stringify(selection));
   await mkdir(path.join(root, 'state'), { recursive: true });
   await mkdir(path.join(root, 'artifacts', '1'), { recursive: true });
   await mkdir(path.join(preparationWorktree(issueRoot), 'docs'), { recursive: true });
-  await writeFile(path.join(preparationWorktree(issueRoot), 'docs', 'ux.md'), '# UX\n');
+  await writeFile(
+    path.join(preparationWorktree(issueRoot), document),
+    stage === 'architecture' ? '# Architecture\n' : '# UX\n',
+  );
   await writeFile(
     path.join(root, 'state', 'current-round.json'),
     JSON.stringify({
-      stage: 'ux',
+      stage,
       round: 1,
       route: 'new',
-      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+      profiles: {
+        author: 'nexus-sol',
+        evaluator: stage === 'architecture' ? 'nexus-astra' : 'nexus-sol',
+      },
     }),
   );
   const author = {
-    stage: 'ux',
+    stage,
     revision: 1,
     outcome: 'authored',
     summary: 'The first journey proposal.',
-    documents: [{ path: 'docs/ux.md', description: 'The proposed journey.' }],
+    documents: [{ path: document, description: 'The proposed work.' }],
     sourcePaths: [],
     plan: [],
     skip: null,
@@ -100,14 +113,22 @@ async function stageWithEvaluation(): Promise<{
         authorIdentity: authoredIdentity(author as never),
         sourceIdentity: sourceInputIdentity(selection as never),
         upstream: [],
-        content: [{ path: 'docs/ux.md', revision: '1'.repeat(40), exists: true }],
+        content: [{ path: document, revision: '1'.repeat(40), exists: true }],
       },
       assessedRevision: 1,
-      verdict: 'changes-requested',
+      verdict: options.verdict ?? 'changes-requested',
       reason: 'The journey contradicts the requirement.',
       findings: [finding],
       priorFindings: [],
-      upstream: null,
+      upstream:
+        options.verdict === 'return-upstream'
+          ? {
+              stage: 'requirements',
+              problem: 'The acceptance example contradicts the requirement.',
+              consequence: 'The stage cannot express one consistent design.',
+              correction: 'Correct the acceptance example.',
+            }
+          : null,
     }),
   );
   return { selectionFile, issueRoot, root, selection };
@@ -387,7 +408,129 @@ describe('preparation repair rounds', () => {
     expect(contexts[0]).toContain('Propose a navigation path that supports the example.');
     // The approved idea handoff is an upstream reference, and the retained revision continues.
     expect(contexts[0]).toContain(path.join(issueRoot, 'refinement', 'artifacts', 'handoff.json'));
+    // A fresh stage visit inherits no earlier findings: only re-entry does.
+    expect(contexts[0]).toContain('No prior findings are supplied for this round');
     await expect(artifact(root, 3, 'author.json')).resolves.toMatchObject({ revision: 2 });
+  });
+
+  it('resolves the findings its own earlier return left open in a reassessment round', async () => {
+    const { selectionFile, issueRoot, root } = await stageWithEvaluation({
+      stage: 'architecture',
+      verdict: 'return-upstream',
+    });
+    // The parent retained that an upstream correction requires this stage's current decision.
+    await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(issueRoot, 'parent', 'handoff.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 1,
+        feedback: null,
+        return: {
+          from: 'architecture',
+          to: 'requirements',
+          problem: 'The acceptance example contradicts the requirement.',
+          consequence: 'The stage cannot express one consistent design.',
+          correction: 'Correct the acceptance example.',
+        },
+        awaitingStages: ['architecture'],
+        tickets: [],
+        publications: [],
+      }),
+    );
+    const round = createStartStageRound({
+      selectionFile,
+      stage: 'architecture',
+      profiles: { authors: ['nexus-sol'], evaluator: 'nexus-astra' },
+      maxRounds: 3,
+      publish: () => undefined,
+    });
+    await expect(round({ stage: 'architecture', route: 'new' })).resolves.toBe('opened');
+    expect(
+      JSON.parse(await readFile(path.join(root, 'state', 'current-round.json'), 'utf8')),
+    ).toMatchObject({ round: 2, route: 'reassess' });
+
+    // The author must answer the finding the earlier return left open.
+    const { runner: dropping } = runnerOf([
+      {
+        outcome: 'skip-proposed',
+        summary: 'The retained design still holds.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      },
+    ]);
+    const author = createStageAuthor({
+      selectionFile,
+      stage: 'architecture',
+      runner: dropping,
+      git: scriptedGit([]).git,
+      publish: () => undefined,
+    });
+    await expect(author({ stage: 'architecture', task: 'propose' })).rejects.toThrow(
+      /did not respond to finding "F1"/,
+    );
+
+    // The evaluator must dispose of it before the reassessed work can be accepted.
+    await writeFile(
+      path.join(root, 'artifacts', '2', 'author.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        revision: 2,
+        outcome: 'skip-proposed',
+        summary: 'The retained design still holds.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'The retained design still holds.', references: ['docs/architecture.md'] },
+        question: null,
+        upstream: null,
+        findingResponses: [
+          { findingId: 'F1', status: 'addressed', response: 'The corrected input resolves it.' },
+        ],
+      }),
+    );
+    const { runner, contexts } = runnerOf([
+      {
+        assessedRevision: 2,
+        verdict: 'accepted-skip',
+        reason: 'The retained design still holds.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      },
+      {
+        assessedRevision: 2,
+        verdict: 'accepted-skip',
+        reason: 'The retained design still holds.',
+        findings: [],
+        priorFindings: [
+          { findingId: 'F1', disposition: 'resolved', reason: 'The corrected input resolves it.' },
+        ],
+        upstream: null,
+      },
+    ]);
+    const evaluator = createStageEvaluator({
+      selectionFile,
+      stage: 'architecture',
+      runner,
+      publish: () => undefined,
+      git: scriptedGit([repositoryState()], {
+        readFileAtRevision: async (repository, _revision, file) =>
+          ok(await readFile(path.join(repository, file), 'utf8')),
+      }).git,
+    });
+    await expect(evaluator({ stage: 'architecture' })).rejects.toThrow(
+      /does not dispose of prior finding "F1"/,
+    );
+    await expect(evaluator({ stage: 'architecture' })).resolves.toBe('accepted-skip');
+    // The evaluator receives the preceding evaluation and the complete unresolved finding set.
+    expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
+    expect(contexts[1]).toContain('The previous evaluation of this work');
   });
 
   it('opens a pending reassessment as such and carries the retained decision into context', async () => {
@@ -428,7 +571,9 @@ describe('preparation repair rounds', () => {
         skip: { reason: 'Retained work still suffices.', references: ['docs/ux.md'] },
         question: null,
         upstream: null,
-        findingResponses: [],
+        findingResponses: [
+          { findingId: 'F1', status: 'addressed', response: 'The corrected input removes it.' },
+        ],
       },
     ]);
     const author = createStageAuthor({
@@ -441,5 +586,8 @@ describe('preparation repair rounds', () => {
     await expect(author({ stage: 'ux', task: 'propose' })).resolves.toBe('skip-proposed');
     expect(contexts[0]).toContain('pending reassessment');
     expect(contexts[0]).toContain('The current authored revision is 1');
+    // The reassessed stage keeps the unresolved finding its own earlier evaluation left open: the
+    // author responds to it and the evaluator must dispose of it.
+    expect(contexts[0]).toContain('Eligible prior finding IDs: "F1"');
   });
 });

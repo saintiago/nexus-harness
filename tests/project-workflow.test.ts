@@ -687,12 +687,15 @@ describe('preparation binding dispatch', () => {
 async function publishPreparation(options: {
   readonly result: Record<string, unknown>;
   readonly status: string;
+  /** The parent handoff record the publication reads, when the case retains one. */
+  readonly handoff?: Record<string, unknown>;
 }): Promise<{
   readonly outcome: string;
   readonly status: () => string;
   readonly comments: readonly JiraComment[];
   readonly calls: string[];
   readonly stage: () => string | undefined;
+  readonly failures: readonly string[];
   readonly feedback: () => unknown;
   readonly returnFinding: () => unknown;
   readonly awaiting: () => readonly string[];
@@ -724,6 +727,10 @@ async function publishPreparation(options: {
     stage: selectedStage,
   };
   await writeFile(selectionFile, JSON.stringify(selection));
+  if (options.handoff !== undefined) {
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(path.join(root, 'parent', 'handoff.json'), JSON.stringify(options.handoff));
+  }
   // The publication validates the current acceptance basis of every accepted or skipped result.
   const author = {
     stage: selectedStage,
@@ -806,6 +813,7 @@ async function publishPreparation(options: {
     },
   });
 
+  const failures: string[] = [];
   const publish = createPublishPreparation({
     selectionFile,
     statuses: {
@@ -818,7 +826,11 @@ async function publishPreparation(options: {
     ideaActive: 'Idea Refinement',
     git: scriptedGit([repositoryState()]).git,
     jira,
-    publish: () => undefined,
+    publish: (event) => {
+      if (event.type === 'failed') {
+        failures.push(String((event.data as { readonly reason?: unknown }).reason));
+      }
+    },
   });
   const outcome = await publish({ stage: selectedStage });
   const saved = JSON.parse(await readFile(selectionFile, 'utf8')) as {
@@ -851,6 +863,7 @@ async function publishPreparation(options: {
     comments,
     calls,
     stage: () => saved.stage,
+    failures,
     feedback: () => handoff?.feedback ?? null,
     returnFinding: () => handoff?.return ?? null,
     awaiting: () => handoff?.awaitingStages ?? [],
@@ -946,6 +959,49 @@ describe('parent preparation publication', () => {
     expect(published.outcome).toBe('failed');
     expect(published.comments).toEqual([]);
     expect(published.status()).toBe('Waiting for Feedback');
+  });
+
+  /** The parent handoff a returned-from Architecture preparation retains. */
+  const architectureHandoff = (awaitingStages: readonly string[]) => ({
+    stage: 'architecture',
+    upstreamReturns: 1,
+    feedback: null,
+    return: {
+      from: 'architecture',
+      to: 'ux',
+      problem: 'The proposed navigation cannot support the acceptance example.',
+      consequence: 'The architecture cannot expose the required journey.',
+      correction: 'Propose a navigation path that supports the example.',
+    },
+    awaitingStages,
+    tickets: [],
+    publications: [],
+  });
+
+  it('clears Architecture\u2019s completed reassessment before admitting the handoff', async () => {
+    const published = await publishPreparation({
+      result: { ...accepted, stage: 'architecture' },
+      status: 'Architecture',
+      handoff: architectureHandoff(['architecture']),
+    });
+
+    // Architecture's own completed reassessment leaves no pending stage behind, so the parent can
+    // start the implementation handoff.
+    expect(published.outcome).toBe('handoff');
+    expect(published.awaiting()).toEqual([]);
+  });
+
+  it('preserves a genuinely pending reassessment instead of handing off', async () => {
+    const published = await publishPreparation({
+      result: { ...accepted, stage: 'architecture' },
+      status: 'Architecture',
+      handoff: architectureHandoff(['ux']),
+    });
+
+    expect(published.outcome).toBe('failed');
+    expect(published.failures.join('\n')).toContain('ux');
+    // The pending stage stays retained so the route can still obtain its current decision.
+    expect(published.awaiting()).toEqual(['ux']);
   });
 
   it('retains a question with its stage while the item waits for feedback', async () => {

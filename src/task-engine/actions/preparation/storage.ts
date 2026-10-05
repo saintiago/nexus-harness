@@ -22,6 +22,7 @@ import {
   stageTerminalDeclaration,
   stageRoundPlanDeclaration,
   type AcceptanceBasis,
+  type AssessedContent,
   type PreparationWorkspace,
   type PreparationStage,
   type StageAuthorOutput,
@@ -33,7 +34,6 @@ import {
   authoredIdentity,
   checkoutRelative,
   recordIdentity,
-  requireContentReadable,
   requireEvaluationContent,
   sourceInputIdentity,
 } from './evaluation-content.js';
@@ -164,14 +164,15 @@ export async function precedingStageWork(
 
 /**
  * The prior findings one round must answer and dispose of: the findings of the evaluation the
- * current response round revises. A "new" route opens a fresh stage visit whose input is the
- * parent's retained correction rather than an earlier round's findings, so it supplies none.
+ * current response or reassessment round revises. A "new" route opens a fresh stage visit whose
+ * input is the parent's retained correction rather than an earlier round's findings, so it
+ * supplies none; a re-entered stage keeps every finding its own earlier evaluation left open.
  */
 export async function priorStageFindings(
   root: string,
   plan: StageRoundPlan,
 ): Promise<StageEvaluationOutput['findings']> {
-  if (plan.route !== 'next') {
+  if (plan.route === 'new') {
     return [];
   }
   const preceding = await precedingStageWork(root, plan.round);
@@ -303,6 +304,133 @@ export function roundArtifactFile(root: string, round: number, relative: string)
   return path.join(root, 'artifacts', String(round), relative);
 }
 
+/**
+ * The retained content one evaluated skip reuses from the immediately preceding completed round
+ * of the same stage: the result's changed documents and stage-owned source paths, the preceding
+ * acceptance's observations of those paths, and the retained prototype when the stage owns one.
+ * Only that immediate acceptance may supply reused assets; a later rejection or upstream return
+ * invalidates it, so reuse never searches past an intervening unfinished or invalid round. The
+ * observations carry the recorded revision and existence, so a retained deletion is validated as
+ * an absence rather than unreadable file bytes.
+ */
+export type ReusedPreparationContent = {
+  /** The preceding result's changed documents the skip reuses, as the result recorded them. */
+  readonly documents: readonly { readonly path: string; readonly revision: string }[];
+  /** The preceding result's stage-owned source paths the skip reuses, checkout-relative. */
+  readonly sourcePaths: readonly string[];
+  /** Every reused checkout path in one ordered set. */
+  readonly paths: readonly string[];
+  /** The preceding acceptance's observation of each reused path. */
+  readonly content: readonly AssessedContent[];
+  /** The retained prototype the preceding result recorded, when this stage owns one. */
+  readonly prototype: PreparationResult['prototype'];
+};
+
+const nothingReused: ReusedPreparationContent = {
+  documents: [],
+  sourcePaths: [],
+  paths: [],
+  content: [],
+  prototype: null,
+};
+
+/** Resolve the content one skip proposal's references reuse from the preceding round. */
+export async function reusedPreparationContent(settings: {
+  readonly root: string;
+  readonly round: number;
+  readonly worktree: string;
+  readonly stage: PreparationStage;
+  readonly references: readonly string[];
+}): Promise<ReusedPreparationContent> {
+  const { root, round, worktree, stage, references } = settings;
+  if (references.length === 0) {
+    return nothingReused;
+  }
+  const previousRound = (await stageRounds(root)).filter((candidate) => candidate < round).at(-1);
+  if (previousRound === undefined) {
+    return nothingReused;
+  }
+  const result = await readStageArtifact(root, previousRound, stageResultArtifact);
+  if (result === null || (result.outcome !== 'accepted' && result.outcome !== 'skipped')) {
+    return nothingReused;
+  }
+  const previousFile = roundArtifactFile(
+    root,
+    previousRound,
+    stageResultArtifact.pathFromArtifactsRoot,
+  );
+  const referencesPath = (reference: string, target: string): boolean =>
+    path.resolve(worktree, reference) === target;
+  const reusesResult = references.some((reference) => referencesPath(reference, previousFile));
+  const documents = result.documents.filter(
+    (document) =>
+      reusesResult || references.some((reference) => referencesPath(reference, document.path)),
+  );
+  const sourcePaths = result.sourcePaths.filter(
+    (source) =>
+      reusesResult ||
+      references.some((reference) => referencesPath(reference, path.join(worktree, source))),
+  );
+  for (const document of documents) {
+    if (document.revision === null) {
+      throw new Error('Reused accepted content has no immutable revision.');
+    }
+  }
+  const prototype = result.prototype;
+  const reusesPrototype =
+    stage === 'prototype' &&
+    prototype !== null &&
+    (reusesResult ||
+      documents.length > 0 ||
+      sourcePaths.length > 0 ||
+      references.some(
+        (reference) =>
+          reference === prototype.revision ||
+          reference === prototype.branch ||
+          referencesPath(reference, worktree),
+      ));
+  const paths: string[] = [];
+  for (const document of documents) {
+    const relative = path.relative(worktree, path.resolve(worktree, document.path));
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`Reused document "${document.path}" lies outside the shared checkout.`);
+    }
+    if (!paths.includes(relative)) {
+      paths.push(relative);
+    }
+  }
+  for (const source of sourcePaths) {
+    if (!paths.includes(source)) {
+      paths.push(source);
+    }
+  }
+  if (paths.length === 0) {
+    return nothingReused;
+  }
+  const evaluation = await readStageArtifact(root, previousRound, stageEvaluationArtifact);
+  const observed = new Map((evaluation?.basis.content ?? []).map((entry) => [entry.path, entry]));
+  const content = paths.map((relative) => {
+    const entry = observed.get(relative);
+    if (entry === undefined) {
+      throw new Error(
+        `The preceding ${stage} acceptance does not bind the reused content "${relative}"; ` +
+          'reuse needs a current decision.',
+      );
+    }
+    return entry;
+  });
+  return {
+    documents: documents.map((document) => ({
+      path: document.path,
+      revision: document.revision as string,
+    })),
+    sourcePaths,
+    paths,
+    content,
+    prototype: reusesPrototype ? prototype : null,
+  };
+}
+
 /** One stage's current, fully bound evaluator decision. */
 export type CurrentStageDecision = {
   readonly round: number;
@@ -320,10 +448,10 @@ export type CurrentDecisionState =
 /**
  * Read one stage's current terminal decision and validate the identities its acceptance basis
  * binds: the complete authored report, the captured source input, the relied-on upstream results
- * and the readability of every assessed revision. A changed author report, refreshed input,
- * corrected upstream result or rewritten history makes the decision stale and requires a current
- * evaluator decision; a changed working path is caught where the decision is asserted, reused or
- * published.
+ * and the exact repository content it assessed or relied on. A changed author report, refreshed
+ * input, corrected upstream result or changed assessed content — including a later stage's edit of
+ * the same path or a rewritten revision — makes the decision stale and requires a current
+ * evaluator decision.
  */
 export async function readCurrentDecision(settings: {
   readonly issueRoot: string;
@@ -381,7 +509,7 @@ export async function readCurrentDecision(settings: {
     if (JSON.stringify(reliedOn) !== JSON.stringify(basis.upstream)) {
       throw new Error(`a relied-on upstream result changed since the ${stage} evaluation`);
     }
-    await requireContentReadable({
+    await requireEvaluationContent({
       git,
       worktree: preparationWorktree(issueRoot),
       content: basis.content,

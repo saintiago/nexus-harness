@@ -32,6 +32,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  reusedPreparationContent,
   roundArtifactFile,
   stageRoot,
   upstreamResultReferences,
@@ -159,17 +160,32 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       );
     }
     const findings = await priorStageFindings(root, plan);
-    // A response round resolves the preceding evaluation's findings against the response it
-    // assesses; a fresh round was already evaluated on its own revision, if at all.
+    // A response or reassessment round resolves the preceding evaluation's findings against the
+    // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
+    // at all.
     const previous =
-      plan.route === 'next'
-        ? ((await precedingStageWork(root, plan.round))?.evaluation ?? null)
-        : null;
+      plan.route === 'new'
+        ? null
+        : ((await precedingStageWork(root, plan.round))?.evaluation ?? null);
 
+    // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
+    // the assessment so the new basis binds their complete current observation, source paths
+    // included, instead of losing them with the reference.
+    const reused =
+      author.outcome === 'skip-proposed'
+        ? await reusedPreparationContent({
+            root,
+            round: plan.round,
+            worktree,
+            stage: settings.stage,
+            references: author.skip?.references ?? [],
+          })
+        : null;
     const retained = await retainEvaluationContent({
       git: settings.git,
       worktree,
       author,
+      reused: reused?.paths ?? [],
     });
     const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
     const basis = {

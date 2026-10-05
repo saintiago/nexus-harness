@@ -1,10 +1,10 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
+import { requireEvaluationContent } from '../evaluation-content.js';
 import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
@@ -20,9 +20,9 @@ import {
   preparationWorktree,
   readStageArtifact,
   readStagePlan,
+  reusedPreparationContent,
   requireCurrentAcceptance,
   stageRoot,
-  stageRounds,
   writeStageArtifact,
 } from '../storage.js';
 
@@ -72,24 +72,6 @@ async function readExhaustionReason(root: string): Promise<string | null> {
     }
   }
   return null;
-}
-
-/** True when the file's content still equals the content saved at one revision. */
-async function retainedContentMatches(
-  settings: { readonly git: GitAdapter; readonly worktree: string },
-  relative: string,
-  revision: string,
-): Promise<boolean> {
-  const saved = await settings.git.readFileAtRevision(settings.worktree, revision, relative);
-  if (!saved.ok) return false;
-  try {
-    return (await readFile(path.join(settings.worktree, relative), 'utf8')) === saved.value;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
 }
 
 /** Create StageResult over the stage area it finalizes. */
@@ -230,7 +212,31 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           })
         : [];
 
-    // The stage-owned paths outside the authoritative documents stay on the retained branch.
+    // Only the immediately preceding round may supply reused assets. A later rejection or return
+    // invalidates that acceptance; never search backwards past it for convenient work. The reused
+    // content must still match the acceptance it came from, and this round's decision must bind it.
+    const reuse = await reusedPreparationContent({
+      root,
+      round: plan.round,
+      worktree,
+      stage: settings.stage,
+      references: outcome === 'skipped' ? (author.skip?.references ?? []) : [],
+    });
+    if (outcome === 'skipped') {
+      await requireEvaluationContent({ git: settings.git, worktree, content: reuse.content });
+      const bound = new Set((evaluation?.basis.content ?? []).map((entry) => entry.path));
+      for (const relative of reuse.paths) {
+        if (!bound.has(relative)) {
+          throw new Error(
+            `The ${settings.stage} evaluation does not bind the reused content "${relative}"; ` +
+              'a current decision is required.',
+          );
+        }
+      }
+    }
+
+    // The stage-owned paths outside the authoritative documents stay on the retained branch: the
+    // authored source paths, plus the source paths a skip reuses from the preceding acceptance.
     const sourcePaths: PreparationResult['sourcePaths'] =
       outcome === 'accepted'
         ? author.sourcePaths.map((value) => {
@@ -246,13 +252,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
             }
             return relative;
           })
-        : [];
+        : [...reuse.sourcePaths];
 
-    // Existing authoritative documents an evaluated skip relied on, with their saved revisions.
+    // Existing authoritative documents an evaluated skip relied on that this round does not
+    // already report as reused documents, with their saved revisions.
     const existingDocuments: PreparationResult['existingDocuments'] = [];
     if (outcome === 'skipped') {
+      const reused = new Set(reuse.paths.map((relative) => path.resolve(worktree, relative)));
       for (const entry of evaluation?.basis.content ?? []) {
         if (!entry.exists) continue;
+        if (reused.has(path.resolve(worktree, entry.path))) continue;
         existingDocuments.push({
           path: path.resolve(worktree, entry.path),
           revision: entry.revision,
@@ -260,87 +269,13 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       }
     }
 
-    // Only the immediately preceding round may supply reused assets. A later rejection or return
-    // invalidates that acceptance; never search backwards past it for convenient work.
-    const reusedDocuments: PreparationResult['documents'] = [];
-    if (outcome === 'skipped') {
-      const previousRound = (await stageRounds(root)).filter((round) => round < plan.round).at(-1);
-      const previous =
-        previousRound === undefined
-          ? null
-          : await readStageArtifact(root, previousRound, stageResultArtifact);
-      if (
-        previous !== null &&
-        (previous.outcome === 'accepted' || previous.outcome === 'skipped')
-      ) {
-        const previousFile = path.join(
-          root,
-          'artifacts',
-          String(previousRound),
-          stageResultArtifact.pathFromArtifactsRoot,
-        );
-        const reusesResult = (author.skip?.references ?? []).some(
-          (reference) => path.resolve(worktree, reference) === previousFile,
-        );
-        for (const document of previous.documents) {
-          if (
-            !reusesResult &&
-            !(author.skip?.references ?? []).some(
-              (reference) => path.resolve(worktree, reference) === document.path,
-            )
-          )
-            continue;
-          if (document.revision === null)
-            throw new Error('Reused accepted content has no immutable revision.');
-          const relative = path.relative(worktree, document.path);
-          if (relative.startsWith('..') || path.isAbsolute(relative))
-            throw new Error(`Reused document "${document.path}" lies outside the checkout.`);
-          if (
-            !(await retainedContentMatches(
-              { git: settings.git, worktree },
-              relative,
-              document.revision,
-            ))
-          )
-            throw new Error('Reused document changed; a current decision is required.');
-          reusedDocuments.push(document);
-        }
-        if (settings.stage === 'prototype' && previous.prototype !== null) {
-          const reusesPrototype =
-            reusesResult ||
-            (author.skip?.references ?? []).some((reference) => {
-              const file = path.resolve(worktree, reference);
-              return (
-                reference === previous.prototype?.revision ||
-                reference === previous.prototype?.branch ||
-                file === worktree ||
-                existingDocuments.some((document) => path.resolve(document.path) === file)
-              );
-            });
-          if (reusesPrototype) {
-            const retainedPaths = new Set([
-              ...previous.documents.map((document) => path.relative(worktree, document.path)),
-              ...previous.sourcePaths,
-            ]);
-            for (const relative of retainedPaths) {
-              if (
-                !(await retainedContentMatches(
-                  { git: settings.git, worktree },
-                  relative,
-                  previous.prototype.revision,
-                ))
-              )
-                throw new Error(
-                  'Retained prototype content changed; fresh observation is required.',
-                );
-            }
-            prototype = previous.prototype;
-          }
-        }
-      }
+    if (outcome === 'skipped' && settings.stage === 'prototype') {
+      // A reused acceptance keeps the prototype implementation tickets reference; changed
+      // prototype content cannot pass the reuse validation above.
+      prototype = reuse.prototype;
     }
 
-    const documents: PreparationResult['documents'] = [...authoredDocuments, ...reusedDocuments];
+    const documents: PreparationResult['documents'] = [...authoredDocuments, ...reuse.documents];
     const outputs: PreparationResult['outputs'] = documents.map((document) => ({
       path: document.path,
     }));
