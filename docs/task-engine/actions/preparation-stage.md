@@ -226,9 +226,10 @@ retained deletions. Reuse remains limited to the immediately preceding completed
 
 Finalization first validates the exact current author/evaluation pair, source and upstream identities,
 usable citations and current content bindings. It then validates preceding content only for selected
-retained assets. Each reused path must also occur in the current basis. Fresh input revisions come
-only from that basis; reused owned-document revisions and prototype observations retain their
-preceding provenance. Deduplicate by canonical path, with owned assets retaining their ownership.
+retained assets. Each reused path must also occur in the current basis. Fresh input and newly authored
+document revisions, including owned-document corrections, come only from that basis; reused
+owned-document revisions and prototype observations retain their preceding provenance. Deduplicate
+by canonical path, with owned assets retaining their ownership.
 An unrelated HEAD change is harmless only while the bound file content remains equal.
 
 Keep the response, evaluation and result contracts compatible with retained rounds. Reassessment
