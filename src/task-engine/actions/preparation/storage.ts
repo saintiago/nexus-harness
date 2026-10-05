@@ -130,18 +130,16 @@ export async function readStageResult(
   return await readStageArtifact(root, round, stageResultArtifact);
 }
 
-/** The authored revision and evaluation one round builds on. */
+/** The latest authored revision one round builds on. */
 export type PrecedingStageWork = {
   /** The round that retained the preceding authored revision. */
   readonly round: number;
   /** The authored revision the next round revises or answers. */
   readonly author: StageAuthorOutput;
-  /** The evaluation of that revision, when the round retained one. */
-  readonly evaluation: StageEvaluationOutput | null;
 };
 
 /**
- * The most recent authored revision retained before one round, with the evaluation of it. A
+ * The most recent authored revision retained before one round. A
  * response or later-stage-visit round reads the work it revises from history instead of expecting
  * the new round's own directory to carry it.
  */
@@ -155,9 +153,24 @@ export async function precedingStageWork(
       return {
         round: earlier,
         author,
-        evaluation: await readStageArtifact(root, earlier, stageEvaluationArtifact),
       };
     }
+  }
+  return null;
+}
+
+/**
+ * The most recent evaluation before one round. Author-only returns and input requests carry no
+ * evaluator dispositions, so its finding evidence remains applicable until a later evaluation
+ * explicitly resolves or withdraws it. This lookup supplies evidence, never an acceptance to reuse.
+ */
+export async function precedingStageEvaluation(
+  root: string,
+  round: number,
+): Promise<StageEvaluationOutput | null> {
+  for (let earlier = round - 1; earlier >= 1; earlier -= 1) {
+    const evaluation = await readStageArtifact(root, earlier, stageEvaluationArtifact);
+    if (evaluation !== null) return evaluation;
   }
   return null;
 }
@@ -175,8 +188,7 @@ export async function priorStageFindings(
   if (plan.route === 'new') {
     return [];
   }
-  const preceding = await precedingStageWork(root, plan.round);
-  return preceding?.evaluation?.findings ?? [];
+  return (await precedingStageEvaluation(root, plan.round))?.findings ?? [];
 }
 
 /** The upstream-return allowance file: how many returns the stage has stated so far. */
@@ -406,8 +418,8 @@ export async function reusedPreparationContent(settings: {
   }
   const paths: string[] = [];
   for (const document of [...documents, ...existingDocuments]) {
-    const relative = path.relative(worktree, path.resolve(worktree, document.path));
-    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    const relative = checkoutRelative(worktree, document.path);
+    if (relative === null) {
       throw new Error(`Reused document "${document.path}" lies outside the shared checkout.`);
     }
     if (!paths.includes(relative)) {

@@ -1383,78 +1383,120 @@ describe('Git adapter', () => {
     },
   );
 
-  it('preserves existing-document evidence through consecutive result-reference skips', async () => {
-    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
-    await createPrepareStage({
-      selectionFile,
-      repository: { source: origin, mainBranch: 'main' },
-      git,
-      publish: () => undefined,
-    })({ stage: 'requirements' });
-    const skip = (references: string[]) => ({
-      outcome: 'skip-proposed',
-      summary: 'Existing requirements suffice.',
-      documents: [],
-      sourcePaths: [],
-      plan: [],
-      skip: { reason: 'Existing requirements suffice.', references },
-      question: null,
-      upstream: null,
-      findingResponses: [],
-    });
-    const first = await acceptedRound({
-      selectionFile,
-      root,
-      stage: 'requirements',
-      round: 1,
-      verdict: 'accepted-skip',
-      author: skip(['readme.md']),
-    });
-    await commitFile(worktree, 'unrelated.md', 'unrelated change\n');
-    for (const round of [2, 3]) {
-      const result = await acceptedRound({
+  it.each(['relative', 'absolute', 'normalized absolute'])(
+    'preserves %s existing-document evidence through consecutive result-reference skips',
+    async (referenceForm) => {
+      const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+      await createPrepareStage({
         selectionFile,
-        root,
-        stage: 'requirements',
-        round,
-        verdict: 'accepted-skip',
-        author: skip([
-          path.join(root, 'requirements', 'artifacts', String(round - 1), 'result.json'),
-        ]),
-      });
-      expect(result.existingDocuments).toEqual(first.existingDocuments);
-      expect(result.documents).toEqual([]);
-      expect(
-        stageEvaluationArtifact.schema.parse(
-          JSON.parse(
-            await readFile(
-              path.join(root, 'requirements', 'artifacts', String(round), 'evaluation.json'),
-              'utf8',
-            ),
-          ),
-        ).basis.content,
-      ).toEqual([{ path: 'readme.md', revision: await headOf(worktree), exists: true }]);
-    }
-    await writeFile(path.join(worktree, 'readme.md'), 'changed requirements\n');
-    await expect(
-      readCurrentDecision({
-        issueRoot: root,
-        stage: 'requirements',
-        selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+        repository: { source: origin, mainBranch: 'main' },
         git,
-      }),
-    ).resolves.toMatchObject({ kind: 'stale' });
-    await expect(
-      acceptedRound({
+        publish: () => undefined,
+      })({ stage: 'requirements' });
+      const skip = (references: string[]) => ({
+        outcome: 'skip-proposed',
+        summary: 'Existing requirements suffice.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'Existing requirements suffice.', references },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      });
+      const reference =
+        referenceForm === 'relative'
+          ? 'readme.md'
+          : referenceForm === 'absolute'
+            ? path.join(worktree, 'readme.md')
+            : `${worktree}/../worktree/./readme.md`;
+      const artifactReference = path.join(root, 'source-input.json');
+      await writeFile(artifactReference, '{}');
+      const first = await acceptedRound({
         selectionFile,
         root,
         stage: 'requirements',
-        round: 4,
+        round: 1,
         verdict: 'accepted-skip',
-        author: skip([path.join(root, 'requirements', 'artifacts/3/result.json')]),
-      }),
-    ).rejects.toThrow(/current decision is required/);
-  });
+        invokeAuthor: true,
+        author: skip([reference, artifactReference]),
+      });
+      expect(first.existingDocuments).toEqual([
+        { path: path.join(worktree, 'readme.md'), revision: await headOf(worktree) },
+      ]);
+      expect(first.skipReferences).toEqual([reference, artifactReference]);
+      const currentDecision = () =>
+        readCurrentDecision({
+          issueRoot: root,
+          stage: 'requirements',
+          selection: JSON.parse(selectionText),
+          git,
+        });
+      const selectionText = await readFile(selectionFile, 'utf8');
+      await expect(currentDecision()).resolves.toMatchObject({ kind: 'current' });
+      await writeFile(path.join(worktree, 'readme.md'), 'changed before reuse\n');
+      await expect(currentDecision()).resolves.toMatchObject({ kind: 'stale' });
+      await expect(
+        decisionContentChanged({ issueRoot: root, stage: 'requirements', git }),
+      ).resolves.toBe(true);
+      await expect(
+        acceptedRound({
+          selectionFile,
+          root,
+          stage: 'requirements',
+          round: 2,
+          verdict: 'accepted-skip',
+          author: skip([path.join(root, 'requirements', 'artifacts/1/result.json')]),
+        }),
+      ).rejects.toThrow(/current decision is required/);
+      await writeFile(path.join(worktree, 'readme.md'), 'initial\n');
+      await commitFile(worktree, 'unrelated.md', 'unrelated change\n');
+      for (const round of [2, 3]) {
+        const result = await acceptedRound({
+          selectionFile,
+          root,
+          stage: 'requirements',
+          round,
+          verdict: 'accepted-skip',
+          author: skip([
+            path.join(root, 'requirements', 'artifacts', String(round - 1), 'result.json'),
+          ]),
+        });
+        expect(result.existingDocuments).toEqual(first.existingDocuments);
+        expect(result.documents).toEqual([]);
+        expect(
+          stageEvaluationArtifact.schema.parse(
+            JSON.parse(
+              await readFile(
+                path.join(root, 'requirements', 'artifacts', String(round), 'evaluation.json'),
+                'utf8',
+              ),
+            ),
+          ).basis.content,
+        ).toEqual([{ path: 'readme.md', revision: await headOf(worktree), exists: true }]);
+      }
+      await expect(currentDecision()).resolves.toMatchObject({ kind: 'current' });
+      await writeFile(path.join(worktree, 'readme.md'), 'changed requirements\n');
+      await expect(
+        readCurrentDecision({
+          issueRoot: root,
+          stage: 'requirements',
+          selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+          git,
+        }),
+      ).resolves.toMatchObject({ kind: 'stale' });
+      await expect(
+        acceptedRound({
+          selectionFile,
+          root,
+          stage: 'requirements',
+          round: 4,
+          verdict: 'accepted-skip',
+          author: skip([path.join(root, 'requirements', 'artifacts/3/result.json')]),
+        }),
+      ).rejects.toThrow(/current decision is required/);
+    },
+  );
 
   it('retains a declared deletion through evaluator replay and reuse', async () => {
     const workspace = await preparationWorkspace();

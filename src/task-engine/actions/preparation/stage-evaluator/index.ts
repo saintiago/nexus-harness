@@ -26,7 +26,7 @@ import {
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
-  precedingStageWork,
+  precedingStageEvaluation,
   priorStageFindings,
   preparationWorktree,
   readStageArtifact,
@@ -163,10 +163,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     // A response or reassessment round resolves the preceding evaluation's findings against the
     // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
     // at all.
-    const previous =
-      plan.route === 'new'
-        ? null
-        : ((await precedingStageWork(root, plan.round))?.evaluation ?? null);
+    const previous = plan.route === 'new' ? null : await precedingStageEvaluation(root, plan.round);
 
     // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
     // the assessment so the new basis binds their complete current observation, source paths

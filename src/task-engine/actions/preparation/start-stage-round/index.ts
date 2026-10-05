@@ -131,17 +131,22 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
 
     if (route === 'new') {
       const current = await retainedPlan();
+      const previousResult = current === null ? null : await readStageResult(root, current.round);
       // A pending reassessment opens as such: the parent retained that an upstream correction
-      // requires this stage's current decision before the route continues.
+      // requires this stage's current decision before the route continues. An author-only exit
+      // also resumes the unfinished work, even when clarification retained no pending-stage marker.
       const handoff = await readRecord(
         path.join(selection.workspace.root, parentAreaDirectory, handoffFile),
         parentHandoffDeclaration,
       );
-      const reassessing = handoff?.awaitingStages.includes(settings.stage) ?? false;
+      const reassessing =
+        (handoff?.awaitingStages.includes(settings.stage) ?? false) ||
+        previousResult?.outcome === 'needsInput' ||
+        previousResult?.outcome === 'returnUpstream';
       if (
         current !== null &&
         current.stage === settings.stage &&
-        (await readStageResult(root, current.round)) === null &&
+        previousResult === null &&
         (await readStageArtifact(root, current.round, stageAuthorArtifact)) === null
       ) {
         // This stage visit already opened its round and has not finished it; the replay continues

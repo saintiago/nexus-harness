@@ -54,9 +54,6 @@ async function exists(target: string): Promise<boolean> {
 
 /** One declared path as a checkout-relative path, or null when it lies outside the checkout. */
 export function checkoutRelative(worktree: string, declared: string): string | null {
-  if (path.isAbsolute(declared)) {
-    return null;
-  }
   const relative = path.relative(worktree, path.resolve(worktree, declared));
   return relative === '' || relative.startsWith('..') || path.isAbsolute(relative)
     ? null

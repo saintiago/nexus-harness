@@ -24,6 +24,7 @@ import {
 import { stageContextText } from '../context.js';
 import { checkoutRelative } from '../evaluation-content.js';
 import {
+  precedingStageEvaluation,
   precedingStageWork,
   priorStageFindings,
   preparationWorktree,
@@ -233,7 +234,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stageRoot: root,
       worktree,
       author: revising ? (preceding?.author ?? author) : author,
-      evaluation: revising ? (preceding?.evaluation ?? null) : null,
+      evaluation: revising ? await precedingStageEvaluation(root, plan.round) : null,
       retained:
         plan.route === 'reassess'
           ? await (async () => {

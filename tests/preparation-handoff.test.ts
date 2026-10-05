@@ -15,12 +15,19 @@ import { scriptedGit, repositoryState } from './support/git.js';
 import type { AgentRoleRunner, BoundAction } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import {
   authoredIdentity,
   sourceInputIdentity,
 } from '../src/task-engine/actions/preparation/evaluation-content.js';
-import { preparationWorktree } from '../src/task-engine/actions/preparation/storage.js';
+import {
+  preparationWorktree,
+  priorStageFindings,
+  readCurrentDecision,
+  readStagePlan,
+  reusedPreparationContent,
+} from '../src/task-engine/actions/preparation/storage.js';
 import type { Finding } from '../src/task-engine/actions/review/artifacts.js';
 
 const temporaryDirectories: string[] = [];
@@ -532,6 +539,157 @@ describe('preparation repair rounds', () => {
     expect(contexts[1]).toContain('Eligible prior finding IDs: "F1"');
     expect(contexts[1]).toContain('The previous evaluation of this work');
   });
+
+  it.each([
+    { exit: 'return-upstream', disposition: 'resolved' },
+    { exit: 'needs-input', disposition: 'withdrawn' },
+  ] as const)(
+    'keeps finding evidence through an author-only $exit until explicitly $disposition',
+    async ({ exit, disposition }) => {
+      const { selectionFile, issueRoot, root, selection } = await stageWithEvaluation();
+      const common = { selectionFile, stage: 'ux' as const, publish: () => undefined };
+      const { git } = scriptedGit([repositoryState()], {
+        readFileAtRevision: async (repository, _revision, file) =>
+          ok(await readFile(path.join(repository, file), 'utf8')),
+      });
+      const open = () =>
+        createStartStageRound({
+          ...common,
+          profiles: { authors: ['a'], evaluator: 'e' },
+          maxRounds: 5,
+        });
+      const exiting = {
+        outcome: exit,
+        summary: 'The finding still needs clarification or correction.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: null,
+        question: exit === 'needs-input' ? 'Which acceptance example governs?' : null,
+        upstream:
+          exit === 'return-upstream'
+            ? {
+                stage: 'requirements',
+                problem: 'The examples contradict each other.',
+                consequence: 'The journey cannot satisfy both.',
+                correction: 'Clarify the governing example.',
+              }
+            : null,
+        findingResponses: [
+          { findingId: 'F1', status: 'unresolved', response: 'The input needs correction.' },
+        ],
+      };
+      await expect(open()({ route: 'next' })).resolves.toBe('opened');
+      await expect(
+        createStageAuthor({ ...common, git, runner: runnerOf([exiting]).runner })({
+          task: 'respond',
+        }),
+      ).resolves.toBe(exit);
+      const resultOutcome = exit === 'needs-input' ? 'needsInput' : 'returnUpstream';
+      await createStageResult({ ...common, git })({ outcome: resultOutcome });
+      await expect(artifact(root, 2, 'evaluation.json')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+      ).resolves.toMatchObject({ kind: 'missing' });
+      await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+      await writeFile(
+        path.join(issueRoot, 'parent/handoff.json'),
+        JSON.stringify({
+          stage: 'ux',
+          upstreamReturns: 1,
+          feedback: null,
+          return: null,
+          awaitingStages: [],
+          tickets: [],
+          publications: [],
+        }),
+      );
+      // Recreate the actions from disk as on a restart; retain the latest author and older evidence.
+      await expect(open()({ route: 'new' })).resolves.toBe('opened');
+      expect(await readStagePlan(root)).toMatchObject({ round: 3, route: 'reassess' });
+      const proposal = {
+        outcome: 'skip-proposed',
+        summary: 'The corrected input now permits the existing journey.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'The existing journey suffices.', references: ['docs/ux.md'] },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      };
+      const authorReports = runnerOf([
+        proposal,
+        {
+          ...proposal,
+          findingResponses: [
+            { findingId: 'F1', status: 'addressed', response: 'The example is corrected.' },
+          ],
+        },
+      ]);
+      const author = createStageAuthor({ ...common, git, runner: authorReports.runner });
+      await expect(author({ task: 'propose' })).rejects.toThrow(/did not respond to finding "F1"/);
+      await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+      expect(authorReports.contexts[1]).toContain('The current authored revision is 2');
+      expect(authorReports.contexts[1]).toContain('The previous evaluation of this work');
+      expect(authorReports.contexts[1]).toContain(finding.evidence);
+      expect(authorReports.contexts[1]).toContain('The input needs correction.');
+      const assessment = {
+        assessedRevision: 3,
+        verdict: 'accepted-skip',
+        reason: 'The corrected input resolves the contradiction.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      };
+      const evaluatorReports = runnerOf([
+        assessment,
+        {
+          ...assessment,
+          priorFindings: [
+            { findingId: 'F1', disposition, reason: 'The input correction removes the concern.' },
+          ],
+        },
+      ]);
+      const evaluate = createStageEvaluator({ ...common, git, runner: evaluatorReports.runner });
+      await expect(evaluate()).rejects.toThrow(/does not dispose of prior finding "F1"/);
+      await expect(evaluate()).resolves.toBe('accepted-skip');
+      expect(evaluatorReports.contexts[1]).toContain(finding.evidence);
+      expect(evaluatorReports.contexts[1]).toContain('Eligible prior finding IDs: "F1"');
+      await createStageResult({ ...common, git })({ outcome: 'skipped' });
+
+      // A later unevaluated exit retains the latest empty finding set, not an older resolved F1.
+      await open()({ route: 'new' });
+      await createStageAuthor({
+        ...common,
+        git,
+        runner: runnerOf([{ ...exiting, findingResponses: [] }]).runner,
+      })({ task: 'propose' });
+      await createStageResult({ ...common, git })({ outcome: resultOutcome });
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+      ).resolves.toMatchObject({ kind: 'missing' });
+      await open()({ route: 'new' });
+      const plan = await readStagePlan(root);
+      expect(plan).toMatchObject({ round: 5, route: 'reassess' });
+      await expect(priorStageFindings(root, plan!)).resolves.toEqual([]);
+      await expect(
+        reusedPreparationContent({
+          root,
+          round: 5,
+          worktree: preparationWorktree(issueRoot),
+          stage: 'ux',
+          references: [path.join(root, 'artifacts/3/result.json')],
+        }),
+      ).resolves.toMatchObject({ paths: [] });
+      const finalReports = runnerOf([proposal, { ...assessment, assessedRevision: 5 }]);
+      await createStageAuthor({ ...common, git, runner: finalReports.runner })({ task: 'propose' });
+      await createStageEvaluator({ ...common, git, runner: finalReports.runner })();
+      await createStageResult({ ...common, git })({ outcome: 'skipped' });
+      expect(finalReports.contexts[0]).toContain('No prior findings are supplied for this round');
+      expect(finalReports.contexts[1]).toContain('No prior findings are inherited by this round');
+    },
+  );
 
   it('opens a pending reassessment as such and carries the retained decision into context', async () => {
     const { selectionFile, issueRoot, root } = await stageWithEvaluation();
