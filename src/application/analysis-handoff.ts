@@ -17,7 +17,6 @@ import {
 } from '../task-engine/actions/preparation/artifacts.js';
 import { implementationHandoffFailureDeclaration } from '../task-engine/actions/project/implementation-handoff/artifacts.js';
 import { stageFailureDeclaration } from '../task-engine/actions/preparation/failure.js';
-import { documentationReviewsDirectory } from '../task-engine/actions/preparation/review-publication/artifacts.js';
 import { preparationPublicationFailureDeclaration } from '../task-engine/actions/project/publish-preparation/artifacts.js';
 import {
   readStageTerminal,
@@ -417,12 +416,6 @@ export async function preparationHandoff(options: {
   ];
   const result = await readStageTerminal(root);
   const issueRoot = options.selection.workspace.root;
-  if (
-    options.terminal === 'preparation-failed' &&
-    (result?.outcome === 'accepted' || result?.outcome === 'skipped')
-  ) {
-    files.push(...(await retainedFiles(issueRoot, documentationReviewsDirectory)));
-  }
   const isHandoff =
     options.terminal === 'preparation-handoff' || options.terminal === 'handoff-failed';
   let reason = result?.reason ?? null;

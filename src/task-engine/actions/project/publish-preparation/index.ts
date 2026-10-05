@@ -230,6 +230,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         return: handoff?.return ?? null,
         awaitingStages: handoff?.awaitingStages ?? [],
         tickets: handoff?.tickets ?? [],
+        basis: handoff?.basis ?? null,
         publications: handoff?.publications ?? [],
       });
       return 'waiting';
@@ -349,7 +350,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
               'the Architecture handoff cannot proceed.',
           );
         }
-        // Architecture hands off through the parent's documentation and ticket publication.
+        // Architecture hands off through the parent-owned implementation-ticket handoff.
         return 'handoff';
       }
       const next = nextStageOf(stage);

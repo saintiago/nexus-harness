@@ -10,8 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitAdapter, type GitAdapter } from '../src/adapters/git.js';
+import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
 import { createPrepareStage } from '../src/task-engine/actions/preparation/prepare-stage/index.js';
-import { createReviewPreparationPublication } from '../src/task-engine/actions/preparation/review-publication/index.js';
+import { readAcceptedDocuments } from '../src/task-engine/actions/preparation/accepted-content.js';
 import {
   authoredIdentity,
   sourceInputIdentity,
@@ -29,13 +30,19 @@ import {
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
-import {
-  prepareDocumentationPublication,
-  readAcceptedDocuments,
-} from '../src/task-engine/actions/preparation/publication.js';
+import { createCompleteDelivery } from '../src/task-engine/actions/project/complete-delivery/index.js';
+import { createPublishDeliveryReport } from '../src/task-engine/actions/project/source-boundaries/index.js';
+import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
+import { createDeliver } from '../src/task-engine/actions/deliver/index.js';
+import { createDevelop } from '../src/task-engine/actions/develop/index.js';
+import { createPrepareWorkspace } from '../src/task-engine/actions/prepare-workspace/index.js';
+import { createReview } from '../src/task-engine/actions/review/index.js';
+import { createStartRound } from '../src/task-engine/actions/start-round/index.js';
+import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import { fault, ok } from '../src/result.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
+import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { scriptedJira } from './support/jira.js';
 import { scriptedGitHub } from './support/github.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
@@ -1206,12 +1213,16 @@ describe('Git adapter', () => {
           ok({
             id,
             key: id === '1' ? 'NEX-1' : 'NEX-2',
-            fields: { status: { name: id === '1' ? status : 'To Do' } },
+            fields: {
+              status: { name: id === '1' ? status : 'To Do' },
+              summary: id === '1' ? 'Source' : 'Implement the requirement',
+            },
           }),
         readComments: () => ok([]),
         searchIssues: () => ok([]),
         createIssue: () => ok({ id: '2', key: 'NEX-2' }),
         linkIssues: () => ok(undefined),
+        updateFields: () => ok(undefined),
         readTransitions: () => ok([{ id: 'done', name: 'Done', to: { id: 'done', name: 'Done' } }]),
         transitionIssue: () => {
           status = 'Done';
@@ -1219,25 +1230,18 @@ describe('Git adapter', () => {
         },
         addComment: () => ok({ id: 'handoff', body: {} }),
       });
-      const { github } = scriptedGitHub({ findPullRequests: () => ok([]) });
       await expect(
         createImplementationHandoff({
           selectionFile,
           project: 'NEX',
-          repository: origin,
-          baseBranch: 'main',
-          reviewCheck: 'Review',
-          nexusLens: { appId: 1, login: 'lens' },
-          postMergeChecks: [],
+          workspaceRoot: path.join(path.dirname(root), 'workspaces'),
+          workspacePointerField: 'workspace',
           architectureStatus: 'Architecture',
           implementation: { issueType: 'Task', labels: [], status: 'To Do', linkType: 'Relates' },
           doneStatus: 'Done',
-          completion: { pollIntervalSeconds: 1, waitLimitSeconds: 1 },
           git,
-          github,
           jira,
           publish: () => undefined,
-          wait: async () => undefined,
         })(),
       ).resolves.toBe('handed-off');
       expect(calls).toContain('createIssue');
@@ -1485,9 +1489,6 @@ describe('Git adapter', () => {
         kind: 'documents',
         retained: ['stories/ux.stories.ts'],
       });
-      await expect(
-        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-      ).resolves.toMatchObject({ kind: 'prepared' });
 
       /** The result file one round's skip reuses. */
       const resultFile = (round: number) =>
@@ -1550,9 +1551,6 @@ describe('Git adapter', () => {
         kind: 'documents',
         retained: ['stories/ux.stories.ts'],
       });
-      await expect(
-        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-      ).resolves.toMatchObject({ kind: 'prepared' });
 
       // A consecutive reuse keeps the retained work and its ownership intact.
       const third = await acceptedRound({
@@ -1797,9 +1795,6 @@ describe('Git adapter', () => {
         { path: 'readme.md', exists: true },
       ],
     });
-    await expect(
-      prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-    ).resolves.toMatchObject({ kind: 'prepared' });
 
     // Authored repair and reassessment keep deletions even after an intervening reuse round.
     for (const [round, route] of [
@@ -1832,9 +1827,6 @@ describe('Git adapter', () => {
           { path: 'legacy.ts', revision: await headOf(worktree), exists: false },
         ]),
       );
-      await expect(
-        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-      ).resolves.toMatchObject({ kind: 'prepared' });
     }
     // Historical stage ownership never permits arbitrary nonexistent or another stage's paths.
     await expect(
@@ -2109,203 +2101,582 @@ describe('Git adapter', () => {
     expect(await readAcceptedDocuments(root)).toMatchObject({ kind: 'documents', documents: [] });
   });
 
-  it.each([
-    'no-documents',
-    'already-landed',
-    'advancing-base',
-    'outside-documents',
-    'changed-content',
-  ] as const)('checks the actual publication contribution (%s)', async (scenario) => {
-    const { origin, source, revision } = await repositoryWithOrigin();
+  it('delivers two handed-off tickets through separate real-Git pull requests', async () => {
+    const { origin } = await repositoryWithOrigin();
     const directory = await temporaryDirectory();
-    const root = path.join(directory, 'NEX-1');
-    const area = path.join(root, 'architecture');
-    const worktree = path.join(root, 'worktree');
-    await mkdir(path.join(area, 'state'), { recursive: true });
-    await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
-    await git.cloneRepository(origin, worktree);
-    await git.createBranch(worktree, 'task/NEX-1', revision);
-    if (scenario !== 'no-documents') await commitFile(worktree, 'readme.md', 'accepted content\n');
-    const accepted = await headOf(worktree);
-    if (scenario === 'outside-documents')
-      await commitFile(worktree, 'implementation.js', 'unaccepted code\n');
-    if (scenario === 'changed-content')
-      await writeFile(path.join(worktree, 'readme.md'), 'later unaccepted content\n');
-    if (scenario === 'already-landed')
-      await publish(source, 'readme.md', 'accepted content\n', 'independent accepted change');
-    if (scenario === 'advancing-base' || scenario === 'outside-documents')
-      await publish(source, 'unrelated.txt', 'new upstream content\n', 'unrelated merge');
-    await writeFile(
-      path.join(area, 'state/current-round.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        round: 1,
-        route: 'new',
-        profiles: { author: 'a', evaluator: 'e' },
-      }),
-    );
-    await writeFile(
-      path.join(area, 'artifacts/1/result.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        outcome: 'accepted',
-        authoredRevision: 1,
-        documents:
-          scenario === 'no-documents'
-            ? []
-            : [{ path: path.join(worktree, 'readme.md'), revision: accepted }],
-        sourcePaths: [],
-        outputs: [],
-        evaluation: { path: path.join(area, 'artifacts/1/evaluation.json') },
-        reason: 'Accepted.',
-        returnStage: null,
-        returnFinding: null,
-        prototype: null,
-      }),
-    );
-    const prepared = await prepareDocumentationPublication({
-      root,
-      baseBranch: 'main',
-      taskKey: 'NEX-1',
-      git,
-    });
-    expect(prepared.kind).toBe(
-      scenario === 'outside-documents' || scenario === 'changed-content'
-        ? 'failed'
-        : scenario === 'advancing-base'
-          ? 'prepared'
-          : 'unchanged',
-    );
+    const workspaces = path.join(directory, 'workspaces');
+    const prepRoot = path.join(workspaces, 'NEX', 'NEX-1');
+    const prepWorktree = path.join(prepRoot, 'worktree');
     const selectionFile = path.join(directory, 'selection.json');
     await writeFile(
       selectionFile,
       JSON.stringify({
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: {},
+        task: { id: '1', key: 'NEX-1', fields: { summary: 'Deliver the feature' } },
         conversation: [],
-        workspace: { root },
+        workspace: { root: prepRoot },
         stage: 'architecture',
       }),
     );
-    let reviews = 0;
-    const review = createReviewPreparationPublication({
+
+    // --- preparation: one evaluated document on the shared checkout and branch ---
+    const prepareStage = createPrepareStage({
       selectionFile,
-      baseBranch: 'main',
+      repository: { source: origin, mainBranch: 'main' },
       git,
-      reviewerProfile: 'e',
       publish: () => undefined,
-      reviewer: {
-        run: async (request) => {
-          reviews += 1;
-          // The reviewer's workspace is the preparation issue root whose one shared worktree/
-          // child AgentRuntime resolves once.
-          expect(request.workspace.root).toBe(root);
-          expect(path.join(request.workspace.root, 'worktree')).toBe(worktree);
-          expect(request.context).toContain('+accepted content');
-          expect(request.context).not.toContain('diff --git a/unrelated.txt');
+    });
+    await expect(prepareStage({ stage: 'requirements' })).resolves.toBe('prepared');
+    await mkdir(path.join(prepWorktree, 'docs'), { recursive: true });
+    await writeFile(
+      path.join(prepWorktree, 'docs', 'requirements.md'),
+      '# Requirements\n\nDeliver the feature.\n',
+    );
+    await gitCommand(['add', 'docs/requirements.md'], prepWorktree);
+    await gitCommand(['commit', '--quiet', '--message', 'the requirements'], prepWorktree);
+    await writeFile(
+      path.join(prepWorktree, 'docs', 'architecture.md'),
+      '# Architecture\n\nThe implementation plan.\n',
+    );
+    await gitCommand(['add', 'docs/architecture.md'], prepWorktree);
+    await gitCommand(['commit', '--quiet', '--message', 'the architecture'], prepWorktree);
+    await acceptedRound({
+      selectionFile,
+      root: prepRoot,
+      stage: 'requirements',
+      round: 1,
+      invokeAuthor: true,
+      author: {
+        outcome: 'authored',
+        summary: 'The requirements.',
+        documents: [{ path: 'docs/requirements.md', description: 'the requirements' }],
+        sourcePaths: [],
+        plan: [],
+        skip: null,
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      },
+    });
+    await acceptedRound({
+      selectionFile,
+      root: prepRoot,
+      stage: 'architecture',
+      round: 1,
+      invokeAuthor: true,
+      author: {
+        outcome: 'authored',
+        summary: 'The architecture.',
+        documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
+        sourcePaths: [],
+        plan: [
+          {
+            summary: 'Add the feature',
+            scope: 'Implement the feature.',
+            completionCriteria: ['The feature exists.'],
+            prerequisites: [],
+          },
+          {
+            summary: 'Extend the feature',
+            scope: 'Extend the delivered feature.',
+            completionCriteria: ['The extension exists.'],
+            prerequisites: [0],
+          },
+        ],
+        skip: null,
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      },
+    });
+    const preparationBase = (
+      JSON.parse(
+        await readFile(path.join(prepRoot, 'parent/prepared-repository.json'), 'utf8'),
+      ) as {
+        readonly baseRevision: string;
+      }
+    ).baseRevision;
+
+    // --- the controlled source and delivery service for the whole journey ---
+    const issues = new Map<
+      string,
+      {
+        readonly key: string;
+        status: string;
+        fields: Record<string, unknown>;
+      }
+    >();
+    issues.set('1', { key: 'NEX-1', status: 'Architecture', fields: { summary: 'Source issue' } });
+    const rankOrder: string[] = ['NEX-1'];
+    const comments: unknown[] = [];
+    const ticketIssues: { id: string; key: string }[] = [];
+    const { jira } = scriptedJira({
+      readIssue: (issueId) => {
+        const issue = issues.get(issueId);
+        if (issue === undefined) {
+          return fault(`Unknown issue "${issueId}".`);
+        }
+        return ok({
+          id: issueId,
+          key: issue.key,
+          fields: {
+            ...issue.fields,
+            status: { id: '9', name: issue.status },
+          },
+        });
+      },
+      readComments: () =>
+        ok(comments as readonly { readonly id: string; readonly body: unknown }[]) as never,
+      readTransitions: () =>
+        ok([
+          { id: 'admit', name: 'Admit', to: { id: '2', name: 'To Do' } },
+          { id: 'review', name: 'Review', to: { id: '4', name: 'In Review' } },
+          { id: 'done', name: 'Finish', to: { id: '5', name: 'Done' } },
+        ]),
+      transitionIssue: (issueId, transitionId) => {
+        const issue = issues.get(issueId);
+        if (issue === undefined) {
+          return fault(`Unknown issue "${issueId}".`);
+        }
+        issue.status =
+          transitionId === 'done' ? 'Done' : transitionId === 'review' ? 'In Review' : 'To Do';
+        return ok(undefined);
+      },
+      updateFields: (issueId, updates) => {
+        const issue = issues.get(issueId);
+        if (issue === undefined) {
+          return fault(`Unknown issue "${issueId}".`);
+        }
+        if (updates.workspacePointer != null) issue.fields['workspace'] = updates.workspacePointer;
+        if (updates.pullRequest != null) issue.fields['pr'] = updates.pullRequest;
+        return ok(undefined);
+      },
+      addComment: (_issueId, body) => {
+        const comment = { id: `c${String(comments.length + 1)}`, body };
+        comments.push(comment);
+        return ok(comment);
+      },
+      createIssue: (fields) => {
+        const number = ticketIssues.length + 2;
+        const identity = { id: `10${String(number)}`, key: `NEX-${String(number)}` };
+        ticketIssues.push(identity);
+        issues.set(identity.id, {
+          key: identity.key,
+          status: 'To Do',
+          fields: {
+            summary: fields['summary'],
+            description: fields['description'],
+            labels: fields['labels'],
+          },
+        });
+        rankOrder.push(identity.key);
+        return ok(identity);
+      },
+      linkIssues: () => ok(undefined),
+      rankIssue: () => ok(undefined),
+      searchIssues: (query) => {
+        if (query.query.includes('labels = ')) {
+          const label = /labels = "([^"]+)"$/.exec(query.query)?.[1];
+          return ok(
+            [...issues.entries()]
+              .filter(
+                ([id, issue]) =>
+                  id !== '1' &&
+                  Array.isArray(issue.fields['labels']) &&
+                  (issue.fields['labels'] as readonly string[]).includes(label ?? ''),
+              )
+              .map(([id, issue]) => ({ id, key: issue.key })),
+          );
+        }
+        if (query.query.includes('key in (')) {
+          const keys = [...query.query.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+          return ok(
+            [...issues.entries()]
+              .filter(([, issue]) => keys.includes(issue.key))
+              .map(([id, issue]) => ({ id, key: issue.key })),
+          );
+        }
+        return ok(
+          rankOrder.map((key) => ({
+            key,
+            id: [...issues.entries()].find(([, issue]) => issue.key === key)?.[0] ?? '9',
+          })),
+        );
+      },
+    });
+
+    // --- the handoff: two linked tickets, the first continuing preparation ---
+    const handoff = createImplementationHandoff({
+      selectionFile,
+      project: 'NEX',
+      workspaceRoot: workspaces,
+      workspacePointerField: 'workspace',
+      architectureStatus: 'Architecture',
+      implementation: {
+        issueType: 'Task',
+        labels: ['implementation'],
+        status: 'To Do',
+        linkType: 'Relates',
+      },
+      doneStatus: 'Done',
+      git,
+      jira,
+      publish: () => undefined,
+    });
+    await expect(handoff()).resolves.toBe('handed-off');
+    expect(ticketIssues.map((issue) => issue.key)).toEqual(['NEX-2', 'NEX-3']);
+    expect(issues.get('1')?.status).toBe('Done');
+    expect(issues.get('102')?.fields['workspace']).toBe(path.join(workspaces, 'NEX', 'NEX-2'));
+    expect(issues.get('103')?.fields['workspace']).toBe(path.join(workspaces, 'NEX', 'NEX-3'));
+
+    // --- the controlled delivery service: one pull request per ticket branch, real merges ---
+    const pullRequests: {
+      number: number;
+      url: string;
+      headBranch: string;
+      baseBranch: string;
+      headRevision: string;
+      merged: boolean;
+      mergeRevision: string | null;
+      autoMergeEnabled: boolean;
+    }[] = [];
+    const reviews: GitHubReview[] = [];
+    const reviewChecks: CheckObservation[] = [];
+    const branchWorktrees = new Map<string, string>();
+    const repository = 'owner/repository';
+    const nexusLens = { appId: 777, login: 'nexus-lens' };
+    const branchHead = async (branch: string): Promise<string> =>
+      headOf(branchWorktrees.get(branch) as string);
+    const { github } = scriptedGitHub({
+      findPullRequests: (_repository, filter) =>
+        ok(
+          pullRequests
+            .filter((pull) => pull.headBranch === filter.branch)
+            .map((pull) => ({ number: pull.number, url: pull.url })),
+        ),
+      readPullRequest: (_repository, number) => {
+        const pull = pullRequests.find((candidate) => candidate.number === number);
+        if (pull === undefined) {
+          return fault(`No pull request #${String(number)} exists.`);
+        }
+        return ok({
+          number: pull.number,
+          url: pull.url,
+          state: pull.merged ? 'closed' : 'open',
+          merged: pull.merged,
+          headBranch: pull.headBranch,
+          baseBranch: pull.baseBranch,
+          headRevision: pull.headRevision,
+          mergeRevision: pull.mergeRevision,
+          autoMergeEnabled: pull.autoMergeEnabled,
+        });
+      },
+      createPullRequest: async (_repository, creation) => {
+        const number = pullRequests.length + 1;
+        const pull = {
+          number,
+          url: `https://github.com/${repository}/pull/${String(number)}`,
+          headBranch: creation.headBranch,
+          baseBranch: creation.baseBranch,
+          headRevision: await branchHead(creation.headBranch),
+          merged: false,
+          mergeRevision: null,
+          autoMergeEnabled: false,
+        };
+        pullRequests.push(pull);
+        return ok({ number: pull.number, url: pull.url, headRevision: pull.headRevision });
+      },
+      updatePullRequest: async (_repository, number) => {
+        const pull = pullRequests.find((candidate) => candidate.number === number);
+        if (pull === undefined) {
+          return fault(`No pull request #${String(number)} exists.`);
+        }
+        pull.headRevision = await branchHead(pull.headBranch);
+        return ok({ number: pull.number, url: pull.url, headRevision: pull.headRevision });
+      },
+      requestAutoMerge: async (_repository, number) => {
+        const pull = pullRequests.find((candidate) => candidate.number === number);
+        if (pull === undefined) {
+          return fault(`No pull request #${String(number)} exists.`);
+        }
+        pull.autoMergeEnabled = true;
+        // The controlled repository performs the real fast-forward merge into main.
+        await gitCommand(
+          ['push', '--quiet', origin, `${pull.headBranch}:main`],
+          branchWorktrees.get(pull.headBranch) as string,
+        );
+        pull.merged = true;
+        pull.mergeRevision = (await gitCommand(['rev-parse', 'main'], origin)).trim();
+        return ok(undefined);
+      },
+      readConversation: () => ok({ comments: [], reviews: [...reviews], reviewComments: [] }),
+      publishReview: (_repository, review) => {
+        const id = reviews.length + 1;
+        reviews.push({
+          id,
+          author: nexusLens.login,
+          user: { login: nexusLens.login },
+          commit_id: review.revision,
+          state: review.verdict === 'approved' ? 'APPROVED' : 'CHANGES_REQUESTED',
+          body: review.body,
+        });
+        return ok({ id, url: `https://github.com/${repository}/pull/1#review` });
+      },
+      readChecks: (_repository, revision) =>
+        ok(reviewChecks.filter((check) => check.revision === revision)),
+      publishReviewCheck: (_repository, publication) => {
+        const id = reviewChecks.length + 1;
+        reviewChecks.push({
+          id,
+          revision: publication.revision,
+          name: publication.name,
+          producer: { id: nexusLens.appId, slug: 'nexus-lens', name: 'Nexus Lens' },
+          status: 'completed',
+          conclusion: publication.result,
+        });
+        return ok({ id });
+      },
+      readRequiredChecks: (_repository, number) => {
+        const pull = pullRequests.find((candidate) => candidate.number === number);
+        if (pull === undefined) {
+          return fault(`No pull request #${String(number)} exists.`);
+        }
+        return ok({
+          revision: pull.headRevision,
+          checks: [
+            {
+              name: 'Nexus Lens review',
+              status: 'completed',
+              conclusion: 'success',
+              evidenceUrl: null,
+            },
+          ],
+        });
+      },
+      readWorkflowRuns: (_repository, revision, workflows) =>
+        ok(
+          workflows.map((workflow, index) => ({
+            id: index + 1,
+            name: workflow,
+            path: workflow,
+            revision,
+            status: 'completed',
+            conclusion: 'success',
+            jobs: [],
+          })),
+        ),
+    });
+
+    /** Deliver one handed-off ticket through the real delivery actions and record its merge. */
+    async function deliverTicket(settings: {
+      readonly ticketKey: string;
+      readonly issueId: string;
+      readonly root: string;
+      readonly expectedBranch: string;
+      readonly expectedRepositoryRoot: string;
+      readonly file: string;
+    }): Promise<{ readonly mergeRevision: string; readonly baseRevision: string }> {
+      const ticketSelectionFile = path.join(directory, `selection-${settings.ticketKey}.json`);
+      await mkdir(settings.root, { recursive: true });
+      await writeFile(
+        ticketSelectionFile,
+        JSON.stringify({
+          taskKey: settings.ticketKey,
+          source: { kind: 'jira', issueId: settings.issueId },
+          task: {
+            id: settings.issueId,
+            key: settings.ticketKey,
+            fields: { summary: `Ticket ${settings.ticketKey}` },
+          },
+          conversation: [],
+          workspace: { root: settings.root },
+          stage: 'delivery',
+        }),
+      );
+      const publish = () => undefined;
+      const prepare = createPrepareWorkspace({
+        selectionFile: ticketSelectionFile,
+        repository: { source: origin, mainBranch: 'main' },
+        preparation: [],
+        environment,
+        project: 'NEX',
+        workspaceRoot: workspaces,
+        git,
+        runCommand: run,
+        publish,
+      });
+      await expect(prepare()).resolves.toBe('prepared');
+      const prepared = JSON.parse(
+        await readFile(path.join(settings.root, 'state/prepared-workspace.json'), 'utf8'),
+      ) as {
+        readonly repositoryWorkspace: { readonly root: string };
+        readonly branch: string;
+        readonly baseRevision: string;
+      };
+      // Actual repository bindings: the action resolved the recorded repository workspace.
+      expect(prepared.repositoryWorkspace.root).toBe(settings.expectedRepositoryRoot);
+      expect(prepared.branch).toBe(settings.expectedBranch);
+      const worktree = path.join(prepared.repositoryWorkspace.root, 'worktree');
+      branchWorktrees.set(prepared.branch, worktree);
+
+      await expect(
+        createStartRound({
+          taskKey: settings.ticketKey,
+          workspace: { root: settings.root },
+          developerLadder: [{ profile: 'nexus-flash', repairAllowance: 1 }],
+          publish,
+        })(),
+      ).resolves.toBe('started');
+      const developer: AgentRoleRunner = {
+        async run(request) {
+          expect(request.workspace.root).toBe(settings.expectedRepositoryRoot);
+          await commitFile(path.join(request.workspace.root, 'worktree'), settings.file, 'work\n');
+          return ok({
+            output: JSON.stringify({
+              status: 'completed',
+              summary: `Implemented ${settings.file}.`,
+              findingResponses: [],
+            }),
+          });
+        },
+      };
+      await expect(
+        createDevelop({ selectionFile: ticketSelectionFile, runner: developer, git, publish })(),
+      ).resolves.toBe('completed');
+      await expect(
+        createVerify({
+          workspace: { root: settings.root },
+          checks: [
+            {
+              name: 'journey check',
+              command: { executable: 'bash', args: ['-c', `test -s ${settings.file}`] },
+            },
+          ],
+          environment,
+          git,
+          runCommand: run,
+          publish,
+        })(),
+      ).resolves.toBe('passed');
+      await expect(
+        createDeliver({
+          selectionFile: ticketSelectionFile,
+          repository,
+          baseBranch: 'main',
+          git,
+          github,
+          publish,
+          wait: () => Promise.resolve(),
+        })(),
+      ).resolves.toBe('published');
+      await expect(
+        createPublishDeliveryReport({
+          selectionFile: ticketSelectionFile,
+          pullRequestField: 'pr',
+          inProgressStatus: 'To Do',
+          reviewStatus: 'In Review',
+          jira,
+          publish,
+        })(),
+      ).resolves.toBe('published');
+      const reviewer: AgentRoleRunner = {
+        async run(request) {
+          expect(request.workspace.root).toBe(settings.expectedRepositoryRoot);
           return ok({
             output: JSON.stringify({
               verdict: 'approved',
-              summary: 'Inspected exact contribution.',
+              summary: 'The delivered revision is correct.',
               findings: [],
               priorFindings: [],
             }),
           });
         },
-      },
-    });
-    expect(await review()).toBe(
-      scenario === 'outside-documents' || scenario === 'changed-content'
-        ? 'failed'
-        : scenario === 'advancing-base'
-          ? 'approved'
-          : 'unchanged',
-    );
-    expect(reviews).toBe(scenario === 'advancing-base' ? 1 : 0);
-    // Assembly/review repetition preserves the exact assessed head even while main advances.
-    if (scenario === 'advancing-base') {
-      await publish(source, 'another-upstream.txt', 'later upstream\n', 'another merge');
-      const replay = await prepareDocumentationPublication({
-        root,
-        baseBranch: 'main',
-        taskKey: 'NEX-1',
-        git,
-      });
-      expect(replay).toMatchObject({ kind: 'prepared', head: accepted, baseRevision: revision });
-      expect(await review()).toBe('approved');
-      expect(reviews).toBe(1);
+      };
+      await expect(
+        createReview({
+          selectionFile: ticketSelectionFile,
+          repository,
+          reviewCheck: 'Nexus Lens review',
+          nexusLens,
+          reviewerProfile: 'nexus-astra',
+          runner: reviewer,
+          git,
+          github,
+          publish,
+        })(),
+      ).resolves.toBe('approved');
+      await expect(
+        createCompleteTask({
+          selectionFile: ticketSelectionFile,
+          repository,
+          reviewCheck: 'Nexus Lens review',
+          nexusLens: { appId: nexusLens.appId },
+          postMergeChecks: [{ name: 'validate', workflow: 'validate.yml' }],
+          completion: { pollIntervalSeconds: 0, waitLimitSeconds: 30 },
+          github,
+          publish,
+          wait: () => Promise.resolve(),
+        })(),
+      ).resolves.toBe('completed');
+      await expect(
+        createCompleteDelivery({
+          selectionFile: ticketSelectionFile,
+          doneStatus: 'Done',
+          reviewStatus: 'In Review',
+          jira,
+          publish,
+        })(),
+      ).resolves.toBe('completed');
+      const completion = JSON.parse(
+        await readFile(path.join(settings.root, 'artifacts/1/completion.json'), 'utf8'),
+      ) as { readonly mergeRevision: string };
+      return { mergeRevision: completion.mergeRevision, baseRevision: prepared.baseRevision };
     }
-  });
 
-  it('rejects a preparation reviewer invocation fault before saving or publishing', async () => {
-    const { origin, revision } = await repositoryWithOrigin();
-    const directory = await temporaryDirectory();
-    const root = path.join(directory, 'NEX-1');
-    const area = path.join(root, 'architecture');
-    const worktree = path.join(root, 'worktree');
-    await mkdir(path.join(area, 'state'), { recursive: true });
-    await mkdir(path.join(area, 'artifacts/1'), { recursive: true });
-    await git.cloneRepository(origin, worktree);
-    await git.createBranch(worktree, 'task/NEX-1', revision);
-    await commitFile(worktree, 'readme.md', 'accepted content\n');
-    const accepted = await headOf(worktree);
-    await writeFile(
-      path.join(area, 'state/current-round.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        round: 1,
-        route: 'new',
-        profiles: { author: 'a', evaluator: 'e' },
-      }),
-    );
-    await writeFile(
-      path.join(area, 'artifacts/1/result.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        outcome: 'accepted',
-        authoredRevision: 1,
-        documents: [{ path: path.join(worktree, 'readme.md'), revision: accepted }],
-        outputs: [],
-        evaluation: { path: path.join(area, 'artifacts/1/evaluation.json') },
-        reason: 'Accepted.',
-        returnStage: null,
-        returnFinding: null,
-        prototype: null,
-      }),
-    );
-    const selectionFile = path.join(directory, 'selection.json');
-    await writeFile(
-      selectionFile,
-      JSON.stringify({
-        taskKey: 'NEX-1',
-        source: { kind: 'jira', issueId: '1' },
-        task: {},
-        conversation: [],
-        workspace: { root },
-        stage: 'architecture',
-      }),
-    );
-    const events: string[] = [];
-    const review = createReviewPreparationPublication({
-      selectionFile,
-      baseBranch: 'main',
-      git,
-      reviewerProfile: 'e',
-      publish: (event) => {
-        events.push(event.type);
-      },
-      reviewer: { run: async () => fault('the reviewer service is unavailable') },
+    const first = await deliverTicket({
+      ticketKey: 'NEX-2',
+      issueId: '102',
+      root: path.join(workspaces, 'NEX', 'NEX-2'),
+      expectedBranch: 'task/NEX-1',
+      expectedRepositoryRoot: prepRoot,
+      file: 'feature.txt',
     });
+    // The first implementation continued the preparation branch and comparison base.
+    expect(first.baseRevision).toBe(preparationBase);
+    expect(issues.get('102')?.status).toBe('Done');
 
-    // An invocation fault is an execution error, not a repository condition the parent captures
-    // as a preparation failure: it rejects without a failure publication or a saved report the
-    // parent could publish a review or check from.
-    await expect(review()).rejects.toThrow('the reviewer service is unavailable');
-    expect(events).toEqual([]);
-    await expect(
-      readFile(path.join(root, 'parent/documentation-reviews', `${accepted}.json`), 'utf8'),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    const second = await deliverTicket({
+      ticketKey: 'NEX-3',
+      issueId: '103',
+      root: path.join(workspaces, 'NEX', 'NEX-3'),
+      expectedBranch: 'task/NEX-3',
+      expectedRepositoryRoot: path.join(workspaces, 'NEX', 'NEX-3'),
+      file: 'extension.txt',
+    });
+    expect(issues.get('103')?.status).toBe('Done');
+
+    // Two separate pull requests, one per implementation ticket; no preparation-only or
+    // aggregate publication exists.
+    expect(pullRequests.map((pull) => pull.headBranch)).toEqual(['task/NEX-1', 'task/NEX-3']);
+    const firstChanged = (
+      await gitCommand(['diff', '--name-only', preparationBase, first.mergeRevision], prepWorktree)
+    )
+      .trim()
+      .split('\n');
+    // The first pull request publishes the preparation commits with its own implementation.
+    expect(firstChanged).toContain('docs/requirements.md');
+    expect(firstChanged).toContain('feature.txt');
+    const secondChanged = (
+      await gitCommand(
+        ['diff', '--name-only', first.mergeRevision, second.mergeRevision],
+        path.join(workspaces, 'NEX', 'NEX-3', 'worktree'),
+      )
+    )
+      .trim()
+      .split('\n');
+    // The second pull request starts from the merged base and carries only its own work.
+    expect(secondChanged).toEqual(['extension.txt']);
   });
 
   it('includes both sides of a rename when checking the complete publication path set', async () => {

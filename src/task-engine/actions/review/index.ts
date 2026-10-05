@@ -239,13 +239,16 @@ export function createReview(settings: ReviewSettings): BoundAction {
       'Selection',
     );
     const root = selection.workspace.root;
-    const worktree = path.join(root, 'worktree');
     const preparedFile = path.join(root, preparedWorkspaceFile);
     const prepared = await readRequiredRecord(
       preparedFile,
       preparedWorkspaceDeclaration,
       'Prepared workspace',
     );
+    // Repository inspection and the reviewer working directory resolve the recorded repository
+    // workspace; the first implementation reviews the preparation checkout's branch.
+    const repositoryWorkspace = prepared.repositoryWorkspace ?? selection.workspace;
+    const worktree = path.join(repositoryWorkspace.root, 'worktree');
     if (prepared.taskKey !== selection.taskKey) {
       throw new Error(
         `The prepared workspace is for task "${prepared.taskKey}", not the selected ` +
@@ -412,7 +415,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     const result: AgentResult = await settings.runner.run({
       operation: 'Review',
       profile: settings.reviewerProfile,
-      workspace: { root },
+      workspace: repositoryWorkspace,
       context,
       outputSchema: z.toJSONSchema(reviewResponseSchema),
       task: selection.taskKey,

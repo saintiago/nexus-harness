@@ -294,7 +294,6 @@ describe('worker action binding', () => {
         'RefreshTaskInput',
         'Researcher',
         'Review',
-        'ReviewPreparationPublication',
         'RouteDeliveryEntry',
         'RouteSelection',
         'SelectWork',

@@ -234,7 +234,7 @@ describe('preparation terminal handoffs', () => {
     await mkdir(path.join(root, 'parent'), { recursive: true });
     await writeFile(
       path.join(root, 'parent/handoff-result.json'),
-      JSON.stringify({ outcome: 'handed-off', tickets: ['NEX-2'], mergeRevision: 'merged' }),
+      JSON.stringify({ outcome: 'handed-off', tickets: ['NEX-2'] }),
     );
     const result = await preparationHandoff({
       selection: {

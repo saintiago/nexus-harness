@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { completionArtifact, type CompletionOutput } from '../complete-task/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -13,6 +14,10 @@ import { deliveryArtifact } from '../deliver/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { roundArtifactPath } from '../artifacts.js';
 import { readRecord, writeRecord } from '../records.js';
+import {
+  implementationInputDeclaration,
+  type ImplementationInput,
+} from '../project/implementation-handoff/artifacts.js';
 import {
   applyTransition,
   readComments,
@@ -92,6 +97,11 @@ export type SelectWorkSettings = {
 /** A nonempty text field, or null for any other value. */
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/** One Jira JQL string literal. */
+function jqlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** True when the issue carries a description in its native source format. */
@@ -332,6 +342,93 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     return readRecord(file, parentHandoffDeclaration);
   }
 
+  /** One prerequisite's retained completion evidence, or null when it is absent or mismatched. */
+  async function prerequisiteCompletion(
+    issue: JiraIssue,
+    key: string,
+  ): Promise<CompletionOutput | null> {
+    const workspace = await workspaceFor(issue);
+    if (!workspace.ok) {
+      return null;
+    }
+    const round = await readRecord(
+      path.join(workspace.value, currentRoundFile),
+      currentRoundDeclaration,
+    );
+    if (round === null) {
+      return null;
+    }
+    const completion = await readRecord(
+      roundArtifactPath(workspace.value, round.number, completionArtifact.pathFromArtifactsRoot),
+      { file: completionArtifact.pathFromArtifactsRoot, schema: completionArtifact.schema },
+    );
+    return completion !== null && completion.taskKey === key ? completion : null;
+  }
+
+  /**
+   * Why one retained implementation issue cannot be claimed yet, or null. A linked implementation
+   * issue waits for every prerequisite's source completion and retained merge/check evidence;
+   * source Done alone is insufficient. A dependent with unfinished prerequisite work is deferred
+   * while a malformed input or an unknown prerequisite identity requests attention.
+   */
+  async function prerequisiteProblem(
+    issue: JiraIssue,
+    root: string,
+  ): Promise<{ readonly kind: 'defer' | 'attention'; readonly reason: string } | null> {
+    const inputFile = path.join(root, implementationInputDeclaration.file);
+    let input: ImplementationInput | null;
+    try {
+      input = await readRecord(inputFile, implementationInputDeclaration);
+    } catch (error) {
+      return {
+        kind: 'attention',
+        reason:
+          `Issue ${issue.key} retains an unreadable implementation input at "${inputFile}": ` +
+          `${messageOf(error)}.`,
+      };
+    }
+    if (input === null || input.prerequisites.length === 0) {
+      return null;
+    }
+    const found = await jira.searchIssues({
+      query: `key in (${input.prerequisites.map((key) => jqlString(key)).join(', ')})`,
+      orderBy: 'Rank ASC',
+    });
+    if (!found.ok) {
+      throw new Error(found.fault.message);
+    }
+    const identities = new Map(found.value.map((identity) => [identity.key, identity]));
+    for (const key of input.prerequisites) {
+      const identity = identities.get(key);
+      if (identity === undefined) {
+        return {
+          kind: 'attention',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} was not found in the project; the ` +
+            'retained implementation input cannot be satisfied.',
+        };
+      }
+      const prerequisite = await readIssue(jira, identity.id);
+      if (statusNameOf(prerequisite) !== settings.statuses.done) {
+        return {
+          kind: 'defer',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} is not Done; implementation is deferred ` +
+            'until the prerequisite completes with its merge/check evidence.',
+        };
+      }
+      if ((await prerequisiteCompletion(prerequisite, key)) === null) {
+        return {
+          kind: 'defer',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} retains no confirmed merge/check ` +
+            'completion evidence; implementation is deferred.',
+        };
+      }
+    }
+    return null;
+  }
+
   /** Retain the parent handoff record for a fresh selection; a retained one is kept. */
   async function retainHandoff(root: string, stage: WorkflowStage): Promise<void> {
     const existing = await readHandoff(root);
@@ -404,6 +501,14 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     const workspace = await workspaceFor(issue);
     if (!workspace.ok) {
       return fail(workspace.fault.message, issue, saved);
+    }
+    if (saved.stage === 'delivery') {
+      // Retained implementation work keeps waiting for its recorded prerequisites; a fresh claim
+      // never starts a dependent whose prerequisite has not completed.
+      const prerequisite = await prerequisiteProblem(issue, workspace.value);
+      if (prerequisite !== null) {
+        return fail(prerequisite.reason, issue, saved);
+      }
     }
     // Re-capture the issue and its complete attributed conversation, so human clarifications
     // added while the item waited for feedback govern the resumed work.
@@ -491,6 +596,17 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       const workspace = await workspaceFor(current);
       if (!workspace.ok) {
         return fail(workspace.fault.message, current);
+      }
+      if (currentStage.value === 'delivery') {
+        const prerequisite = await prerequisiteProblem(current, workspace.value);
+        if (prerequisite !== null) {
+          if (prerequisite.kind === 'defer' && statusNameOf(current) === settings.statuses.ready) {
+            // A dependent whose prerequisite has not completed is deferred; the ranked queue
+            // keeps inspecting eligible work and the prerequisite itself is selected first.
+            continue;
+          }
+          return fail(prerequisite.reason, current);
+        }
       }
       const nextSelection: Selection = {
         taskKey: current.key,

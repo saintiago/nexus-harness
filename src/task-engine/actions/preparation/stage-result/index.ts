@@ -162,7 +162,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     }
     if (author.plan.length > 0) {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
-      // is not a changed authoritative document and never triggers documentation publication.
+      // is not a changed authoritative document and never joins the accepted document set.
       await writeStageArtifact(root, plan.round, stagePlanArtifact, author.plan);
     }
 

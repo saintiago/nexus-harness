@@ -142,12 +142,16 @@ function prepareOver(options: {
   readonly selectionFile: string;
   readonly source: string;
   readonly preparation?: readonly Command[];
+  readonly project?: string;
+  readonly workspaceRoot?: string;
 }) {
   const settings: PrepareWorkspaceSettings = {
     selectionFile: options.selectionFile,
     repository: { source: options.source, mainBranch: 'main' },
     preparation: options.preparation ?? [],
     environment,
+    project: options.project ?? 'NEX',
+    workspaceRoot: options.workspaceRoot ?? path.join(root, 'workspaces'),
     git,
     runCommand: run,
     publish: (event) => events.push(event),
@@ -209,6 +213,7 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-1',
       repository: origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-1',
       baseRevision: revision,
     });
@@ -263,6 +268,7 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-3',
       repository: origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-3',
       baseRevision: revision,
     });
@@ -299,6 +305,7 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-10',
       repository: origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-10',
       baseRevision: mainRevision,
     });
@@ -371,6 +378,7 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-5',
       repository: origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-5',
       baseRevision: revision,
     });
@@ -452,6 +460,7 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-12',
       repository: first.origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-12',
       baseRevision: first.revision,
     });
@@ -628,8 +637,245 @@ describe('PrepareWorkspace', () => {
     expect(await readPrepared(workspace)).toEqual({
       taskKey: 'NEX-9',
       repository: origin,
+      repositoryWorkspace: { root: workspace },
       branch: 'task/NEX-9',
       baseRevision: revision,
     });
+  });
+
+  /** Write one implementation ticket's own workspace and its recorded implementation input. */
+  async function writeImplementationInput(settings: {
+    readonly ticketRoot: string;
+    readonly sourceRoot: string;
+    readonly prerequisites: readonly string[];
+    readonly continuation: {
+      readonly workspace: {
+        readonly repository: string;
+        readonly repositoryWorkspace: { readonly root: string };
+        readonly branch: string;
+        readonly baseRevision: string;
+      };
+      readonly headRevision: string;
+    } | null;
+  }): Promise<void> {
+    await mkdir(path.join(settings.ticketRoot, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(settings.ticketRoot, 'parent/implementation-input.json'),
+      JSON.stringify({
+        sourceKey: 'NEX-1',
+        sourceWorkspace: { root: settings.sourceRoot },
+        architectureResult: { path: 'architecture/artifacts/1/result.json' },
+        planIdentity: 'plan-identity',
+        plannedTask: 1,
+        prerequisites: [...settings.prerequisites],
+        continuation: settings.continuation,
+      }),
+    );
+  }
+
+  /** Retain one prerequisite ticket's confirmed completion evidence in its own workspace. */
+  async function writeCompletion(
+    workspaces: string,
+    ticketKey: string,
+    mergeRevision: string,
+  ): Promise<void> {
+    const workspace = path.join(workspaces, 'NEX', ticketKey);
+    await mkdir(path.join(workspace, 'state'), { recursive: true });
+    await mkdir(path.join(workspace, 'artifacts', '1'), { recursive: true });
+    await writeFile(
+      path.join(workspace, 'state/current-round.json'),
+      JSON.stringify({ number: 1, profile: 'nexus-flash', reason: 'The initial implementation.' }),
+    );
+    await writeFile(
+      path.join(workspace, 'artifacts/1/completion.json'),
+      JSON.stringify({
+        taskKey: ticketKey,
+        pullRequestUrl: 'https://github.com/owner/repository/pull/1',
+        reviewedHead: mergeRevision,
+        mergeRevision,
+        checks: [],
+      }),
+    );
+  }
+
+  it('continues the handed-off preparation checkout for the first implementation ticket', async () => {
+    const { origin, revision } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const preparationRoot = path.join(workspaces, 'NEX', 'NEX-1');
+    const preparationWorktree = worktreeOf(preparationRoot);
+    await mkdir(preparationRoot, { recursive: true });
+    expect(await git.cloneRepository(origin, preparationWorktree)).toMatchObject({ ok: true });
+    expect(await git.createBranch(preparationWorktree, 'task/NEX-1', revision)).toMatchObject({
+      ok: true,
+    });
+    await mkdir(path.join(preparationWorktree, 'docs'), { recursive: true });
+    await writeFile(path.join(preparationWorktree, 'docs', 'requirements.md'), '# Requirements\n');
+    await gitCommand(['add', 'docs/requirements.md'], preparationWorktree);
+    await gitCommand(['commit', '--quiet', '--message', 'the requirements'], preparationWorktree);
+    const preparedRevision = await headOf(preparationWorktree);
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    await writeImplementationInput({
+      ticketRoot,
+      sourceRoot: preparationRoot,
+      prerequisites: [],
+      continuation: {
+        workspace: {
+          repository: origin,
+          repositoryWorkspace: { root: preparationRoot },
+          branch: 'task/NEX-1',
+          baseRevision: revision,
+        },
+        headRevision: preparedRevision,
+      },
+    });
+    const selectionFile = await writeSelection('NEX-2', ticketRoot);
+    const prepare = prepareOver({
+      selectionFile,
+      source: origin,
+      project: 'NEX',
+      workspaceRoot: workspaces,
+      preparation: [{ executable: 'bash', args: ['-c', 'pwd > preparation-cwd.txt'] }],
+    });
+
+    await expect(prepare()).resolves.toBe('prepared');
+
+    // The recorded repository workspace is the preparation issue's checkout, with the retained
+    // branch and the original comparison base; the implementation issue owns no worktree.
+    expect(await readPrepared(ticketRoot)).toEqual({
+      taskKey: 'NEX-2',
+      repository: origin,
+      repositoryWorkspace: { root: preparationRoot },
+      branch: 'task/NEX-1',
+      baseRevision: revision,
+    });
+    expect(await headOf(preparationWorktree)).toBe(preparedRevision);
+    expect(await readFile(path.join(preparationWorktree, 'docs/requirements.md'), 'utf8')).toBe(
+      '# Requirements\n',
+    );
+    expect(await readFile(path.join(preparationWorktree, 'preparation-cwd.txt'), 'utf8')).toBe(
+      `${preparationWorktree}\n`,
+    );
+    await expect(stat(worktreeOf(ticketRoot))).rejects.toMatchObject({ code: 'ENOENT' });
+    // A repetition reuses the same continuation instead of cloning a replacement.
+    await expect(prepare()).resolves.toBe('prepared');
+    expect(await readPrepared(ticketRoot)).toMatchObject({
+      repositoryWorkspace: { root: preparationRoot },
+      branch: 'task/NEX-1',
+    });
+  });
+
+  it('refuses a preparation continuation whose frozen revision left the branch history', async () => {
+    const { origin, source, revision } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const preparationRoot = path.join(workspaces, 'NEX', 'NEX-1');
+    const preparationWorktree = worktreeOf(preparationRoot);
+    await mkdir(preparationRoot, { recursive: true });
+    expect(await git.cloneRepository(origin, preparationWorktree)).toMatchObject({ ok: true });
+    expect(await git.createBranch(preparationWorktree, 'task/NEX-1', revision)).toMatchObject({
+      ok: true,
+    });
+    const preparedRevision = await headOf(preparationWorktree);
+    // Another commit lands on main after the branch point; it is not in the branch history.
+    const unrelated = await publish(source, 'later.txt', 'later\n', 'later main commit');
+    // The local preparation clone must be able to read the revision Git is asked about.
+    expect(await git.fetchRevision(preparationWorktree, 'origin', 'main')).toMatchObject({
+      ok: true,
+      value: unrelated,
+    });
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    await writeImplementationInput({
+      ticketRoot,
+      sourceRoot: preparationRoot,
+      prerequisites: [],
+      continuation: {
+        workspace: {
+          repository: origin,
+          repositoryWorkspace: { root: preparationRoot },
+          branch: 'task/NEX-1',
+          baseRevision: revision,
+        },
+        headRevision: unrelated,
+      },
+    });
+    const selectionFile = await writeSelection('NEX-2', ticketRoot);
+
+    await expect(
+      prepareOver({ selectionFile, source: origin, project: 'NEX', workspaceRoot: workspaces })(),
+    ).resolves.toBe('failed');
+
+    expect(events.at(-1)).toMatchObject({
+      source: 'prepare-workspace',
+      type: 'failed',
+      data: { reason: expect.stringContaining('no longer in the retained branch history') },
+    });
+    // The donor checkout is preserved exactly as preparation left it.
+    expect(await headOf(preparationWorktree)).toBe(preparedRevision);
+    await expect(
+      readFile(path.join(ticketRoot, 'state/prepared-workspace.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('starts a later implementation ticket only from a base containing the prerequisite merge revisions', async () => {
+    const { origin, source } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const merged = await publish(source, 'feature.txt', 'feature\n', 'the prerequisite merge');
+    const firstTicketRoot = path.join(workspaces, 'NEX', 'NEX-3');
+    await writeImplementationInput({
+      ticketRoot: firstTicketRoot,
+      sourceRoot: path.join(workspaces, 'NEX', 'NEX-1'),
+      prerequisites: ['NEX-2'],
+      continuation: null,
+    });
+    await writeCompletion(workspaces, 'NEX-2', merged);
+    const selectionFile = await writeSelection('NEX-3', firstTicketRoot);
+
+    await expect(
+      prepareOver({ selectionFile, source: origin, project: 'NEX', workspaceRoot: workspaces })(),
+    ).resolves.toBe('prepared');
+
+    expect(await readPrepared(firstTicketRoot)).toEqual({
+      taskKey: 'NEX-3',
+      repository: origin,
+      repositoryWorkspace: { root: firstTicketRoot },
+      branch: 'task/NEX-3',
+      baseRevision: merged,
+    });
+    expect(await headOf(worktreeOf(firstTicketRoot))).toBe(merged);
+
+    // A merge revision main has not received cannot start the dependent's prepared checkout.
+    const clone = path.join(root, 'unmerged');
+    expect(await git.cloneRepository(origin, clone)).toMatchObject({ ok: true });
+    expect(await git.createBranch(clone, 'task/NEX-8', merged)).toMatchObject({ ok: true });
+    await writeFile(path.join(clone, 'unmerged.txt'), 'unmerged\n');
+    await gitCommand(['add', 'unmerged.txt'], clone);
+    await gitCommand(['commit', '--quiet', '--message', 'an unmerged prerequisite'], clone);
+    const unmerged = await headOf(clone);
+    await gitCommand(['push', '--quiet', origin, 'task/NEX-8'], clone);
+    const secondTicketRoot = path.join(workspaces, 'NEX', 'NEX-4');
+    await writeImplementationInput({
+      ticketRoot: secondTicketRoot,
+      sourceRoot: path.join(workspaces, 'NEX', 'NEX-1'),
+      prerequisites: ['NEX-8'],
+      continuation: null,
+    });
+    await writeCompletion(workspaces, 'NEX-8', unmerged);
+    const blockedSelection = await writeSelection('NEX-4', secondTicketRoot);
+
+    await expect(
+      prepareOver({
+        selectionFile: blockedSelection,
+        source: origin,
+        project: 'NEX',
+        workspaceRoot: workspaces,
+      })(),
+    ).resolves.toBe('failed');
+    expect(events.at(-1)).toMatchObject({
+      source: 'prepare-workspace',
+      type: 'failed',
+      data: { reason: expect.stringContaining('does not contain prerequisite NEX-8') },
+    });
+    await expect(
+      readFile(path.join(secondTicketRoot, 'state/prepared-workspace.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

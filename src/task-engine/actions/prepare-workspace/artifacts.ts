@@ -3,9 +3,13 @@ import type { RecordDeclaration } from '../records.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
- * PrepareWorkspace's record: the task, repository, development branch and comparison base the
- * workspace retains. The record lives in the workspace state directory, outside the round artifact
- * roots, and is written only when preparation is ready.
+ * PrepareWorkspace's record: the task, repository, the workspace reference whose worktree/ holds
+ * the checkout, the development branch and the comparison base the workspace retains. The record
+ * lives in the selected issue's state directory, outside the round artifact roots, and is written
+ * only when preparation is ready. The repository workspace is the selected issue root for
+ * ordinary and later implementation tasks; the first implementation continues the preparation
+ * issue's recorded repository workspace. A record retained before the repository reference was
+ * recorded resolves to the selected issue root.
  */
 
 /** The record's fixed location, relative to the workspace root. */
@@ -15,6 +19,7 @@ export const preparedWorkspaceFile = 'state/prepared-workspace.json';
 export const preparedWorkspaceSchema = z.object({
   taskKey: z.string().min(1),
   repository: z.string().min(1),
+  repositoryWorkspace: z.object({ root: z.string().min(1) }).optional(),
   branch: z.string().min(1),
   baseRevision: z.string().min(1),
 });

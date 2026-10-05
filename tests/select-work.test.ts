@@ -66,6 +66,7 @@ async function select(options: {
   readonly preparation?: boolean;
   readonly orderBy?: string;
   readonly selectionFile?: string;
+  readonly workspaceRoot?: string;
   readonly replays?: number;
   readonly retained?: { readonly task: JiraIssue; readonly workspace: string };
 }): Promise<{
@@ -104,7 +105,21 @@ async function select(options: {
     { id: '14', name: 'Propose UX', to: { id: '4', name: 'UX Proposal' } },
   ];
   const { jira, calls } = scriptedJira({
-    searchIssues: () => ok(options.issues.map(({ id, key }) => ({ id, key }))),
+    searchIssues: (query) => {
+      // The linked-implementation eligibility check resolves recorded prerequisite keys.
+      if (query.query.includes('key in (')) {
+        const keys = [...query.query.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+        return ok(
+          options.issues
+            .filter((candidate) => keys.includes(candidate.key))
+            .map(({ id, key }) => ({
+              id,
+              key,
+            })),
+        );
+      }
+      return ok(options.issues.map(({ id, key }) => ({ id, key })));
+    },
     readIssue: (issueId) => {
       const found = byId.get(issueId);
       return found === undefined
@@ -126,7 +141,7 @@ async function select(options: {
   });
   const settings: SelectWorkSettings = {
     selectionFile,
-    workspaceRoot: path.join(directory, 'workspaces'),
+    workspaceRoot: options.workspaceRoot ?? path.join(directory, 'workspaces'),
     project: 'NEX',
     selection: {
       query: 'project = NEX AND status = "To Do"',
@@ -214,7 +229,6 @@ describe('SelectWork admission and routing', () => {
       bindActions: () => ({
         PrepareStage: async () => 'prepared',
         RecordStageReturn: async () => 'return',
-        ReviewPreparationPublication: async () => 'approved',
         StartStageRound: createStartStageRound({
           selectionFile,
           stage: 'requirements',
@@ -480,5 +494,110 @@ describe('SelectWork admission and routing', () => {
     await expect(select({ issues: [], orderBy: 'Rank DESC' })).rejects.toThrow(
       /must share one source order/,
     );
+  });
+
+  /** Write one implementation ticket's workspace and its recorded implementation input. */
+  async function linkedImplementation(
+    workspaces: string,
+    ticketKey: string,
+    prerequisite: string,
+  ): Promise<string> {
+    const root = path.join(workspaces, 'NEX', ticketKey);
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/implementation-input.json'),
+      JSON.stringify({
+        sourceKey: 'NEX-1',
+        sourceWorkspace: { root: path.join(workspaces, 'NEX', 'NEX-1') },
+        architectureResult: { path: 'architecture/artifacts/1/result.json' },
+        planIdentity: 'plan-identity',
+        plannedTask: 1,
+        prerequisites: [prerequisite],
+        continuation: null,
+      }),
+    );
+    return root;
+  }
+
+  /** Retain one prerequisite's confirmed completion evidence in its own workspace. */
+  async function retainCompletion(
+    workspaces: string,
+    ticketKey: string,
+    mergeRevision: string,
+  ): Promise<void> {
+    const root = path.join(workspaces, 'NEX', ticketKey);
+    await mkdir(path.join(root, 'state'), { recursive: true });
+    await mkdir(path.join(root, 'artifacts', '1'), { recursive: true });
+    await writeFile(
+      path.join(root, 'state/current-round.json'),
+      JSON.stringify({ number: 1, profile: 'nexus-flash', reason: 'The initial implementation.' }),
+    );
+    await writeFile(
+      path.join(root, 'artifacts/1/completion.json'),
+      JSON.stringify({
+        taskKey: ticketKey,
+        pullRequestUrl: `https://github.com/owner/repository/pull/1`,
+        reviewedHead: mergeRevision,
+        mergeRevision,
+        checks: [],
+      }),
+    );
+  }
+
+  it('defers a dependent implementation while its prerequisite lacks completion evidence', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-defer-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1');
+    // The prerequisite is Done in the source but retains no merge/check completion evidence.
+    const deferred = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+        issue('1', 'NEX-1', 'Done'),
+        issue('3', 'NEX-3', 'To Do'),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+    // Source Done alone is insufficient: the dependent is deferred and the next eligible item is
+    // selected from the ranked queue.
+    expect(deferred.result).toBe('selected');
+    expect(deferred.selection).toMatchObject({ taskKey: 'NEX-3' });
+  });
+
+  it('admits a dependent implementation once its prerequisite holds completion evidence', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-admit-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1');
+    await retainCompletion(workspaces, 'NEX-1', 'f'.repeat(40));
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+        issue('1', 'NEX-1', 'Done'),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-2', stage: 'delivery' });
+  });
+
+  it('requests attention for an unreadable implementation input instead of treating it as empty', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-bad-input-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const root = path.join(workspaces, 'NEX', 'NEX-2');
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(path.join(root, 'parent/implementation-input.json'), '{ not json');
+    const selected = await select({
+      issues: [issue('2', 'NEX-2', 'To Do', { [pointerField]: root })],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+
+    expect(selected.result).toBe('failed');
+    expect(selected.failures.at(-1)).toContain('unreadable implementation input');
   });
 });

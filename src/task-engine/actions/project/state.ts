@@ -72,6 +72,7 @@ export async function advanceStage(
     return: returnFinding,
     awaitingStages: handoff?.awaitingStages ?? [],
     tickets: handoff?.tickets ?? [],
+    basis: handoff?.basis ?? null,
     publications: handoff?.publications ?? [],
   });
   return updated;

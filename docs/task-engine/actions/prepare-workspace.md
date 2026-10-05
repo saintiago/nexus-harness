@@ -31,6 +31,8 @@ Selection supplies the issue root for state and artifacts. repositoryWorkspace s
 the checkout used by all repository operations and agent invocations. Ordinary tasks use the selected
 issue root; the first implementation uses the handoff's preparation repository reference. The base
 revision is the implementation's comparison base, not a requirement to reset retained work to it.
+A record retained before the repository reference was recorded resolves to the selected issue's own
+root; it is never silently reinterpreted as another issue's checkout.
 
 It also owns the attempt's retained records, outside the round artifact roots:
 

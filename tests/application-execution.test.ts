@@ -48,6 +48,7 @@ import { completionArtifact } from '../src/task-engine/actions/complete-task/art
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../src/task-engine/actions/prepare-workspace/artifacts.js';
+import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { reviewArtifact } from '../src/task-engine/actions/review/artifacts.js';
 import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
 import { currentRoundDeclaration } from '../src/task-engine/actions/start-round/artifacts.js';
@@ -336,6 +337,10 @@ function declaredFormats(
       schema: selectionDeclaration.schema,
     },
     { path: preparedWorkspaceDeclaration.file, schema: preparedWorkspaceDeclaration.schema },
+    {
+      path: implementationInputDeclaration.file,
+      schema: implementationInputDeclaration.schema,
+    },
     { path: currentRoundDeclaration.file, schema: currentRoundDeclaration.schema },
     ...roundArtifacts.map((artifact) => ({
       path: `artifacts/<roundNumber>/${artifact.pathFromArtifactsRoot}`,
@@ -1276,6 +1281,9 @@ describe('Application execution', () => {
     expect(context).toContain('recovery invocation 1 of 1');
     // A fresh finite delivery attempt never removes the retained idea refinement area.
     expect(context).toContain('refinement/ for idea refinement');
+    // A first implementation may borrow another issue's preparation checkout; recovery preserves
+    // that donor repository and its accepted history instead of deleting or replacing it.
+    expect(context).toContain('preserve that donor checkout');
     // Reconciliation receives each producer-owned declaration's actual path and generated shape.
     for (const declaration of declaredFormats(executed.executionDirectory)) {
       expect(context, declaration.path).toContain(`Path: ${declaration.path}`);

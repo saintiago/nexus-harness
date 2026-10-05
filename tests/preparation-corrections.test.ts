@@ -251,7 +251,6 @@ it('keeps nested returns and finding obligations through composed restarts and f
             StageEvaluator: dispatch('StageEvaluator'),
             StageResult: dispatch('StageResult'),
             RecordStageReturn: dispatch('RecordStageReturn'),
-            ReviewPreparationPublication: async () => 'unchanged',
             PublishPreparationResult: async (input) => {
               const stage = (input as { stage: string }).stage;
               const outcome = await publishPreparation(input);
