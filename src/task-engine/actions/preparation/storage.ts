@@ -14,7 +14,6 @@ import {
 import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import {
   acceptanceVerdictProblem,
-  evaluationVerdictProblem,
   isBoundStageAuthorOutput,
   isBoundStageEvaluationOutput,
   preparationStages,
@@ -314,18 +313,18 @@ export async function readCurrentDecision(settings: {
       reason: `the ${stage} stage's current result is "${result.outcome}"`,
     };
   }
-  const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
-  const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-  if (evaluation === null || author === null) {
-    return {
-      kind: 'missing',
-      reason: `the ${stage} stage's current round retains no evaluated authored revision`,
-    };
-  }
-  if (author.revision !== result.authoredRevision) {
-    return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
-  }
   try {
+    const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    if (evaluation === null || author === null) {
+      return {
+        kind: 'missing',
+        reason: `the ${stage} stage's current round retains no evaluated authored revision`,
+      };
+    }
+    if (author.revision !== result.authoredRevision) {
+      return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
+    }
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
     await requireRetainedDecision({
@@ -350,13 +349,13 @@ export async function readCurrentDecision(settings: {
         observedPaths: result.sourcePaths,
       });
     }
+    return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
   } catch (error) {
     if (error instanceof Error) {
       return { kind: 'stale', reason: error.message };
     }
     throw error;
   }
-  return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
 }
 
 /** The current round's report, ticket and repository context. */
@@ -388,12 +387,6 @@ export async function requireRetainedDecision(
   if (evaluation.verdict !== verdict) {
     throw new Error('Acceptance requires the evaluator\u2019s applicability decision.');
   }
-  // The retained verdict keeps its functional pairing: only a return-upstream decision carries the
-  // destination and concrete correction. Removed finding-list and narrative checks stay removed.
-  const verdictProblem = evaluationVerdictProblem(evaluation.verdict, evaluation.upstream);
-  if (verdictProblem !== null) {
-    throw new Error(`Acceptance is unusable: ${verdictProblem}.`);
-  }
   const acceptanceProblem = acceptanceVerdictProblem(author.outcome, verdict);
   if (acceptanceProblem !== null) {
     throw new Error(`Acceptance is unusable: ${acceptanceProblem}.`);
@@ -415,10 +408,28 @@ export async function requireRetainedDecision(
   // A current evaluation and its authored report must stay readable with their recorded bytes; a
   // retained combined record stays usable as history without a retroactive Markdown binding.
   if (isBoundStageEvaluationOutput(evaluation)) {
-    await readBoundReport(evaluation, 'Stage evaluation report');
+    await requireStageReport({
+      issueRoot,
+      stage,
+      workId: selection.taskKey,
+      role: 'evaluator',
+      binding: evaluation,
+      profile: evaluation.profile,
+      file: roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot),
+      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
+    });
   }
   if (isBoundStageAuthorOutput(author)) {
-    await readBoundReport(author, 'Stage author report');
+    await requireStageReport({
+      issueRoot,
+      stage,
+      workId: selection.taskKey,
+      role: 'author',
+      binding: author,
+      profile: author.profile,
+      file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+      context: `Validating retained ${stage} acceptance of round ${String(round)} for task ${selection.taskKey}.`,
+    });
   }
   return evaluation;
 }
@@ -496,6 +507,9 @@ export async function requireReturnReport(settings: {
 }): Promise<string | null> {
   const { stage, role, report } = settings.returned;
   if (report === null) {
+    if (role !== null) {
+      throw new Error(`The retained ${stage} ${role} return is missing its report binding.`);
+    }
     return null;
   }
   if (role === null) {
@@ -503,8 +517,32 @@ export async function requireReturnReport(settings: {
       `The retained ${stage} return binds a Markdown report without the role that produced it.`,
     );
   }
+  return requireStageReport({
+    issueRoot: settings.issueRoot,
+    workId: settings.workId,
+    stage,
+    role,
+    binding: report,
+    profile: null,
+    file: report.report.path,
+    context: settings.context,
+  });
+}
+
+/** Read a producing role's bound report, retaining attributable evidence before any failure. */
+async function requireStageReport(settings: {
+  readonly issueRoot: string;
+  readonly workId: string;
+  readonly stage: PreparationStage;
+  readonly role: 'author' | 'evaluator';
+  readonly binding: ReportBinding;
+  readonly profile: string | null;
+  readonly file: string;
+  readonly context: string;
+}): Promise<string> {
+  const { stage, role, binding } = settings;
   try {
-    return (await readBoundReport(report, 'Returning stage report')).text;
+    return (await readBoundReport(binding, `Stage ${role} report`)).text;
   } catch (error) {
     const area = stageRoot(settings.issueRoot, stage);
     return await rejectUnusableRecord({
@@ -516,13 +554,41 @@ export async function requireReturnReport(settings: {
         stage,
         role,
       }),
-      invocationId: report.invocationId,
+      invocationId: binding.invocationId,
       operation: `stage-${role}`,
-      profile: null,
+      profile: settings.profile,
       context: settings.context,
-      file: report.report.path,
+      file: settings.file,
       error,
-      assignedReport: report.report,
+      assignedReport: binding.report,
+    });
+  }
+}
+
+/** A retained question needs its exact producing author and that author's usable report. */
+export async function requireNeedsInputReport(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly round: number;
+  readonly workId: string;
+  readonly authoredRevision: number;
+}): Promise<void> {
+  const { issueRoot, stage, round, workId } = settings;
+  const root = stageRoot(issueRoot, stage);
+  const author = await readStageArtifact(root, round, stageAuthorArtifact);
+  if (author === null || author.revision !== settings.authoredRevision) {
+    throw new Error('A retained question must keep its exact producing author.');
+  }
+  if (isBoundStageAuthorOutput(author)) {
+    await requireStageReport({
+      issueRoot,
+      stage,
+      workId,
+      role: 'author',
+      binding: author,
+      profile: author.profile,
+      file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+      context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
     });
   }
 }

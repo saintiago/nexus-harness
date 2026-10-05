@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { reportBindingSchema } from '../agent-reports.js';
+import { returnEvidenceSchema } from '../preparation/artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 
 /**
@@ -25,21 +25,9 @@ export const ideaParentInputSchema = z.object({
   returnFinding: z
     .object({
       from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
-      role: z
-        .enum(['author', 'evaluator'])
-        .nullable()
-        .default(null)
-        .describe('The returning role whose saved Markdown report explains this return.'),
-      problem: z.string().min(1).optional(),
-      consequence: z.string().min(1).optional(),
-      report: reportBindingSchema
-        .nullable()
-        .default(null)
-        .describe(
-          "The returning role's saved Markdown report binding, or null on a former return.",
-        ),
       correction: z.string().min(1),
     })
+    .and(returnEvidenceSchema)
     .nullable(),
 });
 

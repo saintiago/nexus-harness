@@ -22,6 +22,7 @@ import {
   readStageTerminal,
   readStagePlan,
   requireReturnReport,
+  requireNeedsInputReport,
   roundArtifactFile,
   stageRoot,
 } from '../../preparation/storage.js';
@@ -457,6 +458,17 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       );
     }
     if (outcome === 'needsInput') {
+      try {
+        await requireNeedsInputReport({
+          issueRoot: selection.workspace.root,
+          stage,
+          round: plan.round,
+          workId: selection.taskKey,
+          authoredRevision: result.authoredRevision,
+        });
+      } catch (error) {
+        return failed(messageOf(error));
+      }
       const question = result.reason ?? 'the stage needs an author decision';
       return wait(
         question,

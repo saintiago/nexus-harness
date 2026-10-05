@@ -222,8 +222,10 @@ alter inspected prototype content.
 An upstream return retains its correction and owning earlier stage in the functional outcome, and
 its problem and consequence in the returning role's Markdown report. The return record references
 the returning stage, the destination stage, the returning role, the concrete correction and that
-role's saved report binding; a former combined return keeps its problem and consequence text as
-history. Finalization, replay, publication and destination context loading resolve the report
+role's saved report binding. The role and complete binding are required together; their omission
+cannot reclassify a current return as legacy. Unbound legacy and action-generated corrections
+require their problem and consequence text. The result's destination must match its correction.
+Finalization, replay, publication and destination context loading resolve the report
 through that producer-owned binding: a missing or changed report is preserved as the returning
 role's rejection evidence and the correction cannot proceed, so replacement bytes never stand in
 for the assessment the return cites. The parent records the destination and downstream stages
@@ -258,8 +260,13 @@ available. Reading a simplified typed view must not change the complete recorded
 associate an author with its evaluation or retire rejection feedback. Required control/functional
 fields, outcome/verdict pairing, the verdict's upstream destination/correction pairing, source
 association and applicable observation validity still receive validation from the producer-owned
-retained-decision reader. New outcomes require their Markdown binding; legacy combined records stay
-readable without a retroactive Markdown requirement or finding-list checks.
+retained-decision reader. Every retained evaluation read enforces verdict/upstream pairing, including
+return and repair context reads, rather than checking acceptance alone. New outcomes require their Markdown binding;
+legacy combined records stay readable without a retroactive Markdown requirement or finding-list
+checks. Acceptance and author questions validate their producing reports at finalization, completed
+replay and publication. Report failures retain the available outcome/report and producer-attributed
+rejection before failing or marking a completed decision stale; recovery cannot lose the correction
+obligation by repairing the old artifact alone.
 
 Completed document-stage decisions can continue under these association and routing checks, without
 retroactive citation bindings or new report fields. An unfinished legacy document evaluation that

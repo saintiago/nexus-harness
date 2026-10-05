@@ -26,9 +26,18 @@ import {
   preparationWorktree,
   readCurrentDecision,
   readStagePlan,
+  readStageArtifact,
   stageRoot,
 } from '../src/task-engine/actions/preparation/storage.js';
-import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
+import { stageReturnSchema } from '../src/task-engine/actions/select-work/artifacts.js';
+import { ideaParentInputSchema } from '../src/task-engine/actions/select-idea/artifacts.js';
+import {
+  preparationResultSchema,
+  stageEvaluationArtifact,
+  type StageAuthorOutput,
+  type StageEvaluationOutput,
+  stageAuthorArtifact,
+} from '../src/task-engine/actions/preparation/artifacts.js';
 import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
@@ -1169,4 +1178,229 @@ describe('preparation repair rounds', () => {
       readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
     ).resolves.toMatchObject({ kind: 'current' });
   });
+});
+
+/** A new bound round produced through the real author/evaluator actions. */
+async function boundRound(
+  outcome: 'authored' | 'needs-input' = 'authored',
+  verdict: 'accepted' | 'return-upstream' = 'accepted',
+) {
+  const fixture = await stageWithEvaluation();
+  await openNextRound(fixture.selectionFile, fixture.root);
+  const { runner, contexts } = runnerOf([
+    {
+      outcome,
+      documents: [],
+      sourcePaths: [],
+      plan: [],
+      skip: null,
+      question: outcome === 'needs-input' ? 'Which acceptance example governs?' : null,
+      upstream: null,
+      observation: null,
+    },
+    {
+      verdict,
+      observation: null,
+      upstream:
+        verdict === 'return-upstream'
+          ? { stage: 'requirements', correction: 'Correct the acceptance example.' }
+          : null,
+    },
+  ]);
+  const git = scriptedGit([repositoryState()]).git;
+  const settings = {
+    selectionFile: fixture.selectionFile,
+    stage: 'ux' as const,
+    runner,
+    git,
+    publish: () => undefined,
+  };
+  await createStageAuthor(settings)({ task: 'respond' });
+  if (outcome === 'authored') await createStageEvaluator(settings)();
+  const author = (await artifact(fixture.root, 2, 'author.json')) as StageAuthorOutput;
+  const evaluation =
+    outcome === 'authored'
+      ? ((await artifact(fixture.root, 2, 'evaluation.json')) as StageEvaluationOutput)
+      : null;
+  return { ...fixture, git, author, evaluation, contexts, finalize: createStageResult(settings) };
+}
+
+describe('preparation retained outcome usability', () => {
+  it('rejects damaged current returns across result, parent handoff and idea input readers', async () => {
+    const { root, evaluation, finalize } = await boundRound('authored', 'return-upstream');
+    await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+    const result = (await artifact(root, 2, 'result.json')) as Record<string, unknown>;
+    const finding = result['returnFinding'] as Record<string, unknown>;
+    const binding = finding['report'] as Record<string, unknown>;
+    await rm(evaluation!.report.path);
+    const damaged = [
+      { ...finding, report: undefined },
+      { ...finding, role: undefined },
+      { ...finding, role: undefined, report: undefined },
+      ...['report', 'reportIdentity', 'invocationId'].map((field) => ({
+        ...finding,
+        report: { ...binding, [field]: undefined },
+      })),
+    ];
+    for (const returned of damaged) {
+      const brokenResult = { ...result, returnFinding: returned };
+      expect(preparationResultSchema.safeParse(brokenResult).success).toBe(false);
+      expect(
+        stageReturnSchema.safeParse({ ...returned, from: 'ux', to: 'requirements' }).success,
+      ).toBe(false);
+      expect(
+        ideaParentInputSchema.safeParse({
+          question: null,
+          returnFinding: { ...returned, from: 'ux' },
+        }).success,
+      ).toBe(false);
+      await writeFile(path.join(root, 'artifacts/2/result.json'), JSON.stringify(brokenResult));
+      await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow();
+    }
+    expect(preparationResultSchema.safeParse({ ...result, returnFinding: null }).success).toBe(
+      false,
+    );
+    expect(preparationResultSchema.safeParse({ ...result, returnStage: 'idea' }).success).toBe(
+      false,
+    );
+    // Historical and action-generated returns need the original problem and consequence.
+    for (const returned of [
+      {
+        stage: 'requirements',
+        correction: 'Correct the example.',
+        problem: 'The example contradicts the requirement.',
+        consequence: 'The journey cannot be consistent.',
+      },
+      {
+        stage: 'requirements',
+        role: null,
+        report: null,
+        correction: 'Reassess the work.',
+        problem: 'The retained decision is stale.',
+        consequence: 'The route cannot advance.',
+      },
+    ]) {
+      expect(
+        preparationResultSchema.safeParse({ ...result, returnFinding: returned }).success,
+      ).toBe(true);
+      expect(
+        stageReturnSchema.safeParse({ ...returned, from: 'ux', to: 'requirements' }).success,
+      ).toBe(true);
+      expect(
+        ideaParentInputSchema.safeParse({
+          question: null,
+          returnFinding: { ...returned, from: 'ux' },
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it.each(['current', 'legacy'] as const)(
+    'rejects contradictory %s evaluations before upstream finalization or context use',
+    async (kind) => {
+      const fixture =
+        kind === 'current'
+          ? await boundRound('authored', 'return-upstream')
+          : await stageWithEvaluation({ verdict: 'return-upstream' });
+      const round = kind === 'current' ? 2 : 1;
+      const evaluation = (await artifact(fixture.root, round, 'evaluation.json')) as Record<
+        string,
+        unknown
+      >;
+      const file = path.join(fixture.root, 'artifacts', String(round), 'evaluation.json');
+      const finalize = createStageResult({
+        selectionFile: fixture.selectionFile,
+        stage: 'ux',
+        git: scriptedGit([repositoryState()]).git,
+        publish: () => undefined,
+      });
+      for (const changed of [
+        { ...evaluation, verdict: 'changes-requested' },
+        { ...evaluation, upstream: null },
+      ]) {
+        await writeFile(file, JSON.stringify(changed));
+        await expect(
+          readStageArtifact(fixture.root, round, stageEvaluationArtifact),
+        ).rejects.toThrow(/upstream/);
+        await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/upstream/);
+        await expect(artifact(fixture.root, round, 'result.json')).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
+    },
+  );
+
+  it.each(['missing', 'directory', 'changed'] as const)(
+    'retains author rejection for a %s needs-input report at finalization and replay',
+    async (damage) => {
+      const { root, author, finalize } = await boundRound('needs-input');
+      const corrupt = async () => {
+        await rm(author.report.path, { recursive: true, force: true });
+        if (damage === 'directory') await mkdir(author.report.path);
+        if (damage === 'changed') await writeFile(author.report.path, 'Replacement report.');
+      };
+      await corrupt();
+      await expect(finalize({ outcome: 'needsInput' })).rejects.toThrow(/report/);
+      await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+      await rm(author.report.path, { recursive: true, force: true });
+      await writeFile(author.report.path, controlledMarkdown);
+      await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
+      const original = await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8');
+      await corrupt();
+      await expect(finalize({ outcome: 'needsInput' })).rejects.toThrow(/report/);
+      expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(original);
+      const feedback = await readReportFeedback(root);
+      expect(feedback).toHaveLength(2);
+      for (const entry of feedback)
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          invocationId: author.invocationId,
+          profile: author.profile,
+          scope: { role: 'ux-author', reportKind: 'stage-author' },
+          source: { path: path.join(root, 'artifacts/2/author.json') },
+          assignedReport: author.report,
+        });
+    },
+  );
+
+  it.each(['author', 'evaluator'] as const)(
+    'retains %s report rejection at acceptance, downstream read and completed replay',
+    async (role) => {
+      const { issueRoot, root, selection, git, author, evaluation, finalize } = await boundRound();
+      const producer = role === 'author' ? author : evaluation!;
+      await rm(producer.report.path);
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
+      await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(producer.report.path, controlledMarkdown);
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      await writeFile(producer.report.path, 'Replacement bytes.');
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+      ).resolves.toMatchObject({
+        kind: 'stale',
+        reason: expect.stringContaining('does not match'),
+      });
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not match/);
+      const feedback = await readReportFeedback(root);
+      expect(feedback).toHaveLength(3);
+      for (const entry of feedback)
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          invocationId: producer.invocationId,
+          profile: producer.profile,
+          scope: {
+            role: `ux-${role}`,
+            reportKind: role === 'author' ? 'stage-author' : 'stage-evaluation',
+          },
+          source: {
+            path: path.join(
+              root,
+              'artifacts/2',
+              role === 'author' ? 'author.json' : 'evaluation.json',
+            ),
+          },
+          assignedReport: producer.report,
+        });
+    },
+  );
 });

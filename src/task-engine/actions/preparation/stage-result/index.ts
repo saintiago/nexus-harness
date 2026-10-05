@@ -25,6 +25,7 @@ import {
   requireCurrentAcceptance,
   requireRetainedDecision,
   requireReturnReport,
+  requireNeedsInputReport,
   roundArtifactDirectory,
   stageRoot,
   writeStageArtifact,
@@ -122,6 +123,15 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           git: settings.git,
         });
       }
+      if (outcome === 'needsInput') {
+        await requireNeedsInputReport({
+          issueRoot,
+          stage: settings.stage,
+          round: plan.round,
+          workId: selection.taskKey,
+          authoredRevision: completed.authoredRevision,
+        });
+      }
       if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
         // A replayed return keeps its returning role's Markdown readable through the producer's
         // saved binding: an unusable report is preserved as that role's rejection evidence instead
@@ -191,6 +201,15 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
           'report.',
       );
+    }
+    if (outcome === 'needsInput') {
+      await requireNeedsInputReport({
+        issueRoot,
+        stage: settings.stage,
+        round: plan.round,
+        workId: selection.taskKey,
+        authoredRevision: author.revision,
+      });
     }
     const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
     const upstream = evaluation?.upstream ?? author.upstream;
