@@ -153,8 +153,9 @@ resolve prior findings. Evaluated applicability skips remain valid when their ba
 
 Affected categories are document-citation assessment, retained-asset reuse, stage finalization and
 retained-work continuation. Participants are preparation authors/evaluators and operators resuming
-an interrupted stage. The journey is: changed cited content -> stage reassessment -> current
-evaluation -> finalization -> normal downstream validation and handoff.
+an interrupted stage. The journey is: changed cited content or owned work -> inspect the complete
+current content -> reassess citations or repair owned work -> current evaluation -> finalization ->
+confirm or repair affected downstream decisions -> handoff.
 
 Finalization must retain the current evaluation and assessed citation revisions. Changes to the
 author report, cited content, captured source/conversation or relied-on upstream inputs after that
@@ -169,7 +170,7 @@ Observable acceptance examples:
 | --- | --- |
 | A non-applicable prototype previously cited a role document that a later stage changed; both roles reassess it and obtain a current accepted skip | Finalization succeeds with the newly assessed document revisions. With no retained prototype, no browser evidence is required. The old evaluation remains historical evidence. |
 | A requirements skip cites testing, CI/CD and stack documents changed by Architecture while the requirements document remains unchanged; the current evaluator accepts the reassessment | Finalization succeeds for the current citations, including section citations to the same files named by the prior skip. It does not renew downstream decisions. |
-| Architecture extends a document owned by an earlier accepted requirements result | The earlier requirements acceptance is stale. Requirements repairs its authored work against the complete current document and obtains a new evaluation; repeating the path as an input-only citation cannot authorize the changed owned work. Every affected downstream decision is then confirmed or repaired through normal reassessment before handoff. |
+| Architecture extends a document owned by an earlier accepted requirements result | The earlier requirements acceptance is stale. Requirements repairs its authored work against the complete current document, including the later-stage additions, and obtains a new evaluation. Compatible additions retain the requested outcome; they do not justify a new product requirement. Repeating the path as an input-only citation cannot authorize the changed owned work. Every affected downstream decision is then confirmed or repaired through normal reassessment before handoff. |
 | Cited content changes after the current evaluator assessed it, or its binding is missing or unreadable | Finalization, replay and downstream acceptance reject the stale or incomplete decision and require current evaluation. |
 | A proposal reuses a prior result or owned asset whose content changed without reassessment | The preceding acceptance cannot authorize the changed asset; stale reuse remains rejected. |
 | A skip retains an applicable prototype but its sources changed or either role's observation evidence is missing, unusable or stale | The skip cannot finalize or be reused as current acceptance. Unchanged assets with complete valid evidence remain reusable. |
