@@ -59,6 +59,7 @@ export function createAnalysisRuntime(
     const invocation = beginAgentInvocation({
       agentName: 'analysis',
       operation: 'AnalyzeExperience',
+      ...(request.invocationId === undefined ? {} : { invocationId: request.invocationId }),
       profile: memory.analysisProfile,
       directory: construction.activityDirectory,
       publish: construction.publish,

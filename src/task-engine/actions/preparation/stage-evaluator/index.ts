@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import type { GitAdapter } from '../../../../adapters/git.js';
@@ -16,22 +17,30 @@ import {
 } from '../../../index.js';
 import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
 import { readRequiredRecord } from '../../records.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  recordReportCorrection,
+  rejectReport,
+  rejectUnusableRecord,
+  type ReportScope,
+} from '../../report-feedback.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   acceptanceVerdictProblem,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
+  stageReportScope,
   toFindings,
   type AssessedContent,
   type PreparationStage,
   type StageAuthorOutput,
   type StageEvaluationOutput,
+  type StageEvaluationResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
-  precedingStageEvaluation,
-  priorStageFindings,
   preparationWorktree,
   readStageArtifact,
   readStagePlan,
@@ -45,9 +54,9 @@ import {
   writeStageArtifact,
 } from '../storage.js';
 import {
+  evidenceFilePath,
   observationContentProblem,
   readPrototypeObservation,
-  type PrototypeObservation,
   type PrototypeObservationRole,
 } from '../observation.js';
 
@@ -186,46 +195,61 @@ async function requirePrototypeEvidence(settings: {
   /** True when the assessed verdict relies on the evaluator's own applicable observation. */
   readonly requireEvaluator: boolean;
   readonly assessed: readonly AssessedContent[];
+  /** Retain a violation under the producer whose evidence failed, then raise the failure. */
+  readonly reject: (
+    role: PrototypeObservationRole,
+    observationPath: string | null,
+    error: Error,
+  ) => Promise<never>;
 }): Promise<void> {
   const declared: (readonly [PrototypeObservationRole, string])[] = [];
   if (settings.author.observation !== null) {
     declared.push(['author', settings.author.observation.path]);
   } else if (settings.author.outcome === 'authored') {
-    throw new Error(
-      'The prototype author report carries no observation; applicable prototype work needs the ' +
-        'author\u2019s own browser evidence.',
+    await settings.reject(
+      'author',
+      null,
+      new Error(
+        'The prototype author report carries no observation; applicable prototype work needs the ' +
+          'author\u2019s own browser evidence.',
+      ),
     );
   }
   if (settings.evaluator !== null) {
     declared.push(['evaluator', settings.evaluator.path]);
   } else if (settings.requireEvaluator) {
-    throw new Error(
-      'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
-        'needs the evaluator\u2019s own browser evidence.',
+    await settings.reject(
+      'evaluator',
+      null,
+      new Error(
+        'The prototype evaluator report carries no observation; an accepted applicable prototype ' +
+          'needs the evaluator\u2019s own browser evidence.',
+      ),
     );
   }
   for (const [role, observationPath] of declared) {
-    let observation: PrototypeObservation;
     try {
-      observation = await readPrototypeObservation({
+      const observation = await readPrototypeObservation({
         declared: observationPath,
         roundDirectory: settings.roundDirectory,
         role,
       });
-    } catch (error) {
-      throw new Error(`The ${role} prototype observation is unusable: ${messageOf(error)}`, {
-        cause: error,
+      const problem = await observationContentProblem({
+        git: settings.git,
+        worktree: settings.worktree,
+        observation,
+        assessed: settings.assessed,
+        observedPaths: settings.author.sourcePaths,
       });
-    }
-    const problem = await observationContentProblem({
-      git: settings.git,
-      worktree: settings.worktree,
-      observation,
-      assessed: settings.assessed,
-      observedPaths: settings.author.sourcePaths,
-    });
-    if (problem !== null) {
-      throw new Error(`The ${role} prototype observation is unusable: ${problem}.`);
+      if (problem !== null) throw new Error(`${problem}.`);
+    } catch (error) {
+      await settings.reject(
+        role,
+        observationPath,
+        new Error(`The ${role} prototype observation is unusable: ${messageOf(error)}`, {
+          cause: error,
+        }),
+      );
     }
   }
 }
@@ -247,18 +271,89 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
           'round.',
       );
     }
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const evaluatorProfile = plan.profiles.evaluator;
+    const authorProfile = plan.profiles.author;
+    const authorScope: ReportScope = stageReportScope({
+      project: projectOfWorkspace(selection.workspace.root),
+      workId: selection.taskKey,
+      area: root,
+      stage: settings.stage,
+      role: 'author',
+    });
+    const scope: ReportScope = stageReportScope({
+      project: projectOfWorkspace(selection.workspace.root),
+      workId: selection.taskKey,
+      area: root,
+      stage: settings.stage,
+      role: 'evaluator',
+    });
+    const invocationId = randomUUID();
+    const attribution =
+      `Preparation ${settings.stage} evaluator, round ${String(plan.round)} ` +
+      `(route ${plan.route}), task ${selection.taskKey}, authored revision to assess.`;
+    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
+      try {
+        return await readStageArtifact(root, round, stageAuthorArtifact);
+      } catch (error) {
+        // The unusable record is the author's report: its evidence is retained under the author's
+        // responsibility so the next author invocation receives the correction obligation.
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: authorScope,
+          invocationId,
+          operation: 'stage-author',
+          profile: authorProfile,
+          context: attribution,
+          file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+          error,
+        });
+      }
+    }
+    const author = await readAuthor(plan.round);
     if (author === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
           'assess.',
       );
     }
-    const findings = await priorStageFindings(root, plan);
+    /**
+     * Read one retained evaluation: the evaluator's own earlier report. An unusable record is
+     * preserved under this report responsibility, so this invocation fails on explicit evidence
+     * and its next permitted invocation receives the correction obligation.
+     */
+    async function readEvaluation(round: number): Promise<StageEvaluationOutput | null> {
+      const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
+      try {
+        return await readStageArtifact(root, round, stageEvaluationArtifact);
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-evaluator',
+          profile: evaluatorProfile,
+          context: `${attribution} Reading retained evaluation round ${String(round)}.`,
+          file,
+          error,
+        });
+      }
+    }
+
+    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
     // A response or reassessment round resolves the preceding evaluation's findings against the
     // revision or reuse it assesses; a fresh round was already evaluated on its own revision, if
     // at all.
-    const previous = plan.route === 'new' ? null : await precedingStageEvaluation(root, plan.round);
+    let previous: StageEvaluationOutput | null = null;
+    if (plan.route !== 'new') {
+      for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
+        const retained = await readEvaluation(earlier);
+        if (retained !== null) {
+          previous = retained;
+          break;
+        }
+      }
+    }
+    const findings = previous?.findings ?? [];
 
     // A skip may explicitly reuse the immediately preceding acceptance; resolve those paths before
     // the assessment so the new basis binds their complete current observation, source paths
@@ -271,6 +366,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             worktree,
             stage: settings.stage,
             references: author.skip?.references ?? [],
+            readEvaluation,
           })
         : null;
     const retained = await retainEvaluationContent({
@@ -308,10 +404,12 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       author,
       evaluation: previous,
       retained: retainedDecision,
+      feedback: outstanding,
     });
     const result = await settings.runner.run({
       operation: 'stage-evaluator',
-      profile: plan.profiles.evaluator,
+      invocationId,
+      profile: evaluatorProfile,
       // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
       // shared checkout at its worktree/ child. Stage areas only hold artifacts.
       workspace: { root: selection.workspace.root },
@@ -350,11 +448,28 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     if (!result.ok) {
       throw new Error(result.fault.message);
     }
-    const report = parseAgentReport(
-      result.value.output,
-      stageEvaluationResponseSchema,
-      `${settings.stage} evaluator`,
-    );
+    const report = await (async (): Promise<StageEvaluationResponse> => {
+      try {
+        return parseAgentReport(
+          result.value.output,
+          stageEvaluationResponseSchema,
+          `${settings.stage} evaluator`,
+        );
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-evaluator',
+          profile: evaluatorProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
     const problem = reportProblem(report, {
       stage: settings.stage,
       authorRevision: author.revision,
@@ -362,17 +477,60 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       priorFindings: findings,
     });
     if (problem !== null) {
-      throw new Error(`The ${settings.stage} evaluator report is unusable: ${problem}.`);
+      await rejectReport({
+        areaRoot: root,
+        scope,
+        invocationId,
+        operation: 'stage-evaluator',
+        profile: evaluatorProfile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        reason: `The ${settings.stage} evaluator report is unusable: ${problem}.`,
+      });
     }
     if (settings.stage === 'prototype') {
+      const roundDirectory = roundArtifactDirectory(root, plan.round);
       await requirePrototypeEvidence({
         git: settings.git,
         worktree,
-        roundDirectory: roundArtifactDirectory(root, plan.round),
+        roundDirectory,
         author,
         evaluator: report.observation,
         requireEvaluator: report.verdict === 'accepted',
         assessed: retained.content,
+        reject: async (role, observationPath, error) => {
+          if (role === 'author') {
+            // Retained author evidence belongs to the author, not the current respondent. If
+            // its declaration is absent or outside the round, retain the declaring report.
+            const observationFile =
+              observationPath === null ? null : evidenceFilePath(roundDirectory, observationPath);
+            return rejectUnusableRecord({
+              areaRoot: root,
+              scope: authorScope,
+              invocationId,
+              operation: 'stage-author',
+              profile: authorProfile,
+              context: attribution,
+              file:
+                observationFile ??
+                roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+              error,
+            });
+          }
+          return rejectReport({
+            areaRoot: root,
+            scope,
+            invocationId,
+            operation: 'stage-evaluator',
+            profile: evaluatorProfile,
+            context: attribution,
+            source: null,
+            output: result.value.output,
+            reason: messageOf(error),
+            cause: error,
+          });
+        },
       });
     }
 
@@ -381,7 +539,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       content: retained.content,
     });
-    const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const currentAuthor = await readAuthor(plan.round);
     if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {
@@ -401,6 +559,18 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       String(plan.round),
       stageEvaluationArtifact.pathFromArtifactsRoot,
     );
+    if (outstanding.length > 0) {
+      // The owner validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: root,
+        scope,
+        rejections: outstanding.map((entry) => ({ path: entry.path })),
+        artifact: { path: artifact },
+        content: output,
+        invocationId,
+      });
+    }
     settings.publish(
       actionOutcomeEvent('stage-evaluator', {
         task: selection.taskKey,

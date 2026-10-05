@@ -3,16 +3,17 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
+  readRetainedRefinedIdea,
   responseFormatText,
   retainedHistoryText,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  latestRefinedIdea,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
@@ -21,6 +22,7 @@ import {
   challengerArtifact,
   challengerResponseSchema,
   type ChallengerReport,
+  type ChallengerResponse,
 } from './artifacts.js';
 
 /**
@@ -40,6 +42,38 @@ export type ChallengerSettings = {
   readonly publish: EventPublisher;
 };
 
+/**
+ * Why one Challenger response does not support the verdict it reports, or null. A verdict must
+ * carry exactly the parts the challenge contract requires; the saved report is never normalized.
+ */
+function challengerProblem(response: ChallengerResponse, assessedRevision: number): string | null {
+  if (response.verdict === 'approve' && response.concerns.length > 0) {
+    return (
+      `The Challenger approved refined idea revision ${String(assessedRevision)} while naming ` +
+      'unresolved concerns.'
+    );
+  }
+  if (response.verdict === 'approve' && response.obstacle !== null) {
+    return (
+      `The Challenger approved refined idea revision ${String(assessedRevision)} while stating ` +
+      'a remaining obstacle; approval reports the obstacle as null.'
+    );
+  }
+  if (response.verdict === 'discuss' && response.concerns.length === 0) {
+    return (
+      'The Challenger chose "discuss" without naming a concern, its consequence and what would ' +
+      'resolve it.'
+    );
+  }
+  if (response.verdict === 'discuss' && response.obstacle === null) {
+    return (
+      'The Challenger chose "discuss" without stating the remaining obstacle plainly for the ' +
+      'idea\u2019s author.'
+    );
+  }
+  return null;
+}
+
 /** Create Challenger over the refinement area it reports into. */
 export function createChallenger(settings: ChallengerSettings): BoundAction {
   return async () => {
@@ -47,14 +81,33 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const input = await readIdeaInput(root, plan.submission);
-    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+    const revision = await readRetainedRefinedIdea({
+      root,
+      workId: input.taskKey,
+      plan,
+      submission: plan.submission,
+      cycle: plan.cycle,
+      context:
+        `Challenger reading the refined idea revision in force for submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} of idea ${input.taskKey}.`,
+    });
     if (revision === null) {
       throw new Error(
         `No refined idea revision exists for submission ${String(plan.submission)} cycle ` +
           `${String(plan.cycle)}; the Challenger reviews a written revision.`,
       );
     }
-    const turn = await readCycleArtifact(cycleRoot, editorResponseArtifact);
+    const turn = await readRetainedIdeaReport({
+      root,
+      workId: input.taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorResponseArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `Challenger reading the editor response of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${input.taskKey}.`,
+    });
     const turnFile =
       turn === null ? null : path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
     const file = path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot);
@@ -73,7 +126,17 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       return verdict;
     }
 
-    const existing = await readCycleArtifact(cycleRoot, challengerArtifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: input.taskKey,
+      plan,
+      cycleRoot,
+      declaration: challengerArtifact,
+      contract: ideaReportContracts.challenge,
+      context:
+        `Challenger reading its retained result for submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} of idea ${input.taskKey}.`,
+    });
     if (
       existing !== null &&
       existing.refinedIdea === revision.path &&
@@ -98,7 +161,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       'resolve. The current architecture is not immutable, and a preferable alternative alone is',
       'not a veto. Do not demand detailed design or substitute a different idea.',
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       `The exact refined idea revision you review is the revision in force above: ${revision.path}`,
       turn === null || turnFile === null
         ? 'The revision stands alone: the editor has not responded to a previous concern.'
@@ -107,40 +170,22 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       responseFormatText(challengerResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'challenger',
       operation: 'Challenger',
+      reportKind: 'challenge',
       input,
       context,
       schema: challengerResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (response.verdict === 'approve' && response.concerns.length > 0) {
-      throw new Error(
-        `The Challenger approved refined idea revision ${String(revision.value.revision)} while ` +
-          'naming unresolved concerns.',
-      );
-    }
-    if (response.verdict === 'approve' && response.obstacle !== null) {
-      throw new Error(
-        `The Challenger approved refined idea revision ${String(revision.value.revision)} while ` +
-          'stating a remaining obstacle; approval reports the obstacle as null.',
-      );
-    }
-    if (response.verdict === 'discuss' && response.concerns.length === 0) {
-      throw new Error(
-        'The Challenger chose "discuss" without naming a concern, its consequence and what ' +
-          'would resolve it.',
-      );
-    }
-    if (response.verdict === 'discuss' && response.obstacle === null) {
-      throw new Error(
-        'The Challenger chose "discuss" without stating the remaining obstacle plainly for the ' +
-          'idea\u2019s author.',
-      );
+    const response = outcome.report;
+    const problem = challengerProblem(response, revision.value.revision);
+    if (problem !== null) {
+      await outcome.reject(problem);
     }
 
     const report: ChallengerReport = {
@@ -150,6 +195,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       revision: revision.value.revision,
     };
     await writeCycleArtifact(cycleRoot, challengerArtifact, report);
+    await outcome.resolveFeedback({ path: file }, report);
     return reported(response.verdict);
   };
 }

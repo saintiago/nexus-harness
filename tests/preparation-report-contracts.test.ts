@@ -15,6 +15,7 @@ import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
+import { upstreamReferences } from '../src/task-engine/actions/preparation/context.js';
 import { requireEvaluationContent } from '../src/task-engine/actions/preparation/evaluation-content.js';
 import {
   stageAuthorArtifact,
@@ -27,6 +28,12 @@ import {
   requireCurrentAcceptance,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
+import { stageReportScope } from '../src/task-engine/actions/preparation/artifacts.js';
 import { scriptedGit, repositoryState } from './support/git.js';
 
 const temporaryDirectories: string[] = [];
@@ -431,6 +438,239 @@ it('rejects a skip proposal that carries fields its outcome does not own', async
   await expect(readFile(path.join(root, 'artifacts', '3', 'author.json'), 'utf8')).rejects.toThrow(
     /ENOENT/,
   );
+});
+
+it.each(['author', 'evaluation'] as const)(
+  'retains a malformed older %s report encountered while resolving stage deletions',
+  async (kind) => {
+    const { selectionFile, root, worktree } = await stageArea();
+    const file = path.join(root, 'artifacts', '1', `${kind}.json`);
+    const original = kind === 'author' ? await readFile(file, 'utf8') : null;
+    const malformed = '{"olderReport":';
+    await writeFile(file, malformed);
+    const { git } = scriptedGit([repositoryState()], {
+      commitPaths: async () => ok({ branch: 'task/KAN-76', headRevision: '1'.repeat(40) }),
+      readFileAtRevision: async (_repository, _revision, relative) =>
+        ok(await readFile(path.join(worktree, relative), 'utf8')),
+    });
+    const common = { selectionFile, stage, git, publish: () => undefined };
+    const response = {
+      ...conformingSkipResponse,
+      outcome: 'authored',
+      skip: null,
+      documents: [{ path: 'docs/requirements.md', description: 'Defines requirements.' }],
+    };
+    const contexts: string[] = [];
+    const author = createStageAuthor({ ...common, runner: authorRunner(response, contexts) });
+    await expect(author({ task: 'propose' })).rejects.toThrow(/is not valid JSON/);
+    // A valid round-2 author stops preceding-history traversal. This older record is read only
+    // by deletion validation after invocation, and must still retain the correct producer scope.
+    expect(contexts).toHaveLength(1);
+    const role = kind === 'author' ? 'author' : 'evaluator';
+    const scope = stageReportScope({
+      project: projectOfWorkspace(path.dirname(root)),
+      workId: 'KAN-76',
+      area: root,
+      stage,
+      role,
+    });
+    expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+      scope,
+      source: { path: file },
+      output: malformed,
+      operation: `stage-${role}`,
+      context: expect.stringContaining('round 1'),
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+    if (original === null) await rm(file);
+    else await writeFile(file, original);
+    await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
+    await expect(author({ task: 'propose' })).resolves.toBe('authored');
+    expect(contexts[1]?.includes(malformed)).toBe(kind === 'author');
+    if (kind === 'evaluation') {
+      await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
+      const evaluatorContexts: string[] = [];
+      const evaluator = createStageEvaluator({
+        ...common,
+        runner: evaluatorRunner(
+          {
+            assessedRevision: 3,
+            verdict: 'accepted',
+            reason: 'The authored requirements satisfy the stage.',
+            observation: null,
+            findings: [],
+            priorFindings: [],
+            upstream: null,
+          },
+          evaluatorContexts,
+        ),
+      });
+      await expect(evaluator()).resolves.toBe('accepted');
+      expect(evaluatorContexts[0]).toContain(malformed);
+    }
+    await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toEqual([]);
+    expect(
+      (await readReportFeedback(root)).filter((entry) => entry.record.kind === 'rejection'),
+    ).toHaveLength(1);
+  },
+);
+
+it('retains a malformed older prototype observation under its author', async () => {
+  const { selectionFile, root } = await stageArea('prototype');
+  const file = path.join(root, 'artifacts', '1', 'observation.json');
+  const authorFile = path.join(root, 'artifacts', '1', 'author.json');
+  const retained = JSON.parse(await readFile(authorFile, 'utf8')) as Record<string, unknown>;
+  await writeFile(authorFile, JSON.stringify({ ...retained, observation: { path: file } }));
+  const malformed = '{"observation":';
+  await writeFile(file, malformed);
+  const author = createStageAuthor({
+    selectionFile,
+    stage: 'prototype',
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+    runner: authorRunner(
+      {
+        ...conformingSkipResponse,
+        outcome: 'authored',
+        skip: null,
+        sourcePaths: ['docs/requirements.md'],
+      },
+      [],
+    ),
+  });
+  await expect(author({ task: 'propose' })).rejects.toThrow(/is not valid JSON/);
+  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+    scope: { area: root, role: 'prototype-author', reportKind: 'stage-author' },
+    source: { path: file },
+    output: malformed,
+    context: expect.stringContaining('round 1'),
+  });
+});
+
+it('retains an author report corrupted during evaluation under the author responsibility', async () => {
+  const { selectionFile, root, worktree } = await stageArea();
+  const { git } = scriptedGit([repositoryState()], {
+    readFileAtRevision: async (_repository, _revision, file) =>
+      ok(await readFile(path.join(worktree, file), 'utf8')),
+  });
+  const common = { selectionFile, stage, git, publish: () => undefined };
+  await createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+    task: 'propose',
+  });
+  const file = path.join(root, 'artifacts', '3', 'author.json');
+  const malformed = '{"interrupted":';
+  const evaluator = createStageEvaluator({
+    ...common,
+    runner: {
+      async run() {
+        await writeFile(file, malformed);
+        return ok({
+          output: JSON.stringify({
+            assessedRevision: 3,
+            verdict: 'accepted-skip',
+            reason: 'The existing requirements satisfy the stage.',
+            observation: null,
+            findings: [],
+            priorFindings: [],
+            upstream: null,
+          }),
+        });
+      },
+    },
+  });
+  await expect(evaluator()).rejects.toThrow(/is not valid JSON/);
+  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+    scope: { area: root, role: 'requirements-author' },
+    source: { path: file },
+    output: malformed,
+    operation: 'stage-author',
+  });
+  await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.toBeNull();
+});
+
+it('attributes an unusable upstream context report to its stage author', async () => {
+  const { selectionFile, root } = await stageArea();
+  const selection = selectionDeclaration.schema.parse(
+    JSON.parse(await readFile(selectionFile, 'utf8')),
+  );
+  const file = path.join(root, 'artifacts', '3', 'author.json');
+  const malformed = '{"upstream":';
+  await writeFile(file, malformed);
+  await writeFile(
+    path.join(root, 'artifacts', '3', 'result.json'),
+    JSON.stringify({
+      stage,
+      outcome: 'skipped',
+      authoredRevision: 3,
+      documents: [],
+      outputs: [{ path: file }],
+      evaluation: { path: path.join(root, 'artifacts', '3', 'evaluation.json') },
+      reason: 'The existing requirements satisfy the stage.',
+      returnStage: null,
+      returnFinding: null,
+    }),
+  );
+  await expect(upstreamReferences(selection, 'ux')).rejects.toThrow(/is not valid JSON/);
+  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+    scope: {
+      area: root,
+      workId: 'KAN-76',
+      role: 'requirements-author',
+      reportKind: 'stage-author',
+    },
+    source: { path: file },
+    output: malformed,
+    profile: 'nexus-sol',
+    operation: 'stage-author',
+    context: expect.stringContaining('requirements author round 3 for ux context'),
+  });
+  await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
+});
+
+it('retains a malformed evaluation encountered through accepted-content reuse', async () => {
+  const { selectionFile, root } = await stageArea();
+  const common = {
+    selectionFile,
+    stage,
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+  };
+  await createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+    task: 'propose',
+  });
+  const file = path.join(root, 'artifacts', '2', 'evaluation.json');
+  const malformed = '{"reused":';
+  await writeFile(file, malformed);
+  await writeFile(
+    path.join(root, 'artifacts', '2', 'result.json'),
+    JSON.stringify({
+      stage,
+      outcome: 'skipped',
+      authoredRevision: 2,
+      documents: [{ path: 'docs/requirements.md', revision: '1'.repeat(40) }],
+      outputs: [],
+      evaluation: { path: file },
+      reason: 'The existing requirements satisfy the stage.',
+      returnStage: null,
+      returnFinding: null,
+    }),
+  );
+  const evaluator = createStageEvaluator({
+    ...common,
+    runner: {
+      async run() {
+        throw new Error('Unusable retained content must prevent invocation.');
+      },
+    },
+  });
+  await expect(evaluator()).rejects.toThrow(/is not valid JSON/);
+  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+    scope: { area: root, role: 'requirements-evaluator', reportKind: 'stage-evaluation' },
+    source: { path: file },
+    output: malformed,
+    operation: 'stage-evaluator',
+    context: expect.stringContaining('round 2'),
+  });
 });
 
 it('diagnoses a malformed retained author record without normalizing or overwriting it', async () => {

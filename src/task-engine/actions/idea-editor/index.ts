@@ -3,34 +3,38 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
+  readRetainedRefinedIdea,
+  readRetainedRefinedIdeaRevision,
   responseFormatText,
   retainedHistoryText,
+  type IdeaInvocationOutcome,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  latestChallengerBefore,
-  latestRefinedIdea,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
+import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
+import type { IdeaRoundPlan } from '../start-idea-round/artifacts.js';
 import {
   editorHelpArtifact,
   editorResponseArtifact,
   editorTurnResponseSchema,
   framingArtifact,
   framingResponseSchema,
-  readRefinedIdeaRevision,
   refinedIdeaArtifact,
   type EditorDisposition,
   type EditorTurn,
   type EditorTurnResponse,
+  type RefinedIdeaRead,
 } from './artifacts.js';
 
 /**
@@ -157,16 +161,16 @@ function turnIsValid(
   return turn.refinedIdea === null;
 }
 
-/** Reject an editor turn that does not carry exactly the parts its task and disposition need. */
-function requireValidTurn(task: IdeaEditorTask, turn: EditorTurnResponse): void {
+/** Why one editor turn is not usable for its task, or null. The saved turn is never normalized. */
+function turnProblem(task: IdeaEditorTask, turn: EditorTurnResponse): string | null {
   if (turnIsValid(task, turn)) {
-    return;
+    return null;
   }
-  throw new Error(
+  return (
     `The idea editor's "${turn.disposition}" turn does not carry exactly the parts the ` +
-      `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
-      'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
-      'revised turn.',
+    `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
+    'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
+    'revised turn.'
   );
 }
 
@@ -179,10 +183,18 @@ function revisionFile(root: string, submission: number, cycle: number): string {
 }
 
 /** The next refined idea revision number of one submission. */
-async function nextRevision(root: string, submission: number, cycle: number): Promise<number> {
+async function nextRevision(root: string, plan: IdeaRoundPlan, workId: string): Promise<number> {
   let revision = 0;
-  for (let number = 1; number <= cycle; number += 1) {
-    const read = await readRefinedIdeaRevision(ideaCycleDirectory(root, submission, number));
+  for (let number = 1; number <= plan.cycle; number += 1) {
+    const read = await readRetainedRefinedIdeaRevision({
+      root,
+      workId,
+      plan,
+      cycleRoot: ideaCycleDirectory(root, plan.submission, number),
+      context:
+        `IdeaEditor computing the next refined idea revision of submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+    });
     if (read !== null) {
       revision = Math.max(revision, read.value.revision);
     }
@@ -196,18 +208,28 @@ async function nextRevision(root: string, submission: number, cycle: number): Pr
  */
 async function cycleRevision(
   root: string,
-  submission: number,
-  cycle: number,
-): Promise<Awaited<ReturnType<typeof readRefinedIdeaRevision>>> {
-  const read = await readRefinedIdeaRevision(ideaCycleDirectory(root, submission, cycle));
-  return read !== null && read.value.submission === submission && read.value.cycle === cycle
+  plan: IdeaRoundPlan,
+  workId: string,
+): Promise<RefinedIdeaRead | null> {
+  const read = await readRetainedRefinedIdeaRevision({
+    root,
+    workId,
+    plan,
+    cycleRoot: ideaCycleDirectory(root, plan.submission, plan.cycle),
+    context:
+      `IdeaEditor reading its retained refined idea revision of submission ` +
+      `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+  });
+  return read !== null &&
+    read.value.submission === plan.submission &&
+    read.value.cycle === plan.cycle
     ? read
     : null;
 }
 
 /** Constrain recovery to explaining the immutable revision whose response was not saved. */
-async function recoveryText(root: string, submission: number, cycle: number): Promise<string[]> {
-  const retained = await cycleRevision(root, submission, cycle);
+async function recoveryText(root: string, plan: IdeaRoundPlan, workId: string): Promise<string[]> {
+  const retained = await cycleRevision(root, plan, workId);
   if (retained === null) {
     return [];
   }
@@ -225,28 +247,38 @@ async function recoveryText(root: string, submission: number, cycle: number): Pr
 /** The contributions the editor's response is built on, as invocation context. */
 async function contributionsText(
   root: string,
-  submission: number,
-  cycle: number,
+  plan: IdeaRoundPlan,
+  workId: string,
   task: IdeaEditorTask,
 ): Promise<string[]> {
   if (task !== 'edit') {
     return [];
   }
-  const cycleRoot = ideaCycleDirectory(root, submission, cycle);
+  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
   const contributions: string[] = [];
-  for (const [role, artifact] of [
-    ['Researcher', researchArtifact],
-    ['Project guide', projectGuideArtifact],
+  for (const [label, artifact, contract] of [
+    ['Researcher', researchArtifact, ideaReportContracts.research],
+    ['Project guide', projectGuideArtifact, ideaReportContracts.projectGuidance],
   ] as const) {
-    const contribution = await readCycleArtifact(cycleRoot, artifact);
+    const contribution = await readRetainedIdeaReport({
+      root,
+      workId,
+      plan,
+      cycleRoot,
+      declaration: artifact,
+      contract,
+      context:
+        `IdeaEditor reading the ${label} contribution of submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+    });
     if (contribution === null) {
       throw new Error(
-        `The refined idea needs the ${role.toLowerCase()} contribution of submission ` +
-          `${String(submission)} cycle ${String(cycle)}.`,
+        `The refined idea needs the ${label.toLowerCase()} contribution of submission ` +
+          `${String(plan.submission)} cycle ${String(plan.cycle)}.`,
       );
     }
     contributions.push(
-      `${role} contribution: ${path.join(cycleRoot, artifact.pathFromArtifactsRoot)}\n` +
+      `${label} contribution: ${path.join(cycleRoot, artifact.pathFromArtifactsRoot)}\n` +
         JSON.stringify(contribution, null, 2),
     );
   }
@@ -254,11 +286,24 @@ async function contributionsText(
 }
 
 /** The focused contributions answering the editor's help request, as invocation context. */
-async function focusedText(root: string, submission: number, cycle: number): Promise<string[]> {
-  const cycleRoot = ideaCycleDirectory(root, submission, cycle);
+async function focusedText(root: string, plan: IdeaRoundPlan, workId: string): Promise<string[]> {
+  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
   const focused: string[] = [];
-  for (const artifact of [researchFollowUpArtifact, projectGuideFollowUpArtifact]) {
-    const contribution = await readCycleArtifact(cycleRoot, artifact);
+  for (const [artifact, contract] of [
+    [researchFollowUpArtifact, ideaReportContracts.research],
+    [projectGuideFollowUpArtifact, ideaReportContracts.projectGuidance],
+  ] as const) {
+    const contribution = await readRetainedIdeaReport({
+      root,
+      workId,
+      plan,
+      cycleRoot,
+      declaration: artifact,
+      contract,
+      context:
+        `IdeaEditor reading the focused contribution of submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+    });
     if (contribution !== null) {
       focused.push(
         `Focused ${contribution.role} contribution: ` +
@@ -268,6 +313,36 @@ async function focusedText(root: string, submission: number, cycle: number): Pro
     }
   }
   return focused;
+}
+
+/**
+ * The Challenger result that opened the supplied cycle: the latest one strictly before that cycle,
+ * which the cycle's editor turn answers. An unusable retained result is preserved under the
+ * challenger's report responsibility before the read fails.
+ */
+async function latestChallengerBefore(
+  root: string,
+  plan: IdeaRoundPlan,
+  workId: string,
+): Promise<{ readonly path: string; readonly report: ChallengerReport } | null> {
+  for (let number = plan.cycle - 1; number >= 1; number -= 1) {
+    const cycleRoot = ideaCycleDirectory(root, plan.submission, number);
+    const report = await readRetainedIdeaReport({
+      root,
+      workId,
+      plan,
+      cycleRoot,
+      declaration: challengerArtifact,
+      contract: ideaReportContracts.challenge,
+      context:
+        `IdeaEditor reading the Challenger result of submission ${String(plan.submission)} ` +
+        `cycle ${String(number)} for idea ${workId}.`,
+    });
+    if (report !== null) {
+      return { path: path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot), report };
+    }
+  }
+  return null;
 }
 
 /** Create IdeaEditor over the refinement area it writes into. */
@@ -297,7 +372,17 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const file = path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot);
-    const existing = await readCycleArtifact(cycleRoot, framingArtifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: taskKey,
+      plan,
+      cycleRoot,
+      declaration: framingArtifact,
+      contract: ideaReportContracts.framing,
+      context:
+        `IdeaEditor reading its retained framing of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
+    });
     if (existing !== null) {
       return reported(
         taskKey,
@@ -316,23 +401,26 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'to correction. Ask an essential author decision only when one is already missing: an',
       'element the author can still supply through refinement is not one.',
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(framingResponseSchema),
     ].join('\n\n');
 
-    const framing = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'FrameIdea',
+      reportKind: 'idea-framing',
       input,
       context,
       schema: framingResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
+    const framing = outcome.report;
     await writeCycleArtifact(cycleRoot, framingArtifact, framing);
+    await outcome.resolveFeedback({ path: file }, framing);
     return reported(
       taskKey,
       cycle,
@@ -347,7 +435,17 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const turnFile = path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
-    const existing = await readCycleArtifact(cycleRoot, editorResponseArtifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorResponseArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `IdeaEditor reading its retained turn of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
+    });
     if (existing !== null) {
       const outcome = editOutcome(existing.disposition);
       return reported(
@@ -376,26 +474,30 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         'author-facing reason and no refinedIdea, and reports help as null.',
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
-      ...(await contributionsText(root, plan.submission, plan.cycle, 'edit')),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
+      ...(await contributionsText(root, plan, input.taskKey, 'edit')),
       ...(projectGuidance === null ? [] : [projectGuidance]),
-      ...(await recoveryText(root, plan.submission, plan.cycle)),
+      ...(await recoveryText(root, plan, input.taskKey)),
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
-    const turn = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'EditIdea',
+      reportKind: 'idea-editor-turn',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    requireValidTurn('edit', turn);
-    return persist(root, plan.submission, plan.cycle, 'edit', turn);
+    const problem = turnProblem('edit', outcome.report);
+    if (problem !== null) {
+      await outcome.reject(problem);
+    }
+    return persist(root, plan, input.taskKey, 'edit', outcome);
   }
 
   /** Respond to the Challenger's concern, with focused help when the editor asks for it. */
@@ -408,7 +510,17 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const turnFile = path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
-    const existing = await readCycleArtifact(cycleRoot, editorResponseArtifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorResponseArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `IdeaEditor reading its retained turn of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
+    });
     if (existing !== null) {
       return reported(
         taskKey,
@@ -420,7 +532,17 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           : turnFile,
       );
     }
-    const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
+    const help = await readRetainedIdeaReport({
+      root,
+      workId: taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorHelpArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `IdeaEditor reading its retained help request of submission ${String(plan.submission)} ` +
+        `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
+    });
     if (task === 'respond' && help !== null) {
       // The response asked for help before the invocation was interrupted; route it again.
       return reported(
@@ -433,14 +555,23 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     }
     // The cycle was opened by the discussion the editor answers, which is the preceding cycle's
     // result: the current cycle's Challenger runs after this response.
-    const discussion = await latestChallengerBefore(root, plan.submission, plan.cycle);
+    const discussion = await latestChallengerBefore(root, plan, taskKey);
     if (discussion === null) {
       throw new Error(
         `The editor responds to a Challenger result; submission ${String(plan.submission)} has ` +
           'none.',
       );
     }
-    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
+    const revision = await readRetainedRefinedIdea({
+      root,
+      workId: taskKey,
+      plan,
+      submission: plan.submission,
+      cycle: plan.cycle,
+      context:
+        `IdeaEditor reading the refined idea revision the Challenger discussed, submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${taskKey}.`,
+    });
     if (revision === null) {
       throw new Error(
         `The editor responds to the revision the Challenger discussed; submission ` +
@@ -448,8 +579,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       );
     }
     const input = await readIdeaInput(root, plan.submission);
-    const focused =
-      task === 'respond-after-help' ? await focusedText(root, plan.submission, plan.cycle) : [];
+    const focused = task === 'respond-after-help' ? await focusedText(root, plan, taskKey) : [];
     const guidance = await projectGuidanceText(root);
     const context = [
       ...(task === 'respond-after-help'
@@ -472,30 +602,34 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           ]),
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       `The refined idea revision currently in force: ${revision.path}`,
       `The refined idea revision the Challenger assessed: ${discussion.report.refinedIdea}`,
       `The Challenger result to answer: ` +
         `${discussion.path}\n${JSON.stringify(discussion.report, null, 2)}`,
       ...focused,
       ...(guidance === null ? [] : [guidance]),
-      ...(await recoveryText(root, plan.submission, plan.cycle)),
+      ...(await recoveryText(root, plan, taskKey)),
       responseFormatText(editorTurnResponseSchema),
     ].join('\n\n');
 
-    const turn = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'idea-editor',
       operation: 'EditorResponse',
+      reportKind: 'idea-editor-turn',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
       publish: settings.publish,
     });
-    requireValidTurn(task, turn);
-    return persist(root, plan.submission, plan.cycle, task, turn);
+    const problem = turnProblem(task, outcome.report);
+    if (problem !== null) {
+      await outcome.reject(problem);
+    }
+    return persist(root, plan, taskKey, task, outcome);
   }
 
   /**
@@ -506,13 +640,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
    */
   async function persist(
     root: string,
-    submission: number,
-    cycle: number,
+    plan: IdeaRoundPlan,
+    workId: string,
     task: IdeaEditorTask,
-    turn: EditorTurnResponse,
+    outcome: IdeaInvocationOutcome<typeof editorTurnResponseSchema>,
   ): Promise<string> {
+    const { submission, cycle } = plan;
+    const turn = outcome.report;
     const cycleRoot = ideaCycleDirectory(root, submission, cycle);
-    const existing = await cycleRevision(root, submission, cycle);
+    const existing = await cycleRevision(root, plan, workId);
     if (
       existing !== null &&
       (turn.disposition !== 'revised' ||
@@ -525,7 +661,9 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           cycle,
         }))
     ) {
-      throw new Error(
+      // The conflicting retry is rejected report evidence, not a silent execution error: the next
+      // permitted turn must receive the retained revision and this reason.
+      await outcome.reject(
         `The interrupted editor turn must complete the retained revision at "${existing.path}" ` +
           'without changing it; the retry response was not saved.',
       );
@@ -542,6 +680,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     const taskKey = inputRecord.taskKey;
     if (turn.disposition === 'help-requested') {
       const file = await writeCycleArtifact(cycleRoot, editorHelpArtifact, stored);
+      await outcome.resolveFeedback({ path: file }, stored);
       return reported(taskKey, cycle, 'help-requested', null, file);
     }
 
@@ -551,7 +690,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         throw new Error('The editor revised the idea without returning the revision.');
       }
       if (existing === null) {
-        revision = await nextRevision(root, submission, cycle);
+        revision = await nextRevision(root, plan, workId);
         const { openQuestions, ...parts } = turn.refinedIdea;
         await writeCycleArtifact(cycleRoot, refinedIdeaArtifact, {
           ...parts,
@@ -565,12 +704,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       }
     }
     const file = await writeCycleArtifact(cycleRoot, editorResponseArtifact, stored);
-    const outcome =
+    await outcome.resolveFeedback({ path: file }, stored);
+    const workflowOutcome =
       task === 'edit' ? editOutcome(turn.disposition) : responseOutcome(turn.disposition);
     return reported(
       taskKey,
       cycle,
-      outcome,
+      workflowOutcome,
       revision === null ? null : `revision ${String(revision)}`,
       revision === null ? file : revisionFile(root, submission, cycle),
     );

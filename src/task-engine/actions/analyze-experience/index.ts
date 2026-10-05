@@ -24,6 +24,16 @@ import { messageOf, type ArtifactRef } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 import {
+  outstandingReportFeedback,
+  recordReportCorrection,
+  rejectReport,
+  rejectUnusableRecord,
+  reportFeedbackContextText,
+  type ReportRejection,
+  type ReportScope,
+  type RetainedReportFeedback,
+} from '../report-feedback.js';
+import {
   experienceActivityFileSuffix,
   experienceAnalysisFile,
   experienceAnalysisOutputSchema,
@@ -62,6 +72,8 @@ import {
 export type ExperienceAnalystRequest = {
   /** The complete context text for the configured analysis profile. */
   readonly context: string;
+  /** The invocation identity the caller assigned, so rejection evidence stays attributable. */
+  readonly invocationId?: string;
   /** The request's analysis work area: its evidence root, whose worktree child it runs in. */
   readonly workspace: { readonly root: string };
   /** The JSON Schema the analyst's final response must match. */
@@ -219,7 +231,11 @@ function retainedEvidencePath(
 }
 
 /** The complete context text one analyst invocation receives. */
-function experienceContextText(request: ExperienceRequest, scope: EvidenceScope): string {
+function experienceContextText(
+  request: ExperienceRequest,
+  scope: EvidenceScope,
+  feedback: readonly RetainedReportFeedback<ReportRejection>[],
+): string {
   const { handoff } = request;
   const workspace = handoff.workspaceRoot;
   const evidence = handoff.artifacts.map((artifact) => ({
@@ -312,6 +328,7 @@ function experienceContextText(request: ExperienceRequest, scope: EvidenceScope)
       'Return the response object only; do not write or overwrite the request’s analysis, attempt ' +
         'or submission records. AnalyzeExperience validates and persists your observations.',
     ].join('\n'),
+    ...reportFeedbackContextText(feedback),
   ].join('\n\n');
 }
 
@@ -488,6 +505,47 @@ export function createAnalyzeExperience(
     throw new Error(`The analysis output at "${file}" ${detail}.`);
   }
 
+  /** The report responsibility one request's analyst report belongs to. */
+  function reportScopeOf(request: ExperienceRequest, scope: EvidenceScope): ReportScope {
+    return {
+      project: request.project,
+      workId: request.handoff.workId,
+      area: scope.root,
+      role: 'experience-analyst',
+      reportKind: 'experience-analysis',
+    };
+  }
+
+  /**
+   * Read one request's accepted analysis. An unusable saved analysis is preserved as rejection
+   * evidence under the analyst's report responsibility before the read fails, so repairing or
+   * replacing the file cannot drop the correction obligation; the existing failure policy is
+   * unchanged.
+   */
+  async function readAcceptedAnalysis(
+    request: ExperienceRequest,
+  ): Promise<ExperienceAnalysisOutput | null> {
+    try {
+      return await readAnalysis(request.identity);
+    } catch (error) {
+      // Old requests may fail this read before their evidence is copied. Use the same durable
+      // request area that retention will create, so upgrading cannot strand the feedback.
+      const scope = {
+        root: request.evidenceRoot ?? experienceEvidenceRoot(settings.directory, request.identity),
+      };
+      return await rejectUnusableRecord({
+        areaRoot: scope.root,
+        scope: reportScopeOf(request, scope),
+        invocationId: null,
+        operation: 'analyze-experience',
+        profile,
+        context: `Reading the retained analysis of ${handoffLabel(request.handoff)}.`,
+        file: analysisFile(request.identity),
+        error,
+      });
+    }
+  }
+
   /** The durable request files of this store, in identity order. */
   async function requestFiles(): Promise<string[]> {
     let entries: string[];
@@ -586,7 +644,7 @@ export function createAnalyzeExperience(
     request: ExperienceRequest,
     problems: string[],
   ): Promise<ExperienceRequest> {
-    if (request.evidenceRoot !== null || (await readAnalysis(request.identity)) !== null) {
+    if (request.evidenceRoot !== null || (await readAcceptedAnalysis(request)) !== null) {
       return request;
     }
     const candidates =
@@ -728,7 +786,7 @@ export function createAnalyzeExperience(
     identity: string,
     problems: string[],
   ): Promise<ExperienceAnalysisOutput | null> {
-    const accepted = await readAnalysis(identity);
+    const accepted = await readAcceptedAnalysis(request);
     if (accepted !== null) {
       return accepted;
     }
@@ -743,6 +801,15 @@ export function createAnalyzeExperience(
     let activityTail: Promise<void> = Promise.resolve();
     let activityProblem: string | null = null;
     const scope = evidenceScopeOf(request);
+    const reportScope = reportScopeOf(request, scope);
+    const invocationId = randomUUID();
+    const attribution =
+      `Experience analysis of ${request.handoff.workId} (${request.handoff.workflow}, attempt ` +
+      `${request.handoff.attemptId}, terminal ${request.handoff.terminalId}).`;
+    const suppliedFeedback = await outstandingReportFeedback({
+      areaRoot: scope.root,
+      scope: reportScope,
+    });
     const recordActivity = (activity: AgentEvent): void => {
       activityTail = activityTail.then(async () => {
         try {
@@ -758,8 +825,9 @@ export function createAnalyzeExperience(
       // directory. A handoff without a prepared repository therefore still has a valid location.
       await mkdir(path.join(scope.root, 'worktree'), { recursive: true });
       result = await analyze({
-        context: experienceContextText(request, scope),
+        context: experienceContextText(request, scope, suppliedFeedback),
         workspace: { root: scope.root },
+        invocationId,
         outputSchema: z.toJSONSchema(experienceAnalysisResponseSchema),
         onActivity: recordActivity,
       });
@@ -785,8 +853,26 @@ export function createAnalyzeExperience(
     }
     const validated = await validateAnalysisResponse(result.value.output, request, scope);
     if (!validated.ok) {
-      await recordAttempt(identity, 'failed', validated.problem, null);
-      outstanding(validated.problem);
+      // The rejected analysis stays outstanding under the existing retry policy; retaining its
+      // evidence never converts the failure into acceptance or an extra invocation.
+      let problem = validated.problem;
+      try {
+        await rejectReport({
+          areaRoot: scope.root,
+          scope: reportScope,
+          invocationId,
+          operation: 'analyze-experience',
+          profile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          reason: validated.problem,
+        });
+      } catch (error) {
+        problem = messageOf(error);
+      }
+      await recordAttempt(identity, 'failed', problem, null);
+      outstanding(problem);
       return null;
     }
     const output: ExperienceAnalysisOutput = {
@@ -806,6 +892,18 @@ export function createAnalyzeExperience(
     };
     // The validated output is written once, before any submission, so a retry reuses it.
     await writeDurableRecord(analysisFile(identity), output);
+    if (suppliedFeedback.length > 0) {
+      // The owner validated and saved the usable replacement; recording its complete identity
+      // retires exactly the rejections this invocation was supplied, preserving their history.
+      await recordReportCorrection({
+        areaRoot: scope.root,
+        scope: reportScope,
+        rejections: suppliedFeedback.map((entry) => ({ path: entry.path })),
+        artifact: { path: analysisFile(identity) },
+        content: output,
+        invocationId,
+      });
+    }
     await recordAttempt(identity, 'accepted', null, output.observations.length);
     return output;
   }

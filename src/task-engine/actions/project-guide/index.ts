@@ -3,15 +3,16 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorHelpArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
   responseFormatText,
   retainedHistoryText,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
@@ -87,7 +88,17 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
 
     let question: string | null = null;
     if (phase === 'focused') {
-      const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
+      const help = await readRetainedIdeaReport({
+        root,
+        workId: inputRecord.taskKey,
+        plan,
+        cycleRoot,
+        declaration: editorHelpArtifact,
+        contract: ideaReportContracts.editorTurn,
+        context:
+          `ProjectGuide reading the editor help request of submission ` +
+          `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${inputRecord.taskKey}.`,
+      });
       if (help === null || help.disposition !== 'help-requested') {
         throw new Error(
           `A focused project guidance contribution answers an editor help request; submission ` +
@@ -101,7 +112,18 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       }
     }
 
-    const existing = await readCycleArtifact(cycleRoot, artifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: inputRecord.taskKey,
+      plan,
+      cycleRoot,
+      declaration: artifact,
+      contract: ideaReportContracts.projectGuidance,
+      context:
+        `ProjectGuide reading its retained ${phase === 'initial' ? 'guidance' : 'focused'} ` +
+        `contribution of submission ${String(plan.submission)} cycle ${String(plan.cycle)} ` +
+        `for idea ${inputRecord.taskKey}.`,
+    });
     if (existing !== null) {
       return contributed(inputRecord.taskKey, plan.cycle, existing.provisional, file);
     }
@@ -115,7 +137,10 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
           question,
       await capturedIdeaText(root, plan, inputRecord),
       // The Researcher contributes concurrently; its pending contribution is not this role's.
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: 'researcher' }),
+      await retainedHistoryText(root, plan, {
+        workId: inputRecord.taskKey,
+        omitCurrentCycleOf: 'researcher',
+      }),
       'Find the project\u2019s purpose, charter and vision documents yourself in the supplied',
       'worktree. If they are absent or incomplete, infer direction from code and commits, label',
       'the inference as provisional and cite the evidence. Explain what existing capabilities',
@@ -127,11 +152,12 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       responseFormatText(projectGuideResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'project-guide',
       operation: 'ProjectGuide',
+      reportKind: 'project-guidance',
       input: inputRecord,
       context,
       schema: projectGuideResponseSchema,
@@ -139,11 +165,12 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       publish: settings.publish,
     });
     const stored: ProjectGuideContribution = {
-      ...response,
+      ...outcome.report,
       role: 'project-guide',
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, response.provisional, file);
+    await outcome.resolveFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, stored.provisional, file);
   };
 }

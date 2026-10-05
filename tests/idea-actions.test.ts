@@ -42,11 +42,17 @@ import {
   ideaSourceScopeText,
   ideaStageGuidanceText,
   projectGuidanceInstruction,
+  retainedHistoryText,
 } from '../src/task-engine/actions/idea-context.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
 } from '../src/task-engine/actions/idea-storage.js';
+import {
+  outstandingReportFeedback,
+  projectOfWorkspace,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import {
   projectGuideArtifact,
   projectGuideFollowUpArtifact,
@@ -836,6 +842,24 @@ describe('idea editor', () => {
         expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
         expect(area.events).toEqual([]);
       }
+      // Each conflicting retry is retained as rejection evidence of the editor-turn report, with
+      // its exact output, so the reason survives an interrupted response write.
+      const editorTurnScope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: 'idea-editor',
+        reportKind: 'idea-editor-turn',
+      };
+      const conflicts = await outstandingReportFeedback({
+        areaRoot: area.root,
+        scope: editorTurnScope,
+      });
+      expect(conflicts).toHaveLength(invalidDispositions.length + 1);
+      expect(conflicts.map((entry) => entry.record.reason)).toEqual(
+        expect.arrayContaining([expect.stringContaining('must complete the retained revision')]),
+      );
+      expect(conflicts.map((entry) => entry.record.output)).toContain(JSON.stringify(changed));
       const recoveryContext = agent.requests[1]?.context ?? '';
       expect(recoveryContext).toContain('Interrupted editor turn recovery');
       expect(recoveryContext).toContain('repeat its content exactly');
@@ -853,6 +877,18 @@ describe('idea editor', () => {
       await expect(editor({ task })).resolves.toBe(outcome);
       await expect(editor({ task })).resolves.toBe(outcome);
       expect(agent.requests).toHaveLength(3 + invalidDispositions.length);
+      // The completing invocation received the retained rejections and its validated saved turn
+      // recorded the corrections that retired them, while the rejection history stays readable.
+      const completedContext = agent.requests.at(-1)?.context ?? '';
+      expect(completedContext).toContain('Outstanding report rejection');
+      expect(completedContext).toContain('must complete the retained revision');
+      expect(completedContext).toContain(JSON.stringify(changed).slice(0, 40));
+      await expect(
+        outstandingReportFeedback({ areaRoot: area.root, scope: editorTurnScope }),
+      ).resolves.toEqual([]);
+      expect(
+        (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'rejection'),
+      ).toHaveLength(invalidDispositions.length + 1);
       expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
       expect(await area.read(cycle, editorResponseArtifact.pathFromArtifactsRoot)).toMatchObject({
         disposition: 'revised',
@@ -1567,5 +1603,390 @@ describe('decision publication', () => {
       selectionFile,
     );
     await expect(decide({ decision: 'approved' })).resolves.toBe('failed');
+  });
+});
+
+describe('retained idea reports', () => {
+  /** The report responsibility one idea role's saved report belongs to. */
+  function scopeOf(
+    area: { readonly root: string },
+    role: 'idea-editor' | 'researcher' | 'project-guide' | 'challenger',
+    reportKind: string,
+  ) {
+    return {
+      project: projectOfWorkspace(path.dirname(area.root)),
+      workId: 'NEX-1',
+      area: area.root,
+      role,
+      reportKind,
+    };
+  }
+
+  it.each(['researcher', 'project-guide', 'challenger'] as const)(
+    'retains unreadable framing from the %s context for the framing producer',
+    async (role) => {
+      const area = await refinementArea();
+      await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+        ...revisedTurn(1).refinedIdea,
+        revision: 1,
+        submission: 1,
+        cycle: 1,
+      });
+      const file = path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot);
+      await mkdir(file);
+      const unused = scriptedRuntime([]);
+      const settings = {
+        workspace: { root: area.root },
+        runner: runnerOf(unused.runtime),
+        publish: (event: EngineEvent) => area.events.push(event),
+      };
+      const action = {
+        researcher: createResearcher,
+        'project-guide': createProjectGuide,
+        challenger: createChallenger,
+      }[role](settings);
+      await expect(action({ phase: 'initial' })).rejects.toThrow('could not be read');
+      expect(unused.requests).toHaveLength(0);
+      const scope = scopeOf(area, 'idea-editor', 'idea-framing');
+      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope,
+        operation: 'FrameIdea',
+        profile: profiles['idea-editor'],
+        invocationId: null,
+        source: { path: file },
+        output: null,
+        reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+      });
+      await expect(
+        outstandingReportFeedback({
+          areaRoot: area.root,
+          scope: scopeOf(area, 'idea-editor', 'idea-editor-turn'),
+        }),
+      ).resolves.toEqual([]);
+
+      await rm(file, { recursive: true });
+      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
+        1,
+      );
+      const resumed = scriptedRuntime([framingFixture]);
+      const editor = createIdeaEditor({
+        ...settings,
+        runner: runnerOf(resumed.runtime),
+      });
+      await expect(editor({ task: 'frame' })).resolves.toBe('framed');
+      const context = resumed.requests[0]?.context ?? '';
+      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain(`Artifact at "${file}" could not be read`);
+      expect(context).toContain('unavailable');
+      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+      expect(
+        (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'rejection'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('retains unreadable research encountered in editor history for the next researcher', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(file, { recursive: true });
+    const unused = scriptedRuntime([]);
+    const settings = {
+      workspace: { root: area.root },
+      runner: runnerOf(unused.runtime),
+      publish: (event: EngineEvent) => area.events.push(event),
+    };
+    const editor = createIdeaEditor(settings);
+    await expect(editor({ task: 'edit' })).rejects.toThrow('could not be read');
+    expect(unused.requests).toHaveLength(0);
+    const scope = scopeOf(area, 'researcher', 'research');
+    const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]?.record).toMatchObject({
+      scope,
+      operation: 'Researcher',
+      profile: profiles.researcher,
+      source: { path: file },
+      output: null,
+      reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+    });
+    await rm(file, { recursive: true });
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
+      1,
+    );
+    const resumed = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({ ...settings, runner: runnerOf(resumed.runtime) });
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+    const context = resumed.requests[0]?.context ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain(`Artifact at "${file}" could not be read`);
+    expect(context).toContain('unavailable');
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['editor-framing.json', 'idea-editor', 'idea-framing'],
+    ['refined-idea.json', 'idea-editor', 'idea-editor-turn'],
+    ['editor-response.json', 'idea-editor', 'idea-editor-turn'],
+    ['editor-help-request.json', 'idea-editor', 'idea-editor-turn'],
+    ['researcher.json', 'researcher', 'research'],
+    ['researcher-follow-up.json', 'researcher', 'research'],
+    ['project-guide.json', 'project-guide', 'project-guidance'],
+    ['project-guide-follow-up.json', 'project-guide', 'project-guidance'],
+    ['challenger.json', 'challenger', 'challenge'],
+    ['brief.json', 'idea-editor', 'idea-editor-turn'],
+    ['purpose.json', 'project-guide', 'legacy-purpose'],
+    ['research.json', 'researcher', 'legacy-research'],
+    ['council/purpose.json', 'challenger', 'legacy-council-purpose'],
+    ['council/evidence.json', 'challenger', 'legacy-council-evidence'],
+    ['council/simplicity.json', 'challenger', 'legacy-council-simplicity'],
+  ] as const)(
+    'attributes unreadable earlier history at %s to its producer and compatible contract',
+    async (relative, role, reportKind) => {
+      const area = await refinementArea({ cycle: 2 });
+      const file = path.join(area.cycleRoot(1), relative);
+      await mkdir(file, { recursive: true });
+      await expect(
+        retainedHistoryText(area.root, area.plan, {
+          workId: capturedInput.taskKey,
+          // Omitting a parallel role's current contribution must not omit its older history.
+          omitCurrentCycleOf: role,
+        }),
+      ).rejects.toThrow('could not be read');
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: scopeOf(area, role, reportKind),
+        profile: profiles[role],
+        invocationId: null,
+        source: { path: file },
+        output: null,
+        context: expect.stringContaining('submission 1 cycle 1'),
+        reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+      });
+      await expect(
+        outstandingReportFeedback({
+          areaRoot: area.root,
+          scope: { ...scopeOf(area, role, reportKind), workId: 'NEX-2' },
+        }),
+      ).resolves.toEqual([]);
+    },
+  );
+
+  it('keeps absent reports and omitted concurrent contributions out of history and feedback', async () => {
+    const area = await refinementArea();
+    const options = { workId: capturedInput.taskKey, omitCurrentCycleOf: 'researcher' as const };
+    const initial = await retainedHistoryText(area.root, area.plan, options);
+    expect(initial).toContain('captured idea input');
+    expect(initial).not.toContain('cycle 1');
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(file, { recursive: true });
+    await expect(retainedHistoryText(area.root, area.plan, options)).resolves.toBe(initial);
+    await expect(readReportFeedback(area.root)).resolves.toEqual([]);
+  });
+
+  it('does not supply legacy research rejection to the current research contract', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), 'research.json');
+    await mkdir(file, { recursive: true });
+    const options = { workId: capturedInput.taskKey, omitCurrentCycleOf: null };
+    await expect(retainedHistoryText(area.root, area.plan, options)).rejects.toThrow(
+      'could not be read',
+    );
+    await rm(file, { recursive: true });
+    // A historical repair leaves its rejection outstanding without authorizing a current role
+    // to correct a response contract it does not implement.
+    await writeFile(file, '{"legacy":"repaired"}');
+    const agent = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+    expect(agent.requests[0]?.context).not.toContain('Outstanding report rejection');
+    await expect(
+      outstandingReportFeedback({
+        areaRoot: area.root,
+        scope: scopeOf(area, 'researcher', 'legacy-research'),
+      }),
+    ).resolves.toHaveLength(1);
+    expect(
+      (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'correction'),
+    ).toEqual([]);
+  });
+
+  it('preserves an unusable retained research contribution for the next researcher', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    const malformed = '{"contribution":"The gate helps.",';
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, malformed, 'utf8');
+    const scope = scopeOf(area, 'researcher', 'research');
+    const unused = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(unused.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(researcher({ phase: 'initial' })).rejects.toThrow(/is not valid JSON/);
+    expect(unused.requests).toHaveLength(0);
+    const retained = (await readReportFeedback(area.root)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(retained?.record).toMatchObject({
+      scope,
+      operation: 'Researcher',
+      source: { path: file },
+      output: malformed,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // Replacing the unusable record does not resolve the feedback by itself; the next permitted
+    // researcher receives it and its validated saved contribution records the correction.
+    await rm(file);
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
+      1,
+    );
+    const recovery = scriptedRuntime([researchFixture]);
+    const next = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(recovery.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(next({ phase: 'initial' })).resolves.toBe('contributed');
+    const context = recovery.requests[0]?.context ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('is not valid JSON');
+    expect(context).toContain(malformed);
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+  });
+
+  it('routes unusable editor and contribution reports to their own producers', async () => {
+    const area = await refinementArea();
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(1, researchArtifact.pathFromArtifactsRoot, {
+      ...researchFixture,
+      role: 'researcher',
+      question: null,
+    });
+    const guideFile = path.join(area.cycleRoot(), projectGuideArtifact.pathFromArtifactsRoot);
+    const malformedGuidance = '{"contribution":"It fits the project.",';
+    await mkdir(path.dirname(guideFile), { recursive: true });
+    await writeFile(guideFile, malformedGuidance, 'utf8');
+
+    // The editor reads the Project guide's contribution; that responsibility owns its rejection.
+    const unusedEditor = scriptedRuntime([revisedTurn(1)]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(unusedEditor.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(editor({ task: 'edit' })).rejects.toThrow(/is not valid JSON/);
+    expect(unusedEditor.requests).toHaveLength(0);
+    const guideScope = scopeOf(area, 'project-guide', 'project-guidance');
+    const guideRejection = (
+      await outstandingReportFeedback({ areaRoot: area.root, scope: guideScope })
+    )[0];
+    expect(guideRejection?.record).toMatchObject({
+      scope: guideScope,
+      operation: 'ProjectGuide',
+      source: { path: guideFile },
+      output: malformedGuidance,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // The Challenger then reads the editor's saved response; the editor's responsibility owns
+    // that rejection, independently attributable from the Project guide's.
+    const turnFile = path.join(area.cycleRoot(), editorResponseArtifact.pathFromArtifactsRoot);
+    const malformedTurn = '{"disposition":"answered",';
+    await writeFile(turnFile, malformedTurn, 'utf8');
+    const unusedChallenger = scriptedRuntime([
+      {
+        verdict: 'approve',
+        assessment: 'A plausible way forward.',
+        obstacle: null,
+        concerns: [],
+        suggestions: [],
+      },
+    ]);
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(unusedChallenger.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(challenger()).rejects.toThrow(/is not valid JSON/);
+    expect(unusedChallenger.requests).toHaveLength(0);
+    const editorScope = scopeOf(area, 'idea-editor', 'idea-editor-turn');
+    const turnRejection = (
+      await outstandingReportFeedback({ areaRoot: area.root, scope: editorScope })
+    )[0];
+    expect(turnRejection?.record).toMatchObject({
+      scope: editorScope,
+      source: { path: turnFile },
+      output: malformedTurn,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
+
+    // The Project guide receives its own rejection and its validated saved contribution records
+    // the correction; the editor's rejection stays outstanding under the editor's responsibility.
+    await rm(guideFile);
+    const guideAgent = scriptedRuntime([guidanceFixture]);
+    const guide = createProjectGuide({
+      workspace: { root: area.root },
+      runner: runnerOf(guideAgent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(guide({ phase: 'initial' })).resolves.toBe('contributed');
+    const guideContext = guideAgent.requests[0]?.context ?? '';
+    expect(guideContext).toContain('Outstanding report rejection');
+    expect(guideContext).toContain(malformedGuidance);
+    expect(guideContext).not.toContain(malformedTurn);
+    await expect(
+      outstandingReportFeedback({ areaRoot: area.root, scope: guideScope }),
+    ).resolves.toEqual([]);
+    await expect(
+      outstandingReportFeedback({ areaRoot: area.root, scope: editorScope }),
+    ).resolves.toHaveLength(1);
+  });
+
+  it('preserves an unusable retained refined idea revision under the editor responsibility', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+    const malformed = '{"idea":"A lint gate would keep reviews on behaviour.",';
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, malformed, 'utf8');
+    const scope = scopeOf(area, 'idea-editor', 'idea-editor-turn');
+    const unused = scriptedRuntime([
+      {
+        verdict: 'approve',
+        assessment: 'A plausible way forward.',
+        obstacle: null,
+        concerns: [],
+        suggestions: [],
+      },
+    ]);
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(unused.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(challenger()).rejects.toThrow(/is not valid JSON/);
+    expect(unused.requests).toHaveLength(0);
+    const retained = (await outstandingReportFeedback({ areaRoot: area.root, scope }))[0];
+    expect(retained?.record).toMatchObject({
+      scope,
+      source: { path: file },
+      output: malformed,
+      reason: expect.stringContaining('is not valid JSON'),
+    });
   });
 });

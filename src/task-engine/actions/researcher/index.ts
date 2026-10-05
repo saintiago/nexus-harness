@@ -2,15 +2,16 @@ import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
+  ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
+  readRetainedIdeaReport,
   responseFormatText,
   retainedHistoryText,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
-  readCycleArtifact,
   readIdeaInput,
   readIdeaPlan,
   writeCycleArtifact,
@@ -88,7 +89,17 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
 
     let question: string | null = null;
     if (phase === 'focused') {
-      const help = await readCycleArtifact(cycleRoot, editorHelpArtifact);
+      const help = await readRetainedIdeaReport({
+        root,
+        workId: inputRecord.taskKey,
+        plan,
+        cycleRoot,
+        declaration: editorHelpArtifact,
+        contract: ideaReportContracts.editorTurn,
+        context:
+          `Researcher reading the editor help request of submission ` +
+          `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${inputRecord.taskKey}.`,
+      });
       if (help === null || help.disposition !== 'help-requested') {
         throw new Error(
           `A focused research contribution answers an editor help request; submission ` +
@@ -102,7 +113,18 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       }
     }
 
-    const existing = await readCycleArtifact(cycleRoot, artifact);
+    const existing = await readRetainedIdeaReport({
+      root,
+      workId: inputRecord.taskKey,
+      plan,
+      cycleRoot,
+      declaration: artifact,
+      contract: ideaReportContracts.research,
+      context:
+        `Researcher reading its retained ${phase === 'initial' ? 'research' : 'focused'} ` +
+        `contribution of submission ${String(plan.submission)} cycle ${String(plan.cycle)} ` +
+        `for idea ${inputRecord.taskKey}.`,
+    });
     if (existing !== null) {
       return contributed(inputRecord.taskKey, plan.cycle, existing.sources.length, file);
     }
@@ -116,7 +138,10 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
           question,
       await capturedIdeaText(root, plan, inputRecord),
       // The Project guide contributes concurrently; its pending contribution is not this role's.
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: 'project-guide' }),
+      await retainedHistoryText(root, plan, {
+        workId: inputRecord.taskKey,
+        omitCurrentCycleOf: 'project-guide',
+      }),
       'Use the prepared worktree, project knowledge, existing work and your configured web tools.',
       'Keep suggestions and options at idea level: strengthen the author\u2019s proposal without',
       'replacing it with another idea, and produce no implementation plan or draft configuration.',
@@ -128,11 +153,12 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       responseFormatText(researchResponseSchema),
     ].join('\n\n');
 
-    const response = await invokeIdeaRole({
+    const outcome = await invokeIdeaRole({
       root,
       plan,
       role: 'researcher',
       operation: 'Researcher',
+      reportKind: 'research',
       input: inputRecord,
       context,
       schema: researchResponseSchema,
@@ -140,11 +166,12 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       publish: settings.publish,
     });
     const stored: ResearchContribution = {
-      ...response,
+      ...outcome.report,
       role: 'researcher',
       question,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, response.sources.length, file);
+    await outcome.resolveFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, stored.sources.length, file);
   };
 }

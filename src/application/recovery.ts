@@ -13,6 +13,16 @@ import { devArtifact } from '../task-engine/actions/develop/artifacts.js';
 import { implementationInputDeclaration } from '../task-engine/actions/project/implementation-handoff/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
+import {
+  outstandingReportFeedback,
+  recordReportCorrection,
+  reportFeedbackContextText,
+  reportFeedbackDeclarationText,
+  writeReportFeedbackRecord,
+  type ReportRejection,
+  type ReportScope,
+  type RetainedReportFeedback,
+} from '../task-engine/actions/report-feedback.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
 import {
   stageAuthorArtifact,
@@ -232,6 +242,8 @@ type RecoveryContextSettings = {
   readonly reports: readonly string[];
   readonly invocation: number;
   readonly stop: RecoveryStop;
+  /** The outstanding recovery-report rejections this invocation was supplied. */
+  readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
 };
 
 /** One producer-owned declaration the recovery context states: its path and generated schema. */
@@ -350,6 +362,8 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `Agent activity logs: ${activityDirectory} (one JSONL file per invocation, named with the ` +
         'agent name, Unix start time and invocation ID)',
       `Recovery directory: ${settings.recoveryDirectory}`,
+      `Recovery report feedback: ${path.join(settings.recoveryDirectory, 'report-feedback')} ` +
+        '(immutable rejection and correction records of earlier recovery reports)',
       'Saved reports of this execution: ' +
         (settings.reports.length === 0 ? 'none yet' : settings.reports.join(', ')),
       `Your operational workspace: ${settings.workspace.root} (worktree/ is your working ` +
@@ -404,6 +418,23 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       'Return the response object only; do not write the report file. Application parses your ' +
         'response, saves the report and publishes it.',
     ].join('\n'),
+    [
+      'Report rejection and correction declarations',
+      'Before repairing or replacing a rejected report of another role, preserve its available ' +
+        'output and exact rejection reason with the declarations below. Write each immutable ' +
+        'record under its owning area (a preparation stage area, refinement/, or an issue root) ' +
+        'as report-feedback/<record-id>.json with a unique record ID; never write report-feedback ' +
+        'inside your own operational workspace.',
+      'A record scope names the configured project, the work item (the selection task key), the ' +
+        'absolute owning area, and the report responsibility: a preparation stage report uses ' +
+        'role "<stage>-author" with report kind "stage-author" or "<stage>-evaluator" with ' +
+        '"stage-evaluation"; idea refinement uses the invoking role (researcher, project-guide, ' +
+        'challenger, idea-editor) with "research", "project-guidance", "challenge", ' +
+        '"idea-framing" or "idea-editor-turn"; finite delivery uses "developer"/"development" or ' +
+        '"reviewer"/"review".',
+      reportFeedbackDeclarationText(),
+    ].join('\n\n'),
+    ...reportFeedbackContextText(settings.feedback),
   ].join('\n\n');
 }
 
@@ -528,6 +559,26 @@ export function createRecovery(settings: RecoverySettings): Recovery {
           `The recovery operational workspace could not be prepared: ${messageOf(error)}`,
         );
       }
+      const scope: ReportScope = {
+        project: project.taskSource.project,
+        // A recovery report answers for the whole project execution, not one selected work item:
+        // its responsibility must match across selection clears and reselection, so the stable
+        // project identity is the work the feedback belongs to.
+        workId: project.taskSource.project,
+        area: directory,
+        role: 'recovery',
+        reportKind: 'recovery-report',
+      };
+      let feedback: Awaited<ReturnType<typeof outstandingReportFeedback>>;
+      try {
+        feedback = await outstandingReportFeedback({ areaRoot: directory, scope });
+      } catch (error) {
+        // Missing or unusable evidence is an explicit error, never an empty feedback set: an
+        // invocation that cannot receive its required correction must not run unawares.
+        return attention(
+          `Recovery could not read its retained report feedback: ${messageOf(error)}`,
+        );
+      }
       const context = recoveryContextText({
         request: execution.request,
         project,
@@ -542,6 +593,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         reports: earlierReports(invocation),
         invocation,
         stop,
+        feedback,
       });
 
       publish({ source: 'application', type: 'recovering', data: { reason: stop.failure } });
@@ -581,7 +633,31 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       try {
         report = parseRecoveryReport(result.value.output);
       } catch (error) {
-        return attention(`The recovery invocation failed: ${messageOf(error)}`);
+        const reason = `The recovery invocation failed: ${messageOf(error)}`;
+        try {
+          // The malformed response stays rejected: retain its exact bytes, the violated format
+          // rule and the invocation attribution under the stable project recovery area.
+          await writeReportFeedbackRecord(directory, {
+            kind: 'rejection',
+            scope,
+            invocationId: agentInvocation.identity.invocationId,
+            operation: 'Recovery',
+            profile,
+            context:
+              `Recovery invocation ${String(invocation)} of project ` +
+              `${project.taskSource.project}, stopped because: ${stop.failure}`,
+            source: null,
+            output: result.value.output,
+            reason,
+          });
+        } catch (writeError) {
+          // A failed evidence write reports both the original rejection and the persistence
+          // failure, and grants no acceptance.
+          return attention(
+            `${reason} The rejection evidence could not be saved: ${messageOf(writeError)}`,
+          );
+        }
+        return attention(reason);
       }
       let reportRef: ArtifactRef;
       try {
@@ -590,6 +666,25 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         await writeRecord(reportRef.path, report);
       } catch (error) {
         return attention(`The recovery report could not be saved: ${messageOf(error)}`);
+      }
+      if (feedback.length > 0) {
+        try {
+          // The owner validated and saved the usable replacement; recording its complete identity
+          // retires exactly the rejections this invocation was supplied, preserving their history.
+          await recordReportCorrection({
+            areaRoot: directory,
+            scope,
+            rejections: feedback.map((entry) => ({ path: entry.path })),
+            artifact: reportRef,
+            content: report,
+            invocationId: agentInvocation.identity.invocationId,
+          });
+        } catch (error) {
+          return attention(
+            `The recovery report was saved, but its correction evidence could not be recorded: ` +
+              messageOf(error),
+          );
+        }
       }
       saved = reportRef;
       publish({
