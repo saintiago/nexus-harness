@@ -136,15 +136,38 @@ function turnIsValid(
     return false;
   }
   if (turn.disposition === 'unsuitable' || turn.disposition === 'author-decision-needed') {
-    return turn.reason !== null && turn.refinedIdea === null;
+    return turn.reason !== null && turn.help === null && turn.refinedIdea === null;
+  }
+  if (turn.reason !== null) {
+    return false;
   }
   if (turn.disposition === 'help-requested') {
-    return turn.help !== null && (turn.help.researcher !== null || turn.help.projectGuide !== null);
+    return (
+      turn.help !== null &&
+      (turn.help.researcher !== null || turn.help.projectGuide !== null) &&
+      turn.refinedIdea === null
+    );
+  }
+  if (turn.help !== null) {
+    return false;
   }
   if (turn.disposition === 'revised') {
     return turn.refinedIdea !== null;
   }
   return turn.refinedIdea === null;
+}
+
+/** Reject an editor turn that does not carry exactly the parts its task and disposition need. */
+function requireValidTurn(task: IdeaEditorTask, turn: EditorTurnResponse): void {
+  if (turnIsValid(task, turn)) {
+    return;
+  }
+  throw new Error(
+    `The idea editor's "${turn.disposition}" turn does not carry exactly the parts the ` +
+      `${task} task requires: reason only for an unsuitable or author-decision-needed return, ` +
+      'help only for a help-requested turn with a focused question, and refinedIdea only for a ' +
+      'revised turn.',
+  );
 }
 
 /** The path of one cycle's refined idea revision. */
@@ -371,12 +394,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (!turnIsValid('edit', turn)) {
-      throw new Error(
-        `The idea editor returned the "${turn.disposition}" disposition without the parts the ` +
-          'edit task needs.',
-      );
-    }
+    requireValidTurn('edit', turn);
     return persist(root, plan.submission, plan.cycle, 'edit', turn);
   }
 
@@ -476,12 +494,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       runner: settings.runner,
       publish: settings.publish,
     });
-    if (!turnIsValid(task, turn)) {
-      throw new Error(
-        `The idea editor returned the "${turn.disposition}" disposition without the parts the ` +
-          `${task} task needs.`,
-      );
-    }
+    requireValidTurn(task, turn);
     return persist(root, plan.submission, plan.cycle, task, turn);
   }
 

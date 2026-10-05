@@ -27,12 +27,15 @@ export function sourceInputIdentity(selection: Selection): string {
   return recordIdentity({ task: selection.task, conversation: selection.conversation });
 }
 
-/** True when the path exists as a regular file. */
+/** Failure modes that mean the path names no readable regular file. */
+const unreadableCodes = new Set(['ENOENT', 'ENAMETOOLONG', 'ENOTDIR', 'ELOOP']);
+
+/** True when the path exists as a regular file; a path the filesystem cannot resolve is not one. */
 async function isFile(target: string): Promise<boolean> {
   try {
     return (await stat(target)).isFile();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (unreadableCodes.has((error as NodeJS.ErrnoException).code ?? '')) {
       return false;
     }
     throw error;
@@ -45,7 +48,7 @@ async function exists(target: string): Promise<boolean> {
     await stat(target);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (unreadableCodes.has((error as NodeJS.ErrnoException).code ?? '')) {
       return false;
     }
     throw error;
@@ -58,6 +61,107 @@ export function checkoutRelative(worktree: string, declared: string): string | n
   return relative === '' || relative.startsWith('..') || path.isAbsolute(relative)
     ? null
     : relative;
+}
+
+/** The retained prototype identifiers a Storybook Refinement skip may cite for reuse. */
+export type RetainedPrototypeReference = {
+  readonly branch: string;
+  readonly revision: string;
+};
+
+/**
+ * One skip reference resolved to what it cites: a document in the shared checkout whose exact
+ * revision the evaluation binds, an existing retained file outside the checkout kept as a
+ * citation, the retained prototype a Storybook Refinement skip reuses, or why the reference is
+ * unusable. Explanatory prose is not a reference; it belongs in the skip's reason or summary.
+ */
+export type SkipReferenceResolution =
+  | {
+      readonly kind: 'document';
+      /** The canonical checkout-relative path of the cited document. */
+      readonly relative: string;
+      /** The section anchor the citation named, or null when it cites the whole document. */
+      readonly anchor: string | null;
+    }
+  | { readonly kind: 'evidence'; readonly path: string }
+  | { readonly kind: 'prototype' }
+  | {
+      /** A checkout location that does not name a readable file; a report cannot cite one. */
+      readonly kind: 'absence';
+      readonly relative: string;
+    }
+  | { readonly kind: 'unsupported'; readonly problem: string };
+
+/**
+ * Resolve one skip reference to what it cites, consistently for author validation, evaluation
+ * binding and retained-result reuse. A citation is a checkout path, optionally with a #section
+ * anchor, naming a readable document inside the shared checkout; an existing readable file the
+ * stage retains elsewhere; or, for a Storybook Refinement reuse skip, the retained prototype's
+ * recorded branch or revision or the shared checkout itself. Anything else - prose, an unreadable
+ * path or a location outside the workspace - is unsupported with a concrete reason instead of a
+ * filesystem fault.
+ */
+export async function resolveSkipReference(settings: {
+  readonly worktree: string;
+  readonly reference: string;
+  /** The retained prototype this stage owns, when a prototype skip may reuse it. */
+  readonly retainedPrototype?: RetainedPrototypeReference | null;
+}): Promise<SkipReferenceResolution> {
+  const { worktree, reference } = settings;
+  const prototype = settings.retainedPrototype ?? null;
+  const separator = reference.indexOf('#');
+  const named = (separator === -1 ? reference : reference.slice(0, separator)).trim();
+  const anchor = separator === -1 ? null : reference.slice(separator + 1).trim();
+  if (named === '') {
+    return {
+      kind: 'unsupported',
+      problem: `"${reference}" names no repository document or retained file`,
+    };
+  }
+  if (prototype !== null && (named === prototype.branch || named === prototype.revision)) {
+    return { kind: 'prototype' };
+  }
+  if (path.resolve(worktree, named) === path.resolve(worktree)) {
+    return prototype === null
+      ? {
+          kind: 'unsupported',
+          problem: `"${reference}" names the shared checkout, which only a retained prototype reuse cites`,
+        }
+      : { kind: 'prototype' };
+  }
+  const relative = checkoutRelative(worktree, named);
+  if (relative !== null) {
+    if (!(await isFile(path.join(worktree, relative)))) {
+      return { kind: 'absence', relative };
+    }
+    return { kind: 'document', relative, anchor: anchor === '' ? null : anchor };
+  }
+  if (await isFile(path.resolve(worktree, named))) {
+    return { kind: 'evidence', path: path.resolve(worktree, named) };
+  }
+  return {
+    kind: 'unsupported',
+    problem:
+      `"${reference}" is neither a readable file in the shared preparation checkout nor an ` +
+      'existing retained file',
+  };
+}
+
+/** The citation rule the instructions and every diagnostic share. */
+export const skipReferenceRule =
+  'a skip reference names a readable file in the shared preparation checkout (a path or a ' +
+  'path#section citation), an existing retained file, or - for a Storybook Refinement reuse skip ' +
+  '- the retained prototype branch, revision or checkout; explanations belong in the skip reason';
+
+/** The actionable reason one skip reference cannot be used, for author rejection and diagnosis. */
+export function skipReferenceProblem(resolution: SkipReferenceResolution): string | null {
+  if (resolution.kind === 'absence') {
+    return `the reference "${resolution.relative}" does not name a readable file; ${skipReferenceRule}`;
+  }
+  if (resolution.kind === 'unsupported') {
+    return `${resolution.problem}; ${skipReferenceRule}`;
+  }
+  return null;
 }
 
 /** The content observed before one evaluation, with the revision it was observed at. */
@@ -83,6 +187,8 @@ export async function retainEvaluationContent(settings: {
    * are observed like any other relied-on content, including a retained deletion.
    */
   readonly reused?: readonly string[];
+  /** The retained prototype this stage owns, when a prototype reuse skip cites it. */
+  readonly retainedPrototype?: RetainedPrototypeReference | null;
 }): Promise<RetainedEvaluationContent> {
   const { git, worktree, author } = settings;
   const declared = [...author.documents.map(({ path: value }) => value), ...author.sourcePaths];
@@ -151,13 +257,25 @@ export async function retainEvaluationContent(settings: {
       });
     }
     for (const reference of author.skip?.references ?? []) {
-      const relative = checkoutRelative(worktree, reference);
-      if (relative === null || content.some((entry) => entry.path === relative)) continue;
-      if (!(await isFile(path.join(worktree, relative)))) continue;
+      const resolution = await resolveSkipReference({
+        worktree,
+        reference,
+        retainedPrototype: settings.retainedPrototype ?? null,
+      });
+      const problem = skipReferenceProblem(resolution);
+      if (problem !== null) {
+        throw new Error(`The ${author.stage} skip cannot bind its references: ${problem}.`);
+      }
+      if (
+        resolution.kind !== 'document' ||
+        content.some((entry) => entry.path === resolution.relative)
+      ) {
+        continue;
+      }
       if (revision === null) {
         throw new Error('The prepared checkout reports no revision for the relied-on content.');
       }
-      content.push({ path: relative, revision, exists: true });
+      content.push({ path: resolution.relative, revision, exists: true });
     }
   }
   return { revision, content };

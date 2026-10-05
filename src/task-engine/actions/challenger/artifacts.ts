@@ -15,7 +15,7 @@ export const challengerVerdicts = ['approve', 'discuss'] as const;
 export type ChallengerVerdict = (typeof challengerVerdicts)[number];
 
 /** One consequential concern: what it is, why it matters and what would resolve it. */
-export const challengerConcernSchema = z.object({
+export const challengerConcernSchema = z.strictObject({
   concern: z.string().trim().min(1).describe('The concern that changes the decision.'),
   consequence: z.string().trim().min(1).describe('What the concern puts at risk.'),
   resolution: z.string().trim().min(1).describe('What would resolve the concern.'),
@@ -24,7 +24,7 @@ export const challengerConcernSchema = z.object({
 export type ChallengerConcern = z.infer<typeof challengerConcernSchema>;
 
 /** The provider response: the verdict, a short explanation and the concerns or suggestions. */
-export const challengerResponseSchema = z.object({
+export const challengerResponseSchema = z.strictObject({
   verdict: z
     .enum(challengerVerdicts)
     .describe('Approve when there is a plausible way forward; discuss to name the concerns.'),

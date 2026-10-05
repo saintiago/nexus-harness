@@ -540,6 +540,75 @@ describe('idea editor', () => {
     });
   });
 
+  it('rejects an editor turn carrying parts its disposition does not own', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await area.write(1, challengerArtifact.pathFromArtifactsRoot, {
+      verdict: 'discuss',
+      assessment: 'The evidence is thin.',
+      obstacle: 'Nothing yet shows the gate is worth the change.',
+      concerns: [
+        {
+          concern: 'No evidence that lint gates reduce review time.',
+          consequence: 'The value claim is unsubstantiated.',
+          resolution: 'Cite a study or a comparable project.',
+        },
+      ],
+      suggestions: [],
+      refinedIdea: revision,
+      editorResponse: null,
+      revision: 1,
+    });
+    const help = {
+      researcher: 'What evidence links lint gates to review time?',
+      projectGuide: null,
+    };
+    const cases: readonly { readonly turn: unknown; readonly problem: RegExp }[] = [
+      {
+        turn: { ...revisedTurn(2), reason: 'The concern was already answered.' },
+        problem: /reason only for an unsuitable or author-decision-needed return/u,
+      },
+      {
+        turn: {
+          disposition: 'answered',
+          response: 'The gate runs on staged files only.',
+          reason: null,
+          help,
+          refinedIdea: null,
+        },
+        problem: /help only for a help-requested turn/u,
+      },
+      {
+        turn: {
+          disposition: 'help-requested',
+          response: 'I need evidence before I can revise.',
+          reason: null,
+          help,
+          refinedIdea: revisedTurn(2).refinedIdea,
+        },
+        problem: /refinedIdea only for a revised turn/u,
+      },
+    ];
+    for (const { turn, problem } of cases) {
+      const editor = createIdeaEditor({
+        workspace: { root: area.root },
+        runner: runnerOf(scriptedRuntime([turn]).runtime),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(editor({ task: 'respond' })).rejects.toThrow(problem);
+    }
+    // Every contradictory turn stays rejected: none was normalized into a saved response.
+    await expect(
+      area.exists('artifacts/submissions/1/cycles/2/editor-response.json'),
+    ).resolves.toBe(false);
+  });
+
   it('rebuts a mistaken objection without changing the refined idea text', async () => {
     const area = await refinementArea({ cycle: 2, route: 'next' });
     const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
@@ -1156,6 +1225,36 @@ describe('challenger', () => {
 
     await expect(challenger()).rejects.toThrow(/remaining obstacle/u);
     expect(agent.requests[0]?.context).toContain('state the remaining obstacle plainly');
+    await expect(area.exists('artifacts/submissions/1/cycles/1/challenger.json')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('rejects an approval that states a remaining obstacle', async () => {
+    const area = await refinementArea();
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      openQuestions: undefined,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const agent = scriptedRuntime([
+      {
+        verdict: 'approve',
+        assessment: 'Approved while still naming an obstacle.',
+        obstacle: 'The idea may slow everyday work without saying how it stays fast.',
+        concerns: [],
+        suggestions: [],
+      },
+    ]);
+    const challenger = createChallenger({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(challenger()).rejects.toThrow(/stating a remaining obstacle/u);
     await expect(area.exists('artifacts/submissions/1/cycles/1/challenger.json')).resolves.toBe(
       false,
     );

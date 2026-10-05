@@ -9,7 +9,7 @@ import type { ArtifactDeclaration } from '../artifacts.js';
  */
 
 /** One cited source: its title, link and, for external sources, the date it was accessed. */
-export const researchSourceSchema = z.object({
+export const researchSourceSchema = z.strictObject({
   title: z.string().trim().min(1).describe('The source\u2019s title.'),
   link: z.string().trim().min(1).describe('The source\u2019s link or document location.'),
   accessed: z
@@ -21,7 +21,7 @@ export const researchSourceSchema = z.object({
 });
 
 /** The provider response: the short contribution with the knowledge and options behind it. */
-export const researchResponseSchema = z.object({
+export const researchResponseSchema = z.strictObject({
   contribution: z
     .string()
     .trim()

@@ -10,7 +10,7 @@ import type { ArtifactDeclaration } from '../artifacts.js';
  */
 
 /** The provider response: the short contribution with the project evidence behind it. */
-export const projectGuideResponseSchema = z.object({
+export const projectGuideResponseSchema = z.strictObject({
   contribution: z.string().trim().min(1).describe('The short contribution the editor reads.'),
   /** How the idea could fit the project's purpose and direction. */
   fit: z

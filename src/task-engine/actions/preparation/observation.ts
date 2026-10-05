@@ -16,7 +16,7 @@ import { renderedImageProblem } from './rendered-image.js';
  */
 
 /** One saved prototype observation record, as both prototype roles declare it. */
-export const prototypeObservationSchema = z.object({
+export const prototypeObservationSchema = z.strictObject({
   /** Which prototype role performed the observation; it must match the declaring report. */
   role: z
     .enum(['author', 'evaluator'])
@@ -28,7 +28,7 @@ export const prototypeObservationSchema = z.object({
     .describe('The inspected prototype content bound to the revision it was observed at.'),
   /** The preview the role actually used: the exact start command and the URL it reached. */
   preview: z
-    .object({
+    .strictObject({
       command: z.string().trim().min(1).describe('The exact preview start command used.'),
       url: z.string().trim().min(1).describe('The URL the preview reached.'),
     })
@@ -36,7 +36,7 @@ export const prototypeObservationSchema = z.object({
   /** One exercised journey or state with its actions, result and rendered-image evidence. */
   journeys: z
     .array(
-      z.object({
+      z.strictObject({
         example: z.string().trim().min(1).describe('The acceptance example or journey exercised.'),
         state: z.string().trim().min(1).describe('The state the prototype was in.'),
         actions: z
@@ -46,7 +46,7 @@ export const prototypeObservationSchema = z.object({
         observed: z.string().trim().min(1).describe('What the prototype did in response.'),
         screenshots: z
           .array(
-            z.object({
+            z.strictObject({
               path: z
                 .string()
                 .trim()

@@ -19,7 +19,7 @@ import { describeIssues, parseDocument, readDocumentText } from '../documents.js
 const openQuestionsSchema = z.array(z.string().trim().min(1));
 
 /** The refined idea's substance: the parts the Challenger decides on and publication presents. */
-export const refinedIdeaContentSchema = z.object({
+export const refinedIdeaContentSchema = z.strictObject({
   /**
    * The author's idea as a concise statement of the proposed change, why it matters and the
    * principle behind it, without committing to implementation.
@@ -90,7 +90,7 @@ export const refinedIdeaArtifact = {
  * The framing response: the author's proposal framed for the conversation, the few questions that
  * could develop it, and the essential author decision that stops the workflow when one is missing.
  */
-export const framingResponseSchema = z.object({
+export const framingResponseSchema = z.strictObject({
   framing: z
     .string()
     .trim()
@@ -100,7 +100,7 @@ export const framingResponseSchema = z.object({
     .array(z.string().trim().min(1))
     .describe('The questions this refinement conversation should develop.'),
   authorDecision: z
-    .object({
+    .strictObject({
       question: z
         .string()
         .trim()
@@ -133,7 +133,7 @@ export const editorDispositions = [
 export type EditorDisposition = (typeof editorDispositions)[number];
 
 /** The focused questions the editor asks of each contributor, or null when it asks none. */
-export const editorHelpSchema = z.object({
+export const editorHelpSchema = z.strictObject({
   researcher: z
     .string()
     .trim()
@@ -155,7 +155,7 @@ export type EditorHelp = z.infer<typeof editorHelpSchema>;
  * author-facing reason a return needs and the focused help it requests. A revised refined idea is
  * written to its own immutable revision artifact, never duplicated here.
  */
-export const editorTurnSchema = z.object({
+export const editorTurnSchema = z.strictObject({
   disposition: z
     .enum(editorDispositions)
     .describe('What the editor did with the Challenger\u2019s concern or this edit task.'),

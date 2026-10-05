@@ -16,7 +16,7 @@ const findingLocationFields = {
 };
 
 /** One location in a saved Finding: a location without a line leaves the field out. */
-const findingLocationSchema = z.object({
+const findingLocationSchema = z.strictObject({
   ...findingLocationFields,
   line: findingLocationFields.line.optional(),
 });
@@ -26,7 +26,7 @@ const findingLocationSchema = z.object({
  * every property, so a location without a line reports null; the action turns that null back into
  * an absent line before saving the Finding.
  */
-const reportedLocationSchema = z.object({
+const reportedLocationSchema = z.strictObject({
   ...findingLocationFields,
   line: findingLocationFields.line
     .nullable()
@@ -34,7 +34,7 @@ const reportedLocationSchema = z.object({
 });
 
 /** One defect finding, identified by a task-stable ID. */
-export const findingSchema = z.object({
+export const findingSchema = z.strictObject({
   id: z.string().describe('The task-stable finding ID; reuse it for the same defect.'),
   title: z.string().describe('A short title for the defect.'),
   severity: z
@@ -54,7 +54,7 @@ export const findingSchema = z.object({
 export type Finding = z.infer<typeof findingSchema>;
 
 /** The reviewer's disposition of one finding supplied from an earlier round. */
-export const findingDispositionSchema = z.object({
+export const findingDispositionSchema = z.strictObject({
   findingId: z.string().describe('The eligible prior finding ID this disposition answers.'),
   disposition: z
     .enum(['resolved', 'open', 'withdrawn'])
@@ -119,15 +119,14 @@ export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
  * accepts. The action binds them to the configured profile and the observed reviewed head before
  * writing its output.
  */
-export const reviewResponseSchema = reviewOutputSchema
-  .pick({ verdict: true, summary: true, priorFindings: true })
-  .extend({
-    findings: z
-      .array(reportedFindingSchema)
-      .describe(
-        'Every finding still present in the reviewed revision, including retained open findings.',
-      ),
-  });
+export const reviewResponseSchema = z.strictObject({
+  ...reviewOutputSchema.pick({ verdict: true, summary: true, priorFindings: true }).shape,
+  findings: z
+    .array(reportedFindingSchema)
+    .describe(
+      'Every finding still present in the reviewed revision, including retained open findings.',
+    ),
+});
 
 export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
 

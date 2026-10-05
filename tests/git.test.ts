@@ -70,6 +70,16 @@ const git = createGitAdapter((args, directory, onOutput) =>
 
 const temporaryDirectories: string[] = [];
 
+/** One bounded implementation task, the plan an Architecture report always carries. */
+const architecturePlan = [
+  {
+    summary: 'Implement the accepted architecture',
+    scope: 'Carry the accepted design into the implementation tickets.',
+    completionCriteria: ['The accepted design is implemented and verified.'],
+    prerequisites: [],
+  },
+];
+
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-git-'));
   temporaryDirectories.push(directory);
@@ -888,7 +898,7 @@ describe('Git adapter', () => {
         summary: 'The architecture revision.',
         documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
         sourcePaths: [],
-        plan: [],
+        plan: architecturePlan,
         skip: null,
         question: null,
         upstream: null,
@@ -1277,7 +1287,7 @@ describe('Git adapter', () => {
       { from: 'Storybook Refinement', to: 'Architecture' },
     ];
     /** One authored stage report declaring the supplied documents. */
-    const authored = (documents: readonly string[]) => ({
+    const authored = (documents: readonly string[], plan: readonly unknown[] = []) => ({
       outcome: 'authored',
       summary: 'The stage revision.',
       documents: documents.map((document) => ({
@@ -1285,7 +1295,7 @@ describe('Git adapter', () => {
         description: 'the changed document',
       })),
       sourcePaths: [],
-      plan: [],
+      plan,
       skip: null,
       question: null,
       upstream: null,
@@ -1445,7 +1455,7 @@ describe('Git adapter', () => {
       root,
       stage: 'architecture',
       round: 1,
-      author: authored(['docs/architecture.md']),
+      author: authored(['docs/architecture.md'], architecturePlan),
     });
     const handedOff = await publishStage({
       selectionFile,
@@ -1744,6 +1754,61 @@ describe('Git adapter', () => {
     },
   );
 
+  it('reuses the document a section citation names through a consecutive skip', async () => {
+    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+    await createPrepareStage({
+      selectionFile,
+      repository: { source: origin, mainBranch: 'main' },
+      git,
+      publish: () => undefined,
+    })({ stage: 'requirements' });
+    const skip = (references: string[]) => ({
+      outcome: 'skip-proposed',
+      summary: 'Existing requirements suffice.',
+      documents: [],
+      sourcePaths: [],
+      plan: [],
+      skip: { reason: 'Existing requirements suffice.', references },
+      question: null,
+      upstream: null,
+      observation: null,
+      findingResponses: [],
+    });
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 1,
+      verdict: 'accepted-skip',
+      invokeAuthor: true,
+      author: skip(['readme.md']),
+    });
+    // The citation names a section of readme.md; reuse must select the whole document it resolves
+    // to instead of comparing the annotated string with the retained path.
+    const second = await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 2,
+      verdict: 'accepted-skip',
+      author: skip(['readme.md#purpose']),
+    });
+    expect(second.existingDocuments).toEqual([
+      { path: path.join(worktree, 'readme.md'), revision: await headOf(worktree) },
+    ]);
+    expect(second.documents).toEqual([]);
+    expect(
+      stageEvaluationArtifact.schema.parse(
+        JSON.parse(
+          await readFile(
+            path.join(root, 'requirements', 'artifacts', '2', 'evaluation.json'),
+            'utf8',
+          ),
+        ),
+      ).basis.content,
+    ).toEqual([{ path: 'readme.md', revision: await headOf(worktree), exists: true }]);
+  });
+
   it('retains a declared deletion through evaluator replay and reuse', async () => {
     const workspace = await preparationWorkspace();
     const { origin, source, root, worktree, selectionFile } = workspace;
@@ -1931,7 +1996,7 @@ describe('Git adapter', () => {
         summary: 'Existing design suffices.',
         documents: [],
         sourcePaths: [],
-        plan: [],
+        plan: architecturePlan,
         skip: {
           reason: 'Existing design suffices.',
           references: ['readme.md', 'source requirements'],

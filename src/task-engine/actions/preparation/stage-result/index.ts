@@ -186,6 +186,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       // is not a changed authoritative document and never joins the accepted document set.
       await writeStageArtifact(root, plan.round, stagePlanArtifact, author.plan);
     }
+    if (
+      settings.stage === 'architecture' &&
+      (outcome === 'accepted' || outcome === 'skipped') &&
+      author.plan.length === 0
+    ) {
+      throw new Error(
+        'The Architecture result needs the nonempty implementation plan its handoff requires; ' +
+          'the authored report carries none.',
+      );
+    }
 
     /** The assessed revision an authored round retained, or null for a reference-only skip. */
     const assessedRevision = (): string | null => {

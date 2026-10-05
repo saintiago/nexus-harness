@@ -101,7 +101,17 @@ it('keeps nested returns and finding obligations through composed restarts and f
               summary: 'Assess the existing work against the current input.',
               documents: [],
               sourcePaths: [],
-              plan: [],
+              plan:
+                stage === 'architecture'
+                  ? [
+                      {
+                        summary: 'Implement the existing adequate design',
+                        scope: 'Carry the existing design into implementation.',
+                        completionCriteria: ['The existing design is implemented.'],
+                        prerequisites: [],
+                      },
+                    ]
+                  : [],
               skip: {
                 reason: 'The existing work suffices after correction.',
                 references: ['readme.md'],

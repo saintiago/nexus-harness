@@ -7,7 +7,7 @@ import type { ArtifactDeclaration } from '../artifacts.js';
  */
 
 /** One developer answer to a supplied review finding. */
-export const findingResponseSchema = z.object({
+export const findingResponseSchema = z.strictObject({
   findingId: z.string().describe('The supplied finding ID this answer addresses.'),
   status: z
     .enum(['addressed', 'disputed', 'unresolved'])
@@ -53,10 +53,8 @@ export const devArtifact = {
  * The agent's response fields. The action binds them to the observed task, profile and revisions
  * before writing its output.
  */
-export const developmentResponseSchema = developmentOutputSchema.pick({
-  status: true,
-  summary: true,
-  findingResponses: true,
-});
+export const developmentResponseSchema = z.strictObject(
+  developmentOutputSchema.pick({ status: true, summary: true, findingResponses: true }).shape,
+);
 
 export type DevelopmentResponse = z.infer<typeof developmentResponseSchema>;

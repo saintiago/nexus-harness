@@ -14,6 +14,7 @@ import { ok } from '../src/result.js';
 import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { requireEvaluationContent } from '../src/task-engine/actions/preparation/evaluation-content.js';
 import { scriptedGit, repositoryState } from './support/git.js';
 
 const temporaryDirectories: string[] = [];
@@ -193,6 +194,104 @@ function authorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
   };
 }
 
+/** One scripted evaluator invocation that returns the supplied response and records its context. */
+function evaluatorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
+  return {
+    async run(request) {
+      contexts.push(request.context);
+      return ok({ output: JSON.stringify(response) });
+    },
+  };
+}
+
+/** The prototype documents the captured HARN-96 skip relied on, inside its shared checkout. */
+const prototypeDocuments = [
+  'docs/agent-runtime/report-requirements.md',
+  'docs/ux-ui.md',
+  'package.json',
+  'tests/fixtures/storybook/package.json',
+  'docs/tech-stack.md',
+  'docs/operator-interface.md',
+];
+
+/**
+ * The captured HARN-96 prototype round 1 report, whose skip.references carried paths with
+ * revision and explanatory prose. StageEvaluator resolved the whole string as a filename and
+ * failed ENAMETOOLONG before the evaluator was invoked.
+ */
+const capturedPrototypeSkip = {
+  outcome: 'skip-proposed',
+  summary: 'Storybook Refinement is not applicable to HARN-96.',
+  documents: [],
+  sourcePaths: [],
+  observation: null,
+  plan: [],
+  skip: {
+    reason:
+      'The captured HARN-96 input is an internal change; docs/ux-ui.md limits Nexus UX work to ' +
+      'explicit reporting-terminal changes, and the checkout has no product preview surface.',
+    references: [
+      'docs/agent-runtime/report-requirements.md at revision 9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 scope: no reporting-terminal interaction.',
+      'docs/ux-ui.md at revision 9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 preparation applicability: internal changes do not by themselves require a UI prototype; do not invent terminal interactions.',
+      'Connected checkout at revision 9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a: root package.json declares no Storybook dependency or preview command.',
+    ],
+  },
+  question: null,
+  upstream: null,
+  findingResponses: [],
+};
+
+/** The retained repaired report: the same skip citing the actual documents. */
+const repairedPrototypeSkip = {
+  ...capturedPrototypeSkip,
+  skip: {
+    reason: capturedPrototypeSkip.skip.reason,
+    references: prototypeDocuments,
+  },
+};
+
+/** One prototype stage area whose checkout holds the documents the captured skip cites. */
+async function prototypeStageArea(): Promise<{
+  readonly selectionFile: string;
+  readonly root: string;
+  readonly worktree: string;
+}> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-report-contracts-'));
+  temporaryDirectories.push(directory);
+  const issueRoot = path.join(directory, 'HARN-96');
+  const root = path.join(issueRoot, 'prototype');
+  const worktree = path.join(issueRoot, 'worktree');
+  for (const document of prototypeDocuments) {
+    const file = path.join(worktree, document);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `# ${document}\n\nEvidence ${document}.\n`);
+  }
+  const selectionFile = path.join(directory, 'selection.json');
+  await writeFile(
+    selectionFile,
+    JSON.stringify({
+      taskKey: 'HARN-96',
+      source: { kind: 'jira', issueId: '10995' },
+      task: { id: '10995', key: 'HARN-96', fields: {} },
+      conversation: [],
+      workspace: { root: issueRoot },
+      stage: 'prototype',
+    }),
+  );
+  await mkdir(path.join(root, 'state'), { recursive: true });
+  await mkdir(path.join(root, 'artifacts', '1'), { recursive: true });
+  await writeFile(
+    path.join(root, 'state', 'current-round.json'),
+    JSON.stringify({
+      stage: 'prototype',
+      round: 1,
+      route: 'new',
+      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+    }),
+  );
+  return { selectionFile, root, worktree };
+}
+
 it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation', async () => {
   const { selectionFile, root, worktree } = await stageArea();
   const { git } = scriptedGit([repositoryState()], {
@@ -267,6 +366,60 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   expect(worktree).toContain('worktree');
 });
 
+it('rejects a skip proposal that carries fields its outcome does not own', async () => {
+  const { selectionFile, root } = await stageArea();
+  const { git } = scriptedGit([repositoryState()]);
+  const common = { selectionFile, stage, git, publish: () => undefined };
+  const cases: readonly { readonly report: unknown; readonly problem: string }[] = [
+    {
+      report: {
+        ...conformingSkipResponse,
+        documents: [{ path: 'docs/requirements.md', description: 'Reading citation.' }],
+      },
+      problem: 'only authored work may declare changed documents',
+    },
+    {
+      report: {
+        ...conformingSkipResponse,
+        plan: [
+          {
+            summary: 'Implement the design',
+            scope: 'Carry the design into implementation.',
+            completionCriteria: ['The design is implemented.'],
+            prerequisites: [],
+          },
+        ],
+      },
+      problem:
+        'only an authored or skip-proposed Architecture report supplies an implementation plan',
+    },
+    {
+      report: { ...conformingSkipResponse, question: 'Which requirement governs?' },
+      problem: 'only a needs-input outcome carries the author question',
+    },
+    {
+      report: {
+        ...conformingSkipResponse,
+        upstream: {
+          stage: 'idea',
+          problem: 'The idea is too broad.',
+          consequence: 'Requirements cannot be bounded.',
+          correction: 'Restate the idea with one outcome.',
+        },
+      },
+      problem: 'only a return-upstream outcome carries the upstream request',
+    },
+  ];
+  for (const { report, problem } of cases) {
+    const author = createStageAuthor({ ...common, runner: authorRunner(report, []) });
+    await expect(author({ task: 'propose' })).rejects.toThrow(problem);
+  }
+  // No contradictory report was silently rewritten into a saved skip.
+  await expect(readFile(path.join(root, 'artifacts', '3', 'author.json'), 'utf8')).rejects.toThrow(
+    /ENOENT/,
+  );
+});
+
 it('diagnoses a malformed retained author record without normalizing or overwriting it', async () => {
   const { selectionFile, root } = await stageArea();
   // The captured KAN-76 round-1 failure: an agent response written directly into the
@@ -303,4 +456,130 @@ it('diagnoses a malformed retained author record without normalizing or overwrit
   expect(error?.message).toContain('revision');
   // The rejected bytes stay readable evidence; the action did not normalize or replace them.
   expect(JSON.parse(await readFile(record, 'utf8'))).toEqual(malformed);
+});
+
+it('rejects the captured prototype prose citations while repaired references bind their content', async () => {
+  const { selectionFile, root, worktree } = await prototypeStageArea();
+  const revision = '1'.repeat(40);
+  const { git } = scriptedGit([repositoryState({ headRevision: revision })], {
+    readFileAtRevision: async (_repository, _revision, file) =>
+      ok(await readFile(path.join(worktree, file), 'utf8')),
+  });
+  const common = { selectionFile, stage: 'prototype', git, publish: () => undefined } as const;
+
+  // The captured report asked the platform to resolve prose as a filesystem path. It is rejected
+  // at the producer boundary with the violated rule instead of failing the evaluator's read.
+  const rejected = createStageAuthor({
+    ...common,
+    runner: authorRunner(capturedPrototypeSkip, []),
+  });
+  await expect(rejected({ task: 'propose' })).rejects.toThrow(
+    'The prototype author report is unusable: the skip reference is unusable: ' +
+      'the reference "docs/agent-runtime/report-requirements.md at revision ' +
+      '9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 scope: no reporting-terminal ' +
+      'interaction." does not name a readable file',
+  );
+  await expect(readFile(path.join(root, 'artifacts', '1', 'author.json'), 'utf8')).rejects.toThrow(
+    /ENOENT/,
+  );
+
+  // The captured report as it was retained for evaluation is rejected by the same rule before the
+  // evaluator is invoked, instead of failing to resolve the prose as a filesystem path.
+  await writeFile(
+    path.join(root, 'artifacts', '1', 'author.json'),
+    JSON.stringify({ ...capturedPrototypeSkip, stage: 'prototype', revision: 1 }),
+  );
+  const binding = createStageEvaluator({
+    ...common,
+    runner: evaluatorRunner({}, []),
+  });
+  await expect(binding()).rejects.toThrow(
+    'The prototype skip cannot bind its references: the reference ' +
+      '"docs/agent-runtime/report-requirements.md at revision ' +
+      '9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 scope: no reporting-terminal ' +
+      'interaction." does not name a readable file',
+  );
+  await rm(path.join(root, 'artifacts', '1', 'author.json'));
+
+  // The retained repaired report cites the actual documents and reaches evaluation, which binds
+  // every cited document at the checkout revision.
+  const author = createStageAuthor({
+    ...common,
+    runner: authorRunner(repairedPrototypeSkip, []),
+  });
+  await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+  const evaluator = createStageEvaluator({
+    ...common,
+    runner: evaluatorRunner(
+      {
+        assessedRevision: 1,
+        verdict: 'accepted-skip',
+        reason: 'The existing documents establish prototype inapplicability.',
+        observation: null,
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      },
+      [],
+    ),
+  });
+  await expect(evaluator()).resolves.toBe('accepted-skip');
+  const evaluation = JSON.parse(
+    await readFile(path.join(root, 'artifacts', '1', 'evaluation.json'), 'utf8'),
+  ) as { readonly basis: { readonly content: readonly { path: string }[] } };
+  expect(evaluation.basis.content.map((entry) => entry.path).sort()).toEqual(
+    [...prototypeDocuments].sort(),
+  );
+});
+
+it('binds a section citation to its document so a later change needs a current decision', async () => {
+  const { selectionFile, root, worktree } = await stageArea();
+  // The assessed revision's bytes stay readable after the checkout changes.
+  const savedRequirements = await readFile(path.join(worktree, 'docs', 'requirements.md'), 'utf8');
+  const { git } = scriptedGit([repositoryState()], {
+    readFileAtRevision: async (_repository, _revision, file) =>
+      file === 'docs/requirements.md'
+        ? ok(savedRequirements)
+        : ok(await readFile(path.join(worktree, file), 'utf8')),
+  });
+  const common = { selectionFile, stage, git, publish: () => undefined } as const;
+  const author = createStageAuthor({
+    ...common,
+    runner: authorRunner(
+      {
+        ...conformingSkipResponse,
+        skip: {
+          reason: conformingSkipResponse.skip.reason,
+          references: ['docs/requirements.md#activities-and-rules'],
+        },
+      },
+      [],
+    ),
+  });
+  await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+  const evaluator = createStageEvaluator({
+    ...common,
+    runner: evaluatorRunner(
+      {
+        assessedRevision: 3,
+        verdict: 'accepted-skip',
+        reason: 'The cited section satisfies the stage.',
+        observation: null,
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      },
+      [],
+    ),
+  });
+  await expect(evaluator()).resolves.toBe('accepted-skip');
+  const evaluation = JSON.parse(
+    await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
+  ) as { readonly basis: { readonly content: readonly { path: string }[] } };
+  expect(evaluation.basis.content.map((entry) => entry.path)).toContain('docs/requirements.md');
+
+  await writeFile(path.join(worktree, 'docs', 'requirements.md'), '# Requirements\n\nChanged.\n');
+  await expect(
+    requireEvaluationContent({ git, worktree, content: evaluation.basis.content as never }),
+  ).rejects.toThrow('Evaluated content changed');
 });

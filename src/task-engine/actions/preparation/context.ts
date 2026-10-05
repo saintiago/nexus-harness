@@ -60,10 +60,12 @@ export const preparationSharedInstructions = [
   'Return the response object; do not write or overwrite action-owned author.json, evaluation.json,',
   'result.json, plan.json or state records. The action adds saved-record metadata. Authors declare',
   'changed authoritative documents in documents; sourcePaths declares additional stage-owned',
-  'authored files, never files merely read. Every non-authored outcome has empty sourcePaths.',
-  'Supporting existing inputs belong in skip.references. Only Architecture supplies an',
-  'implementation plan. Observation requirements and allowed outcomes follow the supplied stage',
-  'response rules.',
+  'authored files, never files merely read. Every non-authored outcome has empty documents and',
+  'sourcePaths. Supporting existing inputs belong in skip.references, and each reference cites a',
+  'readable file in the shared checkout (a path, or a path#section citation) or an existing',
+  'retained file; explanations belong in the skip reason. Only Architecture supplies an',
+  'implementation plan, nonempty whenever it authors work or proposes a skip. Observation',
+  'requirements and allowed outcomes follow the supplied stage response rules.',
 ].join('\n');
 
 /** The stage's own area root inside the shared issue workspace. */

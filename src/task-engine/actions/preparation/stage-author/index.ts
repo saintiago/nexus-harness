@@ -22,7 +22,12 @@ import {
   type StageAuthorResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
-import { checkoutRelative } from '../evaluation-content.js';
+import {
+  checkoutRelative,
+  resolveSkipReference,
+  skipReferenceProblem,
+  type RetainedPrototypeReference,
+} from '../evaluation-content.js';
 import {
   evidenceFilePath,
   observationScopeProblem,
@@ -39,6 +44,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  retainedStagePrototype,
   roundArtifactDirectory,
   stageRoot,
   stageRounds,
@@ -181,6 +187,22 @@ async function retainedStageDeletions(
   return deleted;
 }
 
+/** Why the author's implementation plan does not match its stage and outcome, or null. */
+function planProblem(report: StageAuthorResponse, stage: PreparationStage): string | null {
+  const suppliesPlan =
+    stage === 'architecture' &&
+    (report.outcome === 'authored' || report.outcome === 'skip-proposed');
+  if (suppliesPlan) {
+    return report.plan.length === 0
+      ? 'an authored or skip-proposed Architecture report supplies the nonempty implementation ' +
+          'plan the handoff requires, even when an existing adequate design permits the skip'
+      : null;
+  }
+  return report.plan.length > 0
+    ? 'only an authored or skip-proposed Architecture report supplies an implementation plan'
+    : null;
+}
+
 /** Why the author's report is not a usable proposal, or null. */
 async function reportProblem(
   report: StageAuthorResponse,
@@ -192,11 +214,17 @@ async function reportProblem(
     /** The revision the checkout reported before this invocation; deletions it tracked. */
     readonly preEditHead: string | null;
     readonly retainedDeletions: ReadonlySet<string>;
+    /** The retained prototype this stage owns, when a prototype reuse skip cites it. */
+    readonly retainedPrototype: RetainedPrototypeReference | null;
   },
   task: 'propose' | 'respond',
 ): Promise<string | null> {
   if (task === 'respond' && report.outcome === 'skip-proposed') {
     return 'a revision round cannot propose a skip; the evaluator asked for changes';
+  }
+  const plan = planProblem(report, settings.stage);
+  if (plan !== null) {
+    return plan;
   }
   const deletions = settings.retainedDeletions;
   if (settings.stage !== 'prototype') {
@@ -244,6 +272,15 @@ async function reportProblem(
     }
   }
   if (report.outcome === 'authored') {
+    if (report.skip !== null) {
+      return 'only a skip-proposed outcome carries a skip proposal';
+    }
+    if (report.question !== null) {
+      return 'only a needs-input outcome carries the author question';
+    }
+    if (report.upstream !== null) {
+      return 'only a return-upstream outcome carries the upstream request';
+    }
     if (report.documents.length === 0 && report.sourcePaths.length === 0) {
       return 'authored work must name at least one document or stage-owned source path';
     }
@@ -261,13 +298,37 @@ async function reportProblem(
     }
     return null;
   }
+  if (report.documents.length > 0) {
+    return 'only authored work may declare changed documents';
+  }
   if (report.sourcePaths.length > 0) {
     return 'only authored work may declare stage-owned source paths';
   }
+  if (report.skip !== null && report.outcome !== 'skip-proposed') {
+    return 'only a skip-proposed outcome carries a skip proposal';
+  }
+  if (report.question !== null && report.outcome !== 'needs-input') {
+    return 'only a needs-input outcome carries the author question';
+  }
+  if (report.upstream !== null && report.outcome !== 'return-upstream') {
+    return 'only a return-upstream outcome carries the upstream request';
+  }
   if (report.outcome === 'skip-proposed') {
-    return report.skip === null || report.skip.references.length === 0
-      ? 'a proposed skip needs its reason and references to the satisfying inputs'
-      : null;
+    if (report.skip === null || report.skip.references.length === 0) {
+      return 'a proposed skip needs its reason and references to the satisfying inputs';
+    }
+    for (const reference of report.skip.references) {
+      const resolution = await resolveSkipReference({
+        worktree: settings.worktree,
+        reference,
+        retainedPrototype: settings.retainedPrototype,
+      });
+      const problem = skipReferenceProblem(resolution);
+      if (problem !== null) {
+        return `the skip reference is unusable: ${problem}`;
+      }
+    }
+    return null;
   }
   if (report.outcome === 'needs-input') {
     return report.question === null || report.question.trim() === ''
@@ -354,9 +415,15 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           'additional stage-owned authored files it commits in sourcePaths; never declare files ' +
           'that were merely read. A skip-proposed, needs-input or return-upstream outcome carries ' +
           'empty documents and sourcePaths, and a proposed skip puts the existing inputs that ' +
-          'satisfy the stage in skip.references.',
-        'Only the Architecture stage supplies plan entries; every other stage and outcome returns ' +
-          'an empty plan array.',
+          'satisfy the stage in skip.references. Each reference cites a readable file in the ' +
+          'shared checkout (a path, or a path#section citation) or an existing retained file; a ' +
+          'Storybook Refinement reuse skip may instead cite the retained prototype branch, ' +
+          'revision or checkout. Explanations belong in the skip reason: an unresolvable ' +
+          'reference rejects the report.',
+        'Only the Architecture stage supplies plan entries: an authored or skip-proposed ' +
+          'Architecture report carries the nonempty implementation plan, even when an existing ' +
+          'adequate design permits the skip. Every other stage, and a needs-input or ' +
+          'return-upstream outcome, returns an empty plan array.',
         settings.stage === 'prototype'
           ? 'Accepted applicable prototype work needs your own saved browser observation; the ' +
             'observation contract above states the record and the round artifact area.'
@@ -393,6 +460,8 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           report.outcome === 'authored'
             ? await retainedStageDeletions(root, plan.round, worktree)
             : new Set(),
+        retainedPrototype:
+          settings.stage === 'prototype' ? await retainedStagePrototype(root, plan.round) : null,
       },
       task,
     );

@@ -92,9 +92,17 @@ async function authorRound(
       summary: 'The revision addresses the current findings.',
       documents: [],
       sourcePaths: [],
-      existingDocuments: [],
-      skipReferences: [],
-      plan: [],
+      plan:
+        stage === 'architecture'
+          ? [
+              {
+                summary: 'Implement the accepted design',
+                scope: 'Carry the accepted design into implementation.',
+                completionCriteria: ['The accepted design is implemented.'],
+                prerequisites: [],
+              },
+            ]
+          : [],
       skip: null,
       question: null,
       upstream: null,

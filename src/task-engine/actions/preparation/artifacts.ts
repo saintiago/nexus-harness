@@ -91,13 +91,13 @@ export const stageRoundExhaustionDeclaration = {
 } satisfies RecordDeclaration<typeof terminalReasonSchema>;
 
 /** One authoritative document the author produced or revised, relative to the stage worktree. */
-export const authoredDocumentSchema = z.object({
+export const authoredDocumentSchema = z.strictObject({
   path: z.string().trim().min(1).describe('The document path inside the shared checkout.'),
   description: z.string().trim().min(1).describe('Why this document changed.'),
 });
 
 /** One bounded implementation task the Architect planned. */
-export const plannedTaskSchema = z.object({
+export const plannedTaskSchema = z.strictObject({
   summary: z.string().trim().min(1).describe('The task in one short line.'),
   scope: z.string().trim().min(1).describe('What the task covers and what it leaves out.'),
   completionCriteria: z
@@ -112,7 +112,7 @@ export const plannedTaskSchema = z.object({
 export type PlannedTask = z.infer<typeof plannedTaskSchema>;
 
 /** One upstream return: the problematic input, its consequence and the correction needed. */
-export const upstreamRequestSchema = z.object({
+export const upstreamRequestSchema = z.strictObject({
   stage: z.enum(upstreamStages).describe('The earlier stage whose input needs correction.'),
   problem: z.string().trim().min(1).describe('The problematic input.'),
   consequence: z.string().trim().min(1).describe('What the input prevents or contradicts.'),
@@ -122,7 +122,7 @@ export const upstreamRequestSchema = z.object({
 export type UpstreamRequest = z.infer<typeof upstreamRequestSchema>;
 
 /** One applicability skip the author proposes, with the existing inputs that satisfy the stage. */
-export const skipProposalSchema = z.object({
+export const skipProposalSchema = z.strictObject({
   reason: z
     .string()
     .trim()
@@ -132,12 +132,12 @@ export const skipProposalSchema = z.object({
     .array(z.string().trim().min(1))
     .min(1)
     .describe(
-      'The existing inputs that satisfy the stage, such as document citations or retained paths. They stay inputs: a skip neither commits nor excludes them from evaluation.',
+      'The existing inputs that satisfy the stage, each citing a readable file in the shared checkout (a path, or a path#section citation) or an existing retained file; a Storybook Refinement reuse skip may instead cite the retained prototype branch, revision or checkout. Explanations belong in reason; an unresolvable reference is rejected. They stay inputs: a skip neither commits nor excludes them from evaluation.',
     ),
 });
 
 /** One reference to a saved artifact file, such as a prototype observation record or screenshot. */
-export const artifactReferenceSchema = z.object({
+export const artifactReferenceSchema = z.strictObject({
   path: z.string().trim().min(1).describe('The saved record path inside the round artifact area.'),
 });
 
@@ -145,7 +145,7 @@ export const artifactReferenceSchema = z.object({
  * The author's report: the proposal or revision plus its documents, skip proposal, question or
  * upstream request. Finding responses use the shared findings contract.
  */
-export const stageAuthorResponseSchema = z.object({
+export const stageAuthorResponseSchema = z.strictObject({
   outcome: z
     .enum(['authored', 'skip-proposed', 'needs-input', 'return-upstream'])
     .describe(
@@ -177,7 +177,7 @@ export const stageAuthorResponseSchema = z.object({
   plan: z
     .array(plannedTaskSchema)
     .describe(
-      'The Architecture author\u2019s bounded implementation tasks; empty for every other stage and outcome.',
+      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report even when an existing adequate design permits the skip; empty for every other stage and outcome.',
     ),
   skip: skipProposalSchema
     .nullable()
@@ -220,7 +220,7 @@ export const stageAuthorArtifact = {
  * upstream request, plus its disposition of every finding the response round inherited. A skip may
  * only be accepted when the author proposed one.
  */
-export const stageEvaluationResponseSchema = z.object({
+export const stageEvaluationResponseSchema = z.strictObject({
   assessedRevision: z
     .number()
     .int()
@@ -261,7 +261,7 @@ export const stageEvaluationResponseSchema = z.object({
 export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSchema>;
 
 /** One repository path the evaluator assessed or relied on: its observed revision and existence. */
-export const assessedContentSchema = z.object({
+export const assessedContentSchema = z.strictObject({
   /** The canonical checkout-relative path of the assessed repository content. */
   path: z.string().min(1).describe('The canonical checkout-relative path of the assessed content.'),
   /** The revision at which the content was observed; it must stay readable while retained. */

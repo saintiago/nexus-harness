@@ -35,6 +35,7 @@ import {
   readStageArtifact,
   readStagePlan,
   readStageTerminal,
+  retainedStagePrototype,
   reusedPreparationContent,
   roundArtifactDirectory,
   roundArtifactFile,
@@ -92,6 +93,9 @@ function reportProblem(
   }
   if (report.verdict === 'return-upstream' && report.upstream === null) {
     return 'a return-upstream verdict needs the problematic input, consequence and correction';
+  }
+  if (report.upstream !== null && report.verdict !== 'return-upstream') {
+    return 'only a return-upstream verdict carries the upstream request';
   }
   if (settings.stage !== 'prototype') {
     if (report.observation !== null) {
@@ -280,6 +284,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       author,
       reused: reused?.paths ?? [],
+      retainedPrototype: await retainedStagePrototype(root, plan.round),
     });
     const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
     const basis = {
