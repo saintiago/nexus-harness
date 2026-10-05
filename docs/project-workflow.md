@@ -102,8 +102,9 @@ finishing only missing effects. Machine context contains control values/referenc
 
 ## Evaluation and stage applicability
 
-Each preparation stage begins with its author proposing work or a skip with reasons and existing
-input references. The evaluator checks that proposal. Accepted skips are durable results and advance
+Each preparation stage begins with its author assessing the requested change and stage applicability.
+An irrelevant stage permits a skip with reasons; adequate existing documents receive normal
+evaluation without a special existing-document skip. Accepted skips are durable results and advance
 immediately, without manufacturing a document or prototype. Missing information requires clarification
 or an upstream return.
 
@@ -112,7 +113,7 @@ current revision and responses; earlier approval cannot approve changed content.
 answer or rebut mistaken findings. Evaluators explicitly resolve prior findings and distinguish
 necessary changes from optional suggestions.
 
-Each stage updates and commits its relevant authoritative documentation in one retained checkout
+Authors update and commit relevant authoritative documentation when needed in one retained checkout
 and branch, then passes that same workspace forward. Stage-owned round artifacts and evaluations
 remain attributable to their stage. Both author and evaluator run in the actual retained checkout.
 Requirements evaluates requirements, UX evaluates UX, Storybook evaluates the prototype, and
@@ -137,13 +138,62 @@ cannot bypass the limit. Exhaustion retains findings and requests attention, wit
 idea unsuitable. Waiting for Feedback retains the originating stage and specific question. Human
 clarifications govern intent when resumed.
 
+### Current-worktree evaluation requirements
+
+Affected categories are document evaluation, preparation role/report contracts, stage continuation
+and handoff. Participants are Requirements, UX/UI and Architecture authors and evaluators, the
+prototype roles when applicable, and operators continuing retained work. The journey is: inspect
+the captured ticket and current shared documents -> preserve adequate content or correct omissions
+-> evaluate within the selected stage -> resolve necessary findings -> advance through the normal
+route and implementation handoff.
+
+Activities and rules:
+
+1. Requirements, UX/UI and Architecture evaluators assess the ticket's requested changes against
+   the current authoritative documents in the shared worktree. Accept adequate content regardless
+   of who wrote it, whether this author changed it, or its commit history. Architecture's
+   implementation plan still receives evaluation.
+2. Existing sufficient documents need no mandatory document citations, special existing-document
+   skip proposal or historical approval reuse. Authors may leave adequate documents unchanged;
+   missing edits or citation lists alone cannot block evaluation or acceptance. An irrelevant stage
+   still permits a normally evaluated applicability skip. Applicable prototype evaluation inspects
+   the current preview and retains both roles' required observation evidence.
+3. Later-stage edits to a shared document do not mechanically invalidate completed document-stage
+   verdicts or force another cycle. Assess a concrete input defect through the existing findings
+   and upstream-return route. Changed human intent and explicit pending corrections still require
+   reassessment. Historical reports remain attributable evidence, not approval of current content.
+4. Remove the dependent document-citation and historical approval-reuse validation, state and
+   tests, and align authoritative documentation with the contracts actually supplied to roles.
+   Preserve normal findings and responses, stage routing, finite allowances, action-owned artifacts,
+   applicable prototype inspection and implementation review, merge and required CI gates.
+5. Continue retained work without replacing its checkout or branch, discarding its work or history,
+   clearing unresolved findings, or resetting allowances. Deliver through normal preparation,
+   implementation, review, merge and required CI. Activate a changed runtime only after active users
+   exit, under [installation activation](application.md#installation-activation).
+
+Observable acceptance examples:
+
+| Situation | Observable result |
+| --- | --- |
+| Existing requirements, UX/UI or architecture documents satisfy the ticket, and the author makes no document edits or supplies no document citations | The responsible evaluator accepts them directly; authorship, commit history and absence of an existing-document skip do not block acceptance. Architecture still supplies an evaluated implementation plan. |
+| Current documents omit a requested rule or contradict the ticket | The evaluator identifies the concrete omission or contradiction and required correction through normal findings; the corrected current documents receive evaluation. |
+| Requirements and Architecture both edit the preparation-stage document, and the later edit remains compatible with the requested outcome | The route advances without returning to Requirements merely because historical file bindings differ. No citation/approval-reuse cycle is required. |
+| A later stage discovers a genuine defect in an earlier stage's input, or the human changes the requested outcome | Normal upstream correction and reassessment occur; document evaluation does not erase finding obligations or treat old approval as current assessment. |
+| A stage is irrelevant, or a prototype is applicable | The irrelevant stage receives an evaluated applicability skip without mandatory document citations. The applicable prototype receives current preview inspection with the existing required evidence; adequate prose or historical approval cannot replace it. |
+| A retained run resumes or the change is delivered | Retained work, histories, findings and consumed allowances survive. An active runtime is not disturbed; completion still requires normal review, merge and required CI evidence. |
+
+No material product decision is unsettled. This changes no reporting-terminal interaction and adds
+no new evaluation stage, dependency engine or retry mechanism. Technical contracts, removal of the
+superseded mechanisms and compatibility of retained records belong to Architecture within these
+requirements.
+
 ## Requirements
 
 Requirements Analyst defines affected categories, journey, activities, rules and observable
 acceptance examples from source intent and existing requirements. Requirements Evaluator checks
 clarity, coverage, contradictions and unnecessary scope and seeks simpler rules and stronger
-acceptance examples. Adequate existing requirements permit a skip. Product choices requiring author
-agreement remain explicit questions; an agent does not manufacture human approval. Accepted
+acceptance examples. Adequate existing requirements receive direct acceptance. Product choices
+requiring author agreement remain explicit questions; an agent does not manufacture human approval. Accepted
 requirements and evaluation supply UX and Architecture.
 
 ## UX Proposal
@@ -181,8 +231,8 @@ project's design principles. Architecture Evaluator traces required outcomes and
 ownership, failure handling, contract completeness and opportunities to simplify. If no feasible
 clean design supports the inputs, return a concrete finding to Requirements, UX or Storybook.
 After correction, proceed forward again, reevaluating affected outputs and retaining usable work.
-Existing sufficient design permits a skip of technical-design work, while the implementation plan
-still requires evaluation.
+Existing sufficient design receives direct acceptance, while the implementation plan still requires
+evaluation.
 
 Architecture also produces an evaluated implementation plan: one or more bounded tasks, dependencies
 and completion criteria that collectively deliver the accepted outcome. There is no Planner workflow,
@@ -192,10 +242,10 @@ role or Jira status.
 
 After Architecture and its implementation plan are accepted, the parent creates and links one or
 more concise implementation tickets from that plan. Architecture owns the plan; the parent retains
-all source creation and linking operations. Tickets reference the source issue, accepted document
-revisions and any retained prototype evidence. There is no preparation-only PR publication or merge
-gate before this handoff. If existing documents suffice, keep their accepted references and evaluated
-skip evidence without manufacturing changes.
+all source creation and linking operations. Tickets reference the source issue, accepted preparation
+outcomes and any retained prototype evidence. There is no preparation-only PR publication or merge
+gate before this handoff. If existing documents suffice, retain the current evaluator decision
+without manufacturing changes or an existing-document skip.
 
 The first planned implementation ticket continues the preparation checkout and branch, preserving
 its committed documents and retained prototype work. Its PR publishes the committed preparation

@@ -153,39 +153,14 @@ must not search past an intervening invalid or unfinished round. Import the exis
 [findings contract](findings.md); authors may answer or rebut as well as edit, and evaluators explicitly
 resolve prior findings. Evaluated applicability skips remain valid when their basis remains valid.
 
-### Reassessment and finalization requirements
+### Current-worktree evaluation requirements
 
-Affected categories are document-citation assessment, retained-asset reuse, stage finalization and
-retained-work continuation. Participants are preparation authors/evaluators and operators resuming
-an interrupted stage. The journey is: changed cited content -> stage reassessment -> current
-evaluation -> finalization -> normal downstream validation and handoff.
-
-Finalization must retain the current evaluation and assessed citation revisions. Changes to the
-author report, cited content or relied-on inputs after that evaluation still require a new decision;
-an older acceptance cannot fill a missing or unreadable current binding. Genuinely stale,
-unassessed reuse remains rejected. Retaining an applicable prototype still requires its complete
-source and both roles' current observation evidence under the rules below.
-
-Observable acceptance examples:
-
-| Situation | Observable result |
-| --- | --- |
-| A non-applicable prototype previously cited a role document that a later stage changed; both roles reassess it and obtain a current accepted skip | Finalization succeeds with the newly assessed document revisions. With no retained prototype, no browser evidence is required. The old evaluation remains historical evidence. |
-| A requirements skip cites testing, CI/CD and stack documents changed by Architecture while the requirements document remains unchanged; the current evaluator accepts the reassessment | Finalization succeeds for the current citations, including section citations to the same files named by the prior skip. It does not renew downstream decisions. |
-| Cited content changes after the current evaluator assessed it, or its binding is missing or unreadable | Finalization, replay and downstream acceptance reject the stale or incomplete decision and require current evaluation. |
-| A proposal reuses a prior result or owned asset whose content changed without reassessment | The preceding acceptance cannot authorize the changed asset; stale reuse remains rejected. |
-| A skip retains an applicable prototype but its sources changed or either role's observation evidence is missing, unusable or stale | The skip cannot finalize or be reused as current acceptance. Unchanged assets with complete valid evidence remain reusable. |
-
-Regression coverage must reproduce both reassessment patterns and genuinely stale, unassessed
-reuse. Deliver through normal verification, review, merge and required post-merge checks. The
-initiating task activates the checked merged runtime only after its current users exit, following
-[installation activation](../../application.md#installation-activation), then resumes the affected
-checkpoints without replacing their checkout/branch, histories, findings or consumed allowances.
-Resumption proceeds through normal gates and does not itself establish acceptance.
-
-No material product decision is unsettled. This changes no reporting-terminal interaction and adds
-no unrelated retry machinery. Evidence representation, reuse classification and activation
-mechanisms belong to Architecture and delivery.
+The [project workflow requirements](../../project-workflow.md#current-worktree-evaluation-requirements)
+own document-stage acceptance, compatible shared-document edits, retained-work continuation and
+observable examples. Requirements, UX/UI and Architecture assess current documents against the
+ticket directly; existing adequate documents need no mandatory citations, special skip proposal or
+historical approval reuse. Applicable prototype inspection and normal findings, routing and delivery
+gates remain required.
 
 ### Citation assessment and retained-asset resolution
 
@@ -291,7 +266,7 @@ preview evidence. Tool installation belongs to the [profile setup](../../agent-r
 
 Architecture produces one or more bounded tasks with summary, scope, completion criteria and
 zero-based prerequisite indices. Its evaluator checks outcome coverage, size, duplication and a valid
-acyclic graph. Existing adequate technical design permits a skip while this plan still receives
-evaluation. Source issue creation, links and ranking stay outside stage roles. The first implementation
-continues the shared checkout; prototype references remain available to all planned tasks. Preparation
+acyclic graph. Existing adequate technical design receives direct acceptance while this plan still
+receives evaluation. Source issue creation, links and ranking stay outside stage roles. The first
+implementation continues the shared checkout; prototype references remain available to all planned tasks. Preparation
 has no documentation assembly, documentation-only PR, repository reviewer or merge/check state.

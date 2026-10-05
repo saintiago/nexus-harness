@@ -13,21 +13,27 @@ Return the response object; do not write or overwrite action-owned `author.json`
 `result.json`, `plan.json` or state records. The action adds saved-record metadata. Authors declare
 changed authoritative documents in `documents`; `sourcePaths` declares additional stage-owned
 authored files, never files merely read. Every non-authored outcome has empty `sourcePaths`.
-Supporting existing inputs belong in `skip.references`. Only Architecture supplies an implementation
-plan. Observation requirements and allowed outcomes follow the supplied stage response rules.
+Existing documents receive evaluation in the current worktree without mandatory citations or a
+special existing-document skip. Only Architecture supplies an implementation plan. Observation
+requirements and allowed outcomes follow the supplied stage response rules.
 
 Use the supplied shared repository for edits and inspection; each stage retains its own artifact
 area. Assess only the selected stage's responsibilities. Shared-memory guidance and explicit
 search/save access follow [Memory integration](../memory/integration.md#agent-use) for every author
 and evaluator when enabled; no preparation role schedules automatic memory consumption.
 
-Evaluate applicability first. Propose a skip only when the stage is irrelevant or existing inputs
-suffice, with concrete references. If inputs prevent a feasible clean result, identify the problematic
-input, correction and owning earlier stage. Ask the user only for a material decision that available
+Evaluate applicability first. Propose an applicability skip when the stage is irrelevant, with
+reasons; document citations are not mandatory. Preserve and directly evaluate adequate existing
+documents. If inputs prevent a feasible clean result, identify the problematic input, correction and
+owning earlier stage. Ask the user only for a material decision that available
 context cannot resolve. Do not turn a provider/tool failure into an upstream product requirement.
 
 Authors preserve scope and respond to all supplied findings through revision, answer or reasoned
-rebuttal. Evaluators inspect the exact current revision, resolve prior findings and seek useful
+rebuttal. Document evaluators assess the ticket's requested changes against the current shared
+worktree documents, regardless of authorship or commit history. They do not require document edits,
+citations or historical approval reuse to accept adequate content. Compatible later-stage edits to
+shared documents do not force an upstream return; a concrete input defect uses normal findings.
+Evaluators inspect current content, resolve prior findings and seek useful
 improvements as well as omissions. Explain benefits and evidence, separate necessary changes from
 optional suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer
 clicks must preserve clarity, accessibility and error prevention.
@@ -112,4 +118,4 @@ Trace acceptance outcomes through the design and assess feasibility, ownership, 
 failure handling. Seek simpler responsibilities, reuse and lower coupling. Check the implementation
 plan collectively covers the outcome without oversized or overlapping tasks. Return work upstream
 only when an input needs correction; architectural difficulties that can be cleanly solved here
-belong here. Accept adequate existing design when it supports a justified skip.
+belong here. Accept adequate existing design directly, while evaluating the implementation plan.
