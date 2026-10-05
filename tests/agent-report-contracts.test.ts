@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { parseAgentReport } from '../src/task-engine/actions/agent-reports.js';
-import { recoveryReportSchema } from '../src/application/recovery.js';
+import { recoveryResponseSchema } from '../src/application/recovery.js';
 import { experienceAnalysisResponseSchema } from '../src/task-engine/actions/analyze-experience/artifacts.js';
 import { challengerResponseSchema } from '../src/task-engine/actions/challenger/artifacts.js';
 import { developmentResponseSchema } from '../src/task-engine/actions/develop/artifacts.js';
@@ -116,7 +116,21 @@ const reportContracts: readonly ReportContract[] = [
       'invocationId',
     ],
   },
-  { label: 'Recovery', schema: recoveryReportSchema, actionAdded: [] },
+  {
+    label: 'Recovery',
+    schema: recoveryResponseSchema,
+    actionAdded: [
+      'project',
+      'workId',
+      'role',
+      'profile',
+      'request',
+      'recoveryAttempt',
+      'report',
+      'reportIdentity',
+      'invocationId',
+    ],
+  },
   {
     label: 'Experience analyst',
     schema: experienceAnalysisResponseSchema,
@@ -127,8 +141,12 @@ const reportContracts: readonly ReportContract[] = [
       'workflow',
       'attemptId',
       'terminalId',
+      'role',
       'profile',
       'analyzedAt',
+      'report',
+      'reportIdentity',
+      'invocationId',
     ],
   },
   { label: 'Prototype observation record', schema: prototypeObservationSchema, actionAdded: [] },
@@ -290,8 +308,8 @@ const reportSamples: readonly {
   },
   {
     label: 'Recovery',
-    schema: recoveryReportSchema,
-    sample: { summary: 'Resumed.', decision: { kind: 'resume' } },
+    schema: recoveryResponseSchema,
+    sample: { decision: { kind: 'resume' } },
   },
   {
     label: 'Experience analyst',

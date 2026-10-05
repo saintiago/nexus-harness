@@ -32,6 +32,7 @@ import {
   createAnalyzeExperience,
   createAnalyzeExperienceAction,
   type ExperienceAnalyst,
+  type ExperienceAnalystRequest,
 } from '../src/task-engine/actions/analyze-experience/index.js';
 import {
   outstandingReportFeedback,
@@ -74,6 +75,9 @@ async function controlledService(): Promise<ControlledMemoryService> {
 /** What one scripted analyst observes: the complete context and the retained workspace root. */
 type Skill = (context: string, workspace: string) => Result<string> | Promise<Result<string>>;
 
+/** Whether one analyst invocation writes its assigned Markdown report before returning. */
+type ReportBehavior = 'write' | 'skip';
+
 /** What one harness retains across passes. */
 type Harness = {
   readonly directory: string;
@@ -83,9 +87,13 @@ type Harness = {
   readonly handoff: ExperienceHandoff;
   readonly service: ControlledMemoryService;
   readonly contexts: string[];
+  readonly requests: readonly ExperienceAnalystRequest[];
   readonly activity: AgentEvent[];
   readonly schema: unknown;
-  process(options?: { readonly analyze?: Skill }): Promise<readonly string[]>;
+  process(options?: {
+    readonly analyze?: Skill;
+    readonly report?: ReportBehavior;
+  }): Promise<readonly string[]>;
   capture(
     handoff?: ExperienceHandoff,
   ): ReturnType<ReturnType<typeof createAnalyzeExperience>['capture']>;
@@ -95,7 +103,7 @@ type Harness = {
  * One retained terminal handoff with its durable capture: a real workspace with one retained
  * artifact, the recording owner, a controlled AMEM service and the analysis lifecycle under test.
  */
-async function harness(analyze: Skill): Promise<Harness> {
+async function harness(analyze: Skill, report: ReportBehavior = 'write'): Promise<Harness> {
   const root = await temporaryDirectory();
   const directory = path.join(root, 'executions', project, 'memory');
   const workspace = path.join(root, 'workspaces', project, workId);
@@ -115,14 +123,26 @@ async function harness(analyze: Skill): Promise<Harness> {
 
   const service = await controlledService();
   const contexts: string[] = [];
+  const requests: ExperienceAnalystRequest[] = [];
   const activity: AgentEvent[] = [];
   const observed: { schema: unknown } = { schema: null };
   let skill = analyze;
+  let reportBehavior: ReportBehavior = report;
   const analyst: ExperienceAnalyst = async (request) => {
     contexts.push(request.context);
+    requests.push(request);
     observed.schema = request.outputSchema;
     request.onActivity({ type: 'message', text: 'inspecting retained evidence' });
     activity.push({ type: 'message', text: 'inspecting retained evidence' });
+    // Every analyst invocation writes its assigned Markdown before returning; a controlled skill
+    // may omit it to exercise the report rejection and feedback path.
+    if (reportBehavior === 'write') {
+      await writeFile(
+        request.reportPath,
+        'The analyst read the retained evidence and recorded its reasoning.\n',
+        'utf8',
+      );
+    }
     const result = await skill(request.context, request.workspace.root);
     return result.ok ? ok({ output: result.value }) : fault(result.fault.message);
   };
@@ -144,12 +164,14 @@ async function harness(analyze: Skill): Promise<Harness> {
     handoff,
     service,
     contexts,
+    requests,
     activity,
     get schema() {
       return observed.schema;
     },
     process: (options) => {
       skill = options?.analyze ?? analyze;
+      reportBehavior = options?.report ?? report;
       return owner.processPending();
     },
     capture: (value) => owner.capture(value ?? handoff),
@@ -591,6 +613,31 @@ describe('experience analysis', () => {
     expect((await analysisOf(retained)).observations).toEqual([]);
   });
 
+  it('writes the assigned Markdown for an analysis that finds no lesson', async () => {
+    const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
+
+    await expect(retained.process()).resolves.toEqual([]);
+
+    const output = await analysisOf(retained);
+    expect(output).toMatchObject({ role: 'experience-analyst', workId, profile, observations: [] });
+    // Every invocation writes its report, including one that found no reusable lesson, and the
+    // saved analysis binds the exact bytes.
+    expect(output.report.path).toBe(
+      path.join(
+        evidenceRootOf(retained),
+        'reports',
+        retained.requests[0]!.invocationId!,
+        'experience-analysis.md',
+      ),
+    );
+    expect(await readFile(output.report.path, 'utf8')).toBe(
+      'The analyst read the retained evidence and recorded its reasoning.\n',
+    );
+    expect(output.reportIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    expect(output.invocationId).toBe(retained.requests[0]!.invocationId);
+    expect(experienceAnalysisOutputSchema.safeParse(output).success).toBe(true);
+  });
+
   it('reports unusable output, submits nothing and re-analyzes on the next pass', async () => {
     const retained = await harness(() =>
       ok(
@@ -901,6 +948,7 @@ describe('experience analysis', () => {
         expect((await stat(path.join(request.workspace.root, 'worktree'))).isDirectory()).toBe(
           true,
         );
+        await writeFile(request.reportPath, 'The failed handoff held no reusable lesson.', 'utf8');
         return ok({ output: JSON.stringify({ observations: [] }) });
       },
     });
@@ -990,6 +1038,11 @@ describe('experience analysis', () => {
           const retained = path.join(request.workspace.root, 'artifacts', '1', 'completion.json');
           expect(await readFile(retained, 'utf8')).toContain(mergeRevision);
           expect(request.context).toContain('only these retained files are its evidence');
+          await writeFile(
+            request.reportPath,
+            'The migration evidence still supports a lesson.',
+            'utf8',
+          );
           // Citations of original locations resolve against the retained copy.
           return ok({ output: observationAt(evidence) });
         },
@@ -1090,6 +1143,41 @@ describe('experience analysis', () => {
     expect(submission.observation.provenance).toMatchObject({
       migratedFrom: { task: workId, completionRevision: mergeRevision },
     });
+  });
+
+  it('reuses a retained handoff analysis that predates the report binding without reinvoking', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    await expect(retained.process()).resolves.toHaveLength(1);
+    const saved = await analysisOf(retained);
+    // The former handoff-shaped output states the same accepted observations without a Markdown
+    // binding; it stays readable and submittable without a new report requirement.
+    await writeFile(
+      experienceAnalysisFile(retained.directory, retained.identity),
+      `${JSON.stringify(
+        {
+          workId: saved.workId,
+          project: saved.project,
+          workflow: saved.workflow,
+          attemptId: saved.attemptId,
+          terminalId: saved.terminalId,
+          profile: saved.profile,
+          analyzedAt: saved.analyzedAt,
+          observations: saved.observations,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    const invocations = retained.requests.length;
+    const problems = await retained.process({
+      analyze: () => Promise.reject(new Error('The retained analysis must be reused.')),
+    });
+
+    expect(retained.requests).toHaveLength(invocations);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
   });
 
   it.each(['retained', 'experience', 'legacy'] as const)(
@@ -1221,5 +1309,62 @@ describe('experience analysis', () => {
         scope: { ...scope, area: evidenceRootOf(first) },
       }),
     ).resolves.toEqual([]);
+  });
+
+  it('retains a missing assigned Markdown and supplies it to the next permitted attempt', async () => {
+    const first = await harness(
+      (_context, workspace) => ok(observation(workspace)),
+      // The invocation returns valid observations but never writes its assigned Markdown.
+      'skip',
+    );
+
+    const problems = await first.process();
+    expect(problems.join('\n')).toContain('Experience analysis report');
+    expect(problems.join('\n')).toContain('does not exist');
+    const scope = {
+      project,
+      workId,
+      area: evidenceRootOf(first),
+      role: 'experience-analyst',
+      reportKind: 'experience-analysis',
+    };
+    const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope,
+      operation: 'analyze-experience',
+      profile,
+      source: null,
+      assignedReport: {
+        path: path.join(
+          evidenceRootOf(first),
+          'reports',
+          first.requests[0]!.invocationId!,
+          'experience-analysis.md',
+        ),
+      },
+      reason: expect.stringContaining('does not exist'),
+    });
+    await expect(
+      stat(path.join(first.directory, 'analyses', `${first.identity}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // The next permitted attempt receives the rejected bytes and reason, writes its Markdown and
+    // records the correction, so repairing the file alone never cleared the obligation.
+    await expect(
+      first.process({
+        analyze: (_context, workspace) => ok(observation(workspace)),
+        report: 'write',
+      }),
+    ).resolves.toHaveLength(1);
+    const context = first.contexts.at(-1) ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('Violated rule:');
+    expect(context).toContain('does not exist');
+    await expect(
+      outstandingReportFeedback({ areaRoot: evidenceRootOf(first), scope }),
+    ).resolves.toEqual([]);
+    await expect(analysisOf(first)).resolves.toMatchObject({ workId, project, attemptId });
   });
 });

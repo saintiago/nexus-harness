@@ -132,6 +132,7 @@ describe('analysis runtime', () => {
     const result = await analyze({
       context: 'Nexus terminal experience analysis\n\nWork item NEX-1 completed.',
       workspace,
+      reportPath: path.join(workspace.root, 'experience-analysis.md'),
       outputSchema: z.toJSONSchema(experienceAnalysisResponseSchema),
       onActivity: (activity) => activities.push(activity),
     });

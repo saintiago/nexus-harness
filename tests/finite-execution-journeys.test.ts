@@ -48,6 +48,7 @@ import {
 import { installationConfigSetting } from '../src/application/installation.js';
 import type {
   RecoveryInvocationRequest,
+  RecoveryResponse,
   RecoveryRuntimeFactory,
 } from '../src/application/recovery.js';
 import { loadProjectWorkflow } from '../src/application/workflow.js';
@@ -174,8 +175,8 @@ function commentText(document: unknown): string {
 /** One scripted agent turn: it inspects the invocation, acts and returns the provider result. */
 type AgentTurn = (request: CodingRuntimeRequest) => Promise<CodingRuntimeResult>;
 
-/** One scripted recovery invocation: it inspects the stop and returns the report to apply. */
-type RecoveryTurn = (request: RecoveryInvocationRequest) => Promise<RecoveryReport>;
+/** One scripted recovery invocation: it writes its Markdown report and returns the decision. */
+type RecoveryTurn = (request: RecoveryInvocationRequest) => Promise<RecoveryResponse>;
 
 /** The coding runtime the scripted turns run through; AgentRuntime still assembles every prompt. */
 function scriptedCodingRuntime(
@@ -245,15 +246,16 @@ function reviewerTurn(
 }
 
 /** Recovery is unexpected in a journey that supplies no recovery turn. */
-const unexpectedRecovery: RecoveryTurn = () =>
-  Promise.resolve({
-    summary: 'The journey expected no recovery invocation.',
-    decision: { kind: 'needs-attention' },
-  });
+const unexpectedRecovery: RecoveryTurn = async (request) => {
+  await writeAssignedReport(request.context, 'The journey expected no recovery invocation.');
+  return { decision: { kind: 'needs-attention' } };
+};
 
-/** The default analysis turn: the completed work holds no reusable lesson. */
-const noLessons = (): Promise<AgentResult> =>
-  Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+/** The default analysis turn: it writes its Markdown report and finds no reusable lesson. */
+const noLessons = async (request: ExperienceAnalystRequest): Promise<AgentResult> => {
+  await writeFile(request.reportPath, 'The handoff held no reusable lesson.', 'utf8');
+  return ok({ output: JSON.stringify({ observations: [] }) });
+};
 
 /**
  * The in-process worker launch: the real worker wiring (configuration loading, workflow loading,
@@ -944,10 +946,8 @@ describe('finite execution journeys', () => {
   it('recovers an interrupted worker and continues the retained execution', async () => {
     const journey = await finiteJourney();
     let interruptedSnapshot: Record<string, unknown> | null = null;
-    const report: RecoveryReport = {
-      summary: 'The provider ended the first attempt; the retained execution can continue.',
-      decision: { kind: 'resume' },
-    };
+    const recoveryMarkdown =
+      'The provider ended the first attempt; the retained execution can continue.';
 
     const exitCode = await journey.run(
       [
@@ -977,7 +977,8 @@ describe('finite execution journeys', () => {
         interruptedSnapshot = JSON.parse(
           await readFile(path.join(journey.executionDirectory, 'workflow.json'), 'utf8'),
         ) as Record<string, unknown>;
-        return report;
+        await writeAssignedReport(request.context, recoveryMarkdown);
+        return { decision: { kind: 'resume' } };
       },
     );
 
@@ -994,7 +995,7 @@ describe('finite execution journeys', () => {
       'finished',
     ]);
     expect(result.outcome).toBe('completed');
-    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.json$/u);
     // The recovery invocation's boundary names the retained ticket by key and Summary.
     expect(
       journey.events.find((event) => event.source === 'Recovery' && event.type === 'agent-started')
@@ -1006,10 +1007,24 @@ describe('finite execution journeys', () => {
       type: 'recovered',
       data: { decision: 'resume', report: { path: result.report!.path } },
     });
-    expect(JSON.parse(await readFile(result.report?.path ?? '', 'utf8'))).toEqual(report);
+    const savedReport = JSON.parse(
+      await readFile(result.report?.path ?? '', 'utf8'),
+    ) as RecoveryReport;
+    expect(savedReport).toMatchObject({
+      project: 'NEX',
+      workId: 'NEX-1',
+      role: 'recovery',
+      profile: 'nexus-recovery',
+      request: { projectConfigPath: journey.projectConfigPath, workflow: 'project' },
+      recoveryAttempt: 1,
+      decision: { kind: 'resume' },
+    });
+    expect(savedReport.report.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.md$/u);
+    expect(savedReport.reportIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    expect(await readFile(savedReport.report.path, 'utf8')).toBe(recoveryMarkdown);
     expect(journey.notifications).toHaveLength(1);
     expect(journey.notifications[0]?.subject).toContain('resume');
-    expect(journey.notifications[0]?.body).toContain(report.summary);
+    expect(journey.notifications[0]?.body).toContain(recoveryMarkdown);
     // The interrupted attempt keeps its direct artifacts; memory records no evidence for it.
     const logDirectories = await readdir(path.join(journey.executionDirectory, 'logs'));
     await expect(
@@ -1137,10 +1152,13 @@ describe('finite execution journeys', () => {
       preparation: [{ executable: 'bash', args: ['-c', 'echo cannot prepare >&2; exit 3'] }],
     });
 
-    const exitCode = await journey.run([], async () => ({
-      summary: 'The blocked preparation needs its own delivery attempt.',
-      decision: { kind: 'resume' },
-    }));
+    const exitCode = await journey.run([], async (request) => {
+      await writeAssignedReport(
+        request.context,
+        'The blocked preparation needs its own delivery attempt.',
+      );
+      return { decision: { kind: 'resume' } };
+    });
 
     const result = journey.finished();
     expect(exitCode, JSON.stringify(result)).toBe(1);
@@ -1198,28 +1216,31 @@ describe('finite execution journeys', () => {
     const journey = await finiteJourney({
       memory: true,
       memoryServiceUrl: service.url,
-      analysis: (request) => {
+      analysis: async (request) => {
         // The analyst runs only after the worker confirmed the merge, the checks and Done.
         statusAtAnalysis = journeyHandle?.status() ?? '';
-        return Promise.resolve(
-          ok({
-            output: JSON.stringify({
-              observations: [
-                {
-                  content: 'The completion artifact binds the merged revision to its checks.',
-                  evidence: [
-                    {
-                      path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
-                      revision: mergeRevision,
-                      detail: 'The completion evidence of the merged revision.',
-                    },
-                  ],
-                  relatedMemories: [],
-                },
-              ],
-            }),
-          }),
+        await writeFile(
+          request.reportPath,
+          'The completion artifact binds the merged revision to its checks.',
+          'utf8',
         );
+        return ok({
+          output: JSON.stringify({
+            observations: [
+              {
+                content: 'The completion artifact binds the merged revision to its checks.',
+                evidence: [
+                  {
+                    path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
+                    revision: mergeRevision,
+                    detail: 'The completion evidence of the merged revision.',
+                  },
+                ],
+                relatedMemories: [],
+              },
+            ],
+          }),
+        });
       },
     });
     journeyHandle = journey;
@@ -1285,26 +1306,30 @@ describe('finite execution journeys', () => {
     const journey = await finiteJourney({
       memory: true,
       memoryServiceUrl: 'http://127.0.0.1:1',
-      analysis: (request) =>
-        Promise.resolve(
-          ok({
-            output: JSON.stringify({
-              observations: [
-                {
-                  content: 'A lesson the unreachable service cannot accept.',
-                  evidence: [
-                    {
-                      path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
-                      revision: mergeRevision,
-                      detail: 'The completion evidence.',
-                    },
-                  ],
-                  relatedMemories: [],
-                },
-              ],
-            }),
+      analysis: async (request) => {
+        await writeFile(
+          request.reportPath,
+          'A lesson the unreachable service cannot accept.',
+          'utf8',
+        );
+        return ok({
+          output: JSON.stringify({
+            observations: [
+              {
+                content: 'A lesson the unreachable service cannot accept.',
+                evidence: [
+                  {
+                    path: path.join(request.workspace.root, 'artifacts', '1', 'completion.json'),
+                    revision: mergeRevision,
+                    detail: 'The completion evidence.',
+                  },
+                ],
+                relatedMemories: [],
+              },
+            ],
           }),
-        ),
+        });
+      },
     });
 
     const exitCode = await journey.run([

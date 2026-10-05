@@ -52,9 +52,10 @@ export const memoryUseGuidance = [
 /**
  * The constant experience-analysis instructions Application supplies with the configured analysis
  * profile. The Memory integration contract owns this policy: the analyst inspects one terminal
- * handoff's retained evidence, compares the candidate lessons with existing shared memory and
- * returns candidate observations with their evidence; it never saves through a tool, because
- * AnalyzeExperience submits the validated output itself.
+ * handoff's retained evidence, compares the candidate lessons with existing shared memory, writes
+ * its complete analytic report to the assigned Markdown path and returns candidate observations
+ * with their evidence; it never saves through a tool, because AnalyzeExperience submits the
+ * validated output itself.
  */
 export const memoryAnalysisGuidance = [
   'Terminal experience analysis guidance:',
@@ -76,7 +77,10 @@ export const memoryAnalysisGuidance = [
   '  never claim that a note was deleted or invalidated.',
   '- Preserve applicability and uncertainty: a hypothesis must not become an established fact.',
   '  Return no observation when the terminal handoff holds no reusable lesson.',
-  '- Return only the requested JSON object, without Markdown fences and without other text.',
+  '- Write the complete analysis — evidence read, interpretation, why lessons were or were not',
+  '  selected and remaining uncertainty — in the assigned Markdown report, including when no',
+  '  useful lesson is found. Return only the requested JSON object, without Markdown fences and',
+  '  without other text.',
 ].join('\n');
 
 /** One activity entry the invocation reported while it ran. */

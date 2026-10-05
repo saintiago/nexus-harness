@@ -22,13 +22,22 @@ import {
 } from '../../../memory/index.js';
 import { messageOf, type ArtifactRef } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  readAssignedReport,
+  readBoundReport,
+  responseFormatText,
+  type ReportBinding,
+} from '../agent-reports.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
-  recordReportCorrection,
   rejectReport,
   rejectUnusableRecord,
   reportFeedbackContextText,
+  retainSuppliedFeedback,
   type ReportRejection,
   type ReportScope,
   type RetainedReportFeedback,
@@ -36,7 +45,7 @@ import {
 import {
   experienceActivityFileSuffix,
   experienceAnalysisFile,
-  experienceAnalysisOutputSchema,
+  experienceAnalysisReportName,
   experienceAnalysisResponseSchema,
   experienceAttemptsFileSuffix,
   experienceCaptureFile,
@@ -50,13 +59,15 @@ import {
   experienceSubmissionFile,
   experienceSubmissionSchema,
   experienceAttemptSchema,
-  legacyCompletionOutputSchema,
+  isBoundAnalysisOutput,
   legacyCompletionRequestSchema,
+  retainedAnalysisOutputSchema,
   type ExperienceAnalysisOutput,
   type ExperienceCaptureOutcome,
   type ExperienceHandoff,
   type ExperienceRequest,
   type ExperienceSubmission,
+  type RetainedAnalysisOutput,
 } from './artifacts.js';
 
 /**
@@ -76,6 +87,8 @@ export type ExperienceAnalystRequest = {
   readonly invocationId?: string;
   /** The request's analysis work area: its evidence root, whose worktree child it runs in. */
   readonly workspace: { readonly root: string };
+  /** The assigned Markdown report the analyst writes before returning the observations. */
+  readonly reportPath: string;
   /** The JSON Schema the analyst's final response must match. */
   readonly outputSchema: Readonly<Record<string, unknown>>;
   /** Receives the invocation's activity while it runs. */
@@ -115,6 +128,19 @@ export type ExperienceCaptureResult = {
   /** The saved capture record, or null when nothing could be written. */
   readonly evidence: ArtifactRef | null;
   readonly detail: string | null;
+};
+
+/**
+ * The accepted analysis facts the action processes, independent of the stored compatibility
+ * shape: the persisted observations and their provenance, and the assigned Markdown binding of a
+ * current saved outcome. A retained analysis from before the report separation carries no binding
+ * and needs no new Markdown.
+ */
+type AcceptedAnalysis = {
+  readonly profile: string;
+  readonly analyzedAt: string;
+  readonly observations: readonly ExperienceAnalysisOutput['observations'][number][];
+  readonly binding: ReportBinding | null;
 };
 
 /** The action's public capability: durable capture plus resumable analysis and submission. */
@@ -315,20 +341,36 @@ function experienceContextText(
       '- Return no observation when the terminal handoff holds no reusable lesson. Do not save ' +
         'routine status reports or entire handoffs.',
     ].join('\n'),
-    [
-      'Response format',
-      'Return only one JSON object, without Markdown fences and without other text, matching this ' +
-        'JSON Schema:',
-      JSON.stringify(z.toJSONSchema(experienceAnalysisResponseSchema), null, 2),
-      'Every observation needs nonempty content and at least one evidence entry whose path is an ' +
-        `absolute path inside ${scope.root} (the file's recorded location under ${workspace} is ` +
-        'accepted when its retained copy exists) and whose revision names the revision it ' +
-        'establishes. Record compared notes under relatedMemories. An empty observations array is ' +
-        'a valid answer.',
-      'Return the response object only; do not write or overwrite the request’s analysis, attempt ' +
-        'or submission records. AnalyzeExperience validates and persists your observations.',
-    ].join('\n'),
     ...reportFeedbackContextText(feedback),
+  ].join('\n\n');
+}
+
+/**
+ * The invocation instructions: the assigned Markdown path and its narrative obligations, the
+ * derived observation-only response contract and the action-owned records the analyst must leave
+ * to AnalyzeExperience. The action observes the handoff identities and profile itself.
+ */
+function experienceResponseInstructions(settings: {
+  readonly assignedReport: string;
+  readonly analysisFile: string;
+  readonly scopeRoot: string;
+  readonly workspaceRoot: string;
+}): string {
+  return [
+    responseFormatText(experienceAnalysisResponseSchema),
+    'Every observation needs nonempty content and at least one evidence entry whose path is an ' +
+      `absolute path inside ${settings.scopeRoot} (the file's recorded location under ` +
+      `${settings.workspaceRoot} is accepted when its retained copy exists) and whose revision ` +
+      'names the revision it establishes. Record compared notes under relatedMemories. An empty ' +
+      'observations array is a valid answer.',
+    `Assigned Markdown report: ${settings.assignedReport}`,
+    'Write your complete analytic report to that path before returning — including every ' +
+      'invocation, even one that finds no useful lesson: the evidence you read and how you ' +
+      'interpreted it, the reasoning behind each observation or why none was selected, and the ' +
+      'remaining uncertainty. Begin with a brief account of what the analysis found. The assigned ' +
+      'Markdown path is the only report artifact you write.',
+    actionOwnedRecordsText([settings.analysisFile]) +
+      ' AnalyzeExperience validates and persists your observations.',
   ].join('\n\n');
 }
 
@@ -471,38 +513,44 @@ export function createAnalyzeExperience(
   }
 
   /**
-   * Read one persisted analysis, reusing an accepted output recorded by an earlier invocation or
-   * by the earlier completion analysis. A request with no accepted output reports null so the
-   * next pass analyzes it.
+   * Read one persisted analysis through the producer-owned reader: the current saved output with
+   * its report binding, a retained handoff-shaped output from before the binding, or the earlier
+   * completion analysis it migrated from. A request with no saved output reports null so the next
+   * pass analyzes it.
    */
-  async function readAnalysis(identity: string): Promise<ExperienceAnalysisOutput | null> {
+  async function readAnalysis(identity: string): Promise<{
+    readonly analysis: AcceptedAnalysis;
+    readonly record: RetainedAnalysisOutput;
+  } | null> {
     const file = analysisFile(identity);
     const text = await readDocumentText(file, 'Analysis output');
     if (text === null) {
       return null;
     }
-    const parsed = parseDocument(text, experienceAnalysisOutputSchema);
-    if (parsed.kind === 'content') {
-      return parsed.content;
+    const parsed = parseDocument(text, retainedAnalysisOutputSchema);
+    if (parsed.kind !== 'content') {
+      const detail =
+        parsed.kind === 'invalid-json'
+          ? `is not valid JSON: ${messageOf(parsed.error)}`
+          : `does not match its declared content type: ${describeIssues(parsed.error, '<analysis>')}`;
+      throw new Error(`The analysis output at "${file}" ${detail}.`);
     }
-    const migrated = parseDocument(text, legacyCompletionOutputSchema);
-    if (migrated.kind === 'content') {
-      return {
-        workId: migrated.content.taskKey,
-        project: migrated.content.project,
-        workflow: 'finite-delivery',
-        attemptId: `completion-${migrated.content.completionRevision}`,
-        terminalId: 'complete-completed',
-        profile: migrated.content.profile,
-        analyzedAt: migrated.content.analyzedAt,
-        observations: migrated.content.observations,
-      };
-    }
-    const detail =
-      parsed.kind === 'invalid-json'
-        ? `is not valid JSON: ${messageOf(parsed.error)}`
-        : `does not match its declared content type: ${describeIssues(parsed.error, '<analysis>')}`;
-    throw new Error(`The analysis output at "${file}" ${detail}.`);
+    const record = parsed.content;
+    return {
+      record,
+      analysis: {
+        profile: record.profile,
+        analyzedAt: record.analyzedAt,
+        observations: record.observations,
+        binding: isBoundAnalysisOutput(record)
+          ? {
+              report: record.report,
+              reportIdentity: record.reportIdentity,
+              invocationId: record.invocationId,
+            }
+          : null,
+      },
+    };
   }
 
   /** The report responsibility one request's analyst report belongs to. */
@@ -517,32 +565,89 @@ export function createAnalyzeExperience(
   }
 
   /**
-   * Read one request's accepted analysis. An unusable saved analysis is preserved as rejection
-   * evidence under the analyst's report responsibility before the read fails, so repairing or
-   * replacing the file cannot drop the correction obligation; the existing failure policy is
-   * unchanged.
+   * The state one request's saved output leaves it in: an accepted analysis to reuse, no output
+   * yet (an invocation is due), or an unusable saved record whose rejection evidence was just
+   * retained under the analyst's report responsibility. The last state makes no invocation in the
+   * same pass: the next permitted attempt answers that feedback, so repairing or replacing the
+   * file cannot drop the correction obligation. A current bound analysis is accepted only while
+   * its assigned Markdown is readable with the recorded identity; a retained former analysis
+   * needs no new Markdown.
    */
-  async function readAcceptedAnalysis(
+  type SavedAnalysis =
+    | { readonly kind: 'accepted'; readonly analysis: AcceptedAnalysis }
+    | { readonly kind: 'invoke' }
+    | { readonly kind: 'outstanding' };
+
+  async function savedAnalysis(
     request: ExperienceRequest,
-  ): Promise<ExperienceAnalysisOutput | null> {
+    problems: string[],
+  ): Promise<SavedAnalysis> {
+    // Old requests may fail this read before their evidence is copied. Use the same durable
+    // request area that retention will create, so upgrading cannot strand the feedback.
+    const scope = {
+      root: request.evidenceRoot ?? experienceEvidenceRoot(settings.directory, request.identity),
+    };
+    let read: Awaited<ReturnType<typeof readAnalysis>>;
     try {
-      return await readAnalysis(request.identity);
+      read = await readAnalysis(request.identity);
     } catch (error) {
-      // Old requests may fail this read before their evidence is copied. Use the same durable
-      // request area that retention will create, so upgrading cannot strand the feedback.
-      const scope = {
-        root: request.evidenceRoot ?? experienceEvidenceRoot(settings.directory, request.identity),
-      };
-      return await rejectUnusableRecord({
-        areaRoot: scope.root,
-        scope: reportScopeOf(request, scope),
+      problems.push(await retainUnusableAnalysis({ request, scope, error, assignedReport: null }));
+      return { kind: 'outstanding' };
+    }
+    if (read === null) {
+      return { kind: 'invoke' };
+    }
+    const binding = read.analysis.binding;
+    if (binding === null) {
+      return { kind: 'accepted', analysis: read.analysis };
+    }
+    try {
+      await readBoundReport(binding, 'Experience analysis report');
+    } catch (error) {
+      problems.push(
+        await retainUnusableAnalysis({ request, scope, error, assignedReport: binding.report }),
+      );
+      return { kind: 'outstanding' };
+    }
+    // The owner validated and saved the usable replacement; recording its complete identity
+    // retires exactly the rejections its invocation was supplied, preserving their history. An
+    // interrupted correction write also finishes here, on the replay path, without reinvoking.
+    await finishSuppliedCorrection({
+      areaRoot: scope.root,
+      scope: reportScopeOf(request, scope),
+      invocationId: binding.invocationId,
+      artifact: { path: analysisFile(request.identity) },
+      content: read.record,
+    });
+    return { kind: 'accepted', analysis: read.analysis };
+  }
+
+  /**
+   * Preserve one unusable saved analysis as rejection evidence and report the reason, without
+   * raising an execution error: the request remains outstanding work for its next invocation.
+   */
+  async function retainUnusableAnalysis(settings: {
+    readonly request: ExperienceRequest;
+    readonly scope: EvidenceScope;
+    readonly error: unknown;
+    readonly assignedReport: ArtifactRef | null;
+  }): Promise<string> {
+    try {
+      await rejectUnusableRecord({
+        areaRoot: settings.scope.root,
+        scope: reportScopeOf(settings.request, settings.scope),
         invocationId: null,
         operation: 'analyze-experience',
         profile,
-        context: `Reading the retained analysis of ${handoffLabel(request.handoff)}.`,
-        file: analysisFile(request.identity),
-        error,
+        context: `Reading the retained analysis of ${handoffLabel(settings.request.handoff)}.`,
+        file: analysisFile(settings.request.identity),
+        assignedReport: settings.assignedReport,
+        error: settings.error,
       });
+      // rejectUnusableRecord always raises; the fallback keeps the signature honest.
+      return messageOf(settings.error);
+    } catch (rejected) {
+      return messageOf(rejected);
     }
   }
 
@@ -638,13 +743,14 @@ export function createAnalyzeExperience(
   /**
    * Upgrade unresolved requests before invoking an analyst: a failed turn must not leave their
    * only evidence in an attempt recovery may replace. Keep identities, handoffs and timestamps;
-   * accepted outputs and submission payloads need no source files and are never rewritten.
+   * accepted outputs and submission payloads need no source files and are never rewritten. The
+   * caller retains this only while the request has no usable accepted analysis.
    */
   async function retainPendingEvidence(
     request: ExperienceRequest,
     problems: string[],
   ): Promise<ExperienceRequest> {
-    if (request.evidenceRoot !== null || (await readAcceptedAnalysis(request)) !== null) {
+    if (request.evidenceRoot !== null) {
       return request;
     }
     const candidates =
@@ -777,19 +883,16 @@ export function createAnalyzeExperience(
   }
 
   /**
-   * Inspect one terminal handoff and return its persisted analysis, reusing the accepted output of
-   * an earlier attempt. An invocation or validation failure is recorded and reported as
-   * outstanding; the next pass retries it because no output was accepted.
+   * Invoke the configured analyst once for one terminal handoff and return its accepted analysis.
+   * The invocation writes its assigned Markdown report and returns only the observations; an
+   * invocation, validation or assigned-report failure is recorded and reported as outstanding,
+   * and the next pass retries it because no output was accepted.
    */
   async function analyzeRequest(
     request: ExperienceRequest,
     identity: string,
     problems: string[],
-  ): Promise<ExperienceAnalysisOutput | null> {
-    const accepted = await readAcceptedAnalysis(request);
-    if (accepted !== null) {
-      return accepted;
-    }
+  ): Promise<AcceptedAnalysis | null> {
     const analyze = settings.analyze;
     if (analyze === null) {
       problems.push(
@@ -803,6 +906,11 @@ export function createAnalyzeExperience(
     const scope = evidenceScopeOf(request);
     const reportScope = reportScopeOf(request, scope);
     const invocationId = randomUUID();
+    const assignedReport = await assignReportPath(
+      scope.root,
+      invocationId,
+      experienceAnalysisReportName,
+    );
     const attribution =
       `Experience analysis of ${request.handoff.workId} (${request.handoff.workflow}, attempt ` +
       `${request.handoff.attemptId}, terminal ${request.handoff.terminalId}).`;
@@ -810,6 +918,15 @@ export function createAnalyzeExperience(
       areaRoot: scope.root,
       scope: reportScope,
     });
+    if (suppliedFeedback.length > 0) {
+      // Retain which rejections this invocation answers before it runs, so an interrupted
+      // correction write can finish on replay without retiring a rejection created later.
+      await retainSuppliedFeedback({
+        areaRoot: scope.root,
+        invocationId,
+        rejections: suppliedFeedback.map((entry) => ({ path: entry.path })),
+      });
+    }
     const recordActivity = (activity: AgentEvent): void => {
       activityTail = activityTail.then(async () => {
         try {
@@ -825,9 +942,18 @@ export function createAnalyzeExperience(
       // directory. A handoff without a prepared repository therefore still has a valid location.
       await mkdir(path.join(scope.root, 'worktree'), { recursive: true });
       result = await analyze({
-        context: experienceContextText(request, scope, suppliedFeedback),
+        context: [
+          experienceContextText(request, scope, suppliedFeedback),
+          experienceResponseInstructions({
+            assignedReport: assignedReport.path,
+            analysisFile: analysisFile(identity),
+            scopeRoot: scope.root,
+            workspaceRoot: request.handoff.workspaceRoot,
+          }),
+        ].join('\n\n'),
         workspace: { root: scope.root },
         invocationId,
+        reportPath: assignedReport.path,
         outputSchema: z.toJSONSchema(experienceAnalysisResponseSchema),
         onActivity: recordActivity,
       });
@@ -851,11 +977,9 @@ export function createAnalyzeExperience(
       outstanding(result.fault.message);
       return null;
     }
-    const validated = await validateAnalysisResponse(result.value.output, request, scope);
-    if (!validated.ok) {
-      // The rejected analysis stays outstanding under the existing retry policy; retaining its
-      // evidence never converts the failure into acceptance or an extra invocation.
-      let problem = validated.problem;
+    /** Reject one unusable invocation with its evidence retained; the request stays outstanding. */
+    const rejected = async (problem: string): Promise<null> => {
+      let failure = problem;
       try {
         await rejectReport({
           areaRoot: scope.root,
@@ -866,14 +990,27 @@ export function createAnalyzeExperience(
           context: attribution,
           source: null,
           output: result.value.output,
-          reason: validated.problem,
+          assignedReport,
+          reason: problem,
         });
       } catch (error) {
-        problem = messageOf(error);
+        failure = messageOf(error);
       }
-      await recordAttempt(identity, 'failed', problem, null);
-      outstanding(problem);
+      await recordAttempt(identity, 'failed', failure, null);
+      outstanding(failure);
       return null;
+    };
+    const validated = await validateAnalysisResponse(result.value.output, request, scope);
+    if (!validated.ok) {
+      // The rejected analysis stays outstanding under the existing retry policy; retaining its
+      // evidence never converts the failure into acceptance or an extra invocation.
+      return await rejected(validated.problem);
+    }
+    let reportFile: { readonly identity: string };
+    try {
+      reportFile = await readAssignedReport(assignedReport.path, 'Experience analysis report');
+    } catch (error) {
+      return await rejected(messageOf(error));
     }
     const output: ExperienceAnalysisOutput = {
       workId: request.handoff.workId,
@@ -881,6 +1018,7 @@ export function createAnalyzeExperience(
       workflow: request.handoff.workflow,
       attemptId: request.handoff.attemptId,
       terminalId: request.handoff.terminalId,
+      role: 'experience-analyst',
       profile,
       analyzedAt: now().toISOString(),
       observations: validated.value.observations.map((observation, index) => ({
@@ -889,23 +1027,32 @@ export function createAnalyzeExperience(
         evidence: observation.evidence,
         relatedMemories: observation.relatedMemories,
       })),
+      report: assignedReport,
+      reportIdentity: reportFile.identity,
+      invocationId,
     };
     // The validated output is written once, before any submission, so a retry reuses it.
     await writeDurableRecord(analysisFile(identity), output);
-    if (suppliedFeedback.length > 0) {
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
-        areaRoot: scope.root,
-        scope: reportScope,
-        rejections: suppliedFeedback.map((entry) => ({ path: entry.path })),
-        artifact: { path: analysisFile(identity) },
-        content: output,
-        invocationId,
-      });
-    }
+    // The owner validated and saved the usable replacement; recording its complete identity
+    // retires exactly the rejections this invocation was supplied, preserving their history.
+    await finishSuppliedCorrection({
+      areaRoot: scope.root,
+      scope: reportScope,
+      invocationId,
+      artifact: { path: analysisFile(identity) },
+      content: output,
+    });
     await recordAttempt(identity, 'accepted', null, output.observations.length);
-    return output;
+    return {
+      profile: output.profile,
+      analyzedAt: output.analyzedAt,
+      observations: output.observations,
+      binding: {
+        report: output.report,
+        reportIdentity: output.reportIdentity,
+        invocationId: output.invocationId,
+      },
+    };
   }
 
   /**
@@ -916,8 +1063,8 @@ export function createAnalyzeExperience(
    */
   function observationPayload(
     request: ExperienceRequest,
-    output: ExperienceAnalysisOutput,
-    observation: ExperienceAnalysisOutput['observations'][number],
+    output: AcceptedAnalysis,
+    observation: AcceptedAnalysis['observations'][number],
   ): MemoryObservation {
     return {
       sourceKey: experienceObservationSourceKey(request.identity, observation.identity),
@@ -978,8 +1125,8 @@ export function createAnalyzeExperience(
    */
   async function submitObservation(
     request: ExperienceRequest,
-    output: ExperienceAnalysisOutput,
-    observation: ExperienceAnalysisOutput['observations'][number],
+    output: AcceptedAnalysis,
+    observation: AcceptedAnalysis['observations'][number],
     memory: Memory,
     problems: string[],
   ): Promise<void> {
@@ -1117,18 +1264,31 @@ export function createAnalyzeExperience(
             problems.push(`the experience request at "${file}" is unusable: ${messageOf(error)}`);
             continue;
           }
-          let output: ExperienceAnalysisOutput | null;
+          let output: AcceptedAnalysis;
           try {
-            request = await retainPendingEvidence(request, problems);
-            output = await analyzeRequest(request, identity, problems);
+            // A saved usable analysis is reused as it stands; its observations are submitted
+            // without another invocation. A request without output retains its evidence and the
+            // analyst answers its outstanding feedback. An unusable saved record was retained as
+            // rejection evidence and stays outstanding for the next permitted attempt.
+            const saved = await savedAnalysis(request, problems);
+            if (saved.kind === 'outstanding') {
+              continue;
+            }
+            if (saved.kind === 'invoke') {
+              request = await retainPendingEvidence(request, problems);
+              const analyzed = await analyzeRequest(request, identity, problems);
+              if (analyzed === null) {
+                continue;
+              }
+              output = analyzed;
+            } else {
+              output = saved.analysis;
+            }
           } catch (error) {
             problems.push(
               `the experience analysis of ${handoffLabel(request.handoff)} could not be ` +
                 `processed: ${messageOf(error)}`,
             );
-            continue;
-          }
-          if (output === null) {
             continue;
           }
           for (const observation of output.observations) {

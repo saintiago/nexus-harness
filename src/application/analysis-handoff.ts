@@ -1,7 +1,8 @@
 import type { Dirent } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ExperienceHandoff } from '../task-engine/actions/analyze-experience/artifacts.js';
+import { reportBindingOf } from '../task-engine/actions/agent-reports.js';
 import { roundArtifactPath } from '../task-engine/actions/artifacts.js';
 import { completionFailureArtifact } from '../task-engine/actions/complete-task/artifacts.js';
 import { deliveryFailureArtifact } from '../task-engine/actions/deliver/artifacts.js';
@@ -340,9 +341,42 @@ async function ideaAttempt(root: string): Promise<{
   };
 }
 
-/** The evidence one finite-delivery terminal handoff carries, as the action's input shape. */
-function evidence(handoff: { readonly files: readonly string[] }): { readonly path: string }[] {
-  return handoff.files.map((file) => ({ path: file }));
+/**
+ * The associated Markdown one selected producer outcome binds, or null when the record carries no
+ * binding. The shared binding declaration is the producer's exported association; a former
+ * combined record keeps its narrative in place and states none. Reading is best-effort: a file
+ * that is not a JSON record contributes nothing, and its own bytes stay selected evidence.
+ */
+async function boundReportOf(file: string): Promise<string | null> {
+  if (!file.endsWith('.json')) {
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(file, 'utf8')) as unknown;
+  } catch {
+    return null;
+  }
+  return reportBindingOf(value)?.report.path ?? null;
+}
+
+/**
+ * The evidence one terminal handoff carries, as the action's input shape: the selected producer
+ * outcomes and files, extended with the Markdown reports their bindings associate, so capture
+ * retains the complete narrative before the attempt that produced it can be discarded. Original
+ * paths stay in place and keep their identities; a repeated path is selected once.
+ */
+async function handoffArtifacts(files: readonly string[]): Promise<{ readonly path: string }[]> {
+  const selected = [...files];
+  const known = new Set(selected);
+  for (const file of files) {
+    const report = await boundReportOf(file);
+    if (report !== null && !known.has(report)) {
+      known.add(report);
+      selected.push(report);
+    }
+  }
+  return selected.map((path) => ({ path }));
 }
 
 /** Build the terminal handoff of one finite-delivery terminal for the selected work item. */
@@ -366,7 +400,7 @@ export async function finiteDeliveryHandoff(options: {
     outcome: terminal.outcome,
     reason: await retainedTerminalReason(reasonFile),
     workspaceRoot: root,
-    artifacts: evidence({ files }),
+    artifacts: await handoffArtifacts(files),
   };
 }
 
@@ -388,7 +422,7 @@ export async function ideaPublicationHandoff(options: {
     outcome: ideaPublicationOutcomes[options.terminal],
     reason: null,
     workspaceRoot: root,
-    artifacts: evidence(attempt),
+    artifacts: await handoffArtifacts(attempt.files),
   };
 }
 
@@ -450,7 +484,7 @@ export async function preparationHandoff(options: {
       isHandoff || files.some((file) => file.startsWith(path.join(issueRoot, 'parent')))
         ? issueRoot
         : root,
-    artifacts: evidence({ files }),
+    artifacts: await handoffArtifacts(files),
   };
 }
 
@@ -488,12 +522,10 @@ export async function selectionFailureHandoff(options: {
     outcome: 'failed',
     reason: options.failure.reason,
     workspaceRoot: root,
-    artifacts: evidence({
-      files: [
-        owned && selectedFailureFile !== null ? selectedFailureFile : options.failureFile,
-        ...files,
-      ],
-    }),
+    artifacts: await handoffArtifacts([
+      owned && selectedFailureFile !== null ? selectedFailureFile : options.failureFile,
+      ...files,
+    ]),
   };
 }
 
@@ -519,7 +551,7 @@ export async function operationalErrorHandoff(options: {
       outcome: 'error',
       reason: options.failure,
       workspaceRoot: refinement,
-      artifacts: evidence(attempt),
+      artifacts: await handoffArtifacts(attempt.files),
     };
   }
   if (selection.stage !== 'delivery') {
@@ -541,7 +573,7 @@ export async function operationalErrorHandoff(options: {
       outcome: 'error',
       reason: options.failure,
       workspaceRoot: area,
-      artifacts: evidence({ files }),
+      artifacts: await handoffArtifacts(files),
     };
   }
   const attempt = await finiteAttemptState(root);
@@ -558,6 +590,6 @@ export async function operationalErrorHandoff(options: {
     outcome: 'error',
     reason: options.failure,
     workspaceRoot: root,
-    artifacts: evidence({ files }),
+    artifacts: await handoffArtifacts(files),
   };
 }

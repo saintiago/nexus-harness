@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { observationSchema, receiptStatuses } from '../../../memory/index.js';
+import { reportBindingFields } from '../agent-reports.js';
 
 /**
  * AnalyzeExperience's data contracts: the terminal handoff a workflow binding supplies, the
@@ -134,12 +135,20 @@ export const experienceAnalysisResponseSchema = z.strictObject({
 
 export type ExperienceAnalysisResponse = z.infer<typeof experienceAnalysisResponseSchema>;
 
-/**
- * The persisted, validated analysis output. Nexus records it once, then reuses it for every
- * submission retry instead of generating new observations after an interruption. The observation
- * identity is stable within this record and names its submission.
- */
-export const experienceAnalysisOutputSchema = z.strictObject({
+/** One observation the analyst read and the action persisted. */
+const experienceObservationFields = {
+  identity: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The stable observation identity that names its submission.'),
+  content: z.string().trim().min(1),
+  evidence: z.array(experienceEvidenceSchema).min(1),
+  relatedMemories: z.array(experienceMemoryComparisonSchema),
+};
+
+/** The analysis facts both a current and a retained former record state. */
+const experienceAnalysisFields = {
   workId: z.string().trim().min(1),
   project: z.string().trim().min(1),
   workflow: z.string().trim().min(1),
@@ -147,17 +156,32 @@ export const experienceAnalysisOutputSchema = z.strictObject({
   terminalId: z.string().trim().min(1),
   profile: z.string().trim().min(1),
   analyzedAt: z.iso.datetime({ offset: true }),
-  observations: z.array(
-    z.strictObject({
-      identity: z.string().trim().min(1),
-      content: z.string().trim().min(1),
-      evidence: z.array(experienceEvidenceSchema).min(1),
-      relatedMemories: z.array(experienceMemoryComparisonSchema),
-    }),
-  ),
+  observations: z.array(z.strictObject(experienceObservationFields)),
+};
+
+/**
+ * The persisted, validated analysis output. Nexus records it once, with the observed handoff
+ * identities, role, profile and its assigned Markdown binding, then reuses it for every submission
+ * retry instead of generating new observations after an interruption. The observation identity is
+ * stable within this record and names its submission.
+ */
+export const experienceAnalysisOutputSchema = z.strictObject({
+  ...experienceAnalysisFields,
+  role: z.literal('experience-analyst'),
+  ...reportBindingFields,
 });
 
 export type ExperienceAnalysisOutput = z.infer<typeof experienceAnalysisOutputSchema>;
+
+/**
+ * A retained handoff-shaped analysis from before the report binding existed: its observations and
+ * observed identities stay readable and submittable without a Markdown requirement imposed
+ * retroactively. A record carrying any binding field must satisfy the current schema; a damaged
+ * new record never falls back to this shape.
+ */
+export const formerAnalysisOutputSchema = z.strictObject({ ...experienceAnalysisFields });
+
+export type FormerAnalysisOutput = z.infer<typeof formerAnalysisOutputSchema>;
 
 /** The completion-analysis output shape this store still reads while pending work migrates. */
 export const legacyCompletionOutputSchema = z.strictObject({
@@ -177,6 +201,29 @@ export const legacyCompletionOutputSchema = z.strictObject({
 });
 
 export type LegacyCompletionOutput = z.infer<typeof legacyCompletionOutputSchema>;
+
+/**
+ * The producer-owned reader: a current bound analysis, a retained handoff-shaped analysis from
+ * before the binding, or the earlier completion analysis it migrated from. Every shape states its
+ * observations, profile and analysis time; only the current shape requires its Markdown.
+ */
+export const retainedAnalysisOutputSchema = z.union([
+  experienceAnalysisOutputSchema,
+  formerAnalysisOutputSchema,
+  legacyCompletionOutputSchema,
+]);
+
+export type RetainedAnalysisOutput = z.infer<typeof retainedAnalysisOutputSchema>;
+
+/** True when one retained analysis carries the current report binding. */
+export function isBoundAnalysisOutput(
+  output: RetainedAnalysisOutput,
+): output is ExperienceAnalysisOutput {
+  return 'report' in output;
+}
+
+/** The analyst's assigned Markdown name within its invocation directory. */
+export const experienceAnalysisReportName = 'experience-analysis';
 
 /** The submission states; stored and failed are terminal. A blocked receipt stays accepted. */
 export const experienceSubmissionStatuses = ['pending', 'accepted', 'stored', 'failed'] as const;

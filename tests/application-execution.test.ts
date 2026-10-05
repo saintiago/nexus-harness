@@ -29,6 +29,7 @@ import {
   recoveryExecutionSchema,
   type RecoveryInvocationRequest,
   type RecoveryNotifier,
+  type RecoveryReport,
   type RecoveryRuntime,
 } from '../src/application/recovery.js';
 import { installationConfigSetting } from '../src/application/installation.js';
@@ -64,9 +65,20 @@ const workflowModule = fileURLToPath(
 /** Run one Git command to observe the operational worktree the provider receives. */
 const execFileAsync = promisify(execFile);
 
-/** One recovery report serialized as the agent returns it. */
-function report(summary: string, kind: 'resume' | 'needs-attention'): string {
-  return JSON.stringify({ summary, decision: { kind } });
+/** One recovery decision serialized as the agent returns it; narrative belongs in Markdown. */
+function decision(kind: 'resume' | 'needs-attention'): string {
+  return JSON.stringify({ decision: { kind } });
+}
+
+/** One controlled recovery turn: it writes the assigned Markdown and returns the decision. */
+function recoveringTurn(
+  kind: 'resume' | 'needs-attention',
+  markdown: string,
+): (request: RecoveryInvocationRequest) => Promise<AgentResult> {
+  return async (request) => {
+    await writeFile(request.reportPath, markdown, 'utf8');
+    return ok({ output: decision(kind) });
+  };
 }
 
 /** One blocked worker completion carrying the supplied diagnostics. */
@@ -197,9 +209,7 @@ async function harness(options: {
   const invocations: RecoveryInvocationRequest[] = [];
   const notifications: { subject: string; body: string }[] = [];
   const diagnostics: string[] = [];
-  const agent =
-    options.agent ??
-    (() => Promise.resolve(ok({ output: report('Recovery resumed the queue.', 'resume') })));
+  const agent = options.agent ?? recoveringTurn('resume', 'Recovery resumed the queue.');
   const notify =
     options.notify ?? (() => Promise.resolve(ok({ messageId: 'controlled-message-identity' })));
   const launchWorker: WorkerLaunch = (request, onEvent, onActivity) => {
@@ -401,8 +411,9 @@ describe('Application execution', () => {
     expect(executed.notifications).toEqual([]);
     // The request and the unused allowance are retained even when recovery never runs.
     expect(await executionRecord(executed.executionDirectory)).toEqual({
-      request: { projectConfigPath: executed.projectConfigPath },
+      request: { projectConfigPath: executed.projectConfigPath, workflow: 'project' },
       invocations: 0,
+      reports: [],
     });
     const request = executed.launches[0];
     expect(request?.projectConfigPath).toBe(executed.projectConfigPath);
@@ -446,27 +457,30 @@ describe('Application execution', () => {
       completions: [successful, successful],
       memory: true,
       memoryServiceUrl: service.url,
-      analysis: (request) => {
+      analysis: async (request) => {
         analyses.push(request);
-        return Promise.resolve(
-          ok({
-            output: JSON.stringify({
-              observations: [
-                {
-                  content: 'The completion evidence must be read after the Done transition.',
-                  evidence: [
-                    {
-                      path: evidence,
-                      revision: '4'.repeat(40),
-                      detail: 'The completion artifact.',
-                    },
-                  ],
-                  relatedMemories: [],
-                },
-              ],
-            }),
-          }),
+        await writeFile(
+          request.reportPath,
+          'The completion evidence must be read after the Done transition.',
+          'utf8',
         );
+        return ok({
+          output: JSON.stringify({
+            observations: [
+              {
+                content: 'The completion evidence must be read after the Done transition.',
+                evidence: [
+                  {
+                    path: evidence,
+                    revision: '4'.repeat(40),
+                    detail: 'The completion artifact.',
+                  },
+                ],
+                relatedMemories: [],
+              },
+            ],
+          }),
+        });
       },
     });
     // The worker recorded the confirmed completion in the execution's durable store.
@@ -594,9 +608,10 @@ describe('Application execution', () => {
             artifact: { path: '/execution/selection.json' },
           },
         }),
-      analysis: (request) => {
+      analysis: async (request) => {
         analyses.push(request);
-        return Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) }));
+        await writeFile(request.reportPath, 'No reusable lesson was found.', 'utf8');
+        return ok({ output: JSON.stringify({ observations: [] }) });
       },
     });
     // The retained selection names the interrupted attempt Application records the fault for.
@@ -775,16 +790,20 @@ describe('Application execution', () => {
           completions: scenario === 'after-recovery' ? [stopped('blocked'), faulted] : [faulted],
           maxRecoveryAttempts: scenario === 'after-recovery' ? 2 : 1,
           memory: true,
-          analysis: () => Promise.resolve(ok({ output: JSON.stringify({ observations: [] }) })),
-          agent: () =>
-            Promise.resolve(
-              ok({
-                output: report(
-                  'Recovered.',
-                  scenario === 'after-recovery' && launches === 1 ? 'resume' : 'needs-attention',
-                ),
-              }),
-            ),
+          analysis: async (request) => {
+            await writeFile(request.reportPath, 'No reusable lesson was found.', 'utf8');
+            return ok({ output: JSON.stringify({ observations: [] }) });
+          },
+          agent: async (request) => {
+            const kind =
+              scenario === 'after-recovery' && launches === 1 ? 'resume' : 'needs-attention';
+            await writeFile(
+              request.reportPath,
+              'The interrupted execution was reconciled.',
+              'utf8',
+            );
+            return ok({ output: decision(kind) });
+          },
           emit: ({ event }) => {
             launches += 1;
             if (scenario === 'selection-throws') {
@@ -1038,7 +1057,7 @@ describe('Application execution', () => {
           atRecovery = await readFile(logFile, 'utf8');
         }
         request.onActivity(activity);
-        return ok({ output: report('Reconciled and resumable.', 'resume') });
+        return recoveringTurn('resume', 'Reconciled and resumable.')(request);
       },
     });
 
@@ -1117,9 +1136,10 @@ describe('Application execution', () => {
   it('runs recovery between the stopped worker and the resumed worker', async () => {
     const executed = await harness({
       completions: [stopped('worker diagnostic\n'), successful],
-      agent: (request) => {
+      agent: async (request) => {
         request.onActivity({ type: 'message', text: 'investigating the state' });
-        return Promise.resolve(ok({ output: report('Reconciled and resumable.', 'resume') }));
+        await writeFile(request.reportPath, 'Reconciled and resumable.', 'utf8');
+        return ok({ output: decision('resume') });
       },
     });
 
@@ -1170,35 +1190,41 @@ describe('Application execution', () => {
     expect(result.outcome).toBe('completed');
     expect(result.reason).toBe('The workflow finished with the successful outcome "started".');
     expect(await executionRecord(executed.executionDirectory)).toEqual({
-      request: { projectConfigPath: executed.projectConfigPath },
+      request: { projectConfigPath: executed.projectConfigPath, workflow: 'project' },
       invocations: 1,
+      reports: [result.report!.path],
     });
-    // The report lives in the execution's own directory, numbered by invocation.
-    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    // The report lives in the execution's own directory, in this invocation's report directory.
+    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.json$/u);
     // The saved report is published with its reference once it is written.
     expect(executed.events.find((event) => event.type === 'recovered')).toEqual({
       source: 'application',
       type: 'recovered',
       data: { decision: 'resume', report: { path: result.report!.path } },
     });
-    expect(await savedReport(result.report!.path)).toEqual({
-      summary: 'Reconciled and resumable.',
+    const saved = (await savedReport(result.report!.path)) as RecoveryReport;
+    expect(saved).toMatchObject({
+      project: 'NEX',
+      role: 'recovery',
+      profile: 'nexus-recovery',
+      request: { projectConfigPath: executed.projectConfigPath, workflow: 'project' },
+      recoveryAttempt: 1,
       decision: { kind: 'resume' },
     });
+    expect(await readFile(saved.report.path, 'utf8')).toBe('Reconciled and resumable.');
     expect(executed.notifications).toHaveLength(1);
     expect(executed.notifications[0]?.subject).toContain('NEX');
     expect(executed.notifications[0]?.subject).toContain('resume');
+    // The published body carries the Markdown narrative, its observed identity and the outcome.
     expect(executed.notifications[0]?.body).toContain('Reconciled and resumable.');
+    expect(executed.notifications[0]?.body).toContain('invocation ' + saved.invocationId);
     expect(executed.notifications[0]?.body).toContain(result.report!.path);
   });
 
   it('ends with needs-attention when recovery reports it', async () => {
     const executed = await harness({
       completions: [stopped('worker diagnostic\n')],
-      agent: () =>
-        Promise.resolve(
-          ok({ output: report('A human must repair the project.', 'needs-attention') }),
-        ),
+      agent: recoveringTurn('needs-attention', 'A human must repair the project.'),
     });
 
     const result = await executed.application.execute({
@@ -1218,27 +1244,24 @@ describe('Application execution', () => {
       'recovered',
       'finished',
     ]);
-    expect(await savedReport(result.report!.path)).toEqual({
-      summary: 'A human must repair the project.',
-      decision: { kind: 'needs-attention' },
-    });
+    const saved = (await savedReport(result.report!.path)) as RecoveryReport;
+    expect(saved).toMatchObject({ decision: { kind: 'needs-attention' }, recoveryAttempt: 1 });
+    expect(await readFile(saved.report.path, 'utf8')).toBe('A human must repair the project.');
     expect(executed.notifications).toHaveLength(1);
+    expect(executed.notifications[0]?.body).toContain('A human must repair the project.');
   });
 
   it('retains a malformed recovery report and supplies it to the next execution recovery', async () => {
     let invocations = 0;
     const executed = await harness({
       completions: [stopped('first stop\n'), stopped('second stop\n'), successful],
-      agent: () => {
+      agent: async (request) => {
         invocations += 1;
-        return Promise.resolve(
-          ok({
-            output:
-              invocations === 1
-                ? '{"summary":"No decision was returned."}'
-                : report('Reconciled after the rejection.', 'resume'),
-          }),
-        );
+        if (invocations === 1) {
+          return ok({ output: '{"summary":"No decision was returned."}' });
+        }
+        await writeFile(request.reportPath, 'Reconciled after the rejection.', 'utf8');
+        return ok({ output: decision('resume') });
       },
     });
     const selectionFile = path.join(executed.executionDirectory, 'selection.json');
@@ -1301,6 +1324,71 @@ describe('Application execution', () => {
     expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
   });
 
+  it('retains a missing recovery Markdown and stops for attention', async () => {
+    let invocations = 0;
+    const executed = await harness({
+      completions: [stopped('first stop\n'), stopped('second stop\n'), successful],
+      agent: async (request) => {
+        invocations += 1;
+        if (invocations === 1) {
+          // The decision is valid but the assigned Markdown is absent: the invocation is rejected.
+          return ok({ output: decision('resume') });
+        }
+        await writeFile(request.reportPath, 'Reconciled after the rejection.', 'utf8');
+        return ok({ output: decision('resume') });
+      },
+    });
+
+    const first = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+
+    expect(first.outcome).toBe('needs-attention');
+    expect(first.reason).toContain('does not exist');
+    expect(invocations).toBe(1);
+    // The allowance stays consumed, no outcome is saved or published, and the exact reason and
+    // assigned path stay retained under the stable project recovery area.
+    expect(await executionRecord(executed.executionDirectory)).toMatchObject({
+      invocations: 1,
+      reports: [],
+    });
+    expect(executed.notifications).toHaveLength(0);
+    const recoveryArea = path.join(executed.executionDirectory, 'recovery');
+    const rejection = (await readReportFeedback(recoveryArea)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: {
+        project: 'NEX',
+        workId: 'NEX',
+        area: recoveryArea,
+        role: 'recovery',
+        reportKind: 'recovery-report',
+      },
+      operation: 'Recovery',
+      reason: expect.stringContaining('does not exist'),
+      assignedReport: {
+        path: executed.invocations[0]!.reportPath,
+      },
+    });
+
+    // The next execution's permitted invocation receives the rejection, writes its Markdown and
+    // records the correction, so only replacing the file could not clear the obligation.
+    const second = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+    expect(second.outcome).toBe('completed');
+    expect(invocations).toBe(2);
+    const context = executed.invocations[1]?.context ?? '';
+    expect(context).toContain('Violated rule:');
+    expect(context).toContain('does not exist');
+    const records = await readReportFeedback(recoveryArea);
+    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
+    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+  });
+
   it('stops for attention when the retained recovery feedback is unreadable', async () => {
     const executed = await harness({ completions: [stopped('first stop\n')] });
     const feedback = path.join(executed.executionDirectory, 'recovery', 'report-feedback');
@@ -1330,7 +1418,7 @@ describe('Application execution', () => {
           diagnostics: 'worker diagnostic\n',
         },
       ],
-      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+      agent: recoveringTurn('needs-attention', 'Recovered.'),
     });
     await mkdir(executed.executionDirectory, { recursive: true });
     await writeFile(
@@ -1386,8 +1474,11 @@ describe('Application execution', () => {
         JSON.stringify(z.toJSONSchema(declaration.schema), null, 2),
       );
     }
-    // The response format and the current-project scope are part of the context.
-    expect(context).toContain('"decision": {"kind": "resume"}');
+    // The response format, the assigned Markdown path and the current-project scope are part of
+    // the context.
+    expect(context).toContain('"const": "resume"');
+    expect(context).toContain('"const": "needs-attention"');
+    expect(context).toContain(`Assigned Markdown report: ${executed.invocations[0]!.reportPath}`);
     expect(context).toContain('Cross-project repair');
     // Credential values stay in host settings; the context carries references and no secrets.
     expect(context).not.toContain('host-access-key');
@@ -1408,7 +1499,7 @@ describe('Application execution', () => {
           diagnostics: '',
         },
       ],
-      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+      agent: recoveringTurn('needs-attention', 'Recovered.'),
     });
     const ideaDirectory = executed.executionDirectory;
     await mkdir(ideaDirectory, { recursive: true });
@@ -1459,7 +1550,7 @@ describe('Application execution', () => {
           diagnostics: 'worker diagnostic\n',
         },
       ],
-      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+      agent: recoveringTurn('needs-attention', 'Recovered.'),
     });
 
     await executed.application.execute({
@@ -1544,21 +1635,26 @@ describe('Application execution', () => {
     );
     expect(executed.notifications).toHaveLength(1);
     expect(await executionRecord(executed.executionDirectory)).toEqual({
-      request: { projectConfigPath: executed.projectConfigPath },
+      request: { projectConfigPath: executed.projectConfigPath, workflow: 'project' },
       invocations: 1,
+      reports: [result.report!.path],
     });
   });
 
   it('saves one report per invocation and stops at the invocation that needs attention', async () => {
-    const outputs = [
-      report('First attempt reconciled.', 'resume'),
-      report('Second attempt needs a human.', 'needs-attention'),
-    ];
+    const turns = [
+      { kind: 'resume', markdown: 'First attempt reconciled.' },
+      { kind: 'needs-attention', markdown: 'Second attempt needs a human.' },
+    ] as const;
     let invocations = 0;
     const executed = await harness({
       maxRecoveryAttempts: 2,
       completions: [stopped('first stop\n'), stopped('second stop\n')],
-      agent: () => Promise.resolve(ok({ output: outputs[invocations++] ?? '' })),
+      agent: async (request) => {
+        const turn = turns[invocations++]!;
+        await writeFile(request.reportPath, turn.markdown, 'utf8');
+        return ok({ output: decision(turn.kind) });
+      },
     });
 
     const result = await executed.application.execute({
@@ -1567,33 +1663,43 @@ describe('Application execution', () => {
     });
 
     expect(executed.timeline).toEqual(['worker', 'recovery', 'worker', 'recovery']);
-    expect(await executionRecord(executed.executionDirectory)).toEqual({
-      request: { projectConfigPath: executed.projectConfigPath },
-      invocations: 2,
-    });
     expect(result.outcome).toBe('needs-attention');
     expect(result.reason).toContain('Second attempt needs a human.');
-    // One execution keeps its sequential report numbering inside its own report directory.
-    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/2\.json$/u);
-    const reportDirectory = path.dirname(result.report!.path);
-    expect(await savedReport(path.join(reportDirectory, '1.json'))).toEqual({
-      summary: 'First attempt reconciled.',
-      decision: { kind: 'resume' },
+    // One execution retains both invocations' Markdown reports and saved outcomes in order.
+    const record = (await executionRecord(executed.executionDirectory)) as {
+      readonly request: unknown;
+      readonly invocations: number;
+      readonly reports: readonly string[];
+    };
+    expect(record.request).toEqual({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
     });
+    expect(record.invocations).toBe(2);
+    expect(record.reports).toHaveLength(2);
+    expect(record.reports[1]).toBe(result.report!.path);
+    expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.json$/u);
+    const firstReport = (await savedReport(record.reports[0]!)) as RecoveryReport;
+    expect(firstReport).toMatchObject({ recoveryAttempt: 1, decision: { kind: 'resume' } });
+    expect(await readFile(firstReport.report.path, 'utf8')).toBe('First attempt reconciled.');
+    expect(await readFile(path.dirname(result.report!.path) + '/recovery.md', 'utf8')).toBe(
+      'Second attempt needs a human.',
+    );
     // The second invocation is told about the report the first one saved.
-    expect(executed.invocations[1]?.context).toContain(path.join(reportDirectory, '1.json'));
+    expect(executed.invocations[1]?.context).toContain(record.reports[0]!);
+    expect(executed.invocations[1]?.context).toContain('First attempt reconciled.');
     expect(executed.notifications).toHaveLength(2);
   });
 
   it('preserves saved reports across execute calls on the same project storage', async () => {
-    const outputs = [
-      report('The first execution needs a human.', 'needs-attention'),
-      report('The second execution needs a human.', 'needs-attention'),
-    ];
+    const turns = ['The first execution needs a human.', 'The second execution needs a human.'];
     let invocations = 0;
     const executed = await harness({
       completions: [stopped('first stop\n'), stopped('second stop\n')],
-      agent: () => Promise.resolve(ok({ output: outputs[invocations++] ?? '' })),
+      agent: async (request) => {
+        await writeFile(request.reportPath, turns[invocations++]!, 'utf8');
+        return ok({ output: decision('needs-attention') });
+      },
     });
 
     const first = await executed.application.execute({
@@ -1606,21 +1712,27 @@ describe('Application execution', () => {
     });
 
     // Each execute call resets the invocation numbering, but never the other execution's reports.
-    expect(first.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
-    expect(second.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    expect(first.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.json$/u);
+    expect(second.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.json$/u);
     expect(first.report?.path).not.toBe(second.report?.path);
-    expect(await savedReport(first.report!.path)).toEqual({
-      summary: 'The first execution needs a human.',
+    const firstSaved = (await savedReport(first.report!.path)) as RecoveryReport;
+    expect(firstSaved).toMatchObject({ decision: { kind: 'needs-attention' }, recoveryAttempt: 1 });
+    expect(await readFile(firstSaved.report.path, 'utf8')).toBe(
+      'The first execution needs a human.',
+    );
+    const secondSaved = (await savedReport(second.report!.path)) as RecoveryReport;
+    expect(secondSaved).toMatchObject({
       decision: { kind: 'needs-attention' },
+      recoveryAttempt: 1,
     });
-    expect(await savedReport(second.report!.path)).toEqual({
-      summary: 'The second execution needs a human.',
-      decision: { kind: 'needs-attention' },
-    });
+    expect(await readFile(secondSaved.report.path, 'utf8')).toBe(
+      'The second execution needs a human.',
+    );
     // The second execute call began a fresh allowance over the same execution directory.
     expect(await executionRecord(executed.executionDirectory)).toEqual({
-      request: { projectConfigPath: executed.projectConfigPath },
+      request: { projectConfigPath: executed.projectConfigPath, workflow: 'project' },
       invocations: 1,
+      reports: [second.report!.path],
     });
   });
 
@@ -1654,8 +1766,7 @@ describe('Application execution', () => {
     for (const completion of cases) {
       const executed = await harness({
         completions: [completion],
-        agent: () =>
-          Promise.resolve(ok({ output: report('Needs the operator.', 'needs-attention') })),
+        agent: recoveringTurn('needs-attention', 'Needs the operator.'),
       });
 
       const result = await executed.application.execute({

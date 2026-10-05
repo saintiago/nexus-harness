@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../src/agent-runtime/index.js';
 import { recoveryRoleInstructions } from '../src/agent-runtime/index.js';
-import { recoveryReportSchema } from '../src/application/recovery.js';
+import { recoveryResponseSchema } from '../src/application/recovery.js';
 import { createRecoveryRuntime } from '../src/application/recovery-runtime.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { nexusConfiguration } from './support/configuration.js';
@@ -115,7 +115,7 @@ process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');
 
 describe('recovery runtime', () => {
   it('runs the configured recovery profile with the context and the recovery agent environment', async () => {
-    const agentOutput = '{"summary":"Reconciled.","decision":{"kind":"resume"}}';
+    const agentOutput = '{"decision":{"kind":"resume"}}';
     const fixture = await providerFixture(agentOutput);
     const nexus = nexusConfiguration();
     nexus.agentRuntime.provider.executable = fixture.executable;
@@ -130,6 +130,7 @@ describe('recovery runtime', () => {
     }).invoke({
       context: 'Nexus recovery context\n\nThis is recovery invocation 1 of 1.',
       workspace,
+      reportPath: path.join(workspace.root, 'recovery.md'),
       onActivity: (activity) => activities.push(activity),
     });
 
@@ -151,9 +152,9 @@ describe('recovery runtime', () => {
       schemaPath,
       '-',
     ]);
-    // The recovery report's own schema reaches the provider's structured-output capability.
+    // The decision-only recovery response schema reaches the provider's structured-output capability.
     expect(invocation.schema).toBe(
-      `${JSON.stringify(z.toJSONSchema(recoveryReportSchema), null, 2)}\n`,
+      `${JSON.stringify(z.toJSONSchema(recoveryResponseSchema), null, 2)}\n`,
     );
     expect(strictSchemaProblems(JSON.parse(invocation.schema ?? '{}'))).toEqual([]);
     // The invocation-local schema file is removed once the invocation settles.

@@ -479,7 +479,6 @@ export function createApplication(settings: ApplicationSettings): Application {
           nexus,
           project,
           workflow,
-          workflowName: request.workflow,
           workflowPath,
           paths,
           logFile,
