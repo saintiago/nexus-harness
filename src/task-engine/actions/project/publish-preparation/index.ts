@@ -13,7 +13,7 @@ import {
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
 import {
-  decisionContentChanged,
+  readCurrentDecision,
   readStageArtifact,
   readStageTerminal,
   readStagePlan,
@@ -237,9 +237,9 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
 
     const outcome: PreparationResult['outcome'] = result.outcome;
     /**
-     * Every stage whose retained decision no longer covers the checkout content this publication
-     * just accepted: an edit of a path another stage assessed requires that stage's current
-     * decision, whether the other stage stands earlier or later in the route.
+     * Every stage whose retained acceptance basis no longer matches: refreshed source input,
+     * changed reports or repository content require a current decision, whether the affected
+     * stage stands earlier or later in the route.
      */
     async function invalidatedStages(): Promise<PreparationStage[]> {
       const changed: PreparationStage[] = [];
@@ -247,14 +247,13 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         if (candidate === stage) {
           continue;
         }
-        if (
-          await decisionContentChanged({
-            issueRoot: selection.workspace.root,
-            stage: candidate,
-            git: settings.git,
-          })
-        )
-          changed.push(candidate);
+        const decision = await readCurrentDecision({
+          issueRoot: selection.workspace.root,
+          stage: candidate,
+          selection,
+          git: settings.git,
+        });
+        if (decision.kind === 'stale') changed.push(candidate);
       }
       return changed;
     }
@@ -306,28 +305,23 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           indexOf(candidate) < indexOf(stage),
       );
       if (earliest !== undefined) {
-        // The accepted work changed content an earlier stage assessed, so the earlier decision no
-        // longer covers the retained content: the route returns to the earliest responsible stage
-        // instead of advancing past a decision that no longer holds. Every stage between it and
-        // this one re-confirms or repairs its current decision before the route continues, and a
-        // stage whose content stayed unchanged keeps a valid acceptance that its round can reuse.
+        // Return to the earliest stale decision, then reassess downstream work in order. Keep
+        // the complete pending route so refreshed input follows the same bounded correction
+        // flow as changed content, including after a restart.
         return advanceTo(
           earliest,
           {
             from: stage,
             to: earliest,
             problem:
-              `The accepted ${stage} work changed repository content the ${earliest} stage had ` +
-              'assessed.',
-            consequence:
-              `The retained ${earliest} decision no longer covers the current content, so the ` +
-              `route cannot advance on it.`,
+              `The retained ${earliest} decision no longer matches its authored report, ` +
+              'relied-on inputs or assessed repository content.',
+            consequence: `The route cannot advance on the stale ${earliest} decision.`,
             correction:
-              `Reassess the ${earliest} work against the current retained content and confirm ` +
+              `Reassess the ${earliest} work against the current inputs and content and confirm ` +
               'or repair every affected downstream decision.',
           },
-          `Returning to ${earliest} for reconsideration: the accepted ${stage} change is not ` +
-            `covered by ${earliest}'s current decision.`,
+          `Returning to ${earliest} for reconsideration: its retained decision is no longer current.`,
           [...new Set([...(await pendingCorrection(earliest)), ...invalidated])],
         );
       }

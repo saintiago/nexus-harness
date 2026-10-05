@@ -622,36 +622,3 @@ export async function requireCurrentAcceptance(settings: {
     }
   }
 }
-
-/**
- * Whether one stage's accepted decision no longer covers the checkout content it assessed, for
- * example because a later stage edited the same file. Such a stage needs a current decision
- * before the route relies on the edited content.
- */
-export async function decisionContentChanged(settings: {
-  readonly issueRoot: string;
-  readonly stage: PreparationStage;
-  readonly git: GitAdapter;
-}): Promise<boolean> {
-  const { issueRoot, stage, git } = settings;
-  const root = stageRoot(issueRoot, stage);
-  const plan = await readStagePlan(root);
-  if (plan === null) return false;
-  const result = await readStageTerminal(root);
-  if (result === null || (result.outcome !== 'accepted' && result.outcome !== 'skipped')) {
-    return false;
-  }
-  const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
-  if (evaluation === null) return true;
-  try {
-    await requireEvaluationContent({
-      git,
-      worktree: preparationWorktree(issueRoot),
-      content: evaluation.basis.content,
-    });
-    return false;
-  } catch (error) {
-    if (error instanceof Error) return true;
-    throw error;
-  }
-}

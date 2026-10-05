@@ -17,12 +17,13 @@ import {
   sourceInputIdentity,
 } from '../src/task-engine/actions/preparation/evaluation-content.js';
 import {
+  preparationStages,
   stageAuthorArtifact,
   stageEvaluationArtifact,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
-  decisionContentChanged,
   readCurrentDecision,
+  readStagePlan,
   requireCurrentAcceptance,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
@@ -36,6 +37,9 @@ import { fault, ok } from '../src/result.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { scriptedJira } from './support/jira.js';
+import { scriptedGitHub } from './support/github.js';
+import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
+import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 
 /**
  * Git runs with a supplied environment. Global and system configuration are disabled so the
@@ -911,10 +915,6 @@ describe('Git adapter', () => {
         git,
       }),
     ).rejects.toThrow(/current decision is required/);
-    expect(await decisionContentChanged({ issueRoot: root, stage: 'requirements', git })).toBe(
-      true,
-    );
-    expect(await decisionContentChanged({ issueRoot: root, stage: 'ux', git })).toBe(false);
     // A current decision requires the assessed content to still match the checkout: the later UX
     // edit leaves Requirements stale even though its recorded revision stays readable, while UX's
     // own decision stays current.
@@ -1028,6 +1028,222 @@ describe('Git adapter', () => {
       failures,
     };
   }
+
+  it.each([
+    { resumed: 'ux' as const, input: 'conversation' },
+    { resumed: 'architecture' as const, input: 'task' },
+  ])(
+    'reconciles refreshed $input on $resumed resumption before handoff',
+    async ({ resumed, input }) => {
+      const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+      await createPrepareStage({
+        selectionFile,
+        repository: { source: origin, mainBranch: 'main' },
+        git,
+        publish: () => undefined,
+      })({ stage: 'requirements' });
+      const statuses = {
+        requirements: 'Draft',
+        ux: 'UX Proposal',
+        prototype: 'Storybook Refinement',
+        architecture: 'Architecture',
+      };
+      const transitions = Object.values(statuses).flatMap((from) =>
+        Object.values(statuses).map((to) => ({ from, to })),
+      );
+      const skip = (stage: string) => ({
+        outcome: 'skip-proposed',
+        summary: 'Existing content meets the current input.',
+        documents: [],
+        sourcePaths: [],
+        plan:
+          stage === 'architecture'
+            ? [
+                {
+                  summary: 'Implement the requirement',
+                  scope: 'The accepted requirement.',
+                  completionCriteria: ['The requirement is implemented.'],
+                  prerequisites: [],
+                },
+              ]
+            : [],
+        skip: { reason: 'Existing content suffices.', references: ['readme.md'] },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      });
+      // Retain earlier decisions as on feedback resumption. Later stages have not run yet.
+      for (const stage of preparationStages.slice(0, preparationStages.indexOf(resumed))) {
+        await acceptedRound({
+          selectionFile,
+          root,
+          stage,
+          round: 1,
+          verdict: 'accepted-skip',
+          invokeAuthor: true,
+          author: skip(stage),
+        });
+      }
+      const selection = JSON.parse(await readFile(selectionFile, 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      await writeFile(
+        selectionFile,
+        JSON.stringify({
+          ...selection,
+          stage: resumed,
+          [input]:
+            input === 'conversation'
+              ? [
+                  {
+                    id: 'clarification',
+                    author: { displayName: 'Human' },
+                    body: 'Clarified scope.',
+                  },
+                ]
+              : { fields: { description: 'Clarified scope.' } },
+        }),
+      );
+      await acceptedRound({
+        selectionFile,
+        root,
+        stage: resumed,
+        round: 1,
+        verdict: 'accepted-skip',
+        invokeAuthor: true,
+        author: skip(resumed),
+      });
+      const decision = async (stage: (typeof preparationStages)[number]) =>
+        readCurrentDecision({
+          issueRoot: root,
+          stage,
+          selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+          git,
+        });
+      await expect(decision('requirements')).resolves.toMatchObject({ kind: 'stale' });
+      const returned = await publishStage({
+        selectionFile,
+        root,
+        stage: resumed,
+        status: statuses[resumed],
+        transitions,
+      });
+      expect(returned.outcome).toBe('advanced');
+      expect(returned.stage()).toBe('requirements');
+      expect(returned.awaiting()).toEqual(
+        preparationStages.slice(0, preparationStages.indexOf(resumed) + 1),
+      );
+      expect(returned.returnFinding()).toMatchObject({ from: resumed, to: 'requirements' });
+      expect(returned.failures).toEqual([]);
+
+      // Recreate each action on re-entry; only the saved route and round history carry state.
+      const head = await headOf(worktree);
+      for (const stage of preparationStages) {
+        const start = () =>
+          createStartStageRound({
+            selectionFile,
+            stage,
+            profiles: { authors: ['a'], evaluator: 'e' },
+            maxRounds: 2,
+            publish: () => undefined,
+          })({ route: 'new' });
+        await expect(start()).resolves.toBe('opened');
+        const plan = await readStagePlan(path.join(root, stage));
+        const retained = preparationStages.indexOf(stage) <= preparationStages.indexOf(resumed);
+        expect(plan).toMatchObject({
+          round: retained ? 2 : 1,
+          route: retained ? 'reassess' : 'new',
+        });
+        // A restart before authoring must reuse the opened round, not consume another allowance.
+        await expect(start()).resolves.toBe('opened');
+        expect(await readStagePlan(path.join(root, stage))).toEqual(plan);
+        await acceptedRound({
+          selectionFile,
+          root,
+          stage,
+          round: plan!.round,
+          route: plan!.route,
+          verdict: 'accepted-skip',
+          invokeAuthor: true,
+          author: skip(stage),
+        });
+        const publication = await publishStage({
+          selectionFile,
+          root,
+          stage,
+          status: statuses[stage],
+          transitions,
+        });
+        expect(publication.failures).toEqual([]);
+        expect(publication.outcome).toBe(stage === 'architecture' ? 'handoff' : 'advanced');
+        expect(publication.awaiting()).not.toContain(stage);
+        if (stage === 'requirements') {
+          // Replacing Requirements' decision also invalidates the resumed stage's upstream basis.
+          await expect(decision(resumed)).resolves.toMatchObject({ kind: 'stale' });
+          expect(publication.awaiting()).toContain(resumed);
+        }
+        if (stage === 'architecture') expect(publication.awaiting()).toEqual([]);
+      }
+      expect(await headOf(worktree)).toBe(head);
+      for (const stage of preparationStages) {
+        await expect(decision(stage)).resolves.toMatchObject({ kind: 'current' });
+      }
+      await expect(
+        createStartStageRound({
+          selectionFile,
+          stage: 'requirements',
+          profiles: { authors: ['a'], evaluator: 'e' },
+          maxRounds: 2,
+          publish: () => undefined,
+        })({ route: 'new' }),
+      ).resolves.toBe('exhausted');
+
+      // Exercise the final consumer too: it must create the planned ticket, not fail on stale input.
+      let status = 'Architecture';
+      const { jira, calls } = scriptedJira({
+        readIssue: (id) =>
+          ok({
+            id,
+            key: id === '1' ? 'NEX-1' : 'NEX-2',
+            fields: { status: { name: id === '1' ? status : 'To Do' } },
+          }),
+        readComments: () => ok([]),
+        searchIssues: () => ok([]),
+        createIssue: () => ok({ id: '2', key: 'NEX-2' }),
+        linkIssues: () => ok(undefined),
+        readTransitions: () => ok([{ id: 'done', name: 'Done', to: { id: 'done', name: 'Done' } }]),
+        transitionIssue: () => {
+          status = 'Done';
+          return ok(undefined);
+        },
+        addComment: () => ok({ id: 'handoff', body: {} }),
+      });
+      const { github } = scriptedGitHub({ findPullRequests: () => ok([]) });
+      await expect(
+        createImplementationHandoff({
+          selectionFile,
+          project: 'NEX',
+          repository: origin,
+          baseBranch: 'main',
+          reviewCheck: 'Review',
+          nexusLens: { appId: 1, login: 'lens' },
+          postMergeChecks: [],
+          architectureStatus: 'Architecture',
+          implementation: { issueType: 'Task', labels: [], status: 'To Do', linkType: 'Relates' },
+          doneStatus: 'Done',
+          completion: { pollIntervalSeconds: 1, waitLimitSeconds: 1 },
+          git,
+          github,
+          jira,
+          publish: () => undefined,
+          wait: async () => undefined,
+        })(),
+      ).resolves.toBe('handed-off');
+      expect(calls).toContain('createIssue');
+      expect(status).toBe('Done');
+    },
+  );
 
   it('returns changed earlier content to its owning stage and hands off after the reassessment', async () => {
     const workspace = await preparationWorkspace();
@@ -1361,7 +1577,6 @@ describe('Git adapter', () => {
       );
       await gitCommand(['add', 'stories/ux.stories.ts'], worktree);
       await gitCommand(['commit', '--quiet', '--message', 'change the story'], worktree);
-      expect(await decisionContentChanged({ issueRoot: root, stage: 'prototype', git })).toBe(true);
       await expect(
         readCurrentDecision({
           issueRoot: root,
@@ -1436,9 +1651,6 @@ describe('Git adapter', () => {
       await expect(currentDecision()).resolves.toMatchObject({ kind: 'current' });
       await writeFile(path.join(worktree, 'readme.md'), 'changed before reuse\n');
       await expect(currentDecision()).resolves.toMatchObject({ kind: 'stale' });
-      await expect(
-        decisionContentChanged({ issueRoot: root, stage: 'requirements', git }),
-      ).resolves.toBe(true);
       await expect(
         acceptedRound({
           selectionFile,
