@@ -6,7 +6,7 @@
  * four source-updating publication routes.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -20,6 +20,7 @@ import {
   challengerArtifact,
   challengerReportSchema,
   challengerResponseSchema,
+  legacyChallengerArtifact,
 } from '../src/task-engine/actions/challenger/artifacts.js';
 import { createChallenger } from '../src/task-engine/actions/challenger/index.js';
 import {
@@ -1695,6 +1696,98 @@ describe('decision publication', () => {
     expect(jira.comments).toHaveLength(1);
   });
 
+  it.each(['approve', 'discuss'] as const)(
+    'preserves a legacy %s assessment through reassessment, context and handoff replay',
+    async (verdict) => {
+      const area = await refinementArea();
+      await approvedCycle(area);
+      const revision = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const legacy = {
+        verdict,
+        assessment: 'Historical assessment with vendor-reported evidence, not local measurements.',
+        obstacle: verdict === 'discuss' ? 'The benefit needs evidence.' : null,
+        concerns: [
+          {
+            concern: 'Evidence comes from a vendor.',
+            consequence: 'The benefit is uncertain.',
+            resolution: 'Check comparable local results.',
+          },
+        ],
+        suggestions: ['Keep the initial configuration small.'],
+        refinedIdea: revision,
+        editorResponse: null,
+        revision: 1,
+      };
+      const original = `${JSON.stringify(legacy, null, 4)}\n\n`;
+      const currentFile = path.join(area.cycleRoot(), challengerArtifact.pathFromArtifactsRoot);
+      const historyFile = path.join(
+        area.cycleRoot(),
+        legacyChallengerArtifact.pathFromArtifactsRoot,
+      );
+      await writeFile(currentFile, original);
+      // A retry can find the copy already saved before the current result was written.
+      if (verdict === 'discuss') {
+        await writeFile(historyFile, original);
+      }
+      const agent = scriptedRuntime([{ verdict: 'approve', obstacle: null }]);
+      const challenger = createChallenger({
+        workspace: { root: area.root },
+        runner: runnerOf(agent.runtime),
+        publish: (event) => area.events.push(event),
+      });
+      await expect(challenger()).resolves.toBe('approve');
+      await expect(readFile(historyFile, 'utf8')).resolves.toBe(original);
+      const stored = await area.read(1, challengerArtifact.pathFromArtifactsRoot);
+      expect(challengerReportSchema.safeParse(stored).success).toBe(true);
+      expect(stored).toMatchObject({
+        verdict: 'approve',
+        refinedIdea: revision,
+        refinedIdeaIdentity: recordIdentity(JSON.parse(await readFile(revision, 'utf8'))),
+        editorResponse: null,
+        editorIdentity: null,
+      });
+      await expect(challenger()).resolves.toBe('approve');
+      expect(agent.requests).toHaveLength(1);
+
+      const researcherAgent = scriptedRuntime([{}]);
+      await createResearcher({
+        workspace: { root: area.root },
+        runner: runnerOf(researcherAgent.runtime),
+        publish: (event) => area.events.push(event),
+      })({ phase: 'initial' });
+      expect(researcherAgent.requests[0]?.context).toContain(
+        `challenger, retained combined record: ${historyFile}`,
+      );
+      expect(
+        await retainedHistoryText(area.root, area.plan, {
+          workId: 'NEX-1',
+          omitCurrentCycleOf: null,
+        }),
+      ).toContain(historyFile);
+
+      const record = createRecordIdeaDecision({
+        selectionFile: await selectionFileFor(area),
+        submittedStatus: 'Idea',
+        publish: (event) => area.events.push(event),
+      });
+      await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
+      const handoff = JSON.parse(
+        await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
+      ) as IdeaHandoff;
+      expect(handoff.challengerResults).toEqual([historyFile, currentFile]);
+      await rm(path.join(area.root, ideaHandoffFile));
+      await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
+      expect(JSON.parse(await readFile(path.join(area.root, ideaHandoffFile), 'utf8'))).toEqual(
+        handoff,
+      );
+      await expect(readFile(historyFile, 'utf8')).resolves.toBe(original);
+      await expect(readFile(path.join(area.root, ideaRoundPlanFile), 'utf8')).resolves.toBe(
+        JSON.stringify(area.plan),
+      );
+      await expect(readdir(path.dirname(area.cycleRoot()))).resolves.toEqual(['1']);
+    },
+  );
+
   it('preserves a human feedback pause while an approval is awaiting publication', async () => {
     const area = await refinementArea();
     await approvedCycle(area);
@@ -2453,6 +2546,7 @@ describe('retained idea reports', () => {
     ['project-guide.json', 'project-guide', 'project-guidance'],
     ['project-guide-follow-up.json', 'project-guide', 'project-guidance'],
     ['challenger.json', 'challenger', 'challenge'],
+    ['challenger-legacy.json', 'challenger', 'challenge'],
     ['brief.json', 'idea-editor', 'idea-editor-turn'],
     ['purpose.json', 'project-guide', 'legacy-purpose'],
     ['research.json', 'researcher', 'legacy-research'],

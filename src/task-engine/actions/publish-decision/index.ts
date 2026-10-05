@@ -4,6 +4,7 @@ import type { BoundAction, EventPublisher } from '../../index.js';
 import {
   challengerArtifact,
   isBoundChallengerReport,
+  legacyChallengerArtifact,
   type ChallengerReport,
 } from '../challenger/artifacts.js';
 import {
@@ -378,6 +379,7 @@ async function handoffReferences(
       [projectGuideArtifact, ideaReportContracts.projectGuidance, contributions],
       [projectGuideFollowUpArtifact, ideaReportContracts.projectGuidance, contributions],
       [editorResponseArtifact, ideaReportContracts.editorTurn, editorResponses],
+      [legacyChallengerArtifact, ideaReportContracts.challenge, challengerResults],
       [challengerArtifact, ideaReportContracts.challenge, challengerResults],
     ] as const;
     for (const [declaration, contract, references] of reports) {

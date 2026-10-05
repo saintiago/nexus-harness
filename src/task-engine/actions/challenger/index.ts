@@ -1,3 +1,5 @@
+import { constants } from 'node:fs';
+import { copyFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
@@ -25,6 +27,7 @@ import {
   challengerArtifact,
   challengerResponseSchema,
   isBoundChallengerReport,
+  legacyChallengerArtifact,
   type ChallengerReport,
   type ChallengerResponse,
 } from './artifacts.js';
@@ -36,8 +39,8 @@ import {
  * change that decision and a plain statement of the remaining obstacle for the idea's author. The
  * explanations, concerns and suggestions live in its assigned Markdown report. A repeated
  * invocation for the same revision and editor outcome reuses the result it saved; a legacy
- * approval without recorded identities is reassessed, because it cannot bind the content it
- * assessed.
+ * result without recorded identities is reassessed, because it cannot bind the content it
+ * assessed. Its original bytes remain available as a separate history artifact.
  */
 
 export type ChallengerSettings = {
@@ -218,6 +221,23 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       reportIdentity: outcome.reportFile.identity,
       invocationId: outcome.invocationId,
     };
+    if (existing !== null && !isBoundChallengerReport(existing.value)) {
+      const historyFile = path.join(cycleRoot, legacyChallengerArtifact.pathFromArtifactsRoot);
+      try {
+        await copyFile(existing.file, historyFile, constants.COPYFILE_EXCL);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+        // Resume a save interrupted after the copy, without rewriting the historical bytes.
+        if (!(await readFile(historyFile)).equals(await readFile(existing.file))) {
+          throw new Error(
+            `The retained legacy Challenger result at "${historyFile}" differs from "${existing.file}"; preserve both before reassessment.`,
+            { cause: error },
+          );
+        }
+      }
+    }
     await writeCycleArtifact(cycleRoot, challengerArtifact, report);
     await outcome.finishFeedback({ path: file }, report);
     return reported(response.verdict);

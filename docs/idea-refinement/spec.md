@@ -296,7 +296,10 @@ publication of changed content. Carry forward useful reports by reference, witho
 as new work. Older combined artifacts remain readable history under producer-owned compatibility
 readers, without rewriting them or requiring retroactive Markdown. New outcomes require their report
 binding; compatibility never relaxes current idea/editor association or Challenger approval
-freshness. Workflow restart follows the common execution-state contract.
+freshness. When Challenger reassesses a combined result, retain its original bytes separately
+before saving the new bound outcome, and include that original in readable history and the approved
+handoff. Reassessment stays in the existing cycle. Workflow restart follows the common
+execution-state contract.
 
 If an editor turn saved its immutable revision but not its response, recovery asks the editor to
 complete the response specifically for that retained revision. The response must describe what the

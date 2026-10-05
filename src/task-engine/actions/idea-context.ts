@@ -17,7 +17,7 @@ import {
   type ReportFile,
 } from './agent-reports.js';
 import type { ArtifactContent } from './artifacts.js';
-import { challengerArtifact } from './challenger/artifacts.js';
+import { challengerArtifact, legacyChallengerArtifact } from './challenger/artifacts.js';
 import { readDocumentText } from './documents.js';
 import {
   framingArtifact,
@@ -275,6 +275,12 @@ const cycleHistory: readonly CycleHistoryEntry[] = [
     label: 'focused project guidance',
     contract: ideaReportContracts.projectGuidance,
     declaration: projectGuideFollowUpArtifact,
+  },
+  {
+    relative: legacyChallengerArtifact.pathFromArtifactsRoot,
+    label: 'legacy challenger result',
+    contract: ideaReportContracts.challenge,
+    declaration: legacyChallengerArtifact,
   },
   {
     relative: challengerArtifact.pathFromArtifactsRoot,

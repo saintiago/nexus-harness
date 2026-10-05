@@ -135,3 +135,10 @@ export const challengerArtifact = {
     return { verdict: record.verdict, obstacle: record.obstacle, revision: record.revision };
   },
 } satisfies IdeaReportDeclaration<typeof retainedChallengerReportSchema, LegacyChallengerReport>;
+
+/** The untouched combined result retained before a fresh bound assessment replaces it. */
+export const legacyChallengerArtifact = {
+  ...challengerArtifact,
+  pathFromArtifactsRoot: 'challenger-legacy.json',
+  schema: legacyChallengerReportSchema,
+} satisfies IdeaReportDeclaration<typeof legacyChallengerReportSchema, LegacyChallengerReport>;
