@@ -14,7 +14,19 @@ import { ok } from '../src/result.js';
 import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { requireEvaluationContent } from '../src/task-engine/actions/preparation/evaluation-content.js';
+import {
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
+  type PreparationStage,
+} from '../src/task-engine/actions/preparation/artifacts.js';
+import {
+  readCurrentDecision,
+  readStageArtifact,
+  requireCurrentAcceptance,
+} from '../src/task-engine/actions/preparation/storage.js';
+import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
 import { scriptedGit, repositoryState } from './support/git.js';
 
 const temporaryDirectories: string[] = [];
@@ -95,11 +107,12 @@ const conformingSkipResponse = {
 };
 
 /** One requirements stage area with KAN-76's retained rounds 1 and 2 and an open round 3. */
-async function stageArea(): Promise<{
+async function stageArea(selectedStage: PreparationStage = stage): Promise<{
   readonly selectionFile: string;
   readonly root: string;
   readonly worktree: string;
 }> {
+  const stage = selectedStage;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-report-contracts-'));
   temporaryDirectories.push(directory);
   const issueRoot = path.join(directory, 'KAN-76');
@@ -582,4 +595,193 @@ it('binds a section citation to its document so a later change needs a current d
   await expect(
     requireEvaluationContent({ git, worktree, content: evaluation.basis.content as never }),
   ).rejects.toThrow('Evaluated content changed');
+});
+
+it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
+  '%s rejects authored acceptance of a skip and preserves citations for accepted-skip',
+  async (stage) => {
+    const { selectionFile, root, worktree } = await stageArea(stage);
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async (_repository, _revision, file) =>
+        ok(await readFile(path.join(worktree, file), 'utf8')),
+    });
+    const common = { selectionFile, stage, git, publish: () => undefined };
+    await createStageAuthor({
+      ...common,
+      runner: authorRunner(
+        {
+          ...conformingSkipResponse,
+          plan:
+            stage === 'architecture'
+              ? [
+                  {
+                    summary: 'Implement the design',
+                    scope: 'Carry the evaluated design into implementation.',
+                    completionCriteria: ['The design is implemented.'],
+                    prerequisites: [],
+                  },
+                ]
+              : [],
+        },
+        [],
+      ),
+    })({ task: 'propose' });
+    const report = {
+      assessedRevision: 3,
+      verdict: 'accepted',
+      reason: 'The existing documents satisfy the stage.',
+      observation: null,
+      findings: [],
+      priorFindings: [],
+      upstream: null,
+    };
+    await expect(
+      createStageEvaluator({ ...common, runner: evaluatorRunner(report, []) })(),
+    ).rejects.toThrow('accepting a skip proposal requires an accepted-skip verdict');
+    const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
+    await expect(readFile(evaluationFile, 'utf8')).rejects.toThrow(/ENOENT/);
+
+    await expect(
+      createStageEvaluator({
+        ...common,
+        runner: evaluatorRunner({ ...report, verdict: 'accepted-skip' }, []),
+      })(),
+    ).resolves.toBe('accepted-skip');
+    const finalize = createStageResult(common);
+    // A contradictory retained evaluator record must also fail before result persistence.
+    const evaluation = JSON.parse(await readFile(evaluationFile, 'utf8'));
+    await writeFile(evaluationFile, JSON.stringify({ ...evaluation, verdict: 'accepted' }));
+    await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(
+      'accepting a skip proposal requires an accepted-skip verdict',
+    );
+    const resultFile = path.join(root, 'state', 'result.json');
+    await expect(readFile(resultFile, 'utf8')).rejects.toThrow(/ENOENT/);
+    await writeFile(evaluationFile, JSON.stringify(evaluation));
+    await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
+    const savedResult = await readFile(resultFile, 'utf8');
+    expect(JSON.parse(savedResult)).toMatchObject({
+      outcome: 'skipped',
+      skipReferences: conformingSkipResponse.skip.references,
+      existingDocuments: conformingSkipResponse.skip.references.map((file) => ({
+        path: path.join(worktree, file),
+        revision: '1'.repeat(40),
+      })),
+    });
+
+    // Historical contradictory evaluations cannot bypass the rule at finalization or reuse.
+    await writeFile(evaluationFile, JSON.stringify({ ...evaluation, verdict: 'accepted' }));
+    const historicalResult = {
+      ...JSON.parse(savedResult),
+      outcome: 'accepted',
+      existingDocuments: [],
+      skipReferences: [],
+    };
+    await writeFile(resultFile, JSON.stringify(historicalResult));
+    await writeFile(
+      path.join(root, 'artifacts', '3', 'result.json'),
+      JSON.stringify(historicalResult),
+    );
+    await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(
+      'accepting a skip proposal requires an accepted-skip verdict',
+    );
+    expect(await readFile(resultFile, 'utf8')).toBe(JSON.stringify(historicalResult));
+    const selection = selectionDeclaration.schema.parse(
+      JSON.parse(await readFile(selectionFile, 'utf8')),
+    );
+    await expect(
+      readCurrentDecision({ issueRoot: path.dirname(root), stage, selection, git }),
+    ).resolves.toMatchObject({
+      kind: 'stale',
+      reason: expect.stringContaining(
+        'accepting a skip proposal requires an accepted-skip verdict',
+      ),
+    });
+  },
+);
+
+it('requires reevaluation of a retained fragment citation missing its content binding', async () => {
+  const { selectionFile, root, worktree } = await stageArea();
+  const savedRequirements = await readFile(path.join(worktree, 'docs/requirements.md'), 'utf8');
+  const { git } = scriptedGit([repositoryState()], {
+    readFileAtRevision: async () => ok(savedRequirements),
+  });
+  const common = { selectionFile, stage, git, publish: () => undefined };
+  await createStageAuthor({
+    ...common,
+    runner: authorRunner(
+      {
+        ...conformingSkipResponse,
+        skip: {
+          reason: conformingSkipResponse.skip.reason,
+          references: ['docs/requirements.md#activities-and-rules'],
+        },
+      },
+      [],
+    ),
+  })({ task: 'propose' });
+  await createStageEvaluator({
+    ...common,
+    runner: evaluatorRunner(
+      {
+        assessedRevision: 3,
+        verdict: 'accepted-skip',
+        reason: 'The cited section satisfies the stage.',
+        observation: null,
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      },
+      [],
+    ),
+  })();
+  await createStageResult(common)({ outcome: 'skipped' });
+  const issueRoot = path.dirname(root);
+  const selection = selectionDeclaration.schema.parse(
+    JSON.parse(await readFile(selectionFile, 'utf8')),
+  );
+  const decision = () => readCurrentDecision({ issueRoot, stage, selection, git });
+  await expect(decision()).resolves.toMatchObject({ kind: 'current' });
+
+  // Recreate the historical parser's unbound fragment citation without changing its identity.
+  const evaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
+  const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
+  const historicalEvaluation = JSON.stringify({
+    ...evaluation,
+    basis: { ...evaluation.basis, content: [] },
+  });
+  await writeFile(evaluationFile, historicalEvaluation);
+  const resultFiles = [
+    path.join(root, 'artifacts', '3', 'result.json'),
+    path.join(root, 'state', 'result.json'),
+  ];
+  const historicalResult = JSON.stringify({
+    ...JSON.parse(await readFile(resultFiles[0]!, 'utf8')),
+    existingDocuments: [],
+  });
+  for (const file of resultFiles) await writeFile(file, historicalResult);
+  const stale = {
+    kind: 'stale',
+    reason: expect.stringContaining('does not bind the relied-on document "docs/requirements.md"'),
+  };
+  await expect(decision()).resolves.toMatchObject(stale);
+  await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(
+    'does not bind the relied-on document',
+  );
+  await writeFile(path.join(worktree, 'docs/requirements.md'), '# Requirements\n\nChanged.\n');
+  await expect(decision()).resolves.toMatchObject(stale);
+  await expect(
+    requireCurrentAcceptance({
+      issueRoot,
+      stage,
+      selection,
+      round: 3,
+      verdict: 'accepted-skip',
+      git,
+      author: (await readStageArtifact(root, 3, stageAuthorArtifact))!,
+      evaluation: await readStageArtifact(root, 3, stageEvaluationArtifact),
+    }),
+  ).rejects.toThrow('does not bind the relied-on document');
+  // Neither path retroactively manufactures a binding or edits the retained acceptance.
+  expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
+  for (const file of resultFiles) expect(await readFile(file, 'utf8')).toBe(historicalResult);
 });

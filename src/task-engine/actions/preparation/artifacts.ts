@@ -229,7 +229,8 @@ export const stageEvaluationResponseSchema = z.strictObject({
   verdict: z
     .enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream'])
     .describe(
-      'Accepted, accepted-skip for the author\u2019s proposed skip, changes-requested or return-upstream.',
+      'Accepted for authored work, accepted-skip for the author\u2019s proposed skip, ' +
+        'changes-requested or return-upstream.',
     ),
   reason: z.string().describe('Why the evidence and current findings support this verdict.'),
   /**
@@ -259,6 +260,22 @@ export const stageEvaluationResponseSchema = z.strictObject({
 });
 
 export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSchema>;
+
+/** Acceptance preserves the author's distinction between authored work and a proposed skip. */
+export function acceptanceVerdictProblem(
+  outcome: StageAuthorOutput['outcome'],
+  verdict: StageEvaluationResponse['verdict'],
+): string | null {
+  if (verdict === 'accepted-skip' && outcome !== 'skip-proposed') {
+    return 'the evaluator accepted a skip the author did not propose';
+  }
+  if (verdict === 'accepted' && outcome !== 'authored') {
+    return outcome === 'skip-proposed'
+      ? 'accepting a skip proposal requires an accepted-skip verdict'
+      : 'an accepted verdict requires authored work';
+  }
+  return null;
+}
 
 /** One repository path the evaluator assessed or relied on: its observed revision and existence. */
 export const assessedContentSchema = z.strictObject({

@@ -99,6 +99,22 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'A completed preparation round cannot be rewritten with a different result.',
         );
       }
+      if (outcome === 'accepted' || outcome === 'skipped') {
+        const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+        if (author === null) {
+          throw new Error('A retained acceptance must keep its authored report.');
+        }
+        await requireCurrentAcceptance({
+          issueRoot,
+          stage: settings.stage,
+          selection,
+          round: plan.round,
+          verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
+          author,
+          evaluation: await readStageArtifact(root, plan.round, stageEvaluationArtifact),
+          git: settings.git,
+        });
+      }
       if (
         outcome !== 'exhausted' &&
         settings.stage === 'prototype' &&

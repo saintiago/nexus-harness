@@ -18,6 +18,7 @@ import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
+  acceptanceVerdictProblem,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
@@ -77,20 +78,19 @@ function reportProblem(
   settings: {
     readonly stage: PreparationStage;
     readonly authorRevision: number;
-    readonly authorProposedSkip: boolean;
+    readonly authorOutcome: StageAuthorOutput['outcome'];
     readonly priorFindings: readonly { readonly id: string }[];
   },
 ): string | null {
-  const { authorRevision, authorProposedSkip, priorFindings } = settings;
+  const { authorRevision, authorOutcome, priorFindings } = settings;
   if (report.assessedRevision !== authorRevision) {
     return (
       `the report assesses revision ${String(report.assessedRevision)} while the authored ` +
       `revision is ${String(authorRevision)}`
     );
   }
-  if (report.verdict === 'accepted-skip' && !authorProposedSkip) {
-    return 'the evaluator accepted a skip the author did not propose';
-  }
+  const acceptanceProblem = acceptanceVerdictProblem(authorOutcome, report.verdict);
+  if (acceptanceProblem !== null) return acceptanceProblem;
   if (report.verdict === 'return-upstream' && report.upstream === null) {
     return 'a return-upstream verdict needs the problematic input, consequence and correction';
   }
@@ -106,12 +106,6 @@ function reportProblem(
       return 'an evaluated applicability skip carries no observation; it needs no preview evidence';
     }
   } else if (report.verdict === 'accepted') {
-    if (authorProposedSkip) {
-      return (
-        'accepting a prototype skip proposal is an accepted-skip decision, which needs no ' +
-        'preview evidence'
-      );
-    }
     if (report.observation === null) {
       return (
         'accepting applicable prototype work needs the evaluator\u2019s own saved browser ' +
@@ -364,7 +358,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     const problem = reportProblem(report, {
       stage: settings.stage,
       authorRevision: author.revision,
-      authorProposedSkip: author.outcome === 'skip-proposed',
+      authorOutcome: author.outcome,
       priorFindings: findings,
     });
     if (problem !== null) {

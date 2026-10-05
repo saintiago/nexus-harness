@@ -12,6 +12,7 @@ import {
 } from '../round-storage.js';
 import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import {
+  acceptanceVerdictProblem,
   preparationStages,
   preparationWorkspaceDeclaration,
   stageAreas,
@@ -559,30 +560,15 @@ export async function readCurrentDecision(settings: {
   try {
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
-    if (evaluation.assessedRevision !== author.revision || evaluation.verdict !== verdict) {
-      throw new Error(`the ${stage} result does not match its saved evaluation`);
-    }
-    if (basis.author.path !== roundArtifactFile(root, plan.round, 'author.json')) {
-      throw new Error(`the ${stage} evaluation does not name the authored report it assessed`);
-    }
-    if (basis.authorIdentity !== authoredIdentity(author)) {
-      throw new Error(`the ${stage} authored report changed since evaluation`);
-    }
-    if (basis.sourceIdentity !== sourceInputIdentity(selection)) {
-      throw new Error(`the captured issue input changed since the ${stage} evaluation`);
-    }
-    const upstream = await upstreamResultReferences(issueRoot, stage);
-    const reliedOn = upstream.map((reference) => ({
-      result: { path: reference.resultFile },
-      identity: reference.identity,
-    }));
-    if (JSON.stringify(reliedOn) !== JSON.stringify(basis.upstream)) {
-      throw new Error(`a relied-on upstream result changed since the ${stage} evaluation`);
-    }
-    await requireEvaluationContent({
+    await requireCurrentAcceptance({
+      issueRoot,
+      stage,
+      selection,
+      round: plan.round,
+      verdict,
+      author,
+      evaluation,
       git,
-      worktree: preparationWorktree(issueRoot),
-      content: basis.content,
     });
     // An applicable prototype decision also relies on the retained observation records; a record
     // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
@@ -628,6 +614,10 @@ export async function requireCurrentAcceptance(settings: {
   if (evaluation.verdict !== verdict) {
     throw new Error('Acceptance requires the evaluator\u2019s applicability decision.');
   }
+  const acceptanceProblem = acceptanceVerdictProblem(author.outcome, verdict);
+  if (acceptanceProblem !== null) {
+    throw new Error(`Acceptance is unusable: ${acceptanceProblem}.`);
+  }
   const basis: AcceptanceBasis = evaluation.basis;
   if (basis.author.path !== roundArtifactFile(root, round, 'author.json')) {
     throw new Error('The evaluation does not name the authored report it assessed.');
@@ -657,8 +647,8 @@ export async function requireCurrentAcceptance(settings: {
     worktree: preparationWorktree(issueRoot),
     content: basis.content,
   });
-  // A document an evaluated skip relied on that appeared only after the assessment is a changed
-  // relied-on input too: the skip was not taken against it.
+  // A resolvable repository citation must already be bound by the saved evaluation. Historical
+  // skips with omitted bindings need reevaluation; do not invent a binding from current bytes.
   const checkout = preparationWorktree(issueRoot);
   const retainedPrototype = await retainedStagePrototype(root, round);
   for (const reference of author.skip?.references ?? []) {
@@ -672,7 +662,8 @@ export async function requireCurrentAcceptance(settings: {
       !basis.content.some((entry) => entry.path === resolution.relative)
     ) {
       throw new Error(
-        'A relied-on document appeared since evaluation; a current decision is required.',
+        `The evaluation does not bind the relied-on document "${resolution.relative}"; ` +
+          'a current decision is required.',
       );
     }
   }

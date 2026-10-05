@@ -92,6 +92,8 @@ Author and evaluator response contracts omit action-added metadata. StageAuthor 
 authored revision; StageEvaluator adds the observed acceptance basis; result/plan persistence stays
 with the stage operations. Invocation context explicitly reserves their report and state paths.
 Non-authored responses carry empty `sourcePaths`; skip citations belong in `skip.references`.
+Every stage accepts authored work with `accepted` and a proposed skip with `accepted-skip`;
+incompatible outcome/verdict pairs are rejected before persistence and during retained replay.
 
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) in each
 stage area. The current responsible author or evaluator receives outstanding feedback even when
@@ -113,6 +115,9 @@ acceptance and before reuse; an unrelated new HEAD is not by itself a change to 
 A changed authored report, assessed content or relied-on input needs a current evaluator decision.
 Resolve relative and in-checkout absolute references to canonical checkout-relative paths. Paths
 outside the checkout are not repository document references. Preserve source attribution.
+Resolvable repository skip citations missing from a retained evaluation's content basis require
+reevaluation before finalization, replay, downstream reuse or handoff. Preserve the historical
+record; current content cannot supply a retroactive binding.
 
 ## Correction and reuse
 
