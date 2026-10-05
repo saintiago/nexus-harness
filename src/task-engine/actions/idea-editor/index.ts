@@ -401,7 +401,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'to correction. Ask an essential author decision only when one is already missing: an',
       'element the author can still supply through refinement is not one.',
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(framingResponseSchema),
     ].join('\n\n');
@@ -474,7 +474,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         'author-facing reason and no refinedIdea, and reports help as null.',
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       ...(await contributionsText(root, plan, input.taskKey, 'edit')),
       ...(projectGuidance === null ? [] : [projectGuidance]),
       ...(await recoveryText(root, plan, input.taskKey)),
@@ -602,7 +602,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
           ]),
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       `The refined idea revision currently in force: ${revision.path}`,
       `The refined idea revision the Challenger assessed: ${discussion.report.refinedIdea}`,
       `The Challenger result to answer: ` +

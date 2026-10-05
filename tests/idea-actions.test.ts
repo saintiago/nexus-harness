@@ -42,6 +42,7 @@ import {
   ideaSourceScopeText,
   ideaStageGuidanceText,
   projectGuidanceInstruction,
+  retainedHistoryText,
 } from '../src/task-engine/actions/idea-context.js';
 import {
   ideaCycleDirectory,
@@ -1620,6 +1621,201 @@ describe('retained idea reports', () => {
       reportKind,
     };
   }
+
+  it.each(['researcher', 'project-guide', 'challenger'] as const)(
+    'retains unreadable framing from the %s context for the framing producer',
+    async (role) => {
+      const area = await refinementArea();
+      await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+        ...revisedTurn(1).refinedIdea,
+        revision: 1,
+        submission: 1,
+        cycle: 1,
+      });
+      const file = path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot);
+      await mkdir(file);
+      const unused = scriptedRuntime([]);
+      const settings = {
+        workspace: { root: area.root },
+        runner: runnerOf(unused.runtime),
+        publish: (event: EngineEvent) => area.events.push(event),
+      };
+      const action = {
+        researcher: createResearcher,
+        'project-guide': createProjectGuide,
+        challenger: createChallenger,
+      }[role](settings);
+      await expect(action({ phase: 'initial' })).rejects.toThrow('could not be read');
+      expect(unused.requests).toHaveLength(0);
+      const scope = scopeOf(area, 'idea-editor', 'idea-framing');
+      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope,
+        operation: 'FrameIdea',
+        profile: profiles['idea-editor'],
+        invocationId: null,
+        source: { path: file },
+        output: null,
+        reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+      });
+      await expect(
+        outstandingReportFeedback({
+          areaRoot: area.root,
+          scope: scopeOf(area, 'idea-editor', 'idea-editor-turn'),
+        }),
+      ).resolves.toEqual([]);
+
+      await rm(file, { recursive: true });
+      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
+        1,
+      );
+      const resumed = scriptedRuntime([framingFixture]);
+      const editor = createIdeaEditor({
+        ...settings,
+        runner: runnerOf(resumed.runtime),
+      });
+      await expect(editor({ task: 'frame' })).resolves.toBe('framed');
+      const context = resumed.requests[0]?.context ?? '';
+      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain(`Artifact at "${file}" could not be read`);
+      expect(context).toContain('unavailable');
+      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+      expect(
+        (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'rejection'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('retains unreadable research encountered in editor history for the next researcher', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(file, { recursive: true });
+    const unused = scriptedRuntime([]);
+    const settings = {
+      workspace: { root: area.root },
+      runner: runnerOf(unused.runtime),
+      publish: (event: EngineEvent) => area.events.push(event),
+    };
+    const editor = createIdeaEditor(settings);
+    await expect(editor({ task: 'edit' })).rejects.toThrow('could not be read');
+    expect(unused.requests).toHaveLength(0);
+    const scope = scopeOf(area, 'researcher', 'research');
+    const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]?.record).toMatchObject({
+      scope,
+      operation: 'Researcher',
+      profile: profiles.researcher,
+      source: { path: file },
+      output: null,
+      reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+    });
+    await rm(file, { recursive: true });
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
+      1,
+    );
+    const resumed = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({ ...settings, runner: runnerOf(resumed.runtime) });
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+    const context = resumed.requests[0]?.context ?? '';
+    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain(`Artifact at "${file}" could not be read`);
+    expect(context).toContain('unavailable');
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['editor-framing.json', 'idea-editor', 'idea-framing'],
+    ['refined-idea.json', 'idea-editor', 'idea-editor-turn'],
+    ['editor-response.json', 'idea-editor', 'idea-editor-turn'],
+    ['editor-help-request.json', 'idea-editor', 'idea-editor-turn'],
+    ['researcher.json', 'researcher', 'research'],
+    ['researcher-follow-up.json', 'researcher', 'research'],
+    ['project-guide.json', 'project-guide', 'project-guidance'],
+    ['project-guide-follow-up.json', 'project-guide', 'project-guidance'],
+    ['challenger.json', 'challenger', 'challenge'],
+    ['brief.json', 'idea-editor', 'idea-editor-turn'],
+    ['purpose.json', 'project-guide', 'legacy-purpose'],
+    ['research.json', 'researcher', 'legacy-research'],
+    ['council/purpose.json', 'challenger', 'legacy-council-purpose'],
+    ['council/evidence.json', 'challenger', 'legacy-council-evidence'],
+    ['council/simplicity.json', 'challenger', 'legacy-council-simplicity'],
+  ] as const)(
+    'attributes unreadable earlier history at %s to its producer and compatible contract',
+    async (relative, role, reportKind) => {
+      const area = await refinementArea({ cycle: 2 });
+      const file = path.join(area.cycleRoot(1), relative);
+      await mkdir(file, { recursive: true });
+      await expect(
+        retainedHistoryText(area.root, area.plan, {
+          workId: capturedInput.taskKey,
+          // Omitting a parallel role's current contribution must not omit its older history.
+          omitCurrentCycleOf: role,
+        }),
+      ).rejects.toThrow('could not be read');
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: scopeOf(area, role, reportKind),
+        profile: profiles[role],
+        invocationId: null,
+        source: { path: file },
+        output: null,
+        context: expect.stringContaining('submission 1 cycle 1'),
+        reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
+      });
+      await expect(
+        outstandingReportFeedback({
+          areaRoot: area.root,
+          scope: { ...scopeOf(area, role, reportKind), workId: 'NEX-2' },
+        }),
+      ).resolves.toEqual([]);
+    },
+  );
+
+  it('keeps absent reports and omitted concurrent contributions out of history and feedback', async () => {
+    const area = await refinementArea();
+    const options = { workId: capturedInput.taskKey, omitCurrentCycleOf: 'researcher' as const };
+    const initial = await retainedHistoryText(area.root, area.plan, options);
+    expect(initial).toContain('captured idea input');
+    expect(initial).not.toContain('cycle 1');
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(file, { recursive: true });
+    await expect(retainedHistoryText(area.root, area.plan, options)).resolves.toBe(initial);
+    await expect(readReportFeedback(area.root)).resolves.toEqual([]);
+  });
+
+  it('does not supply legacy research rejection to the current research contract', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), 'research.json');
+    await mkdir(file, { recursive: true });
+    const options = { workId: capturedInput.taskKey, omitCurrentCycleOf: null };
+    await expect(retainedHistoryText(area.root, area.plan, options)).rejects.toThrow(
+      'could not be read',
+    );
+    await rm(file, { recursive: true });
+    // A historical repair leaves its rejection outstanding without authorizing a current role
+    // to correct a response contract it does not implement.
+    await writeFile(file, '{"legacy":"repaired"}');
+    const agent = scriptedRuntime([researchFixture]);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+    expect(agent.requests[0]?.context).not.toContain('Outstanding report rejection');
+    await expect(
+      outstandingReportFeedback({
+        areaRoot: area.root,
+        scope: scopeOf(area, 'researcher', 'legacy-research'),
+      }),
+    ).resolves.toHaveLength(1);
+    expect(
+      (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'correction'),
+    ).toEqual([]);
+  });
 
   it('preserves an unusable retained research contribution for the next researcher', async () => {
     const area = await refinementArea();

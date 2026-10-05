@@ -135,59 +135,130 @@ export const ideaSourceScopeText = [
 const worktreeDirectory = 'worktree';
 
 /**
+ * The saved report contract of one idea role: the responsibility a rejection or correction is
+ * routed to and the operation whose report the artifact retains.
+ */
+export type IdeaReportContract = {
+  readonly role: IdeaRole;
+  readonly reportKind: string;
+  readonly operation: string;
+};
+
+/** The saved reports the idea actions read from one another. */
+export const ideaReportContracts = {
+  framing: { role: 'idea-editor', reportKind: 'idea-framing', operation: 'FrameIdea' },
+  editorTurn: {
+    role: 'idea-editor',
+    reportKind: 'idea-editor-turn',
+    operation: 'idea-editor-turn',
+  },
+  research: { role: 'researcher', reportKind: 'research', operation: 'Researcher' },
+  projectGuidance: {
+    role: 'project-guide',
+    reportKind: 'project-guidance',
+    operation: 'ProjectGuide',
+  },
+  challenge: { role: 'challenger', reportKind: 'challenge', operation: 'Challenger' },
+} as const satisfies Record<string, IdeaReportContract>;
+
+/**
  * The retained cycle artifacts the history lists, with the label each history line carries and the
- * role that owns it. The paths earlier implementations wrote are listed too, so their artifacts
- * stay readable history without being rewritten.
+ * report responsibility that owns it. Earlier implementations' paths remain readable history;
+ * incompatible old contracts retain separate feedback instead of reaching current invocations.
  */
 const cycleHistory: readonly {
   readonly relative: string;
   readonly label: string;
-  readonly role: IdeaRole;
+  readonly contract: IdeaReportContract;
 }[] = [
-  { relative: framingArtifact.pathFromArtifactsRoot, label: 'framing', role: 'idea-editor' },
+  {
+    relative: framingArtifact.pathFromArtifactsRoot,
+    label: 'framing',
+    contract: ideaReportContracts.framing,
+  },
   {
     relative: refinedIdeaArtifact.pathFromArtifactsRoot,
     label: 'refined idea revision',
-    role: 'idea-editor',
+    contract: ideaReportContracts.editorTurn,
   },
   {
     relative: editorResponseArtifact.pathFromArtifactsRoot,
     label: 'editor response',
-    role: 'idea-editor',
+    contract: ideaReportContracts.editorTurn,
   },
   {
     relative: editorHelpArtifact.pathFromArtifactsRoot,
     label: 'focused help request',
-    role: 'idea-editor',
+    contract: ideaReportContracts.editorTurn,
   },
-  { relative: researchArtifact.pathFromArtifactsRoot, label: 'research', role: 'researcher' },
+  {
+    relative: researchArtifact.pathFromArtifactsRoot,
+    label: 'research',
+    contract: ideaReportContracts.research,
+  },
   {
     relative: researchFollowUpArtifact.pathFromArtifactsRoot,
     label: 'focused research',
-    role: 'researcher',
+    contract: ideaReportContracts.research,
   },
   {
     relative: projectGuideArtifact.pathFromArtifactsRoot,
     label: 'project guidance',
-    role: 'project-guide',
+    contract: ideaReportContracts.projectGuidance,
   },
   {
     relative: projectGuideFollowUpArtifact.pathFromArtifactsRoot,
     label: 'focused project guidance',
-    role: 'project-guide',
+    contract: ideaReportContracts.projectGuidance,
   },
   {
     relative: challengerArtifact.pathFromArtifactsRoot,
     label: 'challenger result',
-    role: 'challenger',
+    contract: ideaReportContracts.challenge,
   },
   // Artifacts retained from earlier implementations remain readable history.
-  { relative: retainedBriefArtifactPath, label: 'refined idea revision', role: 'idea-editor' },
-  { relative: 'purpose.json', label: 'purpose assessment', role: 'project-guide' },
-  { relative: 'research.json', label: 'research report', role: 'researcher' },
-  { relative: 'council/purpose.json', label: 'council result', role: 'challenger' },
-  { relative: 'council/evidence.json', label: 'council result', role: 'challenger' },
-  { relative: 'council/simplicity.json', label: 'council result', role: 'challenger' },
+  {
+    relative: retainedBriefArtifactPath,
+    label: 'refined idea revision',
+    contract: ideaReportContracts.editorTurn,
+  },
+  {
+    relative: 'purpose.json',
+    label: 'purpose assessment',
+    contract: { role: 'project-guide', reportKind: 'legacy-purpose', operation: 'legacy-purpose' },
+  },
+  {
+    relative: 'research.json',
+    label: 'research report',
+    contract: { role: 'researcher', reportKind: 'legacy-research', operation: 'legacy-research' },
+  },
+  {
+    relative: 'council/purpose.json',
+    label: 'council result',
+    contract: {
+      role: 'challenger',
+      reportKind: 'legacy-council-purpose',
+      operation: 'legacy-council-purpose',
+    },
+  },
+  {
+    relative: 'council/evidence.json',
+    label: 'council result',
+    contract: {
+      role: 'challenger',
+      reportKind: 'legacy-council-evidence',
+      operation: 'legacy-council-evidence',
+    },
+  },
+  {
+    relative: 'council/simplicity.json',
+    label: 'council result',
+    contract: {
+      role: 'challenger',
+      reportKind: 'legacy-council-simplicity',
+      operation: 'legacy-council-simplicity',
+    },
+  },
 ];
 
 /**
@@ -198,7 +269,7 @@ const cycleHistory: readonly {
 export async function retainedHistoryText(
   root: string,
   plan: IdeaRoundPlan,
-  options: { readonly omitCurrentCycleOf: IdeaRole | null },
+  options: { readonly workId: string; readonly omitCurrentCycleOf: IdeaRole | null },
 ): Promise<string> {
   const submissions = await listIdeaSubmissions(root);
   if (submissions.length === 0) {
@@ -217,14 +288,24 @@ export async function retainedHistoryText(
       const cycleRoot = ideaCycleDirectory(root, submission, cycle);
       for (const entry of cycleHistory) {
         if (
-          options.omitCurrentCycleOf === entry.role &&
+          options.omitCurrentCycleOf === entry.contract.role &&
           submission === plan.submission &&
           cycle === plan.cycle
         ) {
           continue;
         }
         const file = path.join(cycleRoot, entry.relative);
-        if ((await readDocumentText(file, 'Artifact')) === null) {
+        const text = await readRetainedIdeaText({
+          root,
+          workId: options.workId,
+          plan,
+          file,
+          contract: entry.contract,
+          context:
+            `Reading retained ${entry.label} from submission ${String(submission)} ` +
+            `cycle ${String(cycle)} for the history of idea ${options.workId}.`,
+        });
+        if (text === null) {
           continue;
         }
         lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${file}`);
@@ -257,10 +338,16 @@ export async function capturedIdeaText(
   input: IdeaInput,
 ): Promise<string> {
   const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-  const framing = await readDocumentText(
-    path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
-    'Artifact',
-  );
+  const framing = await readRetainedIdeaText({
+    root,
+    workId: input.taskKey,
+    plan,
+    file: path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
+    contract: ideaReportContracts.framing,
+    context:
+      `Reading the framing of submission ${String(plan.submission)} ` +
+      `cycle ${String(plan.cycle)} for the captured context of idea ${input.taskKey}.`,
+  });
   const revision = await readRetainedRefinedIdea({
     root,
     workId: input.taskKey,
@@ -336,33 +423,6 @@ export async function projectGuidanceText(root: string): Promise<string | null> 
 }
 
 /**
- * The saved report contract of one idea role: the responsibility a rejection or correction is
- * routed to and the operation whose report the artifact retains.
- */
-export type IdeaReportContract = {
-  readonly role: IdeaRole;
-  readonly reportKind: string;
-  readonly operation: string;
-};
-
-/** The saved reports the idea actions read from one another. */
-export const ideaReportContracts = {
-  framing: { role: 'idea-editor', reportKind: 'idea-framing', operation: 'FrameIdea' },
-  editorTurn: {
-    role: 'idea-editor',
-    reportKind: 'idea-editor-turn',
-    operation: 'idea-editor-turn',
-  },
-  research: { role: 'researcher', reportKind: 'research', operation: 'Researcher' },
-  projectGuidance: {
-    role: 'project-guide',
-    reportKind: 'project-guidance',
-    operation: 'ProjectGuide',
-  },
-  challenge: { role: 'challenger', reportKind: 'challenge', operation: 'Challenger' },
-} as const satisfies Record<string, IdeaReportContract>;
-
-/**
  * The report responsibility of one idea role's saved report: the configured project, the work
  * item, the refinement area and the role's report contract. Feedback routes by this scope.
  */
@@ -379,6 +439,36 @@ export function ideaReportScope(settings: {
     role: settings.role,
     reportKind: settings.reportKind,
   };
+}
+
+/** Read report text for context without changing absent-file or historical-format behavior. */
+async function readRetainedIdeaText(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly file: string;
+  readonly contract: IdeaReportContract;
+  readonly context: string;
+}): Promise<string | null> {
+  try {
+    return await readDocumentText(settings.file, 'Artifact');
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope: ideaReportScope({
+        root: settings.root,
+        workId: settings.workId,
+        role: settings.contract.role,
+        reportKind: settings.contract.reportKind,
+      }),
+      invocationId: null,
+      operation: settings.contract.operation,
+      profile: settings.plan.profiles[settings.contract.role] ?? null,
+      context: settings.context,
+      file: settings.file,
+      error,
+    });
+  }
 }
 
 /**

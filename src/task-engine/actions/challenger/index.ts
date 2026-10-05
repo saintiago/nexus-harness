@@ -161,7 +161,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       'resolve. The current architecture is not immutable, and a preferable alternative alone is',
       'not a veto. Do not demand detailed design or substitute a different idea.',
       await capturedIdeaText(root, plan, input),
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
+      await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       `The exact refined idea revision you review is the revision in force above: ${revision.path}`,
       turn === null || turnFile === null
         ? 'The revision stands alone: the editor has not responded to a previous concern.'

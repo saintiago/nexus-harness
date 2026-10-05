@@ -137,7 +137,10 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
           question,
       await capturedIdeaText(root, plan, inputRecord),
       // The Researcher contributes concurrently; its pending contribution is not this role's.
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: 'researcher' }),
+      await retainedHistoryText(root, plan, {
+        workId: inputRecord.taskKey,
+        omitCurrentCycleOf: 'researcher',
+      }),
       'Find the project\u2019s purpose, charter and vision documents yourself in the supplied',
       'worktree. If they are absent or incomplete, infer direction from code and commits, label',
       'the inference as provisional and cite the evidence. Explain what existing capabilities',

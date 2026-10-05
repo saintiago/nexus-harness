@@ -138,7 +138,10 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
           question,
       await capturedIdeaText(root, plan, inputRecord),
       // The Project guide contributes concurrently; its pending contribution is not this role's.
-      await retainedHistoryText(root, plan, { omitCurrentCycleOf: 'project-guide' }),
+      await retainedHistoryText(root, plan, {
+        workId: inputRecord.taskKey,
+        omitCurrentCycleOf: 'project-guide',
+      }),
       'Use the prepared worktree, project knowledge, existing work and your configured web tools.',
       'Keep suggestions and options at idea level: strengthen the author\u2019s proposal without',
       'replacing it with another idea, and produce no implementation plan or draft configuration.',
