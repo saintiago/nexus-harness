@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
+  finishRetainedIdeaCorrection,
   ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
@@ -28,8 +29,9 @@ import {
  * Researcher runs the research role. The cycle's initial enrichment works from the captured idea,
  * the retained history, the prepared project worktree and its configured web tools; a focused
  * follow-up answers the specific question the editor asked, without repeating the investigation.
- * The contribution is short, its findings and sources stay in the artifact, and a follow-up to
- * the other contributor's question is not requested of this role.
+ * The complete research and its short contribution live in the invocation's Markdown report; the
+ * machine outcome is the completion the join consumes, and a follow-up to the other contributor's
+ * question is not requested of this role.
  */
 
 export type ResearcherSettings = {
@@ -60,19 +62,14 @@ function phaseOf(input: unknown): ResearchPhase {
 /** Create Researcher over the refinement area it contributes to. */
 export function createResearcher(settings: ResearcherSettings): BoundAction {
   /** Publish a saved contribution and return its workflow outcome. */
-  function contributed(
-    taskKey: string,
-    cycle: number,
-    sources: number,
-    artifact: string,
-  ): 'contributed' {
+  function contributed(taskKey: string, cycle: number, artifact: string): 'contributed' {
     publishIdeaOutcome({
       publish: settings.publish,
       source: 'researcher',
       taskKey,
       cycle,
       outcome: 'contributed',
-      detail: `${String(sources)} source${sources === 1 ? '' : 's'}`,
+      detail: null,
       artifact,
     });
     return 'contributed';
@@ -84,6 +81,7 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const artifact = phase === 'initial' ? researchArtifact : researchFollowUpArtifact;
+    const reportName = phase === 'initial' ? 'researcher' : 'researcher-follow-up';
     const inputRecord = await readIdeaInput(root, plan.submission);
     const file = path.join(cycleRoot, artifact.pathFromArtifactsRoot);
 
@@ -100,13 +98,13 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
           `Researcher reading the editor help request of submission ` +
           `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${inputRecord.taskKey}.`,
       });
-      if (help === null || help.disposition !== 'help-requested') {
+      if (help === null || help.value.disposition !== 'help-requested') {
         throw new Error(
           `A focused research contribution answers an editor help request; submission ` +
             `${String(plan.submission)} cycle ${String(plan.cycle)} has none.`,
         );
       }
-      question = help.help?.researcher ?? null;
+      question = help.value.help?.researcher ?? null;
       if (question === null) {
         // The editor asked the Project guide only; this role contributes nothing.
         return 'not-requested';
@@ -126,7 +124,15 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
         `for idea ${inputRecord.taskKey}.`,
     });
     if (existing !== null) {
-      return contributed(inputRecord.taskKey, plan.cycle, existing.sources.length, file);
+      // The saved contribution already answers for the rejections its invocation was supplied;
+      // an interrupted correction write finishes here without another invocation.
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: inputRecord.taskKey,
+        contract: ideaReportContracts.research,
+        read: existing,
+      });
+      return contributed(inputRecord.taskKey, plan.cycle, file);
     }
 
     const guidance = await projectGuidanceText(root);
@@ -136,6 +142,10 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
           'it with sourced knowledge, examples and conceptual possibilities that give it substance.'
         : `Answer this focused question from the editor, without repeating the investigation:\n` +
           question,
+      'Write the complete research in this invocation\u2019s assigned Markdown report: the short',
+      'contribution the editor reads, the sourced findings, the idea-level possibilities and every',
+      'source with its link and access date, together with any material limitation. The editor',
+      'reads that report directly.',
       await capturedIdeaText(root, plan, inputRecord),
       // The Project guide contributes concurrently; its pending contribution is not this role's.
       await retainedHistoryText(root, plan, {
@@ -147,8 +157,6 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       'replacing it with another idea, and produce no implementation plan or draft configuration.',
       'Give links and access dates for external sources and keep source facts distinct from your',
       'own suggestions. Do not scrutinize or reject the idea and do not select an architecture.',
-      'Give the editor a short contribution with the most useful discoveries; keep the detail in',
-      'this report.',
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(researchResponseSchema),
     ].join('\n\n');
@@ -159,19 +167,23 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       role: 'researcher',
       operation: 'Researcher',
       reportKind: 'research',
+      reportName,
       input: inputRecord,
       context,
       schema: researchResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
     const stored: ResearchContribution = {
-      ...outcome.report,
+      taskKey: inputRecord.taskKey,
       role: 'researcher',
+      profile: outcome.profile,
       question,
+      report: outcome.assignedReport,
+      reportIdentity: outcome.reportFile.identity,
+      invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    await outcome.resolveFeedback({ path: file }, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, stored.sources.length, file);
+    await outcome.finishFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, file);
   };
 }

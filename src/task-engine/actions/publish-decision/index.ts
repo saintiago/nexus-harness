@@ -1,20 +1,33 @@
 import path from 'node:path';
 import type { JiraAdapter, JiraDocument } from '../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
+import {
+  challengerArtifact,
+  isBoundChallengerReport,
+  retainedChallengerReportSchema,
+  type ChallengerReport,
+} from '../challenger/artifacts.js';
 import {
   editorResponseArtifact,
   framingArtifact,
-  refinedIdeaArtifact,
-  type FramingResponse,
+  readRefinedIdeaRevision,
+  refinedIdeaIdentity,
+  retainedEditorTurnSchema,
+  retainedFramingSchema,
   type RefinedIdea,
+  type RefinedIdeaRead,
+  type RetainedFraming,
 } from '../idea-editor/artifacts.js';
-import { publishIdeaOutcome } from '../idea-context.js';
+import {
+  ideaReportContracts,
+  publishIdeaOutcome,
+  readRetainedIdeaReport,
+  readRetainedRefinedIdea,
+} from '../idea-context.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
-  latestRefinedIdea,
   readCycleArtifact,
   readIdeaPlan,
   readSubmissionArtifact,
@@ -22,6 +35,7 @@ import {
 } from '../idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
 import { readRequiredRecord, writeRecord } from '../records.js';
+import { recordIdentity } from '../report-feedback.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
 import type { IdeaInput } from '../select-idea/artifacts.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
@@ -146,7 +160,7 @@ function capturedSummary(input: IdeaInput): string | null {
  * The idea a return presents when no refined idea revision exists yet: the captured idea and the
  * editor's framing of it, as the specification directs.
  */
-function capturedIdeaSection(input: IdeaInput, framing: FramingResponse | null): string[] {
+function capturedIdeaSection(input: IdeaInput, framing: RetainedFraming | null): string[] {
   const summary = capturedSummary(input);
   return [
     'Captured idea (no refined idea revision yet)',
@@ -173,7 +187,7 @@ function approvedComment(idea: RefinedIdea, cycles: number): string {
  * What the refinement accomplished, as one line for a human-facing comment: the latest revision's
  * cumulative summary, or what a return that stopped before a revision achieved instead.
  */
-function refinementSummary(idea: RefinedIdea | null, framing: FramingResponse | null): string {
+function refinementSummary(idea: RefinedIdea | null, framing: RetainedFraming | null): string {
   if (idea !== null) {
     return idea.changeSummary;
   }
@@ -209,7 +223,7 @@ function returnOutcome(decision: IdeaDecision, cycles: number): string {
  */
 function returnedComment(settings: {
   readonly input: IdeaInput;
-  readonly framing: FramingResponse | null;
+  readonly framing: RetainedFraming | null;
   readonly idea: RefinedIdea | null;
   readonly decision: IdeaDecision;
   readonly cycles: number;
@@ -234,17 +248,22 @@ function returnedComment(settings: {
   ].join('\n');
 }
 
-/** True when one Challenger result assessed exactly the supplied revision and editor response. */
+/**
+ * True when one bound Challenger result assessed exactly the supplied refined idea revision and
+ * editor outcome: the recorded paths and content identities both match, so changed content can
+ * never reuse an earlier approval.
+ */
 function binds(
   report: ChallengerReport,
-  refinedIdea: string,
-  editorResponse: string | null,
-  revision: number,
+  revision: RefinedIdeaRead,
+  editor: { readonly file: string; readonly identity: string } | null,
 ): boolean {
   return (
-    report.refinedIdea === refinedIdea &&
-    report.editorResponse === editorResponse &&
-    report.revision === revision
+    report.refinedIdea === revision.path &&
+    report.refinedIdeaIdentity === refinedIdeaIdentity(revision) &&
+    report.editorResponse === (editor === null ? null : editor.file) &&
+    report.editorIdentity === (editor === null ? null : editor.identity) &&
+    report.revision === revision.value.revision
   );
 }
 
@@ -315,45 +334,48 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
         if (existing.refinedIdea === null || existing.challenger === null) {
           throw new Error('The retained approval has no refined idea or Challenger reference.');
         }
-        const idea = await readRequiredRecord(
-          existing.refinedIdea,
-          {
-            file: existing.refinedIdea,
-            schema: refinedIdeaArtifact.schema,
-          },
-          'Approved refined idea',
-        );
+        const idea = await readRefinedIdeaRevision(path.dirname(existing.refinedIdea));
+        if (idea === null || idea.path !== existing.refinedIdea) {
+          throw new Error(
+            `The retained approval names no refined idea revision at "${existing.refinedIdea}".`,
+          );
+        }
         const assessed = await readRequiredRecord(
           existing.challenger,
           {
             file: existing.challenger,
-            schema: challengerArtifact.schema,
+            schema: retainedChallengerReportSchema,
           },
           'Approval assessment',
         );
-        await readRequiredRecord(
-          existing.editor,
-          {
-            file: existing.editor,
-            schema:
-              assessed.editorResponse === null
-                ? framingArtifact.schema
-                : editorResponseArtifact.schema,
-          },
-          'Approved editor response',
-        );
+        const editor =
+          assessed.editorResponse === null
+            ? null
+            : await readRequiredRecord(
+                existing.editor,
+                { file: existing.editor, schema: retainedEditorTurnSchema },
+                'Approved editor outcome',
+              );
+        if (assessed.editorResponse === null) {
+          // The approved revision stood alone; the record still names the framing it fell back to.
+          await readRequiredRecord(
+            existing.editor,
+            { file: existing.editor, schema: retainedFramingSchema },
+            'Approved editor framing',
+          );
+        }
         if (
-          idea.revision !== existing.revision ||
+          idea.value.revision !== existing.revision ||
+          !isBoundChallengerReport(assessed) ||
           assessed.verdict !== 'approve' ||
           !binds(
             assessed,
-            existing.refinedIdea,
-            assessed.editorResponse === null ? null : existing.editor,
-            idea.revision,
+            idea,
+            editor === null ? null : { file: existing.editor, identity: recordIdentity(editor) },
           )
         ) {
           throw new Error(
-            'The retained approval does not bind its refined idea and editor response.',
+            'The retained approval does not bind its refined idea and editor outcome.',
           );
         }
         await writeHandoff(
@@ -368,15 +390,52 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       return reported(settings, existing, selection.taskKey, plan.cycle, decisionFile);
     }
 
-    const revision = await latestRefinedIdea(root, plan.submission, plan.cycle);
-    const turn = await readCycleArtifact(cycleRoot, editorResponseArtifact);
-    const turnFile =
-      turn === null ? null : path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
-    const challenger = await readCycleArtifact(cycleRoot, challengerArtifact);
-    const framing = await readCycleArtifact(
-      ideaCycleDirectory(root, plan.submission, 1),
-      framingArtifact,
-    );
+    const revision = await readRetainedRefinedIdea({
+      root,
+      workId: selection.taskKey,
+      plan,
+      submission: plan.submission,
+      cycle: plan.cycle,
+      context:
+        `RecordIdeaDecision reading the refined idea revision in force for submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} of idea ${selection.taskKey}.`,
+    });
+    const turn = await readRetainedIdeaReport({
+      root,
+      workId: selection.taskKey,
+      plan,
+      cycleRoot,
+      declaration: editorResponseArtifact,
+      contract: ideaReportContracts.editorTurn,
+      context:
+        `RecordIdeaDecision reading the editor outcome of submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${selection.taskKey}.`,
+    });
+    const turnFile = turn === null ? null : turn.file;
+    const editorBinding =
+      turn === null ? null : { file: turn.file, identity: recordIdentity(turn.value) };
+    const challenger = await readRetainedIdeaReport({
+      root,
+      workId: selection.taskKey,
+      plan,
+      cycleRoot,
+      declaration: challengerArtifact,
+      contract: ideaReportContracts.challenge,
+      context:
+        `RecordIdeaDecision reading the Challenger result of submission ` +
+        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${selection.taskKey}.`,
+    });
+    const framing = await readRetainedIdeaReport({
+      root,
+      workId: selection.taskKey,
+      plan,
+      cycleRoot: ideaCycleDirectory(root, plan.submission, 1),
+      declaration: framingArtifact,
+      contract: ideaReportContracts.framing,
+      context:
+        `RecordIdeaDecision reading the framing of submission ` +
+        `${String(plan.submission)} for idea ${selection.taskKey}.`,
+    });
 
     let reason: string | null = null;
     if (decision === 'approved') {
@@ -385,27 +444,29 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       }
       if (
         challenger === null ||
-        challenger.verdict !== 'approve' ||
-        !binds(challenger, revision.path, turnFile, revision.value.revision)
+        !isBoundChallengerReport(challenger.value) ||
+        challenger.value.verdict !== 'approve' ||
+        !binds(challenger.value, revision, editorBinding)
       ) {
         throw new Error(
           'Approval requires the current cycle\u2019s Challenger result to approve the exact ' +
-            'refined idea revision and editor response it reviewed.',
+            'refined idea revision and editor outcome it reviewed.',
         );
       }
     }
     if (decision === 'unsuitable') {
-      if (turn === null || turn.disposition !== 'unsuitable' || turn.reason === null) {
+      if (turn === null || turn.value.disposition !== 'unsuitable' || turn.value.reason === null) {
         throw new Error(
           'Returning an unsuitable idea requires the editor to have explained why in its ' +
             'response for this cycle.',
         );
       }
-      reason = turn.reason;
+      reason = turn.value.reason;
     }
     if (decision === 'author-decision-needed') {
-      const fromTurn = turn?.disposition === 'author-decision-needed' ? turn.reason : null;
-      const fromFraming = framing?.authorDecision?.question ?? null;
+      const fromTurn =
+        turn?.value.disposition === 'author-decision-needed' ? turn.value.reason : null;
+      const fromFraming = framing?.value.authorDecision?.question ?? null;
       const question = fromTurn ?? fromFraming;
       if (question === null) {
         throw new Error(
@@ -418,31 +479,25 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       if (
         revision === null ||
         challenger === null ||
-        challenger.verdict !== 'discuss' ||
-        !binds(challenger, revision.path, turnFile, revision.value.revision)
+        !isBoundChallengerReport(challenger.value) ||
+        challenger.value.verdict !== 'discuss' ||
+        !binds(challenger.value, revision, editorBinding)
       ) {
         throw new Error(
           'An exhausted return requires the current cycle\u2019s Challenger result to discuss ' +
-            'the exact refined idea revision and editor response it reviewed.',
+            'the exact refined idea revision and editor outcome it reviewed.',
         );
       }
-      if (challenger.obstacle === null) {
+      if (challenger.value.obstacle === null) {
         throw new Error(
           'An exhausted return needs the Challenger\u2019s plain statement of the remaining ' +
             'obstacle.',
         );
       }
-      reason = challenger.obstacle;
+      reason = challenger.value.obstacle;
     }
 
-    const editorFile =
-      turnFile ??
-      (framing === null
-        ? null
-        : path.join(
-            ideaCycleDirectory(root, plan.submission, 1),
-            framingArtifact.pathFromArtifactsRoot,
-          ));
+    const editorFile = turnFile ?? (framing === null ? null : framing.file);
     if (editorFile === null) {
       throw new Error(
         `Submission ${String(plan.submission)} has no editor framing or response to decide on.`,
@@ -457,7 +512,7 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
         ? approvedComment(revision!.value, plan.cycle)
         : returnedComment({
             input: inputRecord,
-            framing,
+            framing: framing === null ? null : framing.value,
             idea: revision?.value ?? null,
             decision,
             cycles: plan.cycle,
@@ -469,8 +524,7 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       refinedIdea: revision?.path ?? null,
       revision: revision?.value.revision ?? null,
       editor: editorFile,
-      challenger:
-        challenger === null ? null : path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot),
+      challenger: challenger === null ? null : challenger.file,
       reason,
       comment: text,
       // The parent-owned publication fills in the applied transition and comment identity.

@@ -1,62 +1,101 @@
 import { z } from 'zod';
-import type { ArtifactDeclaration } from '../artifacts.js';
+import { reportBindingFields } from '../agent-reports.js';
+import type { IdeaReportDeclaration } from '../idea-context.js';
 
 /**
- * Researcher's artifact contract: the short contribution the editor reads, the sourced knowledge
- * and idea-level possibilities behind it, and the external sources with their access dates. The
- * stored contribution names its role and the focused question it answers, so a follow-up is
- * distinguishable from the cycle's initial enrichment.
+ * Researcher's artifact contract: the completion its workflow joins on and the saved Markdown
+ * report that carries the short contribution, the sourced knowledge, the idea-level possibilities
+ * and the external sources with their access dates. The stored outcome names its role, the
+ * focused question it answers and the report it retained, so a follow-up is distinguishable from
+ * the cycle's initial enrichment.
  */
 
-/** One cited source: its title, link and, for external sources, the date it was accessed. */
-export const researchSourceSchema = z.strictObject({
-  title: z.string().trim().min(1).describe('The source\u2019s title.'),
-  link: z.string().trim().min(1).describe('The source\u2019s link or document location.'),
-  accessed: z
-    .string()
-    .trim()
-    .min(1)
-    .nullable()
-    .describe('The date an external source was accessed, or null for a project source.'),
-});
-
-/** The provider response: the short contribution with the knowledge and options behind it. */
-export const researchResponseSchema = z.strictObject({
-  contribution: z
-    .string()
-    .trim()
-    .min(1)
-    .describe('The short contribution the editor reads, with the most useful discoveries.'),
-  /** Source facts that enrich the idea, each naming the source it came from. */
-  findings: z
-    .array(z.string().trim().min(1))
-    .describe('Source facts that enrich the idea, each naming the source it came from.'),
-  /** Idea-level possibilities and how each could strengthen the submitted idea. */
-  options: z
-    .array(z.string().trim().min(1))
-    .describe('Idea-level possibilities and how each could strengthen the submitted idea.'),
-  sources: z.array(researchSourceSchema).describe('Every source the findings rely on.'),
-});
+/** The provider response: the completion alone; every discovery belongs in the Markdown report. */
+export const researchResponseSchema = z.strictObject({});
 
 export type ResearchResponse = z.infer<typeof researchResponseSchema>;
 
-/** The stored contribution: the response bound to the role and the question it addresses. */
-export const researchContributionSchema = researchResponseSchema.extend({
+/** One former combined contribution's cited source, kept readable as history. */
+const legacyResearchSourceSchema = z.object({
+  title: z.string().trim().min(1),
+  link: z.string().trim().min(1),
+  accessed: z.string().trim().min(1).nullable(),
+});
+
+/** The saved outcome the researcher action records: the report binding and observed attribution. */
+export const researchContributionSchema = z.strictObject({
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
   role: z.literal('researcher'),
+  profile: z.string().trim().min(1).describe('The researcher profile that produced this report.'),
   /** The focused question this contribution answers, or null for the cycle's initial enrichment. */
   question: z.string().trim().min(1).nullable(),
+  ...reportBindingFields,
 });
 
 export type ResearchContribution = z.infer<typeof researchContributionSchema>;
 
+/** A retained combined contribution from before the narrative/outcome separation. */
+export const legacyResearchContributionSchema = z.strictObject({
+  role: z.literal('researcher'),
+  question: z.string().trim().min(1).nullable(),
+  contribution: z.string().trim().min(1),
+  findings: z.array(z.string().trim().min(1)),
+  options: z.array(z.string().trim().min(1)),
+  sources: z.array(legacyResearchSourceSchema),
+});
+
+export type LegacyResearchContribution = z.infer<typeof legacyResearchContributionSchema>;
+
+/** The producer-owned reader: a bound outcome, or a retained combined contribution. */
+export const retainedResearchContributionSchema = z.union([
+  researchContributionSchema,
+  legacyResearchContributionSchema,
+]);
+
+export type RetainedResearchContribution = z.infer<typeof retainedResearchContributionSchema>;
+
+/** True when one retained contribution carries the current report binding. */
+export function isBoundResearchContribution(
+  record: RetainedResearchContribution,
+): record is ResearchContribution {
+  return 'report' in record;
+}
+
+/** A former combined contribution's fields as the readable history its consumer opens. */
+function legacyResearchNarrative(record: LegacyResearchContribution): string {
+  return [
+    `Contribution: ${record.contribution}`,
+    ...(record.findings.length === 0
+      ? []
+      : ['Findings:', ...record.findings.map((finding) => `- ${finding}`)]),
+    ...(record.options.length === 0
+      ? []
+      : ['Options:', ...record.options.map((option) => `- ${option}`)]),
+    'Sources:',
+    ...record.sources.map(
+      (source) =>
+        `- ${source.title}: ${source.link}` +
+        `${source.accessed === null ? '' : ` (accessed ${source.accessed})`}`,
+    ),
+  ].join('\n');
+}
+
 /** The cycle's initial enrichment contribution. */
 export const researchArtifact = {
   pathFromArtifactsRoot: 'researcher.json',
-  schema: researchContributionSchema,
-} satisfies ArtifactDeclaration<typeof researchContributionSchema>;
+  schema: retainedResearchContributionSchema,
+  legacyNarrative: legacyResearchNarrative,
+} satisfies IdeaReportDeclaration<
+  typeof retainedResearchContributionSchema,
+  LegacyResearchContribution
+>;
 
 /** The focused contribution answering the editor's help request in the same cycle. */
 export const researchFollowUpArtifact = {
   pathFromArtifactsRoot: 'researcher-follow-up.json',
-  schema: researchContributionSchema,
-} satisfies ArtifactDeclaration<typeof researchContributionSchema>;
+  schema: retainedResearchContributionSchema,
+  legacyNarrative: legacyResearchNarrative,
+} satisfies IdeaReportDeclaration<
+  typeof retainedResearchContributionSchema,
+  LegacyResearchContribution
+>;

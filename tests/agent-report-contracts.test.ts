@@ -50,7 +50,13 @@ const reportContracts: readonly ReportContract[] = [
   {
     label: 'Challenger',
     schema: challengerResponseSchema,
-    actionAdded: ['refinedIdea', 'editorResponse', 'revision'],
+    actionAdded: [
+      'refinedIdea',
+      'refinedIdeaIdentity',
+      'editorResponse',
+      'editorIdentity',
+      'revision',
+    ],
   },
   {
     label: 'Preparation author',
@@ -222,7 +228,6 @@ const reportSamples: readonly {
     schema: editorTurnResponseSchema,
     sample: {
       disposition: 'help-requested',
-      response: 'I need one focused answer before I can revise.',
       reason: null,
       help: { researcher: 'What evidence supports the scope?', projectGuide: null },
       refinedIdea: null,
@@ -231,41 +236,19 @@ const reportSamples: readonly {
   {
     label: 'Researcher initial/focused',
     schema: researchResponseSchema,
-    sample: {
-      contribution: 'The contribution.',
-      findings: ['A finding.'],
-      options: ['An option.'],
-      sources: [{ title: 'Source', link: 'https://example.com', accessed: null }],
-    },
+    sample: {},
   },
   {
     label: 'Project guide initial/focused',
     schema: projectGuideResponseSchema,
-    sample: {
-      contribution: 'The contribution.',
-      fit: 'The fit.',
-      steering: ['Steer.'],
-      constraints: ['A constraint.'],
-      evidence: ['docs/purpose.md'],
-      provisional: false,
-      uncertainty: [],
-    },
+    sample: {},
   },
   {
     label: 'Challenger',
     schema: challengerResponseSchema,
     sample: {
       verdict: 'discuss',
-      assessment: 'One concern still changes the decision.',
       obstacle: 'The scope is not yet bounded.',
-      concerns: [
-        {
-          concern: 'The scope is broad.',
-          consequence: 'The change would take longer than needed.',
-          resolution: 'Bound the first increment.',
-        },
-      ],
-      suggestions: [],
     },
   },
   {
