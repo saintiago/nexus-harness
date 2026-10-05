@@ -42,6 +42,7 @@ import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { scriptedJira } from './support/jira.js';
 import { scriptedGitHub } from './support/github.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 
@@ -2577,12 +2578,8 @@ describe('Git adapter', () => {
         async run(request) {
           expect(request.workspace.root).toBe(settings.expectedRepositoryRoot);
           await commitFile(path.join(request.workspace.root, 'worktree'), settings.file, 'work\n');
-          return ok({
-            output: JSON.stringify({
-              status: 'completed',
-              summary: `Implemented ${settings.file}.`,
-            }),
-          });
+          await writeAssignedReport(request.context, `Implemented ${settings.file}.`);
+          return ok({ output: JSON.stringify({ status: 'completed' }) });
         },
       };
       await expect(
@@ -2627,13 +2624,8 @@ describe('Git adapter', () => {
       const reviewer: AgentRoleRunner = {
         async run(request) {
           expect(request.workspace.root).toBe(settings.expectedRepositoryRoot);
-          return ok({
-            output: JSON.stringify({
-              verdict: 'approved',
-              summary: 'The delivered revision is correct.',
-              findings: [],
-            }),
-          });
+          await writeAssignedReport(request.context, 'The delivered revision is correct.');
+          return ok({ output: JSON.stringify({ verdict: 'approved' }) });
         },
       };
       await expect(

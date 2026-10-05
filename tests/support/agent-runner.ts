@@ -5,6 +5,7 @@
  * with this adapter, while Application's composition and the system journeys cover the real one.
  */
 
+import { writeFile } from 'node:fs/promises';
 import { createAgentRuntime, type AgentRuntime } from '../../src/agent-runtime/index.js';
 import type { CodingRuntime, CodingRuntimeRequest } from '../../src/adapters/coding-runtime.js';
 import { createAgentRuntimeSettings, type ProfileRole } from '../../src/application/composition.js';
@@ -35,17 +36,35 @@ export function runnerOf(runtime: AgentRuntime): AgentRoleRunner {
 export function composedRunner(
   configuration: NexusConfiguration,
   role: ProfileRole,
-  respond: (request: CodingRuntimeRequest) => string,
+  respond: (request: CodingRuntimeRequest) => string | Promise<string>,
 ): { readonly runner: AgentRoleRunner; readonly requests: CodingRuntimeRequest[] } {
   const requests: CodingRuntimeRequest[] = [];
   const codingRuntime: CodingRuntime = {
-    execute(request) {
+    async execute(request) {
       requests.push(request);
-      return Promise.resolve(ok({ output: respond(request) }));
+      return ok({ output: await respond(request) });
     },
   };
   const runtime = createAgentRuntime(
     createAgentRuntimeSettings(configuration, role, codingRuntime),
   );
   return { runner: runnerOf(runtime), requests };
+}
+
+/**
+ * Write one controlled invocation's Markdown report to the path its assembled prompt or supplied
+ * context assigns. Callers compose the minimal outcome their role returns; this proves the agent
+ * writes the assigned report instead of returning narrative in its response.
+ */
+export async function writeAssignedReport(
+  contextOrPrompt: string,
+  markdown: string,
+): Promise<string> {
+  const match = /^Assigned Markdown report: (.+)$/m.exec(contextOrPrompt);
+  if (match === null) {
+    throw new Error('The invocation assigns no Markdown report path.');
+  }
+  const file = match[1]!.trim();
+  await writeFile(file, markdown, 'utf8');
+  return file;
 }

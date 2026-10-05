@@ -2,11 +2,18 @@ import path from 'node:path';
 import type { JiraAdapter, JiraComment } from '../../../../adapters/jira.js';
 import { messageOf } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
+import { openingNarrativeParagraph } from '../../agent-reports.js';
 import { createArtifactHelpers, roundArtifactPath } from '../../artifacts.js';
-import { devArtifact } from '../../develop/artifacts.js';
+import {
+  devArtifact,
+  developmentReportScope,
+  developmentReportText,
+  readUsableDevelopmentOutcome,
+} from '../../develop/artifacts.js';
 import { deliveryArtifact } from '../../deliver/artifacts.js';
 import { readRequiredRecord, readRecord, writeRecord } from '../../records.js';
-import { reviewArtifact } from '../../review/artifacts.js';
+import { rejectUnusableRecord } from '../../report-feedback.js';
+import { readUsableReviewOutcome, reviewReportText } from '../../review/artifacts.js';
 import { selectionDeclaration, type Selection } from '../../select-task/artifacts.js';
 import {
   applyTransition,
@@ -59,9 +66,12 @@ export function createRefreshTaskInput(settings: {
 }
 
 /** The saved development and delivery evidence of the current round, when both exist. */
-async function roundEvidence(root: string): Promise<{
+async function roundEvidence(
+  root: string,
+  taskKey: string,
+): Promise<{
   readonly round: number;
-  readonly development: { profile: string; summary: string } | null;
+  readonly development: { profile: string; narrative: string } | null;
   readonly repairsUsed: number;
   readonly escalatedFrom: string | null;
   readonly delivery: {
@@ -74,10 +84,14 @@ async function roundEvidence(root: string): Promise<{
     currentRoundDeclaration,
     'Current round',
   );
-  const development = await readRecord(
-    roundArtifactPath(root, current.number, devArtifact.pathFromArtifactsRoot),
-    { file: devArtifact.pathFromArtifactsRoot, schema: devArtifact.schema },
-  );
+  // The concise comment carries the developer's saved Markdown under its binding; an unusable
+  // bound report is retained as the developer's rejection evidence instead of publishing.
+  const development = await readUsableDevelopmentOutcome({
+    areaRoot: root,
+    taskKey,
+    round: current.number,
+    context: `Delivery publication of task ${taskKey} reading the development report.`,
+  });
   const delivery = await readRecord(
     roundArtifactPath(root, current.number, deliveryArtifact.pathFromArtifactsRoot),
     { file: deliveryArtifact.pathFromArtifactsRoot, schema: deliveryArtifact.schema },
@@ -85,7 +99,18 @@ async function roundEvidence(root: string): Promise<{
   // Development reports after the initial round are executed repair turns; their recorded
   // profiles show whether the current round escalated from a weaker one.
   const helpers = createArtifactHelpers({ root });
-  const earlier = await helpers.readArtifactHistory(devArtifact);
+  const earlier = await helpers.readArtifactHistory(devArtifact, (file, error) =>
+    rejectUnusableRecord({
+      areaRoot: root,
+      scope: developmentReportScope(root, taskKey),
+      invocationId: null,
+      operation: 'develop',
+      profile: null,
+      context: `Delivery publication of task ${taskKey} reading retained development history.`,
+      file,
+      error,
+    }),
+  );
   const escalatedFrom =
     development === null
       ? null
@@ -96,7 +121,17 @@ async function roundEvidence(root: string): Promise<{
   return {
     round: current.number,
     development:
-      development === null ? null : { profile: development.profile, summary: development.summary },
+      development === null
+        ? null
+        : {
+            profile: development.profile,
+            // The concise comment carries the report's opening paragraph; a retained combined
+            // report supplies its former narrative.
+            narrative:
+              openingNarrativeParagraph(await developmentReportText(development)) ??
+              `the change is ready for review; see the round ${String(current.number)} ` +
+                'development report',
+          },
     repairsUsed: earlier.length,
     escalatedFrom,
     delivery:
@@ -129,7 +164,7 @@ export function createPublishDeliveryReport(settings: {
       selectionDeclaration,
       'Selection',
     );
-    const evidence = await roundEvidence(selection.workspace.root);
+    const evidence = await roundEvidence(selection.workspace.root, selection.taskKey);
     if (evidence.delivery === null) {
       settings.publish({
         source: 'publish-delivery',
@@ -168,7 +203,7 @@ export function createPublishDeliveryReport(settings: {
       await applyTransition(settings.jira, issue.id, transition.transition);
     }
     const profile = evidence.development?.profile ?? 'unknown profile';
-    const summary = evidence.development?.summary ?? 'the change is ready for review';
+    const summary = evidence.development?.narrative ?? 'the change is ready for review';
     const escalation =
       evidence.escalatedFrom === null
         ? ''
@@ -220,14 +255,13 @@ export function createPublishReviewFeedback(settings: {
       currentRoundDeclaration,
       'Current round',
     );
-    const reviewFile = roundArtifactPath(
-      selection.workspace.root,
-      current.number,
-      reviewArtifact.pathFromArtifactsRoot,
-    );
-    const review = await readRecord(reviewFile, {
-      file: reviewArtifact.pathFromArtifactsRoot,
-      schema: reviewArtifact.schema,
+    // The concise comment carries the reviewer's saved Markdown under its binding; an unusable
+    // bound report is retained as the reviewer's rejection evidence instead of publishing.
+    const review = await readUsableReviewOutcome({
+      areaRoot: selection.workspace.root,
+      taskKey: selection.taskKey,
+      round: current.number,
+      context: `Review publication of task ${selection.taskKey} reading the review report.`,
     });
     /** Report a condition that prevents publication, retaining the reason for the terminal handoff. */
     async function failed(reason: string): Promise<'failed'> {
@@ -242,15 +276,13 @@ export function createPublishReviewFeedback(settings: {
     if (review === null) {
       return failed('the child published no review artifact to report');
     }
-    const blocking = review.findings
-      .filter((finding) => finding.severity === 'blocking')
-      .map((finding) => `- ${finding.title}`);
-    const text = [
-      review.verdict === 'approved'
-        ? `Review approved (profile ${review.profile}): ${review.summary}`
-        : `Review requested changes (profile ${review.profile}): ${review.summary}`,
-      ...(blocking.length === 0 ? [] : ['', 'Blocking findings:', ...blocking]),
-    ].join('\n');
+    const outcome = review.verdict === 'approved' ? 'Review approved' : 'Review requested changes';
+    const opening = openingNarrativeParagraph(await reviewReportText(review));
+    const text =
+      opening === null
+        ? `${outcome} (profile ${review.profile}); see the round ${String(current.number)} ` +
+          `review report for revision ${review.headRevision}.`
+        : `${outcome} (profile ${review.profile}): ${opening}`;
 
     let comments: readonly JiraComment[];
     try {

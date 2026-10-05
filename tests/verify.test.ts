@@ -12,8 +12,13 @@ import type { GitAdapter } from '../src/adapters/git.js';
 import type { ProcessCommand } from '../src/adapters/processes.js';
 import type { Command } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  projectOfWorkspace,
+  readReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import {
   createVerify,
@@ -409,6 +414,91 @@ describe('Verify', () => {
     ).rejects.toThrow(/ENOENT/);
   });
 
+  it.each(['missing', 'changed', 'damaged'] as const)(
+    'does not run checks from an unusable development result: %s',
+    async (kind) => {
+      const { workspaceRoot } = await workspace({});
+      const reportFile = path.join(
+        workspaceRoot,
+        'artifacts',
+        '1',
+        'reports',
+        'dev-1',
+        'developer.md',
+      );
+      await mkdir(path.dirname(reportFile), { recursive: true });
+      const markdown = 'Implemented the retry guard.';
+      await writeFile(reportFile, markdown, 'utf8');
+      await writeFile(
+        path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
+        `${JSON.stringify(
+          {
+            taskKey: 'NEX-1',
+            profile: 'dev-a',
+            status: 'completed',
+            baseRevision,
+            headRevision,
+            role: 'developer',
+            report: { path: reportFile },
+            reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+            invocationId: 'dev-1',
+            readinessFailure: null,
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      if (kind === 'missing') {
+        await rm(reportFile);
+      } else if (kind === 'changed') {
+        await writeFile(reportFile, 'Changed report bytes.\n', 'utf8');
+      } else {
+        const record = JSON.parse(
+          await readFile(path.join(workspaceRoot, 'artifacts', '1', 'development.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        delete record.reportIdentity;
+        await writeFile(
+          path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
+          `${JSON.stringify(record, null, 2)}\n`,
+          'utf8',
+        );
+      }
+
+      const { git } = scriptedGit([repositoryState({ headRevision })]);
+      const { runCommand, calls } = scriptedRunCommand([{ exitCode: 0 }]);
+      await expect(
+        verifyOver({ workspaceRoot, checks: [validateCheck], git, runCommand })(),
+      ).rejects.toThrow(
+        kind === 'missing'
+          ? /does not exist/
+          : kind === 'changed'
+            ? /does not match the identity/
+            : /does not match its declared content type/,
+      );
+      // No configured check runs and no verdict is written from an unusable outcome.
+      expect(calls).toEqual([]);
+      await expect(
+        stat(path.join(workspaceRoot, 'artifacts', '1', 'verification.json')),
+      ).rejects.toThrow(/ENOENT/);
+      // The unreadable or mismatched report stays attributable under the developer's responsibility.
+      const rejection = (await readReportFeedback(workspaceRoot)).find(
+        (entry) => entry.record.kind === 'rejection',
+      );
+      expect(rejection?.record).toMatchObject({
+        scope: {
+          project: projectOfWorkspace(workspaceRoot),
+          workId: 'NEX-1',
+          area: workspaceRoot,
+          role: 'developer',
+          reportKind: 'development',
+        },
+        operation: 'develop',
+        assignedReport: { path: reportFile },
+      });
+    },
+  );
+
   it('rejects a missing development result and a mismatched prepared task', async () => {
     const missing = await workspace({});
     await rm(path.join(missing.workspaceRoot, 'artifacts', '1', 'development.json'));
@@ -431,6 +521,6 @@ describe('Verify', () => {
         git,
         runCommand,
       })(),
-    ).rejects.toThrow(/not the prepared "NEX-1"/);
+    ).rejects.toThrow(/is for task "NEX-2", not "NEX-1"/);
   });
 });

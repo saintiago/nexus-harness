@@ -9,6 +9,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
+import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import type { JiraIssue, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import {
@@ -338,61 +341,104 @@ describe('SelectWork admission and routing', () => {
     expect(selected.transitions).toEqual([]);
   });
 
-  it('continues a retained In Review delivery without moving it backwards', async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-select-work-retained-'));
-    temporaryDirectories.push(directory);
-    const workspace = path.join(directory, 'NEX-1');
-    await mkdir(path.join(workspace, 'state'), { recursive: true });
-    await writeFile(
-      path.join(workspace, 'state', 'attempt.json'),
-      JSON.stringify({ attemptId: 'attempt-1' }),
-    );
-    await writeFile(
-      path.join(workspace, 'state/prepared-workspace.json'),
-      JSON.stringify({
-        taskKey: 'NEX-1',
-        repository: '/repo',
-        branch: 'task/NEX-1',
-        baseRevision: 'base',
-      }),
-    );
-    await writeFile(
-      path.join(workspace, 'state/current-round.json'),
-      JSON.stringify({ number: 1, profile: 'nexus-sol', reason: 'initial' }),
-    );
-    await mkdir(path.join(workspace, 'artifacts/1'), { recursive: true });
-    await writeFile(
-      path.join(workspace, 'artifacts/1/delivery.json'),
-      JSON.stringify({
-        repository: 'owner/repo',
-        pullRequestNumber: 1,
-        pullRequestUrl: 'https://example.com/pr/1',
-        headRevision: 'head',
-      }),
-    );
-    await writeFile(
-      path.join(workspace, 'artifacts/1/development.json'),
-      JSON.stringify({
-        taskKey: 'NEX-1',
-        profile: 'nexus-sol',
-        status: 'completed',
-        baseRevision: 'base',
-        headRevision: 'head',
-        summary: 'Complete.',
-      }),
-    );
-    await writeFile(
-      path.join(workspace, 'artifacts/1/verification.json'),
-      JSON.stringify({ headRevision: 'head', status: 'passed', checks: [] }),
-    );
-    const selected = await select({
-      issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
-    });
+  it.each(['legacy', 'bound', 'missing Markdown', 'foreign task', 'schema'])(
+    'validates retained In Review development evidence: %s',
+    async (kind) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-select-work-retained-'));
+      temporaryDirectories.push(directory);
+      const workspace = path.join(directory, 'NEX-1');
+      await mkdir(path.join(workspace, 'state'), { recursive: true });
+      await writeFile(
+        path.join(workspace, 'state', 'attempt.json'),
+        JSON.stringify({ attemptId: 'attempt-1' }),
+      );
+      await writeFile(
+        path.join(workspace, 'state/prepared-workspace.json'),
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          repository: '/repo',
+          branch: 'task/NEX-1',
+          baseRevision: 'base',
+        }),
+      );
+      await writeFile(
+        path.join(workspace, 'state/current-round.json'),
+        JSON.stringify({ number: 1, profile: 'nexus-sol', reason: 'initial' }),
+      );
+      await mkdir(path.join(workspace, 'artifacts/1'), { recursive: true });
+      await writeFile(
+        path.join(workspace, 'artifacts/1/delivery.json'),
+        JSON.stringify({
+          repository: 'owner/repo',
+          pullRequestNumber: 1,
+          pullRequestUrl: 'https://example.com/pr/1',
+          headRevision: 'head',
+        }),
+      );
+      await writeFile(
+        path.join(workspace, 'artifacts/1/development.json'),
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          profile: 'nexus-sol',
+          status: 'completed',
+          baseRevision: 'base',
+          headRevision: 'head',
+          summary: 'Complete.',
+        }),
+      );
+      await writeFile(
+        path.join(workspace, 'artifacts/1/verification.json'),
+        JSON.stringify({ headRevision: 'head', status: 'passed', checks: [] }),
+      );
+      const file = path.join(workspace, 'artifacts/1/development.json');
+      const reportFile = path.join(workspace, 'artifacts/1/developer.md');
+      const markdown = 'Complete.';
+      if (kind !== 'legacy') {
+        const outcome: Record<string, unknown> = {
+          taskKey: kind === 'foreign task' ? 'OTHER-1' : 'NEX-1',
+          profile: 'nexus-sol',
+          status: 'completed',
+          baseRevision: 'base',
+          headRevision: 'head',
+          role: 'developer',
+          invocationId: 'dev-1',
+          report: { path: reportFile },
+          reportIdentity: reportIdentityOf(Buffer.from(markdown)),
+          readinessFailure: null,
+        };
+        if (kind === 'schema') delete outcome['reportIdentity'];
+        await writeFile(file, JSON.stringify(outcome));
+        if (kind !== 'missing Markdown') await writeFile(reportFile, markdown);
+      }
+      if (!['legacy', 'bound'].includes(kind)) {
+        await expect(
+          select({
+            issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
+          }),
+        ).rejects.toThrow();
+        const records = await readReportFeedback(workspace);
+        expect(records).toHaveLength(1);
+        const rejection = records[0]!.record;
+        expect(rejection).toMatchObject({
+          kind: 'rejection',
+          scope: developmentReportScope(workspace, 'NEX-1'),
+          output: await readFile(file, 'utf8'),
+          assignedReport: { path: reportFile },
+        });
+        if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (kind === 'missing Markdown') expect(rejection.report).toBeNull();
+        else expect(await readFile(rejection.report!.path, 'utf8')).toBe(markdown);
+        return;
+      }
+      const selected = await select({
+        issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
+      });
 
-    expect(selected.result).toBe('selected');
-    expect(selected.selection).toMatchObject({ stage: 'delivery' });
-    expect(selected.transitions).toEqual([]);
-  });
+      expect(selected.result).toBe('selected');
+      expect(selected.selection).toMatchObject({ stage: 'delivery' });
+      expect(selected.transitions).toEqual([]);
+    },
+  );
 
   it.each([
     { retained: false, prepared: false },

@@ -10,13 +10,14 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  reviewArtifact,
-  type Finding,
-  type ReviewOutput,
-} from '../src/task-engine/actions/review/artifacts.js';
+  readReportFeedback,
+  type ReportScope,
+} from '../src/task-engine/actions/report-feedback.js';
+import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { CurrentRound } from '../src/task-engine/actions/start-round/artifacts.js';
 import {
   createStartRound,
@@ -32,17 +33,6 @@ const otherRevision = '9'.repeat(40);
 function headOf(round: number): string {
   return String(round + 1).repeat(40);
 }
-
-/** The current blocking finding a changes-requested review must carry. */
-const blockingFinding: Finding = {
-  title: 'The retry guard is missing',
-  severity: 'blocking',
-  basis: 'The design requires a retry guard.',
-  evidence: 'The reviewed revision contains no retry.',
-  impact: 'Transient failures are lost.',
-  repairGuidance: 'Add the retry guard.',
-  locations: [{ path: 'src/queue.ts', line: 42 }],
-};
 
 let root = '';
 let events: EngineEvent[] = [];
@@ -76,6 +66,31 @@ async function writeCurrentRound(record: unknown): Promise<void> {
   );
 }
 
+/** Write one bound report file and return its path and exact identity, as Develop/Review do. */
+async function writeBoundReport(
+  round: number,
+  invocationId: string,
+  role: 'developer' | 'reviewer',
+  markdown: string,
+): Promise<{ readonly path: string; readonly identity: string }> {
+  const file = path.join(root, 'artifacts', String(round), 'reports', invocationId, `${role}.md`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, markdown, 'utf8');
+  return { path: file, identity: reportIdentityOf(Buffer.from(markdown, 'utf8')) };
+}
+
+/** The path one round's bound report was written to. */
+function reportPathOf(round: number, role: 'developer' | 'reviewer'): string {
+  return path.join(
+    root,
+    'artifacts',
+    String(round),
+    'reports',
+    `${role === 'developer' ? 'dev' : 'rev'}-${String(round)}`,
+    `${role}.md`,
+  );
+}
+
 /** One round's development report, written as Develop writes it. */
 async function writeDevelopment(
   round: number,
@@ -83,13 +98,23 @@ async function writeDevelopment(
   status: 'completed' | 'failed' = 'completed',
   revision = headOf(round),
 ): Promise<void> {
+  const report = await writeBoundReport(
+    round,
+    `dev-${String(round)}`,
+    'developer',
+    `Round ${String(round)} development report.`,
+  );
   await writeRoundArtifact(round, devArtifact.pathFromArtifactsRoot, {
     taskKey: 'NEX-1',
     profile,
     status,
     baseRevision,
     headRevision: revision,
-    summary: status === 'completed' ? 'Implemented the task.' : 'Could not complete the task.',
+    role: 'developer',
+    report: { path: report.path },
+    reportIdentity: report.identity,
+    invocationId: `dev-${String(round)}`,
+    readinessFailure: null,
   });
 }
 
@@ -119,12 +144,21 @@ async function writeReview(
   verdict: ReviewOutput['verdict'],
   revision = headOf(round),
 ): Promise<void> {
+  const report = await writeBoundReport(
+    round,
+    `rev-${String(round)}`,
+    'reviewer',
+    `Round ${String(round)} review report.`,
+  );
   await writeRoundArtifact(round, reviewArtifact.pathFromArtifactsRoot, {
+    taskKey: 'NEX-1',
     profile: 'reviewer',
     headRevision: revision,
     verdict,
-    summary: `The reviewer decided "${verdict}".`,
-    findings: verdict === 'changesRequested' ? [blockingFinding] : [],
+    role: 'reviewer',
+    report: { path: report.path },
+    reportIdentity: report.identity,
+    invocationId: `rev-${String(round)}`,
   });
 }
 
@@ -198,13 +232,18 @@ describe('StartRound', () => {
     const helpers = roundHelpers();
     await startRound();
 
+    const report = await writeBoundReport(1, 'dev-1', 'developer', 'The retry guard.');
     await helpers.writeOutputArtifact(devArtifact, {
       taskKey: 'NEX-1',
       profile: 'dev-a',
       status: 'completed',
       baseRevision,
       headRevision: headOf(1),
-      summary: 'First round.',
+      role: 'developer',
+      report: { path: report.path },
+      reportIdentity: report.identity,
+      invocationId: 'dev-1',
+      readinessFailure: null,
     });
     await expect(helpers.readInputArtifacts(devArtifact)).resolves.toMatchObject([
       { taskKey: 'NEX-1' },
@@ -218,6 +257,93 @@ describe('StartRound', () => {
       { number: 1, value: { taskKey: 'NEX-1' } },
     ]);
   });
+
+  it.each([
+    {
+      label: 'the current development result',
+      expected: /does not exist/,
+      arrange: async () => {
+        await writeCurrentRound({ number: 1, profile: 'dev-a', reason: 'Planned.' });
+        await writeDevelopment(1, 'dev-a');
+        await writeVerification(1, 'failed');
+        await rm(reportPathOf(1, 'developer'));
+      },
+      scope: { role: 'developer', reportKind: 'development' },
+      round: 1,
+    },
+    {
+      label: 'the current review result',
+      expected: /does not exist/,
+      arrange: async () => {
+        await writeCurrentRound({ number: 1, profile: 'dev-a', reason: 'Planned.' });
+        await writeDevelopment(1, 'dev-a');
+        await writeVerification(1, 'failed');
+        await writeReview(1, 'changesRequested');
+        await rm(reportPathOf(1, 'reviewer'));
+      },
+      scope: { role: 'reviewer', reportKind: 'review' },
+      round: 1,
+    },
+    {
+      label: 'an earlier development report',
+      expected: /does not exist/,
+      arrange: async () => {
+        await writeCurrentRound({ number: 2, profile: 'dev-a', reason: 'Planned.' });
+        await writeDevelopment(2, 'dev-a');
+        await writeVerification(2, 'failed');
+        await writeDevelopment(1, 'dev-a');
+        await rm(reportPathOf(1, 'developer'));
+      },
+      scope: { role: 'developer', reportKind: 'development' },
+      round: 1,
+    },
+    {
+      label: 'a damaged current development record',
+      expected: /does not match its declared content type/,
+      arrange: async () => {
+        await writeCurrentRound({ number: 1, profile: 'dev-a', reason: 'Planned.' });
+        await writeDevelopment(1, 'dev-a');
+        await writeVerification(1, 'failed');
+        const record = JSON.parse(
+          await readFile(path.join(root, 'artifacts', '1', 'development.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        delete record.reportIdentity;
+        await writeFile(
+          path.join(root, 'artifacts', '1', 'development.json'),
+          `${JSON.stringify(record, null, 2)}\n`,
+          'utf8',
+        );
+      },
+      scope: { role: 'developer', reportKind: 'development' },
+      round: 1,
+    },
+  ])(
+    'does not plan from an unusable bound report: $label',
+    async ({ arrange, expected, scope, round }) => {
+      await arrange();
+      const before = await readCurrentRound();
+
+      await expect(startRoundOver(ladder)()).rejects.toThrow(expected);
+      // No round opens from an unreadable report; the damaged outcome stays attributable under its
+      // producer's responsibility.
+      expect(await readCurrentRound()).toEqual(before);
+      await expect(stat(path.join(root, 'artifacts', '3'))).rejects.toThrow(/ENOENT/);
+      const rejection = (await readReportFeedback(root)).find(
+        (entry) => entry.record.kind === 'rejection',
+      );
+      expect(rejection?.record).toMatchObject({
+        scope: {
+          project: path.basename(path.dirname(root)),
+          workId: 'NEX-1',
+          area: root,
+          ...scope,
+        } satisfies ReportScope,
+        assignedReport: {
+          path: reportPathOf(round, scope.role === 'developer' ? 'developer' : 'reviewer'),
+        },
+      });
+    },
+  );
 
   it('reuses an unrun planned round without advancing or evaluating the policy', async () => {
     await writeCurrentRound({

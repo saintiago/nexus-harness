@@ -65,12 +65,30 @@ const reportContracts: readonly ReportContract[] = [
   {
     label: 'Developer',
     schema: developmentResponseSchema,
-    actionAdded: ['taskKey', 'profile', 'baseRevision', 'headRevision'],
+    actionAdded: [
+      'taskKey',
+      'profile',
+      'baseRevision',
+      'headRevision',
+      'role',
+      'report',
+      'reportIdentity',
+      'invocationId',
+      'readinessFailure',
+    ],
   },
   {
     label: 'Reviewer',
     schema: reviewResponseSchema,
-    actionAdded: ['profile', 'headRevision'],
+    actionAdded: [
+      'taskKey',
+      'profile',
+      'headRevision',
+      'role',
+      'report',
+      'reportIdentity',
+      'invocationId',
+    ],
   },
   { label: 'Recovery', schema: recoveryReportSchema, actionAdded: [] },
   {
@@ -273,7 +291,6 @@ const reportSamples: readonly {
     schema: developmentResponseSchema,
     sample: {
       status: 'completed',
-      summary: 'Implemented.',
     },
   },
   {
@@ -281,8 +298,6 @@ const reportSamples: readonly {
     schema: reviewResponseSchema,
     sample: {
       verdict: 'changesRequested',
-      summary: 'One defect remains.',
-      findings: [reportedFindingSample],
     },
   },
   {

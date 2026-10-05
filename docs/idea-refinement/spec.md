@@ -35,9 +35,9 @@ questions; it is not a validation gate. Explain the benefit and guiding principl
 names or integration mechanics. Retain architectural directions supplied by the author, but keep
 supporting implementation detail in the research and project guidance artifacts. The editor should
 remove repetition before returning the idea, rather than rely on publication to shorten it.
-Publication adds a cumulative refinement summary of one or two short sentences and the cycle count,
-separately from the idea's substance. Describe the useful changes without repeating the refined idea
-or narrating the agents' work.
+Functional publication data includes a cumulative refinement summary of one or two short sentences
+and the cycle count, separately from the idea's substance. Describe the useful changes without
+repeating the refined idea or narrating the agents' work.
 
 ## Shared role guidance
 
@@ -74,6 +74,12 @@ home and include them once per invocation; role prompts add only their particula
   the other role's point, accept valid rebuttals and withdraw mistaken concerns. Use relevant evidence
   for consequential factual claims; do not fact-check incidental wording or demand implementation
   details to approve an idea. Avoid rhetorical language and repeated reports.
+
+Every invocation writes its contribution, research, guidance, concerns, responses and explanation at
+the Markdown path assigned by Nexus, then returns only the functional fields below. Reports may
+begin with a short contribution for the next role and keep supporting detail in the same artifact;
+no duplicate contribution field is returned. Do not write action-owned outcomes/state records or
+supply observed work, role/profile, cycle or revision metadata.
 
 Agents follow applicable project guidance. Linked architecture documents are evidence to consult
 selectively, not additional role instructions or a reading list to open on every invocation.
@@ -136,7 +142,8 @@ it is worth pursuing. Each has a useful contribution without overlapping vetoes.
 > rebuttals, and explicitly withdraw concerns they resolve. If you believe the idea is unsuitable
 > or needs the author's decision, explain that to the editor rather than treating your first
 > objection as a final verdict. Return either approve or discuss, bound to the supplied revision
-> and response, with a short explanation and any remaining concerns.
+> and response. Write the explanation and remaining concerns in the assigned Markdown report;
+> return only the verdict and applicable functional publication obstacle.
 
 ## Inputs and project context
 
@@ -226,11 +233,55 @@ Returned ideas are not selected again until the author moves them to `Idea`; eac
 rather than waiting internally. Agent/tool failures, malformed output or source update failures
 remain operational faults handled by common execution recovery, never fabricated idea decisions.
 
+## Role outcomes and consumers
+
+Use strict response schemas owned by each producing action. Every listed role/variant also writes
+Markdown, including roles with an empty machine outcome. Null represents inapplicable functional
+fields in provider responses. The following are the complete new response fields:
+
+| Role / invocation | Machine fields | Functional consumer |
+| --- | --- | --- |
+| Editor framing | `framing`, `questions`, `authorDecision: { question } \| null` | Framing/questions guide contributions and synthesis; the question supports an author-decision return and publication before a revision exists |
+| Editor synthesis | The editor-turn fields below; `refinedIdea` holds `idea`, `projectFit`, `feasibility`, `openQuestions`, `changeSummary` when revised | The immutable idea revision, Challenger and terminal publication; synthesis may instead return unsuitable or author-decision-needed, preserving existing routes |
+| Editor discussion / post-help / retained-revision completion | `disposition`, `refinedIdea \| null`, `help: { researcher: string \| null, projectGuide: string \| null } \| null`, `reason: string \| null` | Existing routing, optional immutable revision, focused contributor questions and terminal human feedback |
+| Researcher initial / focused | `{}` | Completion plus the readable report permits the existing join; sourced discoveries, options, links/access dates and limitations are all Markdown |
+| Project guide initial / focused | `{}` | Completion plus the readable report permits the existing join; fit, steering, constraints, evidence, provisional inference and uncertainty are all Markdown |
+| Challenger | `verdict: approve \| discuss`, `obstacle: string \| null` | Existing discussion/approval route; a plain author-facing obstacle is needed for an exhausted terminal publication |
+
+`framing` is the concise functional interpretation presented before a revision exists, not the
+editor's detailed explanation. `changeSummary`, editor return `reason` and Challenger `obstacle` are
+retained only as concise human-publication data; never copy full narrative into them. Discussion
+answers and rebuttals are exclusively the editor's Markdown, replacing `response`. `reason` is
+required only for unsuitable or author-decision-needed: the concise author-facing explanation or
+essential question, respectively. All other dispositions require null. Help is present only for
+help-requested with at least one named question; refinedIdea only for revised. Initial synthesis
+permits revised, unsuitable or author-decision-needed. Discussion permits the existing six
+dispositions. Post-help permits no second help request. `changeSummary` is the concise cumulative
+publication account, not the editor's report. Challenger discuss requires an obstacle and approve
+requires null. Remove structured concerns/suggestions and all their count/consistency validators;
+assessment obligations remain in its prompt and Markdown. Questions and required publication text
+still receive functional validation.
+
+Callers add observed task identity, role/profile, submission/cycle/revision as applicable and
+[ReportBinding](../task-engine/actions/architecture.md#markdown-reports-and-machine-outcomes) to
+saved outcomes. Keep existing functional artifact paths; each invocation's Markdown has its own
+path. Editor and Challenger context includes the relevant contributor/editor/Challenger Markdown
+plus functional idea, question and routing data. The approved handoff references outcomes whose
+report bindings expose this narrative to Requirements. No consumer reads removed narrative JSON
+fields.
+
+Terminal decision recording assembles its concise comment from functional idea/publication data and
+observed cycle count, and retains the exact comment for parent publication/replay. Its decision is
+not inferred from Markdown. A return without a refined revision still uses captured input and
+functional framing; exhausted feedback still includes the current Challenger obstacle. Operational
+failures remain faults, not business decisions.
+
 ## Artifacts and revision binding
 
 Use `refinement/` under the stable `<storage root>/workspaces/<project>/<issue>/` root. Preserve
 earlier submissions and their artifacts. Every role runs in its prepared `worktree/`; Nexus actions
-own writes under `artifacts/` and `state/`. Each numbered submission retains:
+own structured writes under `artifacts/` and `state/`; agents write only their assigned Markdown
+reports. Each numbered submission retains:
 
 - Captured input and the editor's framing.
 - Numbered cycles with editor contributions, refined idea revisions, contributor reports and
@@ -238,17 +289,23 @@ own writes under `artifacts/` and `state/`. Each numbered submission retains:
 - Final decision, publication evidence and, on approval, the handoff.
 
 Keep substantial research separate from short conversation contributions. Each contribution records
-its role and the context or question it addresses. A Challenger result references the exact refined
-idea revision and editor response assessed. Revising either requires a fresh assessment; a previous
-approval cannot authorize publication of changed content. Carry forward useful reports by reference,
-without relabeling them as new work. Older saved artifacts remain readable as history without being
-rewritten. Workflow restart follows the common execution-state contract.
+its role and the context or question it addresses. A Challenger result references and records
+identities of the exact refined idea revision and editor outcome plus associated Markdown response
+assessed. Revising either requires a fresh assessment; a previous approval cannot authorize
+publication of changed content. Carry forward useful reports by reference, without relabeling them
+as new work. Older combined artifacts remain readable history under producer-owned compatibility
+readers, without rewriting them or requiring retroactive Markdown. New outcomes require their report
+binding; compatibility never relaxes current idea/editor association or Challenger approval
+freshness. Workflow restart follows the common execution-state contract.
 
 If an editor turn saved its immutable revision but not its response, recovery asks the editor to
 complete the response specifically for that retained revision. The response must describe what the
-saved revision actually says, including concerns it leaves unresolved. A retry that changes the
-revision or chooses another disposition fails without saving a response; it cannot silently pair
-new commentary with discarded changes. Further revisions belong to later conversation cycles.
+saved revision actually says, including concerns it leaves unresolved in Markdown. Give this
+completion its own report path and minimal editor-turn contract; retain the exact functional
+revision and disposition from the interrupted turn, rather than letting completion overwrite them. A
+retry that changes the revision or chooses another disposition fails without saving a response; it
+cannot silently pair new commentary with discarded changes. Further revisions belong to later
+conversation cycles.
 
 StartIdeaRound owns `state/current-round.json`: submission identity, cycle number and selected role
 profiles. On selection it opens the next submission at cycle 1; on discussion it opens the next cycle

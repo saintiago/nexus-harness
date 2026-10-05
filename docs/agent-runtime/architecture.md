@@ -73,16 +73,18 @@ invocation with the supplied context.
 native provider settings. AgentRuntime transports those settings without owning memory semantics;
 its run interface and complete-context preservation remain unchanged.
 
-additionalContext is caller-prepared text containing the invocation instructions, information and any
-file paths the agent needs. Include it in the prompt as supplied; do not read workspace files to
-discover or construct the request.
+additionalContext is caller-prepared text containing the invocation instructions, assigned Markdown
+report path, separate minimal outcome contract, information and any file paths the agent needs.
+Include it in the prompt as supplied; do not read workspace files to discover or construct the
+request.
 
 Callers requiring a JSON response supply outputSchema as a JSON Schema object derived from their
 authoritative response schema; the derived schema must meet the provider's structured-output
 requirements, with every object property required and additional properties forbidden. A value the
 response may leave out is therefore derived as nullable and reported as null, which the caller
-interprets as the value's absence. The schema describes the agent response, not metadata added by
-the caller afterward. Pass it unchanged to the provider's structured-output capability; prompt text
+interprets as the value's absence. The schema describes only the machine outcome, not Markdown or
+metadata added by the caller afterward. The caller owns report storage and validation; the runtime
+never parses Markdown. Pass it unchanged to the provider's structured-output capability; prompt text
 alone does not enforce the response format. Calls requiring plain text omit it.
 
 Success means the invocation finished and returned output. The caller still parses, validates and
@@ -94,10 +96,10 @@ schema. The caller owns parsing, rejection evidence and correction context; the 
 feedback store and does not reinterpret a rejection or start a repair invocation. A finished
 invocation event establishes only that output was returned, not that its report was accepted.
 
-Coherence assessment uses existing task context, current revisions, findings, responses and verdicts.
-It adds no interface fields, persistent state, scoring or automatic retries. The caller retains report
-validation, rejection feedback and workflow routing; agents judge the substance. Existing
-current-revision acceptance, finite allowances and merge/check gates remain authoritative.
+Coherence assessment uses existing task context, current revisions, Markdown reports and machine
+verdicts. It adds no interface fields, persistent state, scoring or automatic retries. The caller
+retains report validation, rejection feedback and workflow routing; agents judge the substance.
+Existing current-revision acceptance, finite allowances and merge/check gates remain authoritative.
 
 Activity is emitted through the observer the caller supplies for that invocation, so concurrent
 calls keep independent observers. Observer failures do not affect the invocation. Invocation

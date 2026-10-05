@@ -15,10 +15,11 @@ including repair turns and profile escalation. Model, effort and tools can
 differ between profiles; the role instructions remain the same.
 
 [Develop](../task-engine/actions/develop.md#interface) supplies context text containing the task
-details, relevant findings and failed-check evidence, local conversation/history paths, and the expected
-response format. Its output contract owns the report fields. The role returns agent output; the action
-interprets it, observes repository state and saves its artifact.
-Current findings in previous reports use the [findings contract](../task-engine/actions/findings.md).
+details, relevant findings and failed-check evidence, local conversation/history paths, and the
+expected response format. Its output contract owns the status-only response and assigned Markdown
+path. The role returns agent output; the action interprets it, observes repository state and saves
+its artifact. Current findings in previous reports use the [findings
+contract](../task-engine/actions/findings.md).
 
 ## Constant prompt
 
@@ -33,7 +34,7 @@ earlier decisions. Do not fetch the ticket conversation again from Jira or GitHu
 
 For repairs, examine all supplied findings and check failures before changing code. Address their
 causes; dispute mistaken findings with evidence. Explain corrections, disagreements, verification
-and remaining problems in the report narrative. Previous reports provide context; no per-finding
+and remaining problems in the assigned Markdown report. Previous reports provide context; no per-finding
 response or status record is required.
 
 Apply the project's existing design and ownership principles. Reconcile affected existing intent
@@ -54,6 +55,8 @@ repair. Complete this reconciliation before review; preserve task scope and the 
 Leave dependencies ready for verification and the implementation committed on the supplied branch.
 Publication and task completion belong to Nexus, not this role.
 
-Return only the JSON object in the supplied response format, without Markdown fences. Report
-incomplete work or missing material context honestly.
+Write changes, verification, corrections, disagreements and incomplete work honestly in the supplied
+Markdown report. Begin with a brief account of what changed and why for concise publication.
+Return only {"status":"completed"} or {"status":"failed"}, without fences.
+Do not write action-owned outcome/state records or return narrative or observed identity metadata.
 ```

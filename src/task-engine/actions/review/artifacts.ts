@@ -1,165 +1,179 @@
 import { z } from 'zod';
-import type { ArtifactDeclaration } from '../artifacts.js';
+import { readBoundReport, reportBindingFields } from '../agent-reports.js';
+import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
+import { readRecord } from '../records.js';
+import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
 
 /**
- * Review's artifact contract: the findings present in the reviewed revision and the verdict they
- * support. Findings carry no lifecycle identity; earlier reports remain readable evidence.
+ * Review's artifact contract: the saved Markdown review and the verdict it supports, bound to the
+ * revision actually reviewed. Findings live in the Markdown report and have no machine contract;
+ * the agent returns only the verdict its workflow consumes.
  */
 
-/**
- * One affected location's fields: its file, and its line in the reviewed revision when the
- * location has one.
- */
-const findingLocationFields = {
-  path: z.string().describe('The affected file in the reviewed revision.'),
-  line: z.number().int().positive().describe('The one-based line in the reviewed revision.'),
-};
-
-/** One location in a saved Finding: a location without a line leaves the field out. */
-const findingLocationSchema = z.strictObject({
-  ...findingLocationFields,
-  line: findingLocationFields.line.optional(),
-});
-
-/**
- * One location as the agent reports it. The provider's strict structured-output schema requires
- * every property, so a location without a line reports null; the action turns that null back into
- * an absent line before saving the Finding.
- */
-const reportedLocationSchema = z.strictObject({
-  ...findingLocationFields,
-  line: findingLocationFields.line
-    .nullable()
-    .describe('The reviewed revision\u2019s line, or null when the location has no line.'),
-});
-
-/** One defect finding present in the assessed revision. */
-export const findingSchema = z.strictObject({
-  title: z.string().describe('A short title for the defect.'),
-  severity: z
-    .enum(['blocking', 'non-blocking'])
-    .describe('Whether the finding prevents acceptance.'),
-  basis: z.string().describe('The requirement or expected behavior that is violated.'),
-  evidence: z
-    .string()
-    .describe(
-      'The observed or reproducible failure, related occurrences inspected and material uncertainty.',
-    ),
-  impact: z.string().describe('The consequence of the defect.'),
-  repairGuidance: z.string().describe('The required correction.'),
-  locations: z.array(findingLocationSchema).describe('The affected locations; may be empty.'),
-});
-
-export type Finding = z.infer<typeof findingSchema>;
-
-/**
- * One finding as a retained report may still carry it: the current shape plus the removed stable
- * ID. The producer's saved-record reader preserves it as historical data, and no current rule
- * reads, matches or validates it.
- */
-export const retainedFindingSchema = z.strictObject({
-  id: z.string().optional(),
-  ...findingSchema.shape,
-});
-
-/** The review result's fields; the exported schema adds the verdict-consistency check. */
-const reviewOutputFieldsSchema = z.object({
+const reviewFields = {
   /** Task subject captured for this report; older reports may omit it. */
   taskSubject: z.string().optional(),
-  profile: z.string().describe('The reviewer profile that produced this verdict.'),
-  headRevision: z.string().describe('The exact revision this verdict reviews.'),
+  profile: z.string().min(1).describe('The reviewer profile that produced this verdict.'),
+  headRevision: z.string().min(1).describe('The exact revision this verdict reviews.'),
   verdict: z
     .enum(['approved', 'changesRequested'])
     .describe(
-      'Approved requires sufficient evidence and no current blocking finding; changesRequested requires at least one.',
+      'Approved requires sufficient evidence and no current blocking finding; changesRequested ' +
+        'requires at least one.',
     ),
-  summary: z
-    .string()
-    .describe('What was reviewed, the inspected scope and why this verdict is supported.'),
-  findings: z
-    .array(retainedFindingSchema)
-    .describe('The findings present in the reviewed revision, including newly discovered ones.'),
-  /**
-   * The former prior-finding disposition array a retained report may still carry. It stays stored
-   * as history and is never matched, validated or answered.
-   */
-  priorFindings: z.unknown().optional(),
-});
+};
 
-/** Why one review verdict is unsupported by the findings it reports, or null. */
-function verdictProblem(
-  verdict: ReviewOutput['verdict'],
-  findings: readonly { readonly severity: Finding['severity'] }[],
-): string | null {
-  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
-  if (verdict === 'approved' && blockingCount > 0) {
-    return 'approved the revision while reporting a blocking finding';
-  }
-  if (verdict === 'changesRequested' && blockingCount === 0) {
-    return 'requested changes without a current blocking finding';
-  }
-  return null;
-}
-
-/**
- * The review result for one reviewed revision. The producer-owned reader rejects a report whose
- * verdict contradicts its current findings, so continuation, history and downstream consumers all
- * receive a consistent saved report; former fields stay permitted as retained data.
- */
-export const reviewOutputSchema = reviewOutputFieldsSchema.superRefine((report, context) => {
-  const problem = verdictProblem(report.verdict, report.findings);
-  if (problem !== null) {
-    context.addIssue({ code: 'custom', path: ['verdict'], message: `the review ${problem}` });
-  }
+/** The saved review outcome: the assigned Markdown review bound to the reviewed revision. */
+export const reviewOutputSchema = z.strictObject({
+  ...reviewFields,
+  taskKey: z.string().min(1).describe('The task key this review belongs to.'),
+  role: z.literal('reviewer'),
+  ...reportBindingFields,
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
 
 /**
- * The persisted Finding for one finding the agent reported: the response's explicit null line is
- * the Finding contract's absent line.
+ * A retained combined review from before the narrative/outcome separation: its former narrative
+ * and finding arrays stay readable history without their removed lifecycle or consistency rules.
  */
-export function toFinding(reported: ReportedFinding): Finding {
-  return {
-    ...reported,
-    locations: reported.locations.map(({ path, line }) =>
-      line === null ? { path } : { path, line },
-    ),
-  };
-}
-
-/** One current finding as the agent reports it: a location without a line reports null. */
-export const reportedFindingSchema = findingSchema.extend({
-  locations: z
-    .array(reportedLocationSchema)
-    .describe('The affected locations; may be empty. A location without a line reports null.'),
+export const legacyReviewOutputSchema = z.strictObject({
+  ...reviewFields,
+  taskKey: z.string().optional(),
+  summary: z.string().describe('The former combined narrative this review used to carry.'),
+  findings: z.array(z.unknown()).describe('The former structured findings, kept as history.'),
+  priorFindings: z.unknown().optional(),
 });
 
-export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
+export type LegacyReviewOutput = z.infer<typeof legacyReviewOutputSchema>;
 
 /**
- * The agent's response fields: the review fields with locations the strict provider schema
- * accepts. The action binds them to the configured profile and the observed reviewed head before
- * writing its output.
+ * The producer-owned reader: a current outcome requires its report binding, while a retained
+ * combined review stays readable as history. A record carrying any binding field must satisfy the
+ * current schema; a damaged new record never falls back to legacy parsing.
  */
-export const reviewResponseSchema = z.strictObject({
-  ...reviewOutputFieldsSchema.pick({ verdict: true, summary: true }).shape,
-  findings: z
-    .array(reportedFindingSchema)
-    .describe('The findings present in the reviewed revision, including newly discovered ones.'),
-});
+export const retainedReviewOutputSchema = z.union([reviewOutputSchema, legacyReviewOutputSchema]);
 
-export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
+export type RetainedReviewOutput = z.infer<typeof retainedReviewOutputSchema>;
+
+/** True when one retained review outcome carries the current report binding. */
+export function isBoundReviewOutput(outcome: RetainedReviewOutput): outcome is ReviewOutput {
+  return 'report' in outcome;
+}
+
+/** The review's readable Markdown text, or the former combined narrative. */
+export async function reviewReportText(outcome: RetainedReviewOutput): Promise<string> {
+  return isBoundReviewOutput(outcome)
+    ? (await readBoundReport(outcome, 'Review report')).text
+    : outcome.summary;
+}
 
 export const reviewArtifact = {
   pathFromArtifactsRoot: 'review.json',
-  schema: reviewOutputSchema,
-} satisfies ArtifactDeclaration<typeof reviewOutputSchema>;
+  schema: retainedReviewOutputSchema,
+} satisfies ArtifactDeclaration<typeof retainedReviewOutputSchema>;
 
-/** Validate one agent report's verdict against its current findings. */
-export function validateReviewResponse(report: ReviewResponse): void {
-  const problem = verdictProblem(report.verdict, report.findings);
-  if (problem !== null) {
-    throw new Error(`The reviewer ${problem}.`);
+/** The reviewer report responsibility of one owning area and the task it answers for. */
+export function reviewReportScope(areaRoot: string, taskKey: string): ReportScope {
+  return {
+    project: projectOfWorkspace(areaRoot),
+    workId: taskKey,
+    area: areaRoot,
+    role: 'reviewer',
+    reportKind: 'review',
+  };
+}
+
+/**
+ * Require one retained review outcome to be usable for a workflow decision: it must describe the
+ * expected task (when the retained record names one) and, when it carries the current report
+ * binding, its assigned Markdown must be readable with the recorded identity. An unusable outcome
+ * is preserved under the reviewer's report responsibility as attributable rejection evidence
+ * before the read fails. A retained combined review stays readable history.
+ */
+export async function requireUsableReviewOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly file: string;
+  readonly outcome: RetainedReviewOutput;
+  readonly invocationId: string | null;
+  readonly context: string;
+}): Promise<void> {
+  try {
+    if (settings.outcome.taskKey !== undefined && settings.outcome.taskKey !== settings.taskKey) {
+      throw new Error(
+        `The review result at "${settings.file}" is for task ` +
+          `"${settings.outcome.taskKey}", not "${settings.taskKey}".`,
+      );
+    }
+    if (isBoundReviewOutput(settings.outcome)) {
+      await readBoundReport(settings.outcome, 'Review report');
+    }
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: reviewReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: settings.invocationId,
+      operation: 'review',
+      profile: settings.outcome.profile,
+      context: settings.context,
+      file: settings.file,
+      assignedReport: isBoundReviewOutput(settings.outcome) ? settings.outcome.report : null,
+      error,
+    });
   }
 }
+
+/**
+ * Read the current round's saved review outcome for a decision outside Review. An absent record
+ * is null; an unusable record is preserved as the reviewer's rejection evidence before the read
+ * fails; a returned outcome has already passed its task and report-binding checks.
+ */
+export async function readUsableReviewOutcome(settings: {
+  readonly areaRoot: string;
+  readonly taskKey: string;
+  readonly round: number;
+  readonly context: string;
+}): Promise<RetainedReviewOutput | null> {
+  const file = roundArtifactPath(
+    settings.areaRoot,
+    settings.round,
+    reviewArtifact.pathFromArtifactsRoot,
+  );
+  let outcome: RetainedReviewOutput | null;
+  try {
+    outcome = await readRecord(file, {
+      file: reviewArtifact.pathFromArtifactsRoot,
+      schema: reviewArtifact.schema,
+    });
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.areaRoot,
+      scope: reviewReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: null,
+      operation: 'review',
+      profile: null,
+      context: settings.context,
+      file,
+      error,
+    });
+  }
+  if (outcome !== null) {
+    await requireUsableReviewOutcome({
+      areaRoot: settings.areaRoot,
+      taskKey: settings.taskKey,
+      file,
+      outcome,
+      invocationId: null,
+      context: settings.context,
+    });
+  }
+  return outcome;
+}
+
+/** The agent's response: only the verdict its workflow consumes. */
+export const reviewResponseSchema = z.strictObject({
+  verdict: reviewFields.verdict,
+});
+
+export type ReviewResponse = z.infer<typeof reviewResponseSchema>;

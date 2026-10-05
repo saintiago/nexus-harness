@@ -33,21 +33,25 @@ type ReviewOutput = {
   profile: string;
   headRevision: string;
   verdict: 'approved' | 'changesRequested';
-  summary: string;
-  findings: Finding[];
+  taskKey: string;
+  role: 'reviewer';
+  report: ArtifactRef;
+  reportIdentity: string;
+  invocationId: string;
 };
 
-type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings'>;
+type ReviewResponse = { verdict: 'approved' | 'changesRequested' };
 ```
 
 The action captures the refreshed task subject in taskSubject when saving a new report, retaining
 the subject for later artifact interpretation even if task selection is refreshed.
 
-Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
-its current finding definition and verdict rules in context. Parse and validate the response, then add
-the configured profile and observed reviewed head to create ReviewOutput. They are not agent claims.
+Request one JSON object conforming to ReviewResponse as the agent's final output. Include that
+shape, its assigned Markdown path and narrative assessment/verdict obligations in context. Parse and
+validate the response, then add the configured profile and observed reviewed head to create
+ReviewOutput. They are not agent claims.
 
-Review owns one artifact schema and derives its response schema and TypeScript types from it.
+Review owns separate response and saved-outcome schemas and derives their provider format and types.
 Both permit only the two declared verdicts; there is no report-shaped failure result.
 
 ### Outcomes
@@ -89,35 +93,42 @@ remain unchanged after the turn; new caches, logs or generated verification outp
 invalidate a review. Implementation fixes belong to a development turn.
 
 The reviewer evaluates correctness and missing behavior and judges previous concerns and narrative
-responses against current evidence. It returns a verdict, summary and actionable current findings.
-Validate report shape and verdict consistency under the shared contract; remove ID uniqueness and
-cross-round matching checks. Bind the report to the revision actually reviewed. Missing required
-fields or inconsistent verdicts are unusable output, not approval or a newly invented coding finding.
+responses against current evidence. It writes assessment and actionable current findings in Markdown
+and returns only verdict. Validate that control value, the assigned report and its binding under the
+[shared report handling](architecture.md#markdown-reports-and-machine-outcomes). Do not parse or
+validate findings or verdict consistency against prose. Bind the saved outcome/report to the
+revision actually reviewed. Missing or invalid required output is unusable, never approval or an
+invented finding.
 
 An invocation fault or unusable response fails the action before saving a new reviewArtifact or
 publishing a review/check. Retain the failure explanation through ordinary execution diagnostics;
 do not manufacture a review report for an unfinished assessment.
 
-Save the complete report. Publish its review and configured review check for that exact head through
-the Nexus Lens publication capability. Only approved produces a successful review check;
-changesRequested cannot authorize merge. The complete agent conversation stays
-in local artifacts; the published review summarizes the result.
-Recognize an already-published review by the configured Nexus Lens author, the reviewed commit, the
-verdict and the report body, and the check by the configured name, the Nexus Lens producer identity,
-a completed status and the verdict's conclusion. Publish only the missing part.
-Supply concise ticket feedback to the parent-owned publication actor, which publishes a comment
-beginning with the profile and explaining what was missed and what to improve. A requested repair stays in the current workflow; a Jira comment is not the repair input.
+Save the outcome/report binding. Publish the saved Markdown review and configured review check for
+that exact head through the Nexus Lens publication capability. Only approved produces a successful
+review check; changesRequested cannot authorize merge. The complete agent conversation stays in
+local artifacts; the published review summarizes the result. Recognize an already-published review
+by the configured Nexus Lens author, the reviewed commit, the verdict and retained publication body,
+and the check by the configured name, the Nexus Lens producer identity, a completed status and the
+verdict's conclusion. Publish only the missing part. Supply concise ticket feedback to the
+parent-owned publication actor, which publishes a comment beginning with the profile and explaining
+what was missed and what to improve. A requested repair stays in the current workflow; a Jira
+comment is not the repair input.
 
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
+Validate the current development outcome through its producer-owned usable-outcome reader before
+both a fresh assessment and saved-review replay. Missing, changed or foreign development evidence
+fails before publication and retains rejection evidence under the developer's responsibility.
 
 New agent responses use the strict current response schema. The producer's saved-record reader also
 accepts former finding IDs and disposition fields in retained reports without enforcing removed
 lifecycle rules. Preserve the complete original reports as readable historical evidence. Required
-verdict, finding and revision fields still receive shape and consistency validation. An invalid
-retained report is an action failure, not an absent report or a verdict to translate. Reuse an
-otherwise valid completed report only for its recorded head under the existing publication rules;
-history does not authorize a changed revision. Do not rewrite history or add a compatibility verdict.
+verdict and revision fields and new report associations still receive validation; former structured
+findings remain readable history without consistency validation. An invalid retained report is an
+action failure, not an absent report or a verdict to translate. Reuse an otherwise valid completed
+report only for its recorded head under the existing publication rules; history does not authorize a
+changed revision. Do not rewrite history or add a compatibility verdict.
 
 Review has no Jira capability. GitHub Nexus Lens review/check publication remains Review-owned.
 

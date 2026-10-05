@@ -76,8 +76,11 @@ On repetition, inspect the saved selection and current source state. Finish an i
 continue the same unfinished task before selecting unrelated work. Preserve ready-admission
 evidence independently of refreshed task snapshots across repeated interruptions until repository
 preparation succeeds. This exception admits only In Progress; In Review always requires matching
-prepared, development, verification and delivery evidence. A completed previous task allows
-fresh selection. Unexpected source state is reported rather than overwritten.
+prepared, development, verification and delivery evidence.
+Read retained development through its producer-owned usable-outcome reader: invalid task or report
+bindings retain attributable rejection evidence before admission fails, and validated invocation
+evidence completes an interrupted correction without another development turn. A completed previous
+task allows fresh selection. Unexpected source state is reported rather than overwritten.
 
 With no saved active selection, select from the current source order. There is no special blocker
 target. Reuse retained work only when it still exists. If recovery discarded the broken finite

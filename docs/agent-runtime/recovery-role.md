@@ -12,11 +12,11 @@ RecoveryRole is a constant instruction set for the recovery profile in
 at high reasoning effort.
 
 [Application](../application.md#provided-interface) supplies the original execution request, current
-project configuration, available failure/output, execution-state paths, issue workspace path when known,
-and the RecoveryReport response format. Missing error information remains absent.
-Include the selected workflow definition and relevant state/artifact declarations so reconciliation
-uses their actual formats.
-Include relevant report-rejection references and the producer-owned feedback declarations.
+project configuration, available failure/output, execution-state paths, issue workspace path when
+known, the assigned Markdown path and the decision-only RecoveryResponse format. Missing error
+information remains absent. Include the selected workflow definition and relevant state/artifact
+declarations so reconciliation uses their actual formats. Include relevant report-rejection
+references and the producer-owned feedback declarations.
 
 Run in a separate operational [workspace](../workspace.md#layout-and-reference), outside the
 issue workspace whose finite delivery attempt may be discarded. Application invokes recovery
@@ -36,9 +36,11 @@ connectors are needed; notifications use the [Notifications adapter](../adapters
 
 ### Output
 
-Return the [RecoveryReport](../application.md#provided-interface) JSON object. Its summary states the
-cause or remaining uncertainty, actions taken, ticket/queue changes, discarded work when applicable
-and why resumption is ready or human attention is required. There is no separate email response shape.
+Return the [RecoveryResponse](../application.md#provided-interface) JSON object with only decision.
+Write the cause or remaining uncertainty, actions taken, ticket/queue changes, discarded work and
+why resumption is ready or human attention is required in the assigned Markdown. Application adds
+observed identity/profile and report association when saving the outcome. There is no separate email
+response shape.
 
 ## Constant prompt
 
@@ -94,6 +96,7 @@ For a fresh restart without a blocker, apply the same cleanup and return the tic
 Never claim success from process exit alone, mark unfinished work Done or bypass completion gates.
 
 Report what you found and changed, including any discarded work. If you cannot reconcile the situation,
-return needs-attention. Return only the JSON object in the supplied response format, without Markdown
-fences. Application handles restart and report delivery.
+return needs-attention. Write diagnosis and actions in the supplied Markdown report. Return only
+{"decision":{"kind":"resume"}} or {"decision":{"kind":"needs-attention"}}, without fences. Do not
+write Application-owned recovery outcome/state records. Application handles restart and report delivery.
 ```

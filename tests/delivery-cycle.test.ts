@@ -28,6 +28,7 @@ import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import { type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import { createStartRound } from '../src/task-engine/actions/start-round/index.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -151,29 +152,24 @@ async function readArtifact<T>(round: number, name: string): Promise<T> {
 describe('delivery cycle', () => {
   it('publishes, reviews and completes the same delivered revision', async () => {
     const developerRuntime: AgentRuntime = {
-      async run() {
+      async run(_profile, _workspaceRef, additionalContext) {
         await writeFile(path.join(worktree, 'feature.txt'), 'feature\n');
         await gitCommand(['add', '--all'], worktree);
         await gitCommand(['commit', '--quiet', '--message', 'add the feature'], worktree);
-        return ok({
-          output: JSON.stringify({
-            status: 'completed',
-            summary: 'Added the feature with its configured check.',
-          }),
-        });
+        await writeAssignedReport(
+          additionalContext,
+          'Added the feature with its configured check.',
+        );
+        return ok({ output: JSON.stringify({ status: 'completed' }) });
       },
     };
     const reviewerContexts: string[] = [];
+    const reviewMarkdown = 'The change fulfils the task and the check covers it.';
     const reviewerRuntime: AgentRuntime = {
       async run(_profile, _workspaceRef, additionalContext) {
         reviewerContexts.push(additionalContext);
-        return ok({
-          output: JSON.stringify({
-            verdict: 'approved',
-            summary: 'The change fulfils the task and the check covers it.',
-            findings: [],
-          }),
-        });
+        await writeAssignedReport(additionalContext, reviewMarkdown);
+        return ok({ output: JSON.stringify({ verdict: 'approved' }) });
       },
     };
 

@@ -11,10 +11,11 @@ ReviewerRole is a constant instruction set used by reviewer profiles in
 [AgentRuntime](architecture.md#provided-interface). Include the constant prompt below once on every
 reviewer invocation.
 
-[Review](../task-engine/actions/review.md#interface) supplies task details, the base and head revisions,
-development and verification results, locally saved conversation and previous review/development reports.
-Current findings use the [findings contract](../task-engine/actions/findings.md).
-The action supplies the response format, validates the returned report and owns publication.
+[Review](../task-engine/actions/review.md#interface) supplies task details, the base and head
+revisions, development and verification results, locally saved conversation and previous
+review/development reports. Current findings use the [findings
+contract](../task-engine/actions/findings.md). The action supplies a verdict-only response format
+and Markdown path, validates the outcome/report association and owns publication.
 
 ## Constant prompt
 
@@ -43,9 +44,9 @@ before reporting another occurrence. Report the inspected scope and uncertainty 
 findings contract. Seek the complete set of material problems within scope.
 
 Use previous reviews and developer narratives as context and judge whether earlier problems were
-addressed against the current revision. Consider disagreements fairly. Return actionable findings
+addressed against the current revision. Consider disagreements fairly. Write actionable findings
 for current problems without IDs or per-finding dispositions. Explain the inspected scope and verdict
-in the summary. Do not reopen a resolved issue without evidence
+in the assigned Markdown report. Do not reopen a resolved issue without evidence
 of a remaining or reintroduced defect, or change the acceptance standard between rounds.
 
 Apply the supplied verdict rules. Personal preferences and alternative implementations are not
@@ -60,5 +61,8 @@ Caches, logs and generated output are normal parts of verification. Preserve the
 being reviewed; do not implement fixes or commit. Remove your temporary test additions when finished,
 preserving pre-existing work. Publication belongs to Nexus.
 
-Return only the JSON object in the supplied response format, without Markdown fences.
+Write the complete assessment, current findings and optional suggestions in the supplied Markdown
+report. Begin with a brief account of the verdict and necessary corrections for concise publication.
+Return only {"verdict":"approved"} or {"verdict":"changesRequested"}, without fences.
+Do not return findings or explanations in JSON or write action-owned outcome/state records.
 ```

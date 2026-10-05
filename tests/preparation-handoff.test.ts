@@ -26,8 +26,10 @@ import {
   readCurrentDecision,
   readStagePlan,
 } from '../src/task-engine/actions/preparation/storage.js';
-import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
-import type { Finding } from '../src/task-engine/actions/review/artifacts.js';
+import {
+  stageAuthorArtifact,
+  type Finding,
+} from '../src/task-engine/actions/preparation/artifacts.js';
 
 const temporaryDirectories: string[] = [];
 

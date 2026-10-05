@@ -65,12 +65,16 @@ any later one, on the pull request's most recent observation: an observation rep
 already enabled, or the pull request already merged, needs no request. Required review and checks
 remain repository merge gates; requesting auto-merge does not wait for Review or CompleteTask.
 
-Record the resulting PR identity/head and supply the developer report to the parent-owned
-publication actor. That actor sets the ticket's PR field/review status and publishes a concise
-comment beginning with the profile, followed by what changed and why. Count development reports after the initial round as executed repair turns when reporting repairs
-used, and derive profile escalation from their recorded profiles. A planned round without a
-development report is not a used repair. Keep operational paths and repeated links out of the comment.
-Deliver has no Jira capability; source publication belongs to the parent boundary.
+Read the associated developer Markdown under its producer-owned binding. Use it as the PR body and
+retain the exact publication body for repeat reconciliation; legacy combined reports supply their
+former narrative under the producer compatibility reader. Do not parse Markdown as JSON. Record the
+resulting PR identity/head and supply the developer report to the parent-owned publication actor.
+That actor sets the ticket's PR field/review status and publishes a concise comment beginning with
+the profile, followed by what changed and why. Count development reports after the initial round as
+executed repair turns when reporting repairs used, and derive profile escalation from their recorded
+profiles. A planned round without a development report is not a used repair. Keep operational paths
+and repeated links out of the comment. Deliver has no Jira capability; source publication belongs to
+the parent boundary.
 
 Inspect existing publication state on repetition and finish incomplete work, including requesting
 auto-merge if it is not enabled on the open pull request. Use the recorded PR

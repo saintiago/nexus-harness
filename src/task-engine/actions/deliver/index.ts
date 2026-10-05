@@ -3,7 +3,11 @@ import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
-import { devArtifact } from '../develop/artifacts.js';
+import {
+  devArtifact,
+  developmentReportText,
+  readUsableDevelopmentOutcome,
+} from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -114,16 +118,30 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     const repository = prepared.repository;
 
     const helpers = createArtifactHelpers({ root });
-    const [development, verification] = await helpers.readInputArtifacts(
-      devArtifact,
-      verificationArtifact,
-    );
+    const [verification] = await helpers.readInputArtifacts(verificationArtifact);
     const [recorded] = await helpers.readOptionalInputArtifacts(deliveryArtifact);
     const round = await readRequiredRecord(
       path.join(root, currentRoundFile),
       currentRoundDeclaration,
       'Current round',
     );
+    // Publication consumes the developer's Markdown under its saved binding: an unusable bound
+    // report is retained as the developer's rejection evidence instead of publishing without it.
+    const development = await readUsableDevelopmentOutcome({
+      areaRoot: root,
+      taskKey: selection.taskKey,
+      round: round.number,
+      context: `Delivery of task ${selection.taskKey} reading the development result to publish.`,
+    });
+    if (development === null) {
+      throw new Error(
+        `Required artifact at "${roundArtifactPath(
+          root,
+          round.number,
+          devArtifact.pathFromArtifactsRoot,
+        )}" does not exist.`,
+      );
+    }
 
     /** Report an observed condition that prevents publication. */
     async function fail(reason: string): Promise<'failed'> {
@@ -137,10 +155,10 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       return 'failed';
     }
 
-    if (development.taskKey !== selection.taskKey || prepared.taskKey !== selection.taskKey) {
+    if (prepared.taskKey !== selection.taskKey) {
       throw new Error(
-        `The development result is for task "${development.taskKey}" and the prepared workspace ` +
-          `for "${prepared.taskKey}", not the selected "${selection.taskKey}".`,
+        `The prepared workspace is for task "${prepared.taskKey}", not the selected ` +
+          `"${selection.taskKey}".`,
       );
     }
 
@@ -394,7 +412,9 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     // that same pull request within the post-push confirmation deadline, and the confirming
     // observation is the latest state that decides the auto-merge request.
     const title = pullRequestTitle(selection);
-    const body = development.summary;
+    // The pull request body is the developer's saved Markdown under its producer-owned binding; a
+    // retained combined report supplies its former narrative.
+    const body = await developmentReportText(development);
     let pullRequestNumber: number;
     let pullRequestUrl: string;
     let needsAutoMerge: boolean;

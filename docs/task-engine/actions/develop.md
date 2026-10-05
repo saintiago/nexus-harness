@@ -37,10 +37,14 @@ type DevelopmentOutput = {
   status: 'completed' | 'failed';
   baseRevision: string;
   headRevision: string;
-  summary: string;
+  role: 'developer';
+  report: ArtifactRef;
+  reportIdentity: string;
+  invocationId: string;
+  readinessFailure: string | null; // action-observed condition, not agent narrative
 };
 
-type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary'>;
+type DevelopmentResponse = { status: 'completed' | 'failed' };
 ```
 
 The action captures the refreshed task subject in taskSubject when saving a new report, retaining
@@ -50,10 +54,12 @@ Request one JSON object conforming to DevelopmentResponse as the agent's final o
 shape and field meanings in context. Parse and validate it before recording the artifact. There is
 no structured per-finding response or cross-round matching requirement.
 
-The action records the profile and observed repository revisions. The agent supplies status and a
-narrative summary of changes, verification performed and its results, responses to previous reviews,
-disagreements and remaining problems, as applicable. For incomplete work, explain why it could not
-be completed. Claimed verification does not replace Verify's command evidence.
+The action records the profile and observed repository revisions. The agent supplies only status.
+Its assigned Markdown explains changes, verification and results, corrections, disagreements and
+remaining problems, as applicable. Validate and save the [report
+binding](architecture.md#markdown-reports-and-machine-outcomes) with the outcome. For incomplete
+work, explain why it could not be completed. Claimed verification does not replace Verify's command
+evidence.
 
 ### Outcomes
 
@@ -85,12 +91,17 @@ therefore continues the preparation branch without moving or copying stage artif
 
 Interpret the returned report and inspect the resulting branch and revision. Completed work must be
 committed and ready for verification. Record failed when the turn reports incomplete work or leaves
-tracked implementation changes uncommitted; when a completed turn's observed worktree is not ready, the
-recorded summary keeps the agent's explanation and the observed readiness failure. Finish writing
-the report before returning.
+tracked implementation changes uncommitted; when a completed turn's observed worktree is not ready,
+the saved outcome records the observed readinessFailure separately; the agent's Markdown remains
+unchanged. Save the outcome and report association before returning.
 
 On repetition, inspect existing work and the current-round report before deciding whether another
 invocation is needed. A report for a different task or revision is not evidence for the current work.
+The producer-owned usable-outcome reader validates task and Markdown bindings before retained
+consumers decide. After validation it finishes any interrupted correction for the rejections that
+saved invocation was supplied, including completed or failed outcomes consumed at retained entry
+without replaying Develop. Later or unrelated rejections remain outstanding; legacy records without
+invocation evidence cannot resolve them.
 
 Untracked files do not prevent completion. Do not classify or reject them as a readiness check.
 
@@ -99,9 +110,11 @@ boundary. Develop receives the saved snapshot and has no Jira capability.
 
 ## Retained reports
 
-New responses and saved reports use the simplified fields above. Producer-owned saved-record readers
-also accept retained reports carrying the former finding-response field, without validating its
-removed lifecycle rules. Preserve the original file as readable history and provide its narrative
-and previous review evidence to the next invocation. Missing current required fields and unusable
-status or revision metadata still fail through normal report rejection. No history rewrite, new
-round allowance or alternative delivery path is introduced.
+New responses and saved outcomes use the separated contracts above. Producer-owned saved-record
+readers also accept retained reports carrying the former finding-response field, without validating
+its removed lifecycle rules. Preserve the original file as readable history and provide its
+narrative and previous review evidence to the next invocation. The producer reads legacy combined
+reports under the [action compatibility rules](architecture.md#agent-response-contracts). New
+outcome/report bindings, control values and repository readiness still receive validation and normal
+rejection feedback. No history rewrite, new round allowance or alternative delivery path is
+introduced.

@@ -54,9 +54,14 @@ type RecoveryDecision =
   | { kind: 'resume' }
   | { kind: 'needs-attention' };
 
-type RecoveryReport = {
-  summary: string;
-  decision: RecoveryDecision;
+type RecoveryResponse = { decision: RecoveryDecision };
+type RecoveryReport = RecoveryResponse & ReportBinding & {
+  project: string;
+  workId: string | null;
+  role: 'recovery';
+  profile: string;
+  request: ExecutionRequest;
+  recoveryAttempt: number;
 };
 ```
 
@@ -75,12 +80,17 @@ recovered and finished. The finished event carries ExecutionResult. subscribeAct
 attributable agent activity, both the worker's and recovery's, while it happens. Listener failures
 do not affect execution.
 
-Recovery invocations use the [agent invocation contract](task-engine/architecture.md#agent-activity-events)
-with role recovery. Use the [RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context
-and tool contract. Request RecoveryReport in the recovery context and parse the returned output.
-A malformed report is a failed recovery invocation. Once the report is saved, publish a recovered
-event carrying its decision and an [ArtifactRef](high-level-architecture.md#shared-interface-vocabulary)
-to the saved report, before applying the decision.
+Recovery invocations use the [agent invocation
+contract](task-engine/architecture.md#agent-activity-events) with role recovery. Use the
+[RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context and tool contract. Request
+RecoveryResponse and assign a Markdown report path in the recovery context. Parse only the decision,
+validate the assigned readable Markdown, and save RecoveryReport with Application's observed
+identity/profile and the [report
+binding](task-engine/actions/architecture.md#markdown-reports-and-machine-outcomes). An invalid
+outcome or unusable Markdown is a failed recovery invocation. Once the report is saved, publish a
+recovered event carrying its decision and an
+[ArtifactRef](high-level-architecture.md#shared-interface-vocabulary) to the saved report, before
+applying the decision.
 
 ### Component wiring
 
@@ -99,16 +109,18 @@ Terminal capabilities come from the process's standard output. A stream that fai
 presentation rendering to it while execution continues; the boundary releases its stream listeners
 once presentation has stopped and the failures of the writes it issued have arrived.
 
-OperatorInterface receives worker and parent events through one combined subscription and attributable
-agent activity through a separate live subscription.
-Prepare recovery context from the original request, failure, available output, execution-state paths
-and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
-a separate operational workspace, so it can discard a broken finite delivery attempt without
-deleting its own working directory. Initialize that workspace's worktree as a Git repository before the invocation,
+OperatorInterface receives worker and parent events through one combined subscription and
+attributable agent activity through a separate live subscription. Prepare recovery context from the
+original request, failure, available output, execution-state paths and task [workspace
+reference](workspace.md#layout-and-reference) when known. Always run recovery in a separate
+operational workspace, so it can discard a broken finite delivery attempt without deleting its own
+working directory. Initialize that workspace's worktree as a Git repository before the invocation,
 so the configured [coding provider](adapters/coding-runtime.md#behavior) accepts its working
-directory. Include the current project configuration and recovery scope in the context. Pass
-context to AgentRuntime.run with the configured recovery profile.
-Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
+directory. Include the current project configuration and recovery scope in the context. Pass context
+to AgentRuntime.run with the configured recovery profile. Use the [Notifications
+adapter](adapters/notifications.md#interface) to publish the associated Markdown recovery report,
+with its observed identity and decision. Never send outcome JSON as the narrative or infer a
+recovery decision from Markdown.
 
 Import the TaskEngine-owned [report rejection declarations](task-engine/actions/architecture.md#rejection-evidence-and-continuation)
 for readable failure evidence and correction records. Supply relevant rejection references and
@@ -232,8 +244,13 @@ At worker startup the runner resets terminal workflow state before execution, as
 when a fresh restart is needed.
 Recovery allowance persists across worker restarts. The task source owns queue order.
 
-Publish the saved recovery report. Notification failure is reported separately and does not repeat
-recovery. Provider acceptance confirms submission, not inbox delivery.
+Retain per-invocation Markdown reports and their saved outcomes in the recovery area. Producer-owned
+readers preserve former summary/decision reports as readable history under the shared compatibility
+rules. A usable legacy recovery decision is subject to the existing recovery allowance and request
+association; historical output does not authorize a different execution. Publish the saved recovery
+Markdown and use its readable explanation for a needs-attention result. Notification failure is
+reported separately and does not repeat recovery. Provider acceptance confirms submission, not inbox
+delivery.
 
 ## Installation activation
 

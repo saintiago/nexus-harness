@@ -1,10 +1,18 @@
 /** Retained finite entry uses actual artifact reads and the real child over controlled effects. */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTaskEngine, type BoundAction } from '../src/task-engine/index.js';
 import { createRouteDeliveryEntry } from '../src/task-engine/actions/route-delivery-entry/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
+import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  outstandingReportFeedback,
+  readReportFeedback,
+  rejectReport,
+  retainSuppliedFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import { finiteDelivery } from '../workflows/finite-delivery.js';
 
 const directories: string[] = [];
@@ -68,6 +76,28 @@ async function entry(options: {
       }),
     );
   return { root, selectionFile, route: createRouteDeliveryEntry({ selectionFile }) };
+}
+
+/** Save the separated development outcome that retained entry must validate. */
+async function saveBoundDevelopment(root: string, status: 'completed' | 'failed') {
+  const markdown = '# Development\nRetained implementation evidence.\n';
+  const reportFile = path.join(root, 'artifacts/1/developer.md');
+  const file = path.join(root, 'artifacts/1/development.json');
+  await writeFile(reportFile, markdown);
+  const outcome = {
+    taskKey: 'NEX-1',
+    profile: 'nexus-sol',
+    status,
+    baseRevision: 'base',
+    headRevision: 'head',
+    role: 'developer',
+    report: { path: reportFile },
+    reportIdentity: reportIdentityOf(Buffer.from(markdown)),
+    invocationId: 'dev-repair',
+    readinessFailure: null,
+  };
+  await writeFile(file, JSON.stringify(outcome));
+  return { outcome, file, reportFile, markdown };
 }
 
 describe('retained finite delivery entry', () => {
@@ -134,7 +164,84 @@ describe('retained finite delivery entry', () => {
     'refuses %s evidence belonging to another task',
     async (development) => {
       const prepared = await entry({ development, taskKey: 'OTHER-1' });
-      await expect(prepared.route()).rejects.toThrow('another selected task');
+      await expect(prepared.route()).rejects.toThrow('not "NEX-1"');
+    },
+  );
+  it.each(['schema', 'foreign task', 'missing Markdown', 'changed Markdown'])(
+    'retains rejected development evidence at entry for %s',
+    async (damage) => {
+      const prepared = await entry({ development: 'completed' });
+      const saved = await saveBoundDevelopment(prepared.root, 'completed');
+      const damaged: Record<string, unknown> = { ...saved.outcome };
+      if (damage === 'schema') delete damaged['reportIdentity'];
+      if (damage === 'foreign task') damaged['taskKey'] = 'OTHER-1';
+      await writeFile(saved.file, JSON.stringify(damaged));
+      if (damage === 'missing Markdown') await rm(saved.reportFile);
+      if (damage === 'changed Markdown') await writeFile(saved.reportFile, 'Changed evidence.');
+      const rejectedOutput = await readFile(saved.file, 'utf8');
+
+      await expect(prepared.route()).rejects.toThrow();
+      const records = await readReportFeedback(prepared.root);
+      expect(records).toHaveLength(1);
+      const rejection = records[0]!.record;
+      expect(rejection).toMatchObject({
+        kind: 'rejection',
+        scope: developmentReportScope(prepared.root, 'NEX-1'),
+        operation: 'develop',
+        output: rejectedOutput,
+        assignedReport: { path: saved.reportFile },
+      });
+      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+      if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
+      else {
+        expect(rejection.report).not.toBeNull();
+        expect(await readFile(rejection.report!.path, 'utf8')).toBe(
+          damage === 'changed Markdown' ? 'Changed evidence.' : saved.markdown,
+        );
+      }
+    },
+  );
+
+  it.each(['completed', 'failed'] as const)(
+    'finishes only the saved %s invocation correction before retained routing',
+    async (status) => {
+      const prepared = await entry({ development: status });
+      const saved = await saveBoundDevelopment(prepared.root, status);
+      const scope = developmentReportScope(prepared.root, 'NEX-1');
+      const reject = (invocationId: string) =>
+        rejectReport({
+          areaRoot: prepared.root,
+          scope,
+          invocationId,
+          operation: 'develop',
+          profile: 'nexus-sol',
+          context: 'Development round 1.',
+          source: null,
+          output: 'invalid',
+          reason: `Unusable output from ${invocationId}.`,
+        });
+      await expect(reject('earlier')).rejects.toThrow('Unusable output');
+      const supplied = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
+      await retainSuppliedFeedback({
+        areaRoot: prepared.root,
+        invocationId: saved.outcome.invocationId,
+        rejections: supplied.map((entry) => ({ path: entry.path })),
+      });
+      await expect(reject('later')).rejects.toThrow('Unusable output');
+      const expectedPhase = status === 'completed' ? 'verify' : 'round';
+      expect(await prepared.route()).toBe(expectedPhase);
+      expect(await prepared.route()).toBe(expectedPhase);
+      const outstanding = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
+      expect(outstanding).toHaveLength(1);
+      expect(outstanding[0]!.record.invocationId).toBe('later');
+      const records = await readReportFeedback(prepared.root);
+      const corrections = records.filter((entry) => entry.record.kind === 'correction');
+      expect(corrections).toHaveLength(1);
+      expect(corrections[0]!.record).toMatchObject({
+        invocationId: saved.outcome.invocationId,
+        artifact: { path: saved.file },
+        rejections: supplied.map((entry) => ({ path: entry.path })),
+      });
     },
   );
 });

@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CheckObservation, PullRequest } from '../src/adapters/github.js';
 import { ok } from '../src/result.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import {
   completionArtifact,
@@ -18,6 +19,8 @@ import {
 } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { reviewReportScope } from '../src/task-engine/actions/review/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { scriptedGitHub } from './support/github.js';
@@ -85,12 +88,27 @@ async function workspace(
     pullRequestUrl,
     headRevision,
   });
+  const reviewMarkdown = 'The change matches the task.';
+  const reviewReport = path.join(
+    workspaceRoot,
+    'artifacts',
+    '1',
+    'reports',
+    'rev-1',
+    'reviewer.md',
+  );
+  await mkdir(path.dirname(reviewReport), { recursive: true });
+  await writeFile(reviewReport, reviewMarkdown, 'utf8');
   const review: ReviewOutput = {
+    taskSubject: 'Implement the retry guard',
+    taskKey: 'NEX-1',
     profile: 'nexus-review',
     headRevision,
     verdict: 'approved',
-    summary: 'The change matches the task.',
-    findings: [],
+    role: 'reviewer',
+    report: { path: reviewReport },
+    reportIdentity: reportIdentityOf(Buffer.from(reviewMarkdown, 'utf8')),
+    invocationId: 'rev-1',
   };
   await helpers.writeOutputArtifact(reviewArtifact, review);
   return { workspaceRoot, selectionFile };
@@ -289,6 +307,71 @@ describe('CompleteTask', () => {
     expect(events[0]).toEqual(completionOutcome(workspaceRoot, 'completed'));
   });
 
+  it.each([
+    {
+      label: 'a deleted review report',
+      expected: /Review report at ".*" does not exist/,
+      damage: async (_workspaceRoot: string, review: ReviewOutput) => {
+        await rm(review.report.path);
+      },
+    },
+    {
+      label: 'a damaged review record',
+      expected: /does not match its declared content type/,
+      damage: async (workspaceRoot: string, review: ReviewOutput) => {
+        const damaged: Record<string, unknown> = { ...review };
+        delete damaged.reportIdentity;
+        await writeFile(
+          path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
+          `${JSON.stringify(damaged, null, 2)}\n`,
+          'utf8',
+        );
+      },
+    },
+    {
+      label: 'changed review bytes',
+      expected: /does not match the identity recorded for invocation/,
+      damage: async (_workspaceRoot: string, review: ReviewOutput) => {
+        await writeFile(review.report.path, 'Rewritten review bytes.\n', 'utf8');
+      },
+    },
+    {
+      label: 'a review that belongs to another task',
+      expected: /is for task "NEX-2", not "NEX-1"/,
+      damage: async (workspaceRoot: string, review: ReviewOutput) => {
+        await writeFile(
+          path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
+          `${JSON.stringify({ ...review, taskKey: 'NEX-2' }, null, 2)}\n`,
+          'utf8',
+        );
+      },
+    },
+  ])('does not complete from $label', async ({ expected, damage }) => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'unusable-review' });
+    const review = (await readRoundArtifact(workspaceRoot, 'review.json')) as ReviewOutput;
+    await damage(workspaceRoot, review);
+    const { github, calls } = scriptedGitHub({});
+    const { jira } = scriptedJira({});
+    const { wait } = scriptedWait();
+    const completeTask = completeTaskAction({ selectionFile, github, jira, wait });
+
+    await expect(completeTask()).rejects.toThrow(expected);
+    // The damaged approval authorizes nothing: no provider read, no completion evidence.
+    expect(calls).toEqual([]);
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).rejects.toThrow(/ENOENT/);
+    // The unavailable or foreign review stays attributable under the reviewer's responsibility.
+    const rejection = (await readReportFeedback(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'rejection',
+    );
+    expect(rejection?.record).toMatchObject({
+      scope: reviewReportScope(workspaceRoot, 'NEX-1'),
+      operation: 'review',
+      assignedReport: { path: review.report.path },
+    });
+  });
+
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {
     const missing = await workspace({ name: 'missing-check' });
     const missingHub = scriptedGitHub({
@@ -477,12 +560,14 @@ describe('CompleteTask', () => {
     });
   });
 
-  it('refuses a retained approval whose report carries a blocking finding', async () => {
-    const inconsistent = await workspace({ name: 'inconsistent-approval' });
-    const helpers = createArtifactHelpers({ root: inconsistent.workspaceRoot });
-    // A retained report can record an approval while carrying a blocking finding; the
-    // producer-owned reader rejects the contradiction before completion can consume it.
+  it('consumes a retained combined approval without re-running its removed finding rule', async () => {
+    const retained = await workspace({ name: 'retained-approval' });
+    const helpers = createArtifactHelpers({ root: retained.workspaceRoot });
+    // A retained report may record an approval beside its former blocking finding. The removed
+    // consistency rule no longer rejects it, so the approval reaches the existing check
+    // protection; the missing Nexus Lens check still fails completion.
     await helpers.writeOutputArtifact(reviewArtifact, {
+      taskKey: 'NEX-1',
       profile: 'nexus-review',
       headRevision,
       verdict: 'approved',
@@ -499,21 +584,25 @@ describe('CompleteTask', () => {
         },
       ],
     });
-    const { github, calls: githubCalls } = scriptedGitHub({});
+    const { github, calls: githubCalls } = scriptedGitHub({ readChecks: () => ok([]) });
     await expect(
       completeTaskAction({
-        selectionFile: inconsistent.selectionFile,
+        selectionFile: retained.selectionFile,
         github,
         jira: scriptedJira({}).jira,
         wait: scriptedWait().wait,
       })(),
-    ).rejects.toThrow(/approved the revision while reporting a blocking finding/);
-    // The contradiction records no completion evidence and publishes no outcome.
+    ).resolves.toBe('failed');
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: { reason: expect.stringMatching(/carries no "Nexus Lens review" check/) },
+    });
+    // The failed gate records no completion evidence.
     await expect(
-      stat(path.join(inconsistent.workspaceRoot, 'artifacts', '1', 'completion.json')),
+      stat(path.join(retained.workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).rejects.toThrow(/ENOENT/);
-    expect(githubCalls).toEqual([]);
-    expect(events).toEqual([]);
+    expect(githubCalls).toEqual([`readChecks:${headRevision}`]);
   });
 
   it('fails a closed pull request and a failed post-merge check', async () => {

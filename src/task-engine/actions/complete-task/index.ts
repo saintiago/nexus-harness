@@ -4,7 +4,7 @@ import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../..
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { readRequiredRecord } from '../records.js';
-import { reviewArtifact } from '../review/artifacts.js';
+import { readUsableReviewOutcome, reviewArtifact } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { retainTerminalReason } from '../terminal-reason.js';
@@ -75,7 +75,7 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
     );
     const root = selection.workspace.root;
     const helpers = createArtifactHelpers(selection.workspace);
-    const [delivery, review] = await helpers.readInputArtifacts(deliveryArtifact, reviewArtifact);
+    const [delivery] = await helpers.readInputArtifacts(deliveryArtifact);
     const [recorded] = await helpers.readOptionalInputArtifacts(completionArtifact);
     const taskKey = selection.taskKey;
     const round = await readRequiredRecord(
@@ -83,6 +83,24 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       currentRoundDeclaration,
       'Current round',
     );
+    // The approval authorizes completion only while its saved outcome is usable: it must describe
+    // this task and carry its readable report with the recorded identity. An unusable record is
+    // retained as the reviewer's rejection evidence instead of authorizing the merge.
+    const review = await readUsableReviewOutcome({
+      areaRoot: root,
+      taskKey,
+      round: round.number,
+      context: `Completion of task ${taskKey} reading the approved review result.`,
+    });
+    if (review === null) {
+      throw new Error(
+        `Required artifact at "${roundArtifactPath(
+          root,
+          round.number,
+          reviewArtifact.pathFromArtifactsRoot,
+        )}" does not exist.`,
+      );
+    }
 
     /** Report an observed condition that prevents completion. */
     async function fail(reason: string): Promise<'failed'> {

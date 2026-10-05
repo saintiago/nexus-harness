@@ -174,17 +174,20 @@ Activities and rules:
    judge whether earlier problems were addressed. Keep actionable current findings with evidence,
    consequences and repair guidance; unresolved problems do not disappear merely because tracking
    fields are removed. Preserve stage routing and concrete upstream correction requests.
-5. The developer returns a report with status and a narrative summary of changes, verification,
-   responses to previous reviews, disagreements and remaining problems. Nexus saves it as
-   `development.json`. The reviewer receives previous reviews, developer artifacts, task requirements
-   and verification evidence, and returns a verdict, summary and actionable current findings.
+5. Under the [report requirements](agent-runtime/report-requirements.md), the developer writes its
+   narrative in assigned Markdown and returns only status. Nexus saves `development.json` as the
+   observed outcome and report association. The reviewer receives the Markdown reports, functional
+   developer outcome, task requirements and verification evidence, writes its assessment/current
+   findings in Markdown and returns only verdict.
 6. Implementation review scope follows task correctness. The reviewer assesses all relevant code
    as it sees fit, including pre-existing code when correction is necessary. Neither the latest
    diff nor changes since the last reviewed commit limit that scope. Bind the assessment to the
    revision actually reviewed; an earlier approval cannot authorize a changed head.
-7. Retain report-shape checks and verdict consistency. Approval requires no current blocking
-   findings; optional suggestions alone do not force repair. Invalid reports and assessments that
-   cannot finish follow existing failure handling, without invented findings or approval. Align
+7. Validate control/functional fields, report readability and applicable input/revision binding.
+   Approval requires no current blocking problem as an agent judgment explained in Markdown;
+   do not parse findings or validate verdict consistency against prose. Optional suggestions alone
+   do not force repair. Invalid reports and unfinished assessments follow existing failure handling,
+   without invented findings or approval. Align
    authoritative documentation, role instructions, context construction, report contracts and
    affected tests. Preserve finite allowances, action-owned artifacts, applicable prototype
    inspection, review, merge and required CI gates.
@@ -206,10 +209,10 @@ Observable acceptance examples:
 | A later stage discovers a genuine defect in an earlier stage's input, or the human changes the requested outcome | Normal upstream correction and reassessment occur; document evaluation does not erase finding obligations or treat old approval as current assessment. |
 | A stage is irrelevant, or a prototype is applicable | The irrelevant stage receives an evaluated applicability skip without mandatory document citations. The applicable prototype receives current preview inspection with the existing required evidence; adequate prose or historical approval cannot replace it. |
 | Any preparation author/evaluator loop or Develop/Review enters a repair round | Previous reports are supplied as context. The author/developer explains corrections or disagreements narratively; the evaluator/reviewer judges the current result. No stable finding IDs, response/status records, dispositions or cross-round matching are required. |
-| A developer completes a repair, disagrees with a previous review or leaves a problem unresolved | The returned status and summary explain changes, verification, responses, disagreements and remaining problems; Nexus saves the report as `development.json`. A missing `findingResponses` array is not a rejection reason. |
-| A reviewer assesses an implementation after an earlier review | It receives previous reviews, developer artifacts, task requirements and verification evidence, and returns a verdict, summary and actionable findings for problems present at the reviewed revision. Resolved historical problems need no disposition record; unresolved problems remain grounds for current findings. |
+| A developer completes a repair, disagrees with a previous review or leaves a problem unresolved | The status-only response is saved with its observed metadata and Markdown association in `development.json`; Markdown explains changes, verification, corrections, disagreements and remaining problems. A missing `findingResponses` array is not a rejection reason. |
+| A reviewer assesses an implementation after an earlier review | It receives previous reviews, developer artifacts, task requirements and verification evidence, writes its assessment and actionable findings in Markdown, and returns only verdict for the reviewed revision. Resolved historical problems need no disposition record; unresolved problems remain grounds for current findings. |
 | Task correctness requires correcting pre-existing code outside the latest diff | The reviewer may inspect and report that defect with evidence, impact and repair guidance. Its scope follows the task rather than a commit range; unrelated cleanup is not required. |
-| Current evidence shows no blocking problems, or shows a blocking defect | Adequate work is accepted despite optional suggestions. A blocking defect requires changes with actionable current findings; report-shape and verdict-consistency checks still reject unusable or inconsistent reports without cross-round ID matching. |
+| Current evidence shows no blocking problems, or shows a blocking defect | Adequate work is accepted despite optional suggestions. A blocking defect requires changes with actionable current findings; control/functional-data, report-readability and applicable binding checks reject unusable output; prose is not parsed for verdict consistency or cross-round matching. |
 | A run resumes with reports written under the former finding contract | The reports remain readable historical context. Continuation uses the simplified current contract without rewriting history, requiring retroactive lifecycle records or resetting allowances. |
 | A retained run resumes or the change is delivered | Retained work, histories, findings and consumed allowances survive. An active runtime is not disturbed; completion still requires normal review, merge and required CI evidence. |
 

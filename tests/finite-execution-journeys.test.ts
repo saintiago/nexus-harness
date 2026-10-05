@@ -73,13 +73,10 @@ import type {
   DevelopmentResponse,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import { reviewResponseSchema } from '../src/task-engine/actions/review/artifacts.js';
-import type {
-  Finding,
-  ReviewOutput,
-  ReviewResponse,
-} from '../src/task-engine/actions/review/artifacts.js';
+import type { ReviewOutput, ReviewResponse } from '../src/task-engine/actions/review/artifacts.js';
 import type { VerificationOutput } from '../src/task-engine/actions/verify/artifacts.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
 import { controlledMemoryService, type ControlledMemoryService } from './support/memory.js';
@@ -202,9 +199,16 @@ function scriptedCodingRuntime(
   };
 }
 
-/** One development turn: it asserts its role and returns the agent's DevelopmentResponse. */
+/** What one turn writes into its assigned Markdown report. */
+type MarkdownSource = string | ((request: CodingRuntimeRequest) => string | Promise<string>);
+
+/**
+ * One development turn: it asserts its role, writes the turn's Markdown report to the assigned
+ * path and returns the agent's minimal DevelopmentResponse.
+ */
 function developerTurn(
   work: (request: CodingRuntimeRequest) => Promise<DevelopmentResponse>,
+  report: MarkdownSource,
 ): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus development agent.');
@@ -212,19 +216,31 @@ function developerTurn(
     // the provider's strict structured-output requirements.
     expect(request.outputSchema).toEqual(z.toJSONSchema(developmentResponseSchema));
     expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
-    return ok({ output: JSON.stringify(await work(request)) });
+    const response = await work(request);
+    const markdown = typeof report === 'function' ? await report(request) : report;
+    await writeAssignedReport(request.prompt, markdown);
+    return ok({ output: JSON.stringify(response) });
   };
 }
 
-/** One review turn: it asserts its role and returns the agent's ReviewResponse. */
-function reviewerTurn(work: (request: CodingRuntimeRequest) => Promise<ReviewResponse>): AgentTurn {
+/**
+ * One review turn: it asserts its role, writes the turn's Markdown report to the assigned path and
+ * returns the agent's minimal ReviewResponse.
+ */
+function reviewerTurn(
+  work: (request: CodingRuntimeRequest) => Promise<ReviewResponse>,
+  report: MarkdownSource,
+): AgentTurn {
   return async (request) => {
     expect(request.prompt).toContain('You are the Nexus reviewer.');
     // Review's own response schema crosses the real wiring to the provider capability and meets
     // the provider's strict structured-output requirements.
     expect(request.outputSchema).toEqual(z.toJSONSchema(reviewResponseSchema));
     expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
-    return ok({ output: JSON.stringify(await work(request)) });
+    const response = await work(request);
+    const markdown = typeof report === 'function' ? await report(request) : report;
+    await writeAssignedReport(request.prompt, markdown);
+    return ok({ output: JSON.stringify(response) });
   };
 }
 
@@ -695,16 +711,12 @@ describe('finite execution journeys', () => {
       developerTurn(async (request) => {
         await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
         await commitAll(request.directory, 'add the feature');
-        return {
-          status: 'completed',
-          summary: 'Added feature.txt with the guarded behavior.',
-        };
-      }),
-      reviewerTurn(async () => ({
-        verdict: 'approved',
-        summary: 'The change fulfils the task and the configured check covers it.',
-        findings: [],
-      })),
+        return { status: 'completed' };
+      }, 'Added feature.txt with the guarded behavior.'),
+      reviewerTurn(
+        async () => ({ verdict: 'approved' }),
+        'The change fulfils the task and the configured check covers it.',
+      ),
     ]);
 
     const result = journey.finished();
@@ -753,7 +765,6 @@ describe('finite execution journeys', () => {
       profile: 'nexus-review',
       headRevision: development.headRevision,
       verdict: 'approved',
-      findings: [],
     });
     const completion = await journey.artifact<CompletionOutput>(1, 'completion.json');
     expect(completion).toEqual({
@@ -846,70 +857,41 @@ describe('finite execution journeys', () => {
 
   it('completes a review-requested repair with the complete finding handoff', async () => {
     const journey = await finiteJourney();
-    const finding: Finding = {
-      title: 'The feature ships unguarded',
-      severity: 'blocking',
-      basis: 'The task requires the guarded behavior.',
-      evidence: 'feature.txt declares the feature without its guard.',
-      impact: 'The unguarded behavior reaches production.',
-      repairGuidance: 'Add the guard to feature.txt and document the case it rejects.',
-      locations: [{ path: 'feature.txt', line: 1 }],
-    };
-    // The reviewer's strict response shape carries every location's line, null when it has none.
-    const reportedFinding: ReviewResponse['findings'][number] = {
-      ...finding,
-      locations: finding.locations.map((location) => ({
-        path: location.path,
-        line: location.line ?? null,
-      })),
-    };
+    const findingMarkdown = [
+      'The feature ships unguarded.',
+      '',
+      'Basis: the task requires the guarded behavior.',
+      'Evidence: feature.txt declares the feature without its guard.',
+      'Impact: the unguarded behavior reaches production.',
+      'Required correction: add the guard to feature.txt and document the case it rejects.',
+      'Location: feature.txt:1.',
+    ].join('\n');
     const repairResponse = 'Added the guard and documented the rejected case.';
 
     const exitCode = await journey.run([
       developerTurn(async (request) => {
         await writeFile(path.join(request.directory, 'feature.txt'), 'the feature without guard\n');
         await commitAll(request.directory, 'add the feature');
-        return {
-          status: 'completed',
-          summary: 'Added the feature.',
-        };
-      }),
-      reviewerTurn(async () => ({
-        verdict: 'changesRequested',
-        summary: 'The feature is missing its required guard.',
-        findings: [reportedFinding],
-      })),
+        return { status: 'completed' };
+      }, 'Added the feature.'),
+      reviewerTurn(async () => ({ verdict: 'changesRequested' }), findingMarkdown),
       developerTurn(async (request) => {
-        // The repair round receives the preceding review as readable context.
-        expect(request.prompt).toContain('Most recent review report (round 1; repair context');
-        for (const value of [
-          finding.title,
-          finding.basis,
-          finding.evidence,
-          finding.impact,
-          finding.repairGuidance,
-          finding.locations[0]?.path ?? '',
-        ]) {
-          expect(request.prompt).toContain(value);
-        }
+        // The repair round receives the preceding review's Markdown as readable context.
+        expect(request.prompt).toContain(
+          'Most recent review report (round 1, profile nexus-review',
+        );
+        expect(request.prompt).toContain(findingMarkdown);
         await writeFile(path.join(request.directory, 'feature.txt'), 'the guarded feature\n');
         await commitAll(request.directory, 'add the guard');
-        return {
-          status: 'completed',
-          summary: repairResponse,
-        };
-      }),
+        return { status: 'completed' };
+      }, repairResponse),
       reviewerTurn(async (request) => {
-        // The next review receives the earlier report and the developer's narrative.
-        expect(request.prompt).toContain('Previous review report (round 1;');
-        expect(request.prompt).toContain(finding.repairGuidance);
+        // The next review receives the earlier report and the developer's Markdown.
+        expect(request.prompt).toContain('Previous review report (round 1, profile nexus-review');
+        expect(request.prompt).toContain(findingMarkdown);
         expect(request.prompt).toContain(repairResponse);
-        return {
-          verdict: 'approved',
-          summary: 'The guard resolves the finding on the reviewed revision.',
-          findings: [],
-        };
-      }),
+        return { verdict: 'approved' };
+      }, 'The guard resolves the finding on the reviewed revision.'),
     ]);
 
     const result = journey.finished();
@@ -934,23 +916,21 @@ describe('finite execution journeys', () => {
       profile: 'nexus-flash',
       reason: expect.stringContaining('continues with the initial profile "nexus-flash"'),
     });
-    // Round 1 recorded the requested repair and its complete finding.
+    // Round 1 recorded the requested repair and its complete Markdown finding.
     const firstReview = await journey.artifact<ReviewOutput>(1, 'review.json');
-    expect(firstReview).toMatchObject({ verdict: 'changesRequested', findings: [finding] });
-    // Round 2 carries the developer's narrative for the earlier review's concern.
+    expect(firstReview).toMatchObject({ verdict: 'changesRequested' });
+    expect(await readFile(firstReview.report.path, 'utf8')).toBe(findingMarkdown);
+    // Round 2 carries the developer's Markdown for the earlier review's concern.
     const repairDevelopment = await journey.artifact<DevelopmentOutput>(2, 'development.json');
     expect(repairDevelopment).toMatchObject({
       profile: 'nexus-flash',
       status: 'completed',
-      summary: repairResponse,
     });
+    expect(await readFile(repairDevelopment.report.path, 'utf8')).toBe(repairResponse);
     expect(repairDevelopment).not.toHaveProperty('findingResponses');
     expect(repairDevelopment.headRevision).not.toBe(firstReview.headRevision);
     const secondReview = await journey.artifact<ReviewOutput>(2, 'review.json');
-    expect(secondReview).toMatchObject({
-      verdict: 'approved',
-      findings: [],
-    });
+    expect(secondReview).toMatchObject({ verdict: 'approved' });
     const completion = await journey.artifact<CompletionOutput>(2, 'completion.json');
     expect(completion.reviewedHead).toBe(repairDevelopment.headRevision);
     // The pull request was updated in place rather than created again.
@@ -980,16 +960,9 @@ describe('finite execution journeys', () => {
         developerTurn(async (request) => {
           await writeFile(path.join(request.directory, 'feature.txt'), 'the retained feature\n');
           await commitAll(request.directory, 'add the feature after the interruption');
-          return {
-            status: 'completed',
-            summary: 'Added the retained feature after the interruption.',
-          };
-        }),
-        reviewerTurn(async () => ({
-          verdict: 'approved',
-          summary: 'The change fulfils the task.',
-          findings: [],
-        })),
+          return { status: 'completed' };
+        }, 'Added the retained feature after the interruption.'),
+        reviewerTurn(async () => ({ verdict: 'approved' }), 'The change fulfils the task.'),
       ],
       async (request) => {
         // The recovery invocation receives the failure, the retained selection and the real paths.
@@ -1101,16 +1074,12 @@ describe('finite execution journeys', () => {
       developerTurn(async (request) => {
         await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
         await commitAll(request.directory, 'add the feature');
-        return {
-          status: 'completed',
-          summary: 'Added feature.txt for the memory journey.',
-        };
-      }),
-      reviewerTurn(async () => ({
-        verdict: 'approved',
-        summary: 'The change fulfils the task and the configured check covers it.',
-        findings: [],
-      })),
+        return { status: 'completed' };
+      }, 'Added feature.txt for the memory journey.'),
+      reviewerTurn(
+        async () => ({ verdict: 'approved' }),
+        'The change fulfils the task and the configured check covers it.',
+      ),
     ]);
 
     const result = journey.finished();
@@ -1259,16 +1228,9 @@ describe('finite execution journeys', () => {
       developerTurn(async (request) => {
         await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
         await commitAll(request.directory, 'add the feature');
-        return {
-          status: 'completed',
-          summary: 'Added feature.txt for the analysis journey.',
-        };
-      }),
-      reviewerTurn(async () => ({
-        verdict: 'approved',
-        summary: 'The change fulfils the task.',
-        findings: [],
-      })),
+        return { status: 'completed' };
+      }, 'Added feature.txt for the analysis journey.'),
+      reviewerTurn(async () => ({ verdict: 'approved' }), 'The change fulfils the task.'),
     ]);
 
     const result = journey.finished();
@@ -1349,16 +1311,12 @@ describe('finite execution journeys', () => {
       developerTurn(async (request) => {
         await writeFile(path.join(request.directory, 'feature.txt'), 'the feature\n');
         await commitAll(request.directory, 'add the feature');
-        return {
-          status: 'completed',
-          summary: 'Added feature.txt without reaching the memory service.',
-        };
-      }),
-      reviewerTurn(async () => ({
-        verdict: 'approved',
-        summary: 'The change fulfils the task and the configured check covers it.',
-        findings: [],
-      })),
+        return { status: 'completed' };
+      }, 'Added feature.txt without reaching the memory service.'),
+      reviewerTurn(
+        async () => ({ verdict: 'approved' }),
+        'The change fulfils the task and the configured check covers it.',
+      ),
     ]);
 
     const result = journey.finished();

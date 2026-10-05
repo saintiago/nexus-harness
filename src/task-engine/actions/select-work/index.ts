@@ -9,7 +9,7 @@ import {
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
-import { devArtifact } from '../develop/artifacts.js';
+import { readUsableDevelopmentOutcome } from '../develop/artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { roundArtifactPath } from '../artifacts.js';
@@ -302,10 +302,12 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       const development =
         round === null
           ? null
-          : await readRecord(
-              roundArtifactPath(recorded, round.number, devArtifact.pathFromArtifactsRoot),
-              { file: devArtifact.pathFromArtifactsRoot, schema: devArtifact.schema },
-            );
+          : await readUsableDevelopmentOutcome({
+              areaRoot: recorded,
+              taskKey: issue.key,
+              round: round.number,
+              context: `Selecting retained In Review delivery for task ${issue.key}.`,
+            });
       if (
         development?.status !== 'completed' ||
         development.taskKey !== issue.key ||

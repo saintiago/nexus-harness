@@ -1,8 +1,25 @@
 import path from 'node:path';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
-import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
-import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
-import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
+import {
+  createArtifactHelpers,
+  roundArtifactPath,
+  type ArtifactHistoryValue,
+} from '../artifacts.js';
+import {
+  devArtifact,
+  developmentReportScope,
+  readUsableDevelopmentOutcome,
+  requireUsableDevelopmentOutcome,
+  type RetainedDevelopmentOutput,
+} from '../develop/artifacts.js';
+import { rejectUnusableRecord } from '../report-feedback.js';
+import {
+  readUsableReviewOutcome,
+  requireUsableReviewOutcome,
+  reviewArtifact,
+  reviewReportScope,
+  type RetainedReviewOutput,
+} from '../review/artifacts.js';
 import { ensureRoundDirectory, readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
 import { retainTerminalReason } from '../terminal-reason.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
@@ -53,9 +70,9 @@ type PlanningEvidence = {
   /** The developer ladder in increasing capability order. */
   readonly ladder: readonly DeveloperProfileAllowance[];
   /** The retained development reports of this round and every earlier round, in round order. */
-  readonly reports: readonly ArtifactHistoryValue<DevelopmentOutput>[];
+  readonly reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[];
   /** The retained review results of this round and every earlier round, in round order. */
-  readonly reviews: readonly ArtifactHistoryValue<ReviewOutput>[];
+  readonly reviews: readonly ArtifactHistoryValue<RetainedReviewOutput>[];
   /** The current round's number. */
   readonly currentRound: number;
   /** Whether the current repair trigger is the current round's changes-requested review. */
@@ -68,9 +85,9 @@ type PlanningEvidence = {
  * approval is not a repair trigger.
  */
 function hasRepairTrigger(
-  development: DevelopmentOutput,
+  development: RetainedDevelopmentOutput,
   verification: VerificationOutput | null,
-  review: ReviewOutput | null,
+  review: RetainedReviewOutput | null,
 ): boolean {
   if (development.status === 'failed') {
     return true;
@@ -91,7 +108,7 @@ function hasRepairTrigger(
 
 /** The executed repair turns per profile: the development reports in rounds after the first. */
 function repairTurns(
-  reports: readonly ArtifactHistoryValue<DevelopmentOutput>[],
+  reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[],
 ): ReadonlyMap<string, number> {
   const turns = new Map<string, number>();
   for (const { number, value } of reports) {
@@ -110,7 +127,7 @@ function repairTurns(
  * or a duplicate review of the same head is not a new rejection. An approval resets the streak;
  * other verdicts leave it unchanged.
  */
-function rejectionStreak(reviews: readonly ArtifactHistoryValue<ReviewOutput>[]): {
+function rejectionStreak(reviews: readonly ArtifactHistoryValue<RetainedReviewOutput>[]): {
   readonly streak: number;
   readonly latestRound: number | null;
 } {
@@ -135,7 +152,7 @@ function rejectionStreak(reviews: readonly ArtifactHistoryValue<ReviewOutput>[])
 /** Why no further configured repair turn is available, naming the executed turns and allowances. */
 function exhaustedReason(
   ladder: readonly DeveloperProfileAllowance[],
-  reports: readonly ArtifactHistoryValue<DevelopmentOutput>[],
+  reports: readonly ArtifactHistoryValue<RetainedDevelopmentOutput>[],
 ): string {
   const repairs = reports.filter((report) => report.number > 1).length;
   const allowances = ladder
@@ -238,16 +255,26 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
     }
 
     const helpers = createArtifactHelpers({ root });
-    const [development] = await helpers.readOptionalInputArtifacts(devArtifact);
+    // Planning consumes the current development result only while it describes this task and, when
+    // bound, carries its readable report with the recorded identity; an unusable record is
+    // retained as the developer's rejection evidence instead of deciding a round.
+    const development = await readUsableDevelopmentOutcome({
+      areaRoot: root,
+      taskKey: settings.taskKey,
+      round: current.number,
+      context: `Round planning of task ${settings.taskKey} reading the current development result.`,
+    });
     if (development === null) {
       // The round was planned but never ran development: reuse its plan and advance nothing.
       return await openRound(current.number, current.profile, current.reason);
     }
-
-    const [verification, review] = await helpers.readOptionalInputArtifacts(
-      verificationArtifact,
-      reviewArtifact,
-    );
+    const [verification] = await helpers.readOptionalInputArtifacts(verificationArtifact);
+    const review = await readUsableReviewOutcome({
+      areaRoot: root,
+      taskKey: settings.taskKey,
+      round: current.number,
+      context: `Round planning of task ${settings.taskKey} reading the current review result.`,
+    });
     if (!hasRepairTrigger(development, verification, review)) {
       throw new Error(
         'No repair trigger exists for the current development revision; the development result ' +
@@ -256,12 +283,57 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
     }
 
     // The retained reports and reviews of this round and every earlier round, in round order.
-    const reports = [
-      ...(await helpers.readArtifactHistory(devArtifact)),
-      { number: current.number, value: development },
-    ];
+    const earlierReports = await helpers.readArtifactHistory(devArtifact, (file, error) =>
+      rejectUnusableRecord({
+        areaRoot: root,
+        scope: developmentReportScope(root, settings.taskKey),
+        invocationId: null,
+        operation: 'develop',
+        profile: null,
+        context: `Round planning of task ${settings.taskKey} reading retained development history.`,
+        file,
+        error,
+      }),
+    );
+    for (const value of earlierReports) {
+      await requireUsableDevelopmentOutcome({
+        areaRoot: root,
+        taskKey: settings.taskKey,
+        file: roundArtifactPath(root, value.number, devArtifact.pathFromArtifactsRoot),
+        outcome: value.value,
+        invocationId: null,
+        context:
+          `Round planning of task ${settings.taskKey} reading the round ` +
+          `${String(value.number)} development report.`,
+      });
+    }
+    const earlierReviews = await helpers.readArtifactHistory(reviewArtifact, (file, error) =>
+      rejectUnusableRecord({
+        areaRoot: root,
+        scope: reviewReportScope(root, settings.taskKey),
+        invocationId: null,
+        operation: 'review',
+        profile: null,
+        context: `Round planning of task ${settings.taskKey} reading retained review history.`,
+        file,
+        error,
+      }),
+    );
+    for (const value of earlierReviews) {
+      await requireUsableReviewOutcome({
+        areaRoot: root,
+        taskKey: settings.taskKey,
+        file: roundArtifactPath(root, value.number, reviewArtifact.pathFromArtifactsRoot),
+        outcome: value.value,
+        invocationId: null,
+        context:
+          `Round planning of task ${settings.taskKey} reading the round ` +
+          `${String(value.number)} review report.`,
+      });
+    }
+    const reports = [...earlierReports, { number: current.number, value: development }];
     const reviews = [
-      ...(await helpers.readArtifactHistory(reviewArtifact)),
+      ...earlierReviews,
       ...(review === null ? [] : [{ number: current.number, value: review }]),
     ];
     const reviewTrigger =
