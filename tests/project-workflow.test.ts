@@ -17,10 +17,17 @@ import {
   createActionBinding,
   type ActionBindingSettings,
 } from '../src/application/action-bindings.js';
-import { parseNexusConfiguration, parseProjectConfiguration } from '../src/configuration/index.js';
+import {
+  parseNexusConfiguration,
+  parseProjectConfiguration,
+  preparationStages,
+  type PreparationStage,
+} from '../src/configuration/index.js';
+import { preparationRoleInstructions, type PreparationRole } from '../src/agent-runtime/index.js';
 import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
+import { preparationSharedInstructions } from '../src/task-engine/actions/preparation/context.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
@@ -607,6 +614,255 @@ describe('preparation binding dispatch', () => {
     await expect(stat(path.join(root, 'ux', 'worktree'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it('delivers every preparation role its shared guidance and own constant once', async () => {
+    const directory = await temporaryDirectory();
+    const root = path.join(directory, 'NEX-1');
+    const selectionFile = path.join(directory, 'selection.json');
+    const worktree = preparationWorktree(root);
+    const revision = 'a'.repeat(40);
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '1' },
+        task: { id: '1', key: 'NEX-1', fields: { summary: 'Coherent change' } },
+        conversation: [{ id: 'c1', body: 'Original request.' }],
+        workspace: { root },
+        stage: 'ux',
+      }),
+    );
+    await mkdir(path.join(worktree, 'docs'), { recursive: true });
+    for (const stage of preparationStages) {
+      await writeFile(path.join(worktree, 'docs', `${stage}.md`), `# ${stage}\n`);
+    }
+    const configuration = parseNexusConfiguration(nexusConfiguration(), directory);
+    const configured = configuration.preparation.profiles;
+    const stageRoles: Record<
+      PreparationStage,
+      { readonly author: PreparationRole; readonly evaluator: PreparationRole }
+    > = {
+      requirements: { author: 'requirements-author', evaluator: 'requirements-evaluator' },
+      ux: { author: 'ux-author', evaluator: 'ux-evaluator' },
+      prototype: { author: 'prototype-author', evaluator: 'prototype-evaluator' },
+      architecture: { author: 'architecture-author', evaluator: 'architecture-evaluator' },
+    };
+    const authors: Record<PreparationStage, readonly string[]> = {
+      requirements: [configured.requirements.author],
+      ux: [configured.ux.author],
+      prototype: configured.prototype.authors,
+      architecture: [configured.architecture.author],
+    };
+    const evaluators: Record<PreparationStage, string> = {
+      requirements: configured.requirements.evaluator,
+      ux: configured.ux.evaluator,
+      prototype: configured.prototype.evaluator,
+      architecture: configured.architecture.evaluator,
+    };
+
+    /** One author's controlled skip proposal over the stage's current checkout document. */
+    const skipProposal = (stage: PreparationStage): unknown => ({
+      outcome: 'skip-proposed',
+      summary: `The retained ${stage} documents already satisfy the stage.`,
+      documents: [],
+      sourcePaths: [],
+      plan:
+        stage === 'architecture'
+          ? [
+              {
+                summary: 'Implement the accepted design',
+                scope: 'Carry the accepted design into implementation.',
+                completionCriteria: ['The accepted design is implemented.'],
+                prerequisites: [],
+              },
+            ]
+          : [],
+      skip: {
+        reason: `docs/${stage}.md states the current ${stage} intent.`,
+        references: [`docs/${stage}.md`],
+      },
+      question: null,
+      upstream: null,
+      observation: null,
+      findingResponses: [],
+    });
+
+    /** One planned provider invocation in the order the composed actions must issue it. */
+    type PlannedInvocation = {
+      readonly stage: PreparationStage;
+      readonly round: number;
+      readonly part: 'author' | 'evaluator';
+      readonly profile: string;
+      readonly instructions: readonly string[];
+      readonly output: unknown;
+    };
+    const invocations: PlannedInvocation[] = [];
+    for (const stage of preparationStages) {
+      const roles = stageRoles[stage];
+      // The prototype author ladder runs every selectable variant; the other stages have one.
+      for (const [index, profile] of authors[stage].entries()) {
+        invocations.push({
+          stage,
+          round: index + 1,
+          part: 'author',
+          profile,
+          instructions: preparationRoleInstructions[roles.author],
+          output: skipProposal(stage),
+        });
+      }
+      const round = authors[stage].length;
+      invocations.push({
+        stage,
+        round,
+        part: 'evaluator',
+        profile: evaluators[stage],
+        instructions: preparationRoleInstructions[roles.evaluator],
+        output: {
+          assessedRevision: round,
+          verdict: 'accepted-skip',
+          reason: 'The proposal cites the current document and needs no change.',
+          observation: null,
+          findings: [],
+          priorFindings: [],
+          upstream: null,
+        },
+      });
+    }
+
+    let issued = 0;
+    const prompts: string[] = [];
+    const codingRuntime: CodingRuntime = {
+      async execute(request) {
+        prompts.push(request.prompt);
+        const planned = invocations[issued];
+        issued += 1;
+        if (planned === undefined) {
+          throw new Error('No scripted provider output remains for this invocation.');
+        }
+        return ok({ output: JSON.stringify(planned.output) });
+      },
+    };
+    const { git } = scriptedGit(
+      [
+        repositoryState({
+          remoteUrl: path.resolve(directory, 'repository.git'),
+          branch: 'task/NEX-1',
+          headRevision: revision,
+        }),
+      ],
+      {
+        commitPaths: () => ok({ branch: 'task/NEX-1', headRevision: revision }),
+        readFileAtRevision: async (repository, _revision, file) =>
+          ok(await readFile(path.join(repository, file), 'utf8')),
+      },
+    );
+    const settings: ActionBindingSettings = {
+      project: parseProjectConfiguration(projectConfiguration(), directory),
+      nexus: configuration,
+      paths: {
+        directory,
+        workflowStateFile: path.join(directory, 'workflow.json'),
+        selectionFile,
+      },
+      jira: unusedCapability('Jira'),
+      github: unusedCapability('GitHub'),
+      git,
+      codingRuntime,
+      runCommand: unusedCapability('processes'),
+      commandEnvironment: {},
+      activityDirectory: path.join(directory, 'agents'),
+      wait: () => Promise.resolve(),
+    };
+    const actions = createActionBinding(settings)(
+      () => undefined,
+      () => undefined,
+    );
+
+    for (const planned of invocations) {
+      const area = stageRoot(root, planned.stage);
+      await mkdir(path.join(area, 'state'), { recursive: true });
+      await mkdir(path.join(area, 'artifacts', String(planned.round)), { recursive: true });
+      await writeFile(
+        path.join(area, 'state', 'current-round.json'),
+        JSON.stringify({
+          stage: planned.stage,
+          round: planned.round,
+          route: 'new',
+          profiles: {
+            author: authors[planned.stage][planned.round - 1]!,
+            evaluator: evaluators[planned.stage],
+          },
+        }),
+      );
+      if (planned.part === 'author') {
+        await expect(
+          actions['StageAuthor']?.({ stage: planned.stage, task: 'propose' }),
+        ).resolves.toBe('skip-proposed');
+      } else {
+        await expect(actions['StageEvaluator']?.({ stage: planned.stage })).resolves.toBe(
+          'accepted-skip',
+        );
+      }
+    }
+
+    const occurrences = (text: string, part: string): number => text.split(part).length - 1;
+    expect(prompts).toHaveLength(invocations.length);
+    invocations.forEach((planned, position) => {
+      const prompt = prompts[position]!;
+      const roles = stageRoles[planned.stage];
+      const label = `${planned.stage} ${planned.part}`;
+      // The shared preparation guidance reaches every author and evaluator once, carrying the
+      // reconciliation and resulting-design inspection obligations within their scope limits.
+      expect(occurrences(prompt, preparationSharedInstructions), label).toBe(1);
+      for (const obligation of [
+        'Before evaluation, authors reconcile',
+        'Remove superseded rules and mechanisms together with',
+        'correct it at its owning boundary',
+        'Evaluators inspect the resulting design and applicable implementation, affected interactions',
+        'Preserve stage responsibility, adequate-work acceptance and',
+      ]) {
+        expect(occurrences(prompt, obligation), `${label}: ${obligation}`).toBe(1);
+      }
+      // The invoked role's constant prompt and its configured instructions reach the provider
+      // once, alongside the complete captured task context.
+      expect(occurrences(prompt, planned.instructions.join('\n\n')), `${label} role constant`).toBe(
+        1,
+      );
+      expect(occurrences(prompt, planned.instructions[0]!), `${label} role identity`).toBe(1);
+      const configuredProfile = configuration.agentRuntime.profiles.find(
+        (candidate) => candidate.id === planned.profile,
+      )!;
+      for (const instruction of configuredProfile.instructions) {
+        expect(occurrences(prompt, instruction), `${label} configured instruction`).toBe(1);
+      }
+      expect(
+        occurrences(prompt, `Preparation stage: ${planned.stage}, round ${String(planned.round)}.`),
+        `${label} stage and round`,
+      ).toBe(1);
+      expect(prompt).toContain('Selected issue: NEX-1 "Coherent change"');
+      expect(prompt).toContain('Captured issue input and conversation (authoritative):');
+      expect(prompt).toContain('Original request.');
+      expect(prompt).toContain(`Connected project worktree: ${worktree}`);
+      if (planned.part === 'author') {
+        expect(prompt).toContain(
+          'Propose this round\u2019s work or an evaluated skip for the exact revision you author.',
+        );
+      } else {
+        expect(prompt).toContain(
+          `Assess the exact authored revision ${String(planned.round)} and resolve every prior`,
+        );
+      }
+      // A profile reused across roles carries only the invoked role's instructions.
+      const otherRole = planned.part === 'author' ? roles.evaluator : roles.author;
+      expect(prompt).not.toContain(preparationRoleInstructions[otherRole][0]!);
+    });
+    // Both selectable prototype-author ladder variants were exercised.
+    expect(
+      invocations
+        .filter((planned) => planned.stage === 'prototype' && planned.part === 'author')
+        .map((planned) => planned.profile),
+    ).toEqual(configured.prototype.authors);
   });
 });
 

@@ -86,6 +86,28 @@ Contract and workflow describe what a test proves, not additional pyramid layers
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's
 internal implementation.
 
+### Change coherence instruction delivery
+
+Verify the [coherence requirements](agent-runtime/change-coherence.md) through actual preparation
+author/evaluator and Develop/Review action invocations, real application profile composition and
+AgentRuntime, with a recording coding provider and controlled outputs. Capture the provider's
+assembled prompt for all eight preparation roles, the developer and reviewer. Include a development
+repair and every selectable developer and prototype-author profile variant; exercise a profile
+reused across roles to establish that instructions do not leak between roles.
+
+Assert the delivered obligations, not only that a prompt contains an imported constant. Preparation
+authors receive reconciliation before evaluation; evaluators receive inspection of the resulting
+revision or proposed skip. Developers receive removal of superseded dependencies and reconciliation
+before review; reviewers receive inspection of resulting intent, implementation and affected
+interactions. Check scope limits, confirmed ownership causes, adequate-work acceptance and optional
+suggestions alongside complete task/repair context. Shared preparation guidance and selected role
+instructions occur once. Reuse existing finite-workflow and delivery-gate coverage; this instruction
+change adds no workflow transitions or report shapes.
+
+Review authoritative role documentation against the delivered prompts. Controlled agent outputs
+prove instruction delivery and existing routing, not model compliance, cumulative design quality
+or absence of regressions in a month-long run.
+
 ## Test discipline
 
 Keep edge cases at the narrowest effective scope. Add broader coverage only for interactions that

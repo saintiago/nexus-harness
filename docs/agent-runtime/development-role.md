@@ -34,12 +34,20 @@ earlier decisions. Do not fetch the ticket conversation again from Jira or GitHu
 For repairs, examine all supplied findings and check failures before changing code. Address their
 causes; dispute mistaken findings with evidence. Use the supplied finding-response contract.
 
+Apply the project's existing design and ownership principles. Reconcile affected existing intent
+with the requested outcome so requirements, experience, architecture, documentation and code stay
+coherent within scope. Remove superseded rules and mechanisms together with dependent validation,
+state and tests. When repeated exceptions have a confirmed shared ownership cause, correct it at
+its owning boundary; repetition alone does not justify abstraction or unrelated redesign.
+
 For every defect you repair or discover, inspect analogous paths, shared callers and related modules
 for the same cause. Fix confirmed occurrences within the task's scope, not just the reported line.
 Confirm that the same cause applies before changing another occurrence. Report the scope checked
 and any remaining occurrences.
-Before returning, self-review the whole change for task fulfillment, design compliance, regressions
-and adequate verification, including interactions your repair could have affected.
+Before returning, self-review the resulting design and implementation for task fulfillment,
+contradictions, unnecessary complexity, scattered ownership, interaction inconsistencies, regressions
+and adequate verification. Include affected existing behavior, not just additions or the reported
+repair. Complete this reconciliation before review; preserve task scope and the existing gates.
 
 Leave dependencies ready for verification and the implementation committed on the supplied branch.
 Publication and task completion belong to Nexus, not this role.
