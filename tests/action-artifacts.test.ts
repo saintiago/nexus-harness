@@ -452,6 +452,18 @@ describe('retained report contracts', () => {
     expect(openingNarrativeParagraph('# Only a heading\n')).toBeNull();
     expect(openingNarrativeParagraph('- only\n- a list\n')).toBeNull();
     expect(openingNarrativeParagraph('Title\n=====\n')).toBeNull();
+    expect(openingNarrativeParagraph('    const result = true;\n')).toBeNull();
+    expect(openingNarrativeParagraph('\tconst result = true;\n')).toBeNull();
+    expect(openingNarrativeParagraph('    code\n\nThe explanation.')).toBe('The explanation.');
+    expect(openingNarrativeParagraph('# Review\nThe retry guard works.')).toBe(
+      'The retry guard works.',
+    );
+    expect(openingNarrativeParagraph('Title\n=====\nThe retry guard works.')).toBe(
+      'The retry guard works.',
+    );
+    expect(openingNarrativeParagraph('First paragraph.\n## Heading\nSecond paragraph.')).toBe(
+      'First paragraph.',
+    );
     expect(openingNarrativeParagraph('   ')).toBeNull();
   });
 });

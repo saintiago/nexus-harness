@@ -400,15 +400,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
           invocationId,
           context: attribution,
         });
-        // The saved outcome already answers for the rejections its invocation was supplied; an
-        // interrupted correction write finishes here without another invocation.
-        await finishSuppliedCorrection({
-          areaRoot: root,
-          scope,
-          invocationId: existing.invocationId,
-          artifact: { path: artifactFile },
-          content: existing,
-        });
       }
       report(existing.status);
       return existing.status;

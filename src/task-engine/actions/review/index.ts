@@ -36,6 +36,7 @@ import {
   devArtifact,
   developmentReportScope,
   isBoundDevelopmentOutput,
+  readUsableDevelopmentOutcome,
   type RetainedDevelopmentOutput,
 } from '../develop/artifacts.js';
 import {
@@ -303,36 +304,16 @@ export function createReview(settings: ReviewSettings): BoundAction {
       invocationId,
       'reviewer',
     );
-    /** One retained report read: an unusable record is preserved under its producer's scope. */
-    const readReport = async <Value>(
-      file: string,
-      producer: {
-        readonly scope: ReportScope;
-        readonly operation: string;
-        readonly profile: string | null;
-      },
-      read: () => Promise<Value>,
-    ): Promise<Value> => {
-      try {
-        return await read();
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope: producer.scope,
-          invocationId,
-          operation: producer.operation,
-          profile: producer.profile,
-          context: attribution,
-          file,
-          error,
-        });
-      }
-    };
-    const development = await readReport(
-      roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
-      { scope: developerScope, operation: 'develop', profile: null },
-      async () => (await helpers.readInputArtifacts(devArtifact))[0],
-    );
+    const developmentInput = await readUsableDevelopmentOutcome({
+      areaRoot: root,
+      taskKey: selection.taskKey,
+      round: round.number,
+      context: attribution,
+    });
+    if (developmentInput === null) {
+      throw new Error('Review requires the current round development result.');
+    }
+    const development = developmentInput;
     const [verification, delivery] = await helpers.readInputArtifacts(
       verificationArtifact,
       deliveryArtifact,
@@ -354,12 +335,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       });
     }
 
-    if (development.taskKey !== selection.taskKey) {
-      throw new Error(
-        `The development result is for task "${development.taskKey}", not the selected ` +
-          `"${selection.taskKey}".`,
-      );
-    }
     // The delivered head, development result, verification result and retained worktree must
     // describe the same revision before anything is reviewed.
     const reviewedHead = delivery.headRevision;

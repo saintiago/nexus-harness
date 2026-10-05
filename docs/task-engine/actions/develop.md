@@ -97,6 +97,11 @@ unchanged. Save the outcome and report association before returning.
 
 On repetition, inspect existing work and the current-round report before deciding whether another
 invocation is needed. A report for a different task or revision is not evidence for the current work.
+The producer-owned usable-outcome reader validates task and Markdown bindings before retained
+consumers decide. After validation it finishes any interrupted correction for the rejections that
+saved invocation was supplied, including completed or failed outcomes consumed at retained entry
+without replaying Develop. Later or unrelated rejections remain outstanding; legacy records without
+invocation evidence cannot resolve them.
 
 Untracked files do not prevent completion. Do not classify or reject them as a readiness check.
 

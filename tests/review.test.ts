@@ -17,7 +17,10 @@ import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
-import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  devArtifact,
+  developmentReportScope,
+} from '../src/task-engine/actions/develop/artifacts.js';
 import {
   outstandingReportFeedback,
   projectOfWorkspace,
@@ -1024,6 +1027,57 @@ describe('Review', () => {
       report: expect.objectContaining({ path: expect.stringContaining('report-feedback') }),
     });
   });
+
+  it.each([false, true])(
+    'rejects unusable developer evidence before Review (saved review: %s)',
+    async (replay) => {
+      for (const damage of ['missing Markdown', 'changed Markdown', 'foreign task', 'schema']) {
+        const { workspaceRoot, selectionFile } = await workspace({ name: `${replay}-${damage}` });
+        await writeDeliveredRound(workspaceRoot);
+        if (replay) await saveReview(workspaceRoot, 1, 'The implementation is approved.');
+        const file = path.join(workspaceRoot, 'artifacts/1/development.json');
+        const outcome = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown> & {
+          report: { path: string };
+        };
+        const reportFile = outcome.report.path;
+        if (damage === 'missing Markdown') await rm(reportFile);
+        if (damage === 'changed Markdown') await writeFile(reportFile, 'Changed evidence.');
+        if (damage === 'foreign task') outcome['taskKey'] = 'NEX-2';
+        if (damage === 'schema') delete outcome['reportIdentity'];
+        await writeFile(file, JSON.stringify(outcome));
+        const rejectedOutput = await readFile(file, 'utf8');
+        const { github, calls } = scriptedGitHub({});
+        const { git, calls: gitCalls } = scriptedGit([]);
+
+        await expect(
+          reviewAction({
+            selectionFile,
+            runner: runnerOf(unusedRuntime()),
+            git,
+            github,
+          })(),
+        ).rejects.toThrow();
+        expect(calls).toEqual([]);
+        expect(gitCalls).toEqual([]);
+        const records = await readReportFeedback(workspaceRoot);
+        expect(records).toHaveLength(1);
+        const rejection = records[0]!.record;
+        expect(rejection).toMatchObject({
+          kind: 'rejection',
+          scope: developmentReportScope(workspaceRoot, 'NEX-1'),
+          operation: 'develop',
+          output: rejectedOutput,
+          assignedReport: { path: reportFile },
+        });
+        if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
+        else
+          expect(await readFile(rejection.report!.path, 'utf8')).toBe(
+            damage === 'changed Markdown' ? 'Changed evidence.' : 'Implemented the retry guard.',
+          );
+      }
+    },
+  );
 
   it('finishes the correction its saved review owes when a repetition reuses it', async () => {
     const { workspaceRoot, selectionFile } = await workspace({ name: 'correction-replay' });

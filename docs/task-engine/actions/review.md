@@ -117,6 +117,9 @@ comment is not the repair input.
 
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
+Validate the current development outcome through its producer-owned usable-outcome reader before
+both a fresh assessment and saved-review replay. Missing, changed or foreign development evidence
+fails before publication and retains rejection evidence under the developer's responsibility.
 
 New agent responses use the strict current response schema. The producer's saved-record reader also
 accepts former finding IDs and disposition fields in retained reports without enforcing removed

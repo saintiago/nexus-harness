@@ -107,14 +107,14 @@ export async function readBoundReport(
 export function openingNarrativeParagraph(markdown: string): string | null {
   for (const block of markdownBlocks(markdown)) {
     const paragraph = block.trim();
-    if (paragraph !== '' && isNarrativeBlock(paragraph)) {
+    if (paragraph !== '' && isNarrativeBlock(block)) {
       return paragraph;
     }
   }
   return null;
 }
 
-/** One blank-line-separated block; a fenced code block stays one block. */
+/** Markdown blocks separated by blank lines or headings; fenced code stays one block. */
 function markdownBlocks(markdown: string): string[] {
   const blocks: string[] = [];
   let current: string[] = [];
@@ -133,6 +133,13 @@ function markdownBlocks(markdown: string): string[] {
         fence = { marker: match[1]![0]!, length: match[1]!.length };
         current.push(line);
       } else if (line.trim() === '') {
+        flush();
+      } else if (/^ {0,3}#{1,6}(\s|$)/.test(line)) {
+        flush();
+        current.push(line);
+        flush();
+      } else if (current.length > 0 && /^ {0,3}(=+|-+)\s*$/.test(line)) {
+        current.push(line);
         flush();
       } else {
         current.push(line);
@@ -161,7 +168,7 @@ function isNarrativeBlock(block: string): boolean {
   if (
     /^#{1,6}(\s|$)/.test(first) ||
     /^(`{3,}|~{3,})/.test(first) ||
-    /^ {4}/.test(lines[0]!) ||
+    /^( {4}|\t)/.test(lines[0]!) ||
     /^>/.test(first) ||
     /^</.test(first) ||
     /^\s{0,3}([-*+]|\d{1,9}[.)])(\s|$)/.test(lines[0]!) ||

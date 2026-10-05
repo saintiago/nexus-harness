@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { readBoundReport, reportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
-import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
+import {
+  finishSuppliedCorrection,
+  projectOfWorkspace,
+  rejectUnusableRecord,
+  type ReportScope,
+} from '../report-feedback.js';
 
 /**
  * Develop's artifact contract: the saved Markdown report bound to the observed repository
@@ -95,6 +100,8 @@ export function developmentReportScope(areaRoot: string, taskKey: string): Repor
  * readable with the recorded identity. An unusable outcome is preserved under the developer's
  * report responsibility as attributable rejection evidence before the read fails. A retained
  * combined report stays readable history, and the check never makes a damaged outcome usable.
+ * After validation, finish any interrupted correction attributed to this saved invocation, so
+ * retained continuation also reconciles it when Develop itself is skipped.
  */
 export async function requireUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;
@@ -125,6 +132,15 @@ export async function requireUsableDevelopmentOutcome(settings: {
       file: settings.file,
       assignedReport: isBoundDevelopmentOutput(settings.outcome) ? settings.outcome.report : null,
       error,
+    });
+  }
+  if (isBoundDevelopmentOutput(settings.outcome)) {
+    await finishSuppliedCorrection({
+      areaRoot: settings.areaRoot,
+      scope: developmentReportScope(settings.areaRoot, settings.taskKey),
+      invocationId: settings.outcome.invocationId,
+      artifact: { path: settings.file },
+      content: settings.outcome,
     });
   }
 }
