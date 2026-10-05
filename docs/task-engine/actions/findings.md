@@ -1,17 +1,14 @@
 # Findings contract
 
-## Ownership and shapes
+## Ownership and shape
 
-[Review](review.md#output) owns and exports Finding and FindingDisposition with its artifact declarations.
-[Develop](develop.md#output) owns and exports FindingResponse with its artifact declaration.
-Consumers, including preparation-stage authors/evaluators, import these definitions. Preparation
-evaluation owns its own verdict and revision contract; shared findings do not create a shared
-workflow coordinator. Define each with one Zod schema and derive its TypeScript type;
-the following shapes specify the data, not additional copies of those schemas.
+[Review](review.md#output) owns and exports Finding with its artifact declaration. Consumers,
+including preparation evaluators, import that public definition. Preparation owns its own verdict,
+stage and observation rules; sharing Finding does not create a shared workflow coordinator.
+Define Finding with one Zod schema and derive its TypeScript type. This shape specifies its data:
 
 ```ts
 type Finding = {
-  id: string;
   title: string;
   severity: 'blocking' | 'non-blocking';
   basis: string;
@@ -20,51 +17,27 @@ type Finding = {
   repairGuidance: string;
   locations: { path: string; line?: number }[];
 };
-
-type FindingResponse = {
-  findingId: string;
-  status: 'addressed' | 'disputed' | 'unresolved';
-  response: string;
-};
-
-type FindingDisposition = {
-  findingId: string;
-  disposition: 'resolved' | 'open' | 'withdrawn';
-  reason: string;
-};
 ```
 
 basis identifies the task requirement, documented obligation or expected behavior that is violated.
-evidence describes the observed or reproducible failure, the related occurrences inspected and any
-material uncertainty. impact explains its consequence. repairGuidance describes the required
-correction without prescribing an unnecessary implementation. locations identifies affected files;
-it may be empty for a missing behavior with no useful code location. Lines refer to the reviewed revision.
+evidence describes the observed or reproducible failure, related occurrences inspected and material
+uncertainty. impact explains its consequence. repairGuidance describes the required correction
+without prescribing an unnecessary implementation. locations identifies affected files; it may be
+empty for missing behavior with no useful location. Lines refer to the assessed revision. The strict
+agent response uses an explicit null for an absent line; the saved finding omits that line.
 
-response explains the change, disagreement or remaining problem, with supporting evidence and the
-extent of the related-occurrence check. addressed is a developer claim; review confirms resolution.
-reason explains the reviewer's disposition using the current implementation and developer response.
+## Current assessment and history
 
-## Handoff and identity
+Findings describe problems present in the current assessment. They have no stable IDs, responses,
+statuses or dispositions to match across rounds. Authors and developers explain repairs,
+disagreements and remaining problems in their report narrative. Evaluators and reviewers use previous
+reports as context and judge those explanations against the current work. A remaining or recurring
+defect warrants a current finding with evidence; a resolved problem needs no lifecycle record.
 
-Finding IDs are unique within a task and stable across rounds. Reuse an ID for an existing defect,
-including additional occurrences of that same cause. Give a genuinely different defect a new ID.
-Use retained reports to choose IDs; no separate finding store is required.
-
-The development input contains the preceding review's current findings as complete Finding values.
-The developer returns one FindingResponse for each supplied finding. The next reviewer receives those
-same findings and responses, plus the current implementation and verification evidence. Use these
-shapes unchanged in context, agent responses and persisted artifacts; human publication is a summary.
-
-Review's findings array contains all findings still present in the current revision, including retained
-open findings and newly discovered ones. priorFindings contains one disposition for each supplied prior
-finding. An open disposition has a matching current finding. Resolved or withdrawn findings remain in
-history rather than the current array. Neither role silently drops or renumbers an existing finding.
-
-The supplied prior-finding set is exactly the preceding review's findings array, not its priorFindings
-dispositions or findings appearing only in older reports. Return exactly one disposition for each ID
-in that set and none for IDs outside it; an empty set requires an empty priorFindings array. Historical
-reports remain evidence for identity and recurrence, not additional disposition requests. A defect
-shown to recur may return in findings under its stable ID without adding an out-of-set disposition.
+Context construction supplies complete previous reports or readable references, preserving their
+attribution and evidence. Human publication is a summary, never the repair input. Historical reports
+remain readable without retroactive responses or dispositions. The current finding list must not
+include resolved problems merely to answer an earlier review.
 
 ## Verdict rules
 
@@ -72,9 +45,10 @@ shown to recur may return in findings under its stable ID without adding an out-
   require another repair round.
 - changesRequested: at least one current blocking finding with a concrete basis, evidence and impact.
 
-These are the only review verdicts. If material evidence is unavailable and the assessment cannot
-finish, use the existing execution-error and recovery path. Missing evidence alone is not a blocking
-finding and must not be converted into approval or a changesRequested verdict.
+These are the only implementation review verdicts. If material evidence is unavailable and the
+assessment cannot finish, use the existing execution-error and recovery path. Missing evidence alone
+is not a blocking finding and must not become approval or a changesRequested verdict.
 
-Actions validate response shapes, referenced IDs and consistency with these verdict rules. The reviewer
-judges the substance of evidence; the harness does not attempt to prove prose claims deterministically.
+Actions validate report shape and consistency between current findings and verdict. They do not
+match findings to earlier reports or attempt to prove prose claims deterministically. Preparation
+applies its own verdict names and upstream-correction rules to this same current-finding shape.

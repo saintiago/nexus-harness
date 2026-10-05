@@ -28,13 +28,15 @@ documents. If inputs prevent a feasible clean result, identify the problematic i
 owning earlier stage. Ask the user only for a material decision that available
 context cannot resolve. Do not turn a provider/tool failure into an upstream product requirement.
 
-Authors preserve scope and respond to all supplied findings through revision, answer or reasoned
-rebuttal. Document evaluators assess the ticket's requested changes against the current shared
+Authors preserve scope and explain corrections, answers, disagreements and remaining problems in
+their report narrative, using previous reports as context without per-finding response/status records.
+Document evaluators assess the ticket's requested changes against the current shared
 worktree documents, regardless of authorship or commit history. They do not require document edits,
 citations or historical approval reuse to accept adequate content. Compatible later-stage edits to
 shared documents do not force an upstream return; a concrete input defect uses normal findings.
-Evaluators inspect current content, resolve prior findings and seek useful
-improvements as well as omissions. Explain benefits and evidence, separate necessary changes from
+Evaluators inspect current content, judge whether earlier concerns remain and seek useful
+improvements as well as omissions. Return actionable current findings without stable IDs or
+disposition records. Explain benefits and evidence, separate necessary changes from
 optional suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer
 clicks must preserve clarity, accessibility and error prevention.
 

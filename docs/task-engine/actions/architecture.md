@@ -33,7 +33,7 @@ Each report owner defines its response schema separately from its saved artifact
 the provider schema and response-format text from the same response declaration. Field descriptions
 state meaning and ownership; caller-supplied instructions state outcome, role and invocation
 restrictions that the provider schema cannot express. Supply these rules before invocation, including
-the current eligible findings and assessed revision when relevant. Keep semantic validation with the
+previous reports as context and the assessed revision when relevant. Keep semantic validation with the
 owner of the rule. Shared report helpers format, parse and retain evidence; they do not choose a
 verdict, infer artifact ownership or supply a second workflow policy.
 
@@ -42,6 +42,14 @@ The caller supplies observed identity/revision metadata and writes its declared 
 the action-owned paths in invocation context and explicitly forbid the agent from writing them.
 Response nullability conversions are declared mappings, not repairs of malformed output. Reject
 unknown response fields rather than silently stripping claims outside the response contract.
+
+When a contract removes fields, its producer-owned saved-record reader can permit those former
+fields in retained artifacts without retaining their obsolete validation or adding them to the current
+response schema. Keep required current data and verdict/revision rules validated. Provide the
+original report as readable historical context; do not rewrite it or synthesize missing current data.
+Complete recorded identities retain historical fields where existing associations depend on them;
+a simplified typed view is not a new identity. This compatibility belongs to the report producer,
+not to a generic history reader, AgentRuntime or a parallel workflow.
 
 ### Rejection evidence and continuation
 

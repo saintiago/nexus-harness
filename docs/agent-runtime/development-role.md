@@ -18,7 +18,7 @@ differ between profiles; the role instructions remain the same.
 details, relevant findings and failed-check evidence, local conversation/history paths, and the expected
 response format. Its output contract owns the report fields. The role returns agent output; the action
 interprets it, observes repository state and saves its artifact.
-Findings and responses use the [findings contract](../task-engine/actions/findings.md).
+Current findings in previous reports use the [findings contract](../task-engine/actions/findings.md).
 
 ## Constant prompt
 
@@ -32,7 +32,9 @@ preserve unrelated changes. Use the supplied local conversation and previous rep
 earlier decisions. Do not fetch the ticket conversation again from Jira or GitHub.
 
 For repairs, examine all supplied findings and check failures before changing code. Address their
-causes; dispute mistaken findings with evidence. Use the supplied finding-response contract.
+causes; dispute mistaken findings with evidence. Explain corrections, disagreements, verification
+and remaining problems in the report narrative. Previous reports provide context; no per-finding
+response or status record is required.
 
 Apply the project's existing design and ownership principles. Reconcile affected existing intent
 with the requested outcome so requirements, experience, architecture, documentation and code stay
