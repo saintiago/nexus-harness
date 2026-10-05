@@ -379,6 +379,54 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   expect(worktree).toContain('worktree');
 });
 
+it('permits a repair round to propose a reason-only applicability skip', async () => {
+  const { selectionFile, root } = await stageArea();
+  await writeFile(
+    path.join(root, 'state', 'current-round.json'),
+    JSON.stringify({
+      stage,
+      round: 3,
+      route: 'next',
+      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+    }),
+  );
+  const { git } = scriptedGit([repositoryState()]);
+  const common = { selectionFile, stage, git, publish: () => undefined };
+  const contexts: string[] = [];
+  const correction = {
+    ...conformingSkipResponse,
+    summary: 'The findings show the corrected scope makes the stage irrelevant.',
+    skip: {
+      reason: 'The corrected scope leaves no requirement this stage owns.',
+      references: [],
+    },
+  };
+  await expect(
+    createStageAuthor({ ...common, runner: authorRunner(correction, contexts) })({
+      task: 'respond',
+    }),
+  ).resolves.toBe('skip-proposed');
+  // The response invocation states that a repair may propose an evaluated applicability skip.
+  expect(contexts.join('\n')).toContain('you may propose an applicability skip');
+  await expect(
+    createStageEvaluator({
+      ...common,
+      runner: evaluatorRunner(
+        {
+          assessedRevision: 3,
+          verdict: 'accepted-skip',
+          reason: 'The corrected scope makes the stage irrelevant.',
+          observation: null,
+          findings: [],
+          upstream: null,
+        },
+        [],
+      ),
+    })(),
+  ).resolves.toBe('accepted-skip');
+  await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
+});
+
 it('rejects a skip proposal that carries fields its outcome does not own', async () => {
   const { selectionFile, root } = await stageArea();
   const { git } = scriptedGit([repositoryState()]);

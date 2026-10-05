@@ -1879,6 +1879,116 @@ describe('Git adapter', () => {
     ).rejects.toThrow(/was not tracked before this edit/);
   });
 
+  it('rejects declared documents and sources deleted after evaluation', async () => {
+    const { origin, source, root, worktree, selectionFile } = await preparationWorkspace();
+    await publish(source, 'source.ts', 'export const value = 1;\n', 'add the stage source');
+    await expect(
+      createPrepareStage({
+        selectionFile,
+        repository: { source: origin, mainBranch: 'main' },
+        git,
+        publish: () => undefined,
+      })({ stage: 'requirements' }),
+    ).resolves.toBe('prepared');
+    await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
+    await writeFile(path.join(worktree, 'source.ts'), 'export const value = 2;\n');
+    const author = {
+      outcome: 'authored',
+      summary: 'The requirements revision and its stage-owned source.',
+      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      sourcePaths: ['source.ts'],
+      plan: [],
+      skip: null,
+      question: null,
+      upstream: null,
+      observation: null,
+    };
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 1,
+      invokeAuthor: true,
+      author,
+    });
+    // The saved terminal result is removed to reproduce an interrupted finalization; the
+    // evaluation already observed both declared paths at its repository revision.
+    await rm(path.join(root, 'requirements', 'artifacts', '1', 'result.json'));
+    await rm(path.join(root, 'requirements', 'state', 'result.json'));
+
+    // Both declarations disappear uncommitted: the evaluated revision still retains their bytes,
+    // so finalization must obtain a current decision instead of accepting the deletion.
+    await rm(path.join(worktree, 'readme.md'));
+    await rm(path.join(worktree, 'source.ts'));
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'requirements',
+      git,
+      publish: () => undefined,
+    });
+    await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/current decision is required/);
+  });
+
+  it('does not infer a stage\u2019s deletion ownership from another stage\u2019s deletion', async () => {
+    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+    await expect(
+      createPrepareStage({
+        selectionFile,
+        repository: { source: origin, mainBranch: 'main' },
+        git,
+        publish: () => undefined,
+      })({ stage: 'requirements' }),
+    ).resolves.toBe('prepared');
+    // Requirements records a modification of the tracked document and finalizes it.
+    await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
+    const requirements = {
+      outcome: 'authored',
+      summary: 'The requirements revision.',
+      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      sourcePaths: [],
+      plan: [],
+      skip: null,
+      question: null,
+      upstream: null,
+      observation: null,
+    };
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'requirements',
+      round: 1,
+      invokeAuthor: true,
+      author: requirements,
+    });
+    // UX then deletes the same document and finalizes that deletion as its own work.
+    await rm(path.join(worktree, 'readme.md'));
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'ux',
+      round: 1,
+      invokeAuthor: true,
+      author: {
+        ...requirements,
+        summary: 'The experience stage retires the stale document.',
+        documents: [{ path: 'readme.md', description: 'the retired document' }],
+      },
+    });
+    // Requirements redeclaring the absent path must not inherit UX's deletion: its retained
+    // declaration recorded a file at the evaluated revision, never a deletion of its own.
+    await expect(
+      acceptedRound({
+        selectionFile,
+        root,
+        stage: 'requirements',
+        round: 2,
+        route: 'reassess',
+        invokeAuthor: true,
+        author: requirements,
+      }),
+    ).rejects.toThrow(/was not tracked before this edit/);
+  });
+
   it('binds an owned-document correction to the complete current file at its newly assessed revision', async () => {
     const { origin, root, worktree, selectionFile } = await preparationWorkspace();
     const prepare = createPrepareStage({

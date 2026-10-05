@@ -156,21 +156,26 @@ async function declaredPathProblem(
 /**
  * Deletions this stage actually declared and retained for evaluation. Ownership survives later
  * repair, skip and return rounds; it does not authorize absent paths deleted by other stages.
- * A retained authored declaration is the primary ownership evidence: the declaration could only
- * name an absent path that existed or was tracked when it was made, so a committed deletion stays
- * attributable to the stage that declared it, including when a replay re-declares it. A validated
- * author observation and a former evaluation's assessed content remain additional evidence for
- * records written before document bindings were removed. The current round is included so replay
- * after an interrupted evaluation keeps its deletion too.
+ * Ownership comes from action-observed evidence of the earlier declaration, never from the
+ * checkout's present contents: an evaluated declaration recorded a deletion only when the path is
+ * absent at the exact revision that round's evaluation assessed, while a path it committed as a
+ * file stays a modification even if some later work removed it. Before an evaluation is saved, a
+ * validated author observation and a former evaluation's assessed content remain the additional
+ * deletion evidence for records written before document bindings were removed. The current round
+ * is included so replay after an interrupted evaluation keeps its recorded deletion too.
  */
 async function retainedStageDeletions(
-  root: string,
-  round: number,
-  worktree: string,
+  settings: {
+    readonly git: GitAdapter;
+    readonly root: string;
+    readonly round: number;
+    readonly worktree: string;
+  },
   readAuthor: (round: number) => Promise<StageAuthorOutput | null>,
   readEvaluation: (round: number) => Promise<StageEvaluationOutput | null>,
   readObservation: (round: number, file: string) => Promise<PrototypeObservation | null>,
 ): Promise<ReadonlySet<string>> {
+  const { git, root, round, worktree } = settings;
   const deleted = new Set<string>();
   for (const retained of await stageRounds(root)) {
     if (retained > round) break;
@@ -181,9 +186,6 @@ async function retainedStageDeletions(
         .map((value) => checkoutRelative(worktree, value))
         .filter((value): value is string => value !== null),
     );
-    for (const relative of declared) {
-      if (!(await fileExists(worktree, relative))) deleted.add(relative);
-    }
     const evaluation = await readEvaluation(retained);
     let content = evaluation?.basis.content ?? [];
     if (evaluation === null && author.observation !== null) {
@@ -200,6 +202,14 @@ async function retainedStageDeletions(
       const relative = checkoutRelative(worktree, entry.path);
       if (!entry.exists && relative !== null && declared.has(relative)) deleted.add(relative);
     }
+    const revision = evaluation?.basis.repositoryRevision;
+    if (revision !== undefined) {
+      for (const relative of declared) {
+        if (!(await git.readFileAtRevision(worktree, revision, relative)).ok) {
+          deleted.add(relative);
+        }
+      }
+    }
   }
   return deleted;
 }
@@ -212,7 +222,7 @@ function planProblem(report: StageAuthorResponse, stage: PreparationStage): stri
   if (suppliesPlan) {
     return report.plan.length === 0
       ? 'an authored or skip-proposed Architecture report supplies the nonempty implementation ' +
-          'plan the handoff requires, even when an existing adequate design permits the skip'
+          'plan the handoff requires'
       : null;
   }
   return report.plan.length > 0
@@ -232,11 +242,7 @@ async function reportProblem(
     readonly preEditHead: string | null;
     readonly retainedDeletions: ReadonlySet<string>;
   },
-  task: 'propose' | 'respond',
 ): Promise<string | null> {
-  if (task === 'respond' && report.outcome === 'skip-proposed') {
-    return 'a revision round cannot propose a skip; the evaluator asked for changes';
-  }
   const plan = planProblem(report, settings.stage);
   if (plan !== null) {
     return plan;
@@ -515,7 +521,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             ? 'Propose the current decision for this reassessed work: repair what changed and leave adequate current documents unchanged; a submission may declare no changed files.'
             : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to the current findings, explaining ' +
-            'corrections, disagreements and remaining problems in the summary.',
+            'corrections, disagreements and remaining problems in the summary. When the findings ' +
+            'show that the corrected scope makes the stage irrelevant, you may propose an ' +
+            'applicability skip instead of further work; evaluation decides its applicability.',
         'Return the response object only; do not write or overwrite the action-owned stage records ' +
           '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
           'adds the stage and authored revision metadata and persists your report.',
@@ -529,9 +537,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           'path#section citation) or an existing retained file; an unreadable reference rejects ' +
           'the report and an empty list is valid.',
         'Only the Architecture stage supplies plan entries: an authored or skip-proposed ' +
-          'Architecture report carries the nonempty implementation plan, even when an existing ' +
-          'adequate design permits the skip. Every other stage, and a needs-input or ' +
-          'return-upstream outcome, returns an empty plan array.',
+          'Architecture report carries the nonempty implementation plan the handoff requires. ' +
+          'Every other stage, and a needs-input or return-upstream outcome, returns an empty ' +
+          'plan array.',
         settings.stage === 'prototype'
           ? 'Accepted applicable prototype work needs your own saved browser observation; the ' +
             'observation contract above states the record and the round artifact area.'
@@ -570,31 +578,25 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         });
       }
     })();
-    const problem = await reportProblem(
-      report,
-      {
-        git: settings.git,
-        stage: settings.stage,
-        worktree,
-        roundDirectory: roundArtifactDirectory(root, plan.round),
-        preEditHead: before.value.headRevision,
-        retainedDeletions:
-          report.outcome === 'authored'
-            ? await retainedStageDeletions(
-                root,
-                plan.round,
-                worktree,
-                readAuthor,
-                readEvaluation,
-                (round, file) =>
-                  readAuthorRecord(round, file, () =>
-                    readRecord(file, { file, schema: prototypeObservationSchema }),
-                  ),
-              )
-            : new Set(),
-      },
-      task,
-    );
+    const problem = await reportProblem(report, {
+      git: settings.git,
+      stage: settings.stage,
+      worktree,
+      roundDirectory: roundArtifactDirectory(root, plan.round),
+      preEditHead: before.value.headRevision,
+      retainedDeletions:
+        report.outcome === 'authored'
+          ? await retainedStageDeletions(
+              { git: settings.git, root, round: plan.round, worktree },
+              readAuthor,
+              readEvaluation,
+              (round, file) =>
+                readAuthorRecord(round, file, () =>
+                  readRecord(file, { file, schema: prototypeObservationSchema }),
+                ),
+            )
+          : new Set(),
+    });
     if (problem !== null) {
       await rejectReport({
         areaRoot: root,

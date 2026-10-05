@@ -415,6 +415,31 @@ describe('evaluated preparation child', () => {
     expect(calls).toContain('StageResult');
   });
 
+  it('routes a repair-round applicability skip through evaluation to skipped finalization', async () => {
+    const authorOutcomes = ['authored', 'skip-proposed'];
+    const evaluatorOutcomes = ['changes-requested', 'accepted-skip'];
+    let authors = 0;
+    let evaluators = 0;
+    const { result, calls, inputs } = await runPreparation({
+      StageAuthor: async () => authorOutcomes[authors++] ?? 'authored',
+      StageEvaluator: async () => evaluatorOutcomes[evaluators++] ?? 'accepted',
+    });
+
+    expect(result).toEqual({ ok: true, value: 'skipped' });
+    expect(calls).toEqual([
+      'PrepareStage',
+      'StartStageRound',
+      'StageAuthor',
+      'StageEvaluator',
+      'StartStageRound',
+      'StageAuthor',
+      'StageEvaluator',
+      'StageResult',
+    ]);
+    // The repair round revised the authored revision in answer to the findings.
+    expect(inputs[5]).toEqual({ stage: 'ux', task: 'respond' });
+  });
+
   it('returns a retained question for human feedback', async () => {
     const { result } = await runPreparation({
       StageAuthor: async () => 'needs-input',
@@ -826,6 +851,15 @@ describe('preparation binding dispatch', () => {
         1,
       );
       expect(occurrences(prompt, planned.instructions[0]!), `${label} role identity`).toBe(1);
+      if (planned.stage === 'architecture') {
+        // Adequate existing design receives direct evaluation: no Architecture instruction or
+        // schema description keeps the removed existing-document skip guidance.
+        expect(prompt, label).not.toContain('permits the skip');
+        expect(prompt, label).not.toContain('justified skip');
+        if (planned.part === 'evaluator') {
+          expect(prompt).toContain('Accept adequate existing design directly');
+        }
+      }
       const configuredProfile = configuration.agentRuntime.profiles.find(
         (candidate) => candidate.id === planned.profile,
       )!;

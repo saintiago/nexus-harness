@@ -170,12 +170,12 @@ export const stageAuthorResponseSchema = z.strictObject({
   plan: z
     .array(plannedTaskSchema)
     .describe(
-      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report even when an existing adequate design permits the skip; empty for every other stage and outcome.',
+      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report; empty for every other stage and outcome.',
     ),
   skip: skipProposalSchema
     .nullable()
     .describe(
-      'The applicability skip proposal, or null unless the outcome is skip-proposed. A revision round cannot propose a skip.',
+      'The applicability skip proposal, or null unless the outcome is skip-proposed. A repair round may propose an applicability skip when the corrected scope makes the stage irrelevant; evaluation decides its applicability.',
     ),
   question: z
     .string()

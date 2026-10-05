@@ -244,8 +244,11 @@ function changed(): Error {
 /**
  * Reject declared stage work that no longer matches the evaluated revision: the documents and
  * stage-owned sources the author declared must still be the committed bytes the evaluator
- * assessed. An uncommitted edit or deletion after the observation needs a current decision, while
- * a submission that declares no changed work has nothing to check.
+ * assessed. Expected existence comes from the evaluated revision, not the current checkout: a file
+ * the evaluator assessed as present and that was later deleted needs a current decision, while a
+ * deletion the evaluator assessed as absent stays valid until the path is recreated. An
+ * uncommitted edit after the observation needs a current decision, while a submission that
+ * declares no changed work has nothing to check.
  */
 export async function requireDeclaredWork(settings: {
   readonly git: GitAdapter;
@@ -269,10 +272,11 @@ export async function requireDeclaredWork(settings: {
     if (content.some((entry) => entry.path === relative)) {
       continue;
     }
+    const evaluated = await git.readFileAtRevision(worktree, settings.revision, relative);
     content.push({
       path: relative,
       revision: settings.revision,
-      exists: await isFile(path.join(worktree, relative)),
+      exists: evaluated.ok,
     });
   }
   await requireEvaluationContent({ git, worktree, content });
