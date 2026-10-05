@@ -9,7 +9,6 @@ import {
 import {
   editorResponseArtifact,
   framingArtifact,
-  readRefinedIdeaRevision,
   refinedIdeaIdentity,
   type RefinedIdea,
   type RefinedIdeaRead,
@@ -21,13 +20,13 @@ import {
   readRetainedIdeaReport,
   readRetainedIdeaReportAtFile,
   readRetainedRefinedIdea,
+  readRetainedRefinedIdeaRevision,
   type AnyIdeaReportDeclaration,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
-  readCycleArtifact,
   readIdeaPlan,
   readSubmissionArtifact,
   writeSubmissionArtifact,
@@ -287,7 +286,13 @@ async function requireRecordedApproval(settings: {
   if (record.refinedIdea === null || record.challenger === null) {
     throw new Error('The retained approval has no refined idea or Challenger reference.');
   }
-  const idea = await readRefinedIdeaRevision(path.dirname(record.refinedIdea));
+  const idea = await readRetainedRefinedIdeaRevision({
+    root: settings.root,
+    workId: settings.workId,
+    plan: settings.plan,
+    cycleRoot: path.dirname(record.refinedIdea),
+    context: `${settings.context} Reading the approved refined idea revision.`,
+  });
   if (idea === null || idea.path !== record.refinedIdea) {
     throw new Error(
       `The retained approval names no refined idea revision at "${record.refinedIdea}".`,
@@ -311,7 +316,7 @@ async function requireRecordedApproval(settings: {
       root: settings.root,
       workId: settings.workId,
       plan: settings.plan,
-      cycleRoot: ideaCycleDirectory(settings.root, settings.plan.submission, settings.plan.cycle),
+      cycleRoot: ideaCycleDirectory(settings.root, settings.plan.submission, 1),
       declaration: framingArtifact,
       contract: ideaReportContracts.framing,
       context: `${settings.context} Reading the framing the approval falls back to.`,
@@ -355,8 +360,8 @@ async function requireRecordedApproval(settings: {
 /** The retained artifact paths one approved handoff references, in cycle order. */
 async function handoffReferences(
   root: string,
-  submission: number,
-  cycle: number,
+  workId: string,
+  plan: IdeaRoundPlan,
 ): Promise<{
   readonly editorResponses: string[];
   readonly contributions: string[];
@@ -365,23 +370,31 @@ async function handoffReferences(
   const editorResponses: string[] = [];
   const contributions: string[] = [];
   const challengerResults: string[] = [];
-  for (let number = 1; number <= cycle; number += 1) {
-    const cycleRoot = ideaCycleDirectory(root, submission, number);
-    for (const artifact of [
-      researchArtifact,
-      researchFollowUpArtifact,
-      projectGuideArtifact,
-      projectGuideFollowUpArtifact,
-    ]) {
-      if ((await readCycleArtifact(cycleRoot, artifact)) !== null) {
-        contributions.push(path.join(cycleRoot, artifact.pathFromArtifactsRoot));
+  for (let number = 1; number <= plan.cycle; number += 1) {
+    const cycleRoot = ideaCycleDirectory(root, plan.submission, number);
+    const reports = [
+      [researchArtifact, ideaReportContracts.research, contributions],
+      [researchFollowUpArtifact, ideaReportContracts.research, contributions],
+      [projectGuideArtifact, ideaReportContracts.projectGuidance, contributions],
+      [projectGuideFollowUpArtifact, ideaReportContracts.projectGuidance, contributions],
+      [editorResponseArtifact, ideaReportContracts.editorTurn, editorResponses],
+      [challengerArtifact, ideaReportContracts.challenge, challengerResults],
+    ] as const;
+    for (const [declaration, contract, references] of reports) {
+      const report = await readRetainedIdeaReport({
+        root,
+        workId,
+        plan,
+        cycleRoot,
+        declaration,
+        contract,
+        context:
+          `RecordIdeaDecision reading submission ${String(plan.submission)} cycle ` +
+          `${String(number)} history for the approved handoff of idea ${workId}.`,
+      });
+      if (report !== null) {
+        references.push(report.file);
       }
-    }
-    if ((await readCycleArtifact(cycleRoot, editorResponseArtifact)) !== null) {
-      editorResponses.push(path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot));
-    }
-    if ((await readCycleArtifact(cycleRoot, challengerArtifact)) !== null) {
-      challengerResults.push(path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot));
     }
   }
   return { editorResponses, contributions, challengerResults };
@@ -425,14 +438,7 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
             `RecordIdeaDecision replaying the recorded approval of submission ` +
             `${String(plan.submission)} for idea ${selection.taskKey}.`,
         });
-        await writeHandoff(
-          selection,
-          root,
-          plan.submission,
-          plan.cycle,
-          approval.path,
-          decisionFile,
-        );
+        await writeHandoff(selection, root, plan, approval.path, decisionFile);
       }
       return reported(settings, existing, selection.taskKey, plan.cycle, decisionFile);
     }
@@ -579,7 +585,7 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
     };
     const file = await writeSubmissionArtifact(root, plan.submission, decisionArtifact, record);
     if (decision === 'approved' && revision !== null) {
-      await writeHandoff(selection, root, plan.submission, plan.cycle, revision.path, decisionFile);
+      await writeHandoff(selection, root, plan, revision.path, decisionFile);
     }
     return reported(settings, record, selection.taskKey, plan.cycle, file);
   };
@@ -609,21 +615,27 @@ function reported(
 async function writeHandoff(
   selection: Selection,
   root: string,
-  submission: number,
-  cycle: number,
+  plan: IdeaRoundPlan,
   refinedIdea: string,
   decisionFile: string,
 ): Promise<void> {
-  const references = await handoffReferences(root, submission, cycle);
-  const framing = await readCycleArtifact(ideaCycleDirectory(root, submission, 1), framingArtifact);
+  const references = await handoffReferences(root, selection.taskKey, plan);
+  const framing = await readRetainedIdeaReport({
+    root,
+    workId: selection.taskKey,
+    plan,
+    cycleRoot: ideaCycleDirectory(root, plan.submission, 1),
+    declaration: framingArtifact,
+    contract: ideaReportContracts.framing,
+    context:
+      `RecordIdeaDecision reading submission ${String(plan.submission)} framing ` +
+      `for the approved handoff of idea ${selection.taskKey}.`,
+  });
   const handoff: IdeaHandoff = {
     issue: { id: selection.source.issueId, key: selection.taskKey },
     issueWorkspace: selection.workspace.root,
-    capturedInput: ideaSubmissionInputFile(root, submission),
-    framing:
-      framing === null
-        ? null
-        : path.join(ideaCycleDirectory(root, submission, 1), framingArtifact.pathFromArtifactsRoot),
+    capturedInput: ideaSubmissionInputFile(root, plan.submission),
+    framing: framing?.file ?? null,
     refinedIdea,
     ...references,
     decision: decisionFile,

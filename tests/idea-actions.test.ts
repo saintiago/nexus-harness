@@ -1993,8 +1993,8 @@ describe('decision publication', () => {
   });
 
   /**
-   * Record a cycle-1 approval whose editor outcome is a turn and whose framing is usable; the
-   * returned report paths are the turn's and the framing's bound Markdown.
+   * Record an approval in the current cycle with a turn and usable cycle-1 framing.
+   * Return the turn's and framing's bound Markdown paths.
    */
   async function recordedTurnApproval(area: RefinementArea): Promise<{
     readonly record: (input?: unknown) => Promise<string>;
@@ -2017,14 +2017,14 @@ describe('decision publication', () => {
       '# Framing\n',
       'editor-framing-1',
     );
-    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+    await area.write(area.plan.cycle, refinedIdeaArtifact.pathFromArtifactsRoot, {
       ...revisedTurn(1).refinedIdea,
       revision: 1,
       submission: 1,
-      cycle: 1,
+      cycle: area.plan.cycle,
     });
     const turnFile = await area.writeReported(
-      1,
+      area.plan.cycle,
       editorResponseArtifact.pathFromArtifactsRoot,
       {
         taskKey: 'NEX-1',
@@ -2038,7 +2038,7 @@ describe('decision publication', () => {
       'editor-turn-1',
     );
     await writeChallenge(area, {
-      cycle: 1,
+      cycle: area.plan.cycle,
       verdict: 'approve',
       obstacle: null,
       markdown: 'Revision 1 is worth pursuing.',
@@ -2054,7 +2054,7 @@ describe('decision publication', () => {
     const bindings = await approvalBindings(area);
     expect(bindings.decision.editor).toBe(turnFile);
     const framing = JSON.parse(
-      await readFile(path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot), 'utf8'),
+      await readFile(path.join(area.cycleRoot(1), framingArtifact.pathFromArtifactsRoot), 'utf8'),
     ) as { readonly report: { readonly path: string } };
     return {
       record,
@@ -2088,6 +2088,178 @@ describe('decision publication', () => {
       };
       const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
       expect(feedback[0]?.record).toMatchObject({ operation, invocationId });
+    },
+  );
+
+  it.each(['missing', 'changed'] as const)(
+    'rejects later-cycle approval replay and publication with %s cycle-1 framing Markdown',
+    async (damage) => {
+      const area = await refinementArea({ cycle: 2, route: 'next' });
+      const approval = await recordedTurnApproval(area);
+      const decisionFile = path.join(area.root, 'artifacts/submissions/1/decision.json');
+      const decisionBytes = await readFile(decisionFile, 'utf8');
+      await rm(path.join(area.root, ideaHandoffFile));
+      if (damage === 'missing') {
+        await rm(approval.framingReport);
+      } else {
+        await writeFile(approval.framingReport, '# Changed framing\n');
+      }
+
+      await expect(approval.record({ decision: 'approved' })).rejects.toThrow(/does not/u);
+      await expect(approval.publishDecision()).rejects.toThrow(/does not/u);
+      expect(approval.jira.transitions).toEqual([]);
+      expect(approval.jira.comments).toEqual([]);
+      await expect(readFile(decisionFile, 'utf8')).resolves.toBe(decisionBytes);
+      expect(await area.exists(ideaHandoffFile)).toBe(false);
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: { role: 'idea-editor', reportKind: 'idea-framing' },
+        invocationId: 'editor-framing-1',
+        source: { path: path.join(area.cycleRoot(1), framingArtifact.pathFromArtifactsRoot) },
+      });
+    },
+  );
+
+  it.each(['replay', 'publication'] as const)(
+    'retains malformed approved revision evidence during %s',
+    async (consumer) => {
+      const area = await refinementArea({ cycle: 2, route: 'next' });
+      const approval = await recordedTurnApproval(area);
+      const file = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const rejected = '{ malformed revision';
+      await writeFile(file, rejected);
+      const consume =
+        consumer === 'replay'
+          ? () => approval.record({ decision: 'approved' })
+          : approval.publishDecision;
+
+      await expect(consume()).rejects.toThrow(/is not valid JSON/u);
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: { role: 'idea-editor', reportKind: 'idea-editor-turn' },
+        operation: 'EditorTurn',
+        source: { path: file },
+        output: rejected,
+        reason: expect.stringContaining('is not valid JSON'),
+      });
+      expect(approval.jira.transitions).toEqual([]);
+      expect(approval.jira.comments).toEqual([]);
+    },
+  );
+
+  const handoffProducers = [
+    [researchArtifact, 'researcher', 'research', 'Researcher'],
+    [researchFollowUpArtifact, 'researcher', 'research', 'Researcher'],
+    [projectGuideArtifact, 'project-guide', 'project-guidance', 'ProjectGuide'],
+    [projectGuideFollowUpArtifact, 'project-guide', 'project-guidance', 'ProjectGuide'],
+    [editorResponseArtifact, 'idea-editor', 'idea-editor-turn', 'EditorTurn'],
+    [challengerArtifact, 'challenger', 'challenge', 'Challenger'],
+  ] as const;
+
+  it.each(handoffProducers)(
+    'retains malformed %s history under its producer during handoff reconstruction',
+    async (artifact, role, reportKind, operation) => {
+      const area = await refinementArea({ cycle: 2, route: 'next' });
+      const approval = await recordedTurnApproval(area);
+      // Cycle-1 history is not the cycle-2 approval evidence. Handoff assembly is the reader
+      // responsible for detecting this damage and retaining it for the historical producer.
+      const file = await area.writeReported(
+        1,
+        artifact.pathFromArtifactsRoot,
+        {
+          taskKey: 'NEX-1',
+          role,
+          profile: 'historical-profile',
+          ...(role === 'idea-editor'
+            ? { disposition: 'answered', reason: null, help: null }
+            : role === 'challenger'
+              ? {
+                  verdict: 'discuss',
+                  obstacle: 'A remaining concern',
+                  revision: 1,
+                  refinedIdea: path.join(
+                    area.cycleRoot(1),
+                    refinedIdeaArtifact.pathFromArtifactsRoot,
+                  ),
+                  refinedIdeaIdentity: 'historical-identity',
+                  editorResponse: null,
+                  editorIdentity: null,
+                }
+              : { question: null }),
+        },
+        '# Historical contribution\n',
+        'historical-invocation',
+      );
+      const intact = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+      const damaged = { ...intact };
+      delete damaged.reportIdentity;
+      const rejected = JSON.stringify(damaged);
+      await writeFile(file, rejected);
+      await rm(path.join(area.root, ideaHandoffFile));
+
+      await expect(approval.record({ decision: 'approved' })).rejects.toThrow(
+        /declared content type/u,
+      );
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: { role, reportKind },
+        operation,
+        invocationId: 'historical-invocation',
+        profile: 'historical-profile',
+        source: { path: file },
+        output: rejected,
+        assignedReport: damaged.report,
+      });
+      const retainedReport = feedback[0]?.record;
+      expect(retainedReport?.kind).toBe('rejection');
+      if (retainedReport?.kind === 'rejection') {
+        expect(retainedReport.report).not.toBeNull();
+        await expect(readFile(retainedReport.report!.path, 'utf8')).resolves.toBe(
+          '# Historical contribution\n',
+        );
+      }
+      expect(await area.exists(ideaHandoffFile)).toBe(false);
+      // Repairing the artifact permits handoff reconstruction, but cannot retire feedback.
+      await writeFile(file, JSON.stringify(intact));
+      await expect(approval.record({ decision: 'approved' })).resolves.toBe('recorded');
+      const handoff = JSON.parse(
+        await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
+      ) as IdeaHandoff;
+      expect([
+        ...handoff.contributions,
+        ...handoff.editorResponses,
+        ...handoff.challengerResults,
+      ]).toContain(file);
+      await expect(readReportFeedback(area.root)).resolves.toHaveLength(1);
+    },
+  );
+
+  it.each([
+    [researchArtifact, 'researcher', 'research'],
+    [projectGuideArtifact, 'project-guide', 'project-guidance'],
+  ] as const)(
+    'retains an unusable %s report during fresh handoff assembly',
+    async (_artifact, role, reportKind) => {
+      const area = await refinementArea();
+      await approvedCycle(area);
+      const file = role === 'researcher' ? await writeResearch(area) : await writeGuidance(area);
+      const contribution = JSON.parse(await readFile(file, 'utf8')) as { report: { path: string } };
+      await writeFile(contribution.report.path, '# Changed contribution\n');
+      const jira = source();
+      const actions = decisionActions(area, jira, await selectionFileFor(area));
+
+      await expect(actions.record({ decision: 'approved' })).rejects.toThrow(
+        /does not match the identity/u,
+      );
+      expect(await area.exists(ideaHandoffFile)).toBe(false);
+      const feedback = await readReportFeedback(area.root);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: { role, reportKind },
+        source: { path: file },
+        assignedReport: contribution.report,
+      });
     },
   );
 });

@@ -176,14 +176,6 @@ export async function readArtifactFile<Declaration extends ArtifactDeclaration>(
   return text === null ? null : parseCycleArtifact(file, declaration, text);
 }
 
-/** Read one cycle artifact, or null when the cycle did not produce it. */
-export async function readCycleArtifact<Declaration extends ArtifactDeclaration>(
-  cycleRoot: string,
-  declaration: Declaration,
-): Promise<ArtifactContent<Declaration> | null> {
-  return readArtifactFile(path.join(cycleRoot, declaration.pathFromArtifactsRoot), declaration);
-}
-
 /** Write one cycle artifact and return its path. */
 export async function writeCycleArtifact<Declaration extends ArtifactDeclaration>(
   cycleRoot: string,
