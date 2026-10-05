@@ -221,11 +221,15 @@ alter inspected prototype content.
 
 An upstream return retains its correction and owning earlier stage in the functional outcome, and
 its problem and consequence in the returning role's Markdown report. The return record references
-the returning stage, the destination stage, the concrete correction and that report; a former
-combined return keeps its problem and consequence text as history. The parent records the
-destination and downstream stages awaiting reassessment before advancing source state; this pending
-route survives restart. The destination corrects its work in the shared checkout. Idea correction
-changes its input artifacts without replacing that checkout.
+the returning stage, the destination stage, the returning role, the concrete correction and that
+role's saved report binding; a former combined return keeps its problem and consequence text as
+history. Finalization, replay, publication and destination context loading resolve the report
+through that producer-owned binding: a missing or changed report is preserved as the returning
+role's rejection evidence and the correction cannot proceed, so replacement bytes never stand in
+for the assessment the return cites. The parent records the destination and downstream stages
+awaiting reassessment before advancing source state; this pending route survives restart. The
+destination corrects its work in the shared checkout. Idea correction changes its input artifacts
+without replacing that checkout.
 
 Proceed through pending stages in order. Each uses current input and work and obtains a current
 assessment, preserving adequate content and repairing affected content. Do not manufacture edits,
@@ -252,8 +256,9 @@ fields as retained data without enforcing removed matching or citation-reuse rul
 original reports byte-for-byte and supply readable references so their full evidence remains
 available. Reading a simplified typed view must not change the complete recorded identity used to
 associate an author with its evaluation or retire rejection feedback. Required control/functional
-fields, outcome/verdict pairing, source association and applicable observation validity still
-receive validation. New outcomes require their Markdown binding; legacy combined records stay
+fields, outcome/verdict pairing, the verdict's upstream destination/correction pairing, source
+association and applicable observation validity still receive validation from the producer-owned
+retained-decision reader. New outcomes require their Markdown binding; legacy combined records stay
 readable without a retroactive Markdown requirement or finding-list checks.
 
 Completed document-stage decisions can continue under these association and routing checks, without

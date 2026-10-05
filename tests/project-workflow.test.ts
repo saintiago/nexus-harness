@@ -32,6 +32,7 @@ import { createImplementationHandoff } from '../src/task-engine/actions/project/
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
   acceptedResultIdentity,
@@ -1086,6 +1087,89 @@ async function publishPreparation(options: {
   };
 }
 
+/**
+ * Write one current bound author/evaluation pair with readable Markdown into an existing stage
+ * area, so publication reads the producing report through the identity its producer recorded.
+ */
+async function writeBoundRound(options: {
+  readonly stageArea: string;
+  readonly selectionFile: string;
+  readonly stage?: string;
+  readonly skipped?: boolean;
+  readonly evaluationMarkdown?: string;
+}): Promise<{ readonly evaluationReportPath: string }> {
+  const stage = options.stage ?? 'ux';
+  const selection = JSON.parse(await readFile(options.selectionFile, 'utf8')) as never;
+  const authorReportPath = path.join(
+    options.stageArea,
+    'artifacts',
+    '1',
+    'reports',
+    'author-1',
+    'author.md',
+  );
+  const evaluationReportPath = path.join(
+    options.stageArea,
+    'artifacts',
+    '1',
+    'reports',
+    'evaluator-1',
+    'evaluator.md',
+  );
+  await mkdir(path.dirname(authorReportPath), { recursive: true });
+  await mkdir(path.dirname(evaluationReportPath), { recursive: true });
+  const authorMarkdown = '# Author\n\nThe authored work.\n';
+  const evaluationMarkdown = options.evaluationMarkdown ?? '# Evaluation\n\nAccepted.\n';
+  await writeFile(authorReportPath, authorMarkdown, 'utf8');
+  await writeFile(evaluationReportPath, evaluationMarkdown, 'utf8');
+  const author = {
+    stage,
+    revision: 1,
+    outcome: options.skipped === true ? 'skip-proposed' : 'authored',
+    documents: [],
+    sourcePaths: [],
+    observation: null,
+    plan: [],
+    skip: options.skipped === true ? { references: [] } : null,
+    question: null,
+    upstream: null,
+    taskKey: 'NEX-1',
+    profile: 'nexus-sol',
+    role: 'author',
+    report: { path: authorReportPath },
+    reportIdentity: reportIdentityOf(Buffer.from(authorMarkdown, 'utf8')),
+    invocationId: 'author-1',
+  };
+  const authorFile = path.join(options.stageArea, 'artifacts', '1', 'author.json');
+  await writeFile(authorFile, JSON.stringify(author));
+  const evaluation = {
+    basis: {
+      author: { path: authorFile },
+      authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
+      sourceIdentity: sourceInputIdentity(selection),
+      upstream: [],
+      repositoryRevision: repositoryState().headRevision,
+      content: [],
+    },
+    assessedRevision: 1,
+    verdict: options.skipped === true ? 'accepted-skip' : 'accepted',
+    observation: null,
+    upstream: null,
+    stage,
+    taskKey: 'NEX-1',
+    profile: 'nexus-sol',
+    role: 'evaluator',
+    report: { path: evaluationReportPath },
+    reportIdentity: reportIdentityOf(Buffer.from(evaluationMarkdown, 'utf8')),
+    invocationId: 'evaluator-1',
+  };
+  await writeFile(
+    path.join(options.stageArea, 'artifacts', '1', 'evaluation.json'),
+    JSON.stringify(evaluation),
+  );
+  return { evaluationReportPath };
+}
+
 describe('parent preparation publication', () => {
   const accepted = {
     stage: 'ux',
@@ -1337,11 +1421,161 @@ describe('parent preparation publication', () => {
     expect(published.returnFinding()).toEqual({
       from: 'ux',
       to: 'requirements',
+      role: null,
       problem: 'The acceptance example contradicts the requirement.',
       consequence: 'UX cannot propose one consistent journey.',
       correction: 'Correct the acceptance example.',
       report: null,
     });
+  });
+
+  it.each(['accepted', 'skipped'] as const)(
+    'publishes the %s stage from the evaluation report\u2019s opening narrative and profile',
+    async (outcome) => {
+      const published = await publishPreparation({
+        result: { ...accepted, outcome },
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stage) => {
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            skipped: outcome === 'skipped',
+            evaluationMarkdown: '# Evaluation\n\nThe controlled narrative.\n',
+          });
+        },
+      });
+
+      expect(published.outcome).toBe('advanced');
+      expect(published.failures).toEqual([]);
+      expect(JSON.stringify(published.comments[0]?.body)).toContain(
+        `Preparation ux ${outcome} (profile nexus-sol): The controlled narrative.`,
+      );
+    },
+  );
+
+  it('names the evaluation report when its Markdown carries no opening narrative', async () => {
+    let reportPath = '';
+    const published = await publishPreparation({
+      result: accepted,
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Evaluation\n\n- The lifecycle is complete.\n',
+          })
+        ).evaluationReportPath;
+      },
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(JSON.stringify(published.comments[0]?.body)).toContain(
+      `Preparation ux accepted (profile nexus-sol): see the stage evaluation report at ` +
+        `${reportPath}.`,
+    );
+  });
+
+  it('publishes a bound return with the returning report\u2019s narrative and binding', async () => {
+    let reportPath = '';
+    let returnFinding: unknown = null;
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Assessment\n\nThe controlled narrative.\n',
+          })
+        ).evaluationReportPath;
+        const evaluation = JSON.parse(
+          await readFile(path.join(stage, 'artifacts', '1', 'evaluation.json'), 'utf8'),
+        ) as { readonly reportIdentity: string; readonly invocationId: string };
+        returnFinding = {
+          stage: 'requirements',
+          role: 'evaluator',
+          report: {
+            report: { path: reportPath },
+            reportIdentity: evaluation.reportIdentity,
+            invocationId: evaluation.invocationId,
+          },
+          correction: 'Correct the acceptance example.',
+        };
+        await writeFile(
+          path.join(stage, 'artifacts', '1', 'result.json'),
+          JSON.stringify({
+            ...accepted,
+            outcome: 'returnUpstream',
+            returnStage: 'requirements',
+            returnFinding,
+            reason: null,
+          }),
+        );
+      },
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(published.failures).toEqual([]);
+    expect(published.stage()).toBe('requirements');
+    const body = JSON.stringify(published.comments[0]?.body);
+    expect(body).toContain(
+      'Returning to requirements for correction: Correct the acceptance example.',
+    );
+    expect(body).toContain(
+      'The returning ux evaluator report (profile nexus-sol): The controlled narrative.',
+    );
+    expect(published.returnFinding()).toMatchObject({
+      from: 'ux',
+      to: 'requirements',
+      role: 'evaluator',
+      report: { report: { path: reportPath }, reportIdentity: expect.any(String) },
+      correction: 'Correct the acceptance example.',
+    });
+  });
+
+  it('fails a return publication whose saved report no longer matches its binding', async () => {
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        const reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
+          })
+        ).evaluationReportPath;
+        // The return binds bytes that no longer match what the returning role saved.
+        await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
+        await writeFile(
+          path.join(stage, 'artifacts', '1', 'result.json'),
+          JSON.stringify({
+            ...accepted,
+            outcome: 'returnUpstream',
+            returnStage: 'requirements',
+            returnFinding: {
+              stage: 'requirements',
+              role: 'evaluator',
+              report: {
+                report: { path: reportPath },
+                reportIdentity: '0'.repeat(64),
+                invocationId: 'evaluator-1',
+              },
+              correction: 'Correct the acceptance example.',
+            },
+            reason: null,
+          }),
+        );
+      },
+    });
+
+    expect(published.outcome).toBe('failed');
+    expect(published.failures.join('\n')).toContain('does not match the identity recorded');
+    expect(published.comments).toEqual([]);
+    expect(published.status()).toBe('UX Proposal');
+    expect(published.returnFinding()).toBeNull();
   });
 
   it('preserves an unexpected human status change instead of overwriting it', async () => {

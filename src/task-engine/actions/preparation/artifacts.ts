@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
-import { reportBindingFields } from '../agent-reports.js';
+import { readBoundReport, reportBindingFields, reportBindingSchema } from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
@@ -455,6 +455,18 @@ export function isBoundStageEvaluationOutput(
   return 'report' in evaluation;
 }
 
+/**
+ * One retained evaluation report's readable narrative: its bound Markdown, or the former combined
+ * reason. Callers validate the binding they rely on; this reads the exact bytes the producer saved.
+ */
+export async function stageEvaluationReportText(
+  evaluation: RetainedStageEvaluationOutput,
+): Promise<string> {
+  return isBoundStageEvaluationOutput(evaluation)
+    ? (await readBoundReport(evaluation, 'Stage evaluation report')).text
+    : evaluation.reason;
+}
+
 export const stageEvaluationArtifact = {
   pathFromArtifactsRoot: 'evaluation.json',
   schema: retainedStageEvaluationOutputSchema,
@@ -508,17 +520,26 @@ export const preparationResultSchema = z.object({
   returnStage: z.enum(upstreamStages).nullable(),
   /**
    * The concrete upstream correction a return carries, with the returning role's Markdown report
-   * that explains its problem and consequence. Former combined results retain their problem and
-   * consequence fields as history; current returns carry the report reference instead.
+   * binding and that role that explains its problem and consequence. Former combined results
+   * retain their problem and consequence fields as history; current returns carry the binding
+   * instead, so every consumer reads the assessment through the identity its producer saved.
    */
   returnFinding: z
     .object({
       stage: z.enum(upstreamStages),
       correction: z.string().min(1),
-      report: z
-        .object({ path: z.string().min(1) })
+      /** The returning role whose saved report explains the return; null on a former result. */
+      role: z
+        .enum(['author', 'evaluator'])
         .nullable()
-        .default(null),
+        .default(null)
+        .describe('The role whose saved Markdown report explains this return.'),
+      report: reportBindingSchema
+        .nullable()
+        .default(null)
+        .describe(
+          "The returning role's saved Markdown report binding, or null on a former return.",
+        ),
       problem: z.string().min(1).optional(),
       consequence: z.string().min(1).optional(),
     })

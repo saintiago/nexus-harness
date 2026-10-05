@@ -91,15 +91,21 @@ project documents may satisfy inputs even when no earlier stage ran. Required in
 
 Preparation children return accepted, skipped, returnUpstream, needsInput or exhausted, plus their
 saved result reference. A return artifact names an allowed earlier stage, the problematic input,
-the returning role's Markdown report and the correction needed; a former combined return keeps its
-problem and consequence text as history. Idea refinement retains approved, unsuitable,
+the returning role's Markdown report binding and the correction needed; a former combined return
+keeps its problem and consequence text as history. The parent validates that binding before it
+publishes or advances the return, and destination context reads the report through it: an unusable
+report is preserved as the returning role's rejection evidence instead of advancing the correction
+without its assessment. Idea refinement retains approved, unsuitable,
 author-decision-needed and attempts-exhausted meanings. Finite Delivery returns completed or blocked
 with its revision-specific evidence. Provider/storage faults remain execution failures.
 
 The parent validates the result, saves handoff evidence, finishes Jira publication/transition, then
-enters the next child. Save outputs before publication. An accepted local result cannot advance past
-a failed source write. Repetition inspects retained publication identities and current source state,
-finishing only missing effects. Machine context contains control values/references, not full reports.
+enters the next child. Concise preparation comments carry the validated evaluation or returning
+report's opening narrative with the observed profile, or the known outcome and report reference when
+it has no opening prose. Save outputs before publication. An accepted local result cannot advance
+past a failed source write. Repetition inspects retained publication identities and current source
+state, finishing only missing effects. Machine context contains control values/references, not full
+reports.
 
 ## Evaluation and stage applicability
 

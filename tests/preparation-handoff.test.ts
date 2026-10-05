@@ -17,6 +17,7 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   authoredIdentity,
   sourceInputIdentity,
@@ -25,8 +26,10 @@ import {
   preparationWorktree,
   readCurrentDecision,
   readStagePlan,
+  stageRoot,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
 const temporaryDirectories: string[] = [];
@@ -907,7 +910,13 @@ describe('preparation repair rounds', () => {
     expect(saved.returnFinding).toMatchObject({
       stage: 'requirements',
       correction: 'Correct the acceptance example.',
-      report: { path: expect.stringContaining('evaluator.md') },
+      role: 'evaluator',
+      // The return keeps the producer's saved binding: its Markdown path and recorded identity.
+      report: {
+        report: { path: expect.stringContaining('evaluator.md') },
+        reportIdentity: expect.any(String),
+        invocationId: expect.any(String),
+      },
     });
     // A current return explains its problem and consequence in the returning Markdown report.
     expect(saved.returnFinding).not.toHaveProperty('problem');
@@ -938,5 +947,226 @@ describe('preparation repair rounds', () => {
         consequence: 'The stage cannot express one consistent design.',
       },
     });
+  });
+
+  it('refuses to finalize or replay a return whose saved report no longer matches its binding', async () => {
+    const { selectionFile, issueRoot, root } = await stageWithEvaluation();
+    await openNextRound(selectionFile, root);
+    const { runner } = runnerOf([
+      {
+        outcome: 'authored',
+        documents: [{ path: 'docs/ux.md' }],
+        sourcePaths: [],
+        plan: [],
+        skip: null,
+        question: null,
+        upstream: null,
+        observation: null,
+      },
+      {
+        verdict: 'return-upstream',
+        observation: null,
+        upstream: { stage: 'requirements', correction: 'Correct the acceptance example.' },
+      },
+    ]);
+    const git = scriptedGit([repositoryState()], {
+      commitPaths: () => ok({ branch: 'task/NEX-1', headRevision: '2'.repeat(40) }),
+      readFileAtRevision: async (repository, _revision, file) =>
+        ok(await readFile(path.join(repository, file), 'utf8')),
+    }).git;
+    await createStageAuthor({ selectionFile, stage: 'ux', runner, git, publish: () => undefined })({
+      task: 'respond',
+    });
+    await createStageEvaluator({
+      selectionFile,
+      stage: 'ux',
+      runner,
+      git,
+      publish: () => undefined,
+    })();
+    const evaluation = (await artifact(root, 2, 'evaluation.json')) as {
+      readonly report: { readonly path: string };
+    };
+    const finalize = createStageResult({
+      selectionFile,
+      stage: 'ux',
+      git,
+      publish: () => undefined,
+    });
+
+    // The evaluator's assigned Markdown is replaced after its binding was saved: the return cannot
+    // leave the stage without the assessment its saved identity names.
+    await writeFile(evaluation.report.path, '# Replaced assessment\n\nDifferent bytes.\n');
+    await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
+      /does not match the identity recorded/,
+    );
+    await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+    const firstFeedback = await readReportFeedback(root);
+    expect(firstFeedback).toHaveLength(1);
+    expect(firstFeedback[0]?.record).toMatchObject({
+      kind: 'rejection',
+      scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
+      assignedReport: { path: evaluation.report.path },
+    });
+
+    // A completed return replays only while its returning report stays readable with its recorded
+    // identity; deleting it after finalization is the same unusable evidence, not a silent skip.
+    await writeFile(evaluation.report.path, controlledMarkdown);
+    await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+    await rm(evaluation.report.path, { force: true });
+    await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/does not exist/);
+    await expect(artifact(root, 2, 'result.json')).resolves.toMatchObject({
+      outcome: 'returnUpstream',
+      returnFinding: { report: { reportIdentity: expect.any(String) } },
+    });
+    await expect(readReportFeedback(root)).resolves.toHaveLength(2);
+
+    // The destination context reads the same producer-owned binding: a replaced report is
+    // preserved as the returning role's rejection evidence instead of being embedded.
+    await writeFile(evaluation.report.path, '# Replacement\n\nSubstituted evidence.\n');
+    await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+    const saved = (await artifact(root, 2, 'result.json')) as {
+      readonly returnFinding: unknown;
+    };
+    await writeFile(
+      path.join(issueRoot, 'parent', 'handoff.json'),
+      JSON.stringify({
+        stage: 'requirements',
+        upstreamReturns: 1,
+        feedback: null,
+        return: {
+          from: 'ux',
+          to: 'requirements',
+          role: 'evaluator',
+          report: (saved.returnFinding as { readonly report: unknown }).report,
+          correction: 'Correct the acceptance example.',
+        },
+        awaitingStages: [],
+        tickets: [],
+        publications: [],
+      }),
+    );
+    const destination = createStageAuthor({
+      selectionFile,
+      stage: 'requirements',
+      runner: runnerOf([]).runner,
+      git: scriptedGit([repositoryState()]).git,
+      publish: () => undefined,
+    });
+    await mkdir(path.join(stageRoot(issueRoot, 'requirements'), 'state'), { recursive: true });
+    await mkdir(path.join(stageRoot(issueRoot, 'requirements'), 'artifacts', '1'), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(stageRoot(issueRoot, 'requirements'), 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'requirements',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+      }),
+    );
+    await expect(destination({ stage: 'requirements', task: 'propose' })).rejects.toThrow(
+      /does not match the identity recorded/,
+    );
+    const destinationFeedback = await readReportFeedback(root);
+    expect(destinationFeedback).toHaveLength(3);
+    expect(destinationFeedback.at(-1)?.record).toMatchObject({
+      kind: 'rejection',
+      scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
+    });
+  });
+
+  it('refuses a retained evaluation whose verdict carries a contradictory upstream request', async () => {
+    const { issueRoot, root, selection } = await stageWithEvaluation();
+    const { git } = scriptedGit([repositoryState()], {
+      readFileAtRevision: async (_repository, _revision, file) =>
+        ok(await readFile(path.join(preparationWorktree(issueRoot), file), 'utf8')),
+    });
+    const evaluationFile = path.join(root, 'artifacts', '1', 'evaluation.json');
+    await writeFile(
+      path.join(root, 'artifacts', '1', 'result.json'),
+      JSON.stringify({
+        stage: 'ux',
+        outcome: 'accepted',
+        authoredRevision: 1,
+        documents: [],
+        sourcePaths: [],
+        skipReferences: [],
+        outputs: [{ path: evaluationFile }],
+        evaluation: { path: evaluationFile },
+        reason: null,
+        returnStage: null,
+        returnFinding: null,
+        prototype: null,
+        prototypeObservations: [],
+      }),
+    );
+    const legacy = JSON.parse(await readFile(evaluationFile, 'utf8')) as Record<string, unknown>;
+    // A saved current evaluation keeps the functional verdict/upstream pairing: an accepted
+    // decision cannot also request an upstream correction. Removed finding rules stay removed.
+    const reportPath = path.join(root, 'artifacts', '1', 'reports', 'inv-1', 'evaluator.md');
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    await writeFile(reportPath, controlledMarkdown, 'utf8');
+    const current = {
+      basis: legacy['basis'],
+      assessedRevision: 1,
+      verdict: 'accepted',
+      observation: null,
+      upstream: null,
+      stage: 'ux',
+      taskKey: 'NEX-1',
+      profile: 'nexus-sol',
+      role: 'evaluator',
+      report: { path: reportPath },
+      reportIdentity: reportIdentityOf(Buffer.from(controlledMarkdown, 'utf8')),
+      invocationId: 'inv-1',
+    };
+    await writeFile(evaluationFile, JSON.stringify(current));
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
+    await writeFile(
+      evaluationFile,
+      JSON.stringify({
+        ...current,
+        upstream: {
+          stage: 'requirements',
+          correction: 'Correct the acceptance example.',
+        },
+      }),
+    );
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).resolves.toMatchObject({
+      kind: 'stale',
+      reason: expect.stringContaining('only a return-upstream verdict carries the upstream'),
+    });
+
+    // The pairing rule governs retained combined records too, not only current bound responses.
+    await writeFile(
+      evaluationFile,
+      JSON.stringify({
+        ...legacy,
+        verdict: 'accepted',
+        upstream: {
+          stage: 'requirements',
+          problem: 'The acceptance example contradicts the requirement.',
+          consequence: 'The stage cannot express one consistent design.',
+          correction: 'Correct the acceptance example.',
+        },
+      }),
+    );
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).resolves.toMatchObject({
+      kind: 'stale',
+      reason: expect.stringContaining('only a return-upstream verdict carries the upstream'),
+    });
+    // An accepted side without a contradictory request still reads as the current decision.
+    await writeFile(evaluationFile, JSON.stringify({ ...legacy, verdict: 'accepted' }));
+    await expect(
+      readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
   });
 });

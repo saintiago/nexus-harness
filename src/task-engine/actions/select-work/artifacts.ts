@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { reportBindingSchema } from '../agent-reports.js';
 import { selectionSchema } from '../select-task/artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 
@@ -56,19 +57,25 @@ export type HandoffBasis = z.infer<typeof handoffBasisSchema>;
 /**
  * One upstream return the parent published: the stage that returned the work, the earlier stage
  * that must correct the named input and the concrete correction it needs. The returning role's
- * Markdown report carries the problem and consequence; former combined returns retain their
- * problem and consequence text as history instead. The destination stage reads the record as a
- * required input until its own publication clears it.
+ * saved Markdown report binding carries the problem and consequence and every reader validates the
+ * bytes it names; former combined returns retain their problem and consequence text as history
+ * instead. The destination stage reads the record as a required input until its own publication
+ * clears it.
  */
 export const stageReturnSchema = z.object({
   from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
   to: z.enum(['idea', 'requirements', 'ux', 'prototype']),
+  role: z
+    .enum(['author', 'evaluator'])
+    .nullable()
+    .default(null)
+    .describe('The returning role whose saved Markdown report explains this return.'),
   problem: z.string().min(1).optional(),
   consequence: z.string().min(1).optional(),
-  report: z
-    .object({ path: z.string().min(1) })
+  report: reportBindingSchema
     .nullable()
-    .default(null),
+    .default(null)
+    .describe("The returning role's saved Markdown report binding, or null on a former return."),
   correction: z.string().min(1),
 });
 

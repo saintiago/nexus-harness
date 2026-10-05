@@ -42,6 +42,7 @@ import { researchArtifact, researchFollowUpArtifact } from './researcher/artifac
 import { issueSummary } from './source.js';
 import type { IdeaInput } from './select-idea/artifacts.js';
 import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
+import { requireReturnReport } from './preparation/storage.js';
 
 /**
  * The context every idea refinement role receives: the current captured author input as the
@@ -379,8 +380,22 @@ export async function capturedIdeaText(
               `Required correction: ${returned.correction}`,
             );
             if (returned.report !== null) {
-              lines.push(`The returning role's Markdown report: ${returned.report.path}`);
-              const text = await readDocumentText(returned.report.path, 'Returning stage report');
+              lines.push(`The returning role's Markdown report: ${returned.report.report.path}`);
+              // The refinement area sits beside the stage areas under the issue workspace: the
+              // report is read through the returning role's saved binding, so a missing or changed
+              // report is preserved as that role's rejection evidence instead of being embedded.
+              const text = await requireReturnReport({
+                issueRoot: path.dirname(root),
+                workId: input.taskKey,
+                returned: {
+                  stage: returned.from,
+                  role: returned.role,
+                  report: returned.report,
+                },
+                context:
+                  `Reading the ${returned.from} return for the captured idea context of ` +
+                  `${input.taskKey}.`,
+              });
               if (text !== null) {
                 lines.push('The complete returning report:', text);
               }

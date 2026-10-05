@@ -15,6 +15,7 @@ import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   challengerArtifact,
   challengerReportSchema,
@@ -36,6 +37,7 @@ import {
   refinedIdeaDeliverableInstruction,
 } from '../src/task-engine/actions/idea-editor/index.js';
 import {
+  capturedIdeaText,
   ideaAttributionText,
   ideaCommunicationText,
   ideaDefinitionText,
@@ -1607,6 +1609,57 @@ describe('decision publication', () => {
 });
 
 describe('retained idea reports', () => {
+  it('reads a parent return through the returning role\u2019s saved binding', async () => {
+    const area = await refinementArea();
+    const report = path.join(
+      path.dirname(area.root),
+      'ux',
+      'artifacts',
+      '1',
+      'reports',
+      'inv-1',
+      'evaluator.md',
+    );
+    await mkdir(path.dirname(report), { recursive: true });
+    const markdown = '# Assessment\n\nThe controlled narrative.\n';
+    await writeFile(report, markdown);
+    const boundInput = {
+      ...capturedInput,
+      parentInput: {
+        question: null,
+        returnFinding: {
+          from: 'ux' as const,
+          role: 'evaluator' as const,
+          report: {
+            report: { path: report },
+            reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+            invocationId: 'inv-1',
+          },
+          correction: 'Correct the acceptance example.',
+        },
+      },
+    };
+
+    // The readable report reaches the idea role through its producer-owned identity.
+    const context = await capturedIdeaText(area.root, area.plan, boundInput);
+    expect(context).toContain('Correct the acceptance example.');
+    expect(context).toContain('The complete returning report:');
+    expect(context).toContain('The controlled narrative.');
+
+    // Replacing the bytes after the binding was saved is not embedded as the returning evidence.
+    await writeFile(report, '# Replacement\n\nSubstituted evidence.\n');
+    await expect(capturedIdeaText(area.root, area.plan, boundInput)).rejects.toThrow(
+      /does not match the identity recorded/,
+    );
+    const feedback = await readReportFeedback(path.join(path.dirname(area.root), 'ux'));
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]?.record).toMatchObject({
+      kind: 'rejection',
+      scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
+      assignedReport: { path: report },
+    });
+  });
+
   /** The report responsibility one idea role's saved report belongs to. */
   function scopeOf(
     area: { readonly root: string },

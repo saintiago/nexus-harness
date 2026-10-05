@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../../index.js';
+import type { ReportBinding } from '../../agent-reports.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
@@ -23,6 +24,7 @@ import {
   readStagePlan,
   requireCurrentAcceptance,
   requireRetainedDecision,
+  requireReturnReport,
   roundArtifactDirectory,
   stageRoot,
   writeStageArtifact,
@@ -120,6 +122,23 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           git: settings.git,
         });
       }
+      if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
+        // A replayed return keeps its returning role's Markdown readable through the producer's
+        // saved binding: an unusable report is preserved as that role's rejection evidence instead
+        // of replaying a correction whose assessment is missing or changed.
+        await requireReturnReport({
+          issueRoot,
+          workId: selection.taskKey,
+          returned: {
+            stage: settings.stage,
+            role: completed.returnFinding.role ?? null,
+            report: completed.returnFinding.report,
+          },
+          context:
+            `Replaying the retained ${settings.stage} return of round ${String(plan.round)} for ` +
+            `task ${selection.taskKey}.`,
+        });
+      }
       if (
         outcome !== 'exhausted' &&
         settings.stage === 'prototype' &&
@@ -186,19 +205,56 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           : null;
 
     /**
-     * The returning role's Markdown report: the evaluator's when its verdict carried the upstream
-     * request, otherwise the author's. A retained combined record has no report binding and
-     * returns null; its former problem and consequence travel through the return finding instead.
+     * The returning role's saved Markdown report binding: the evaluator's when its verdict carried
+     * the upstream request, otherwise the author's. A retained combined record has no report
+     * binding and returns null; its former problem and consequence travel through the return
+     * finding instead.
      */
-    const returningReport = (): { readonly path: string } | null => {
+    const returningReport = (): {
+      readonly role: 'author' | 'evaluator';
+      readonly binding: ReportBinding;
+    } | null => {
       if (upstream === null) {
         return null;
       }
       if (evaluation !== null && evaluation.upstream !== null) {
-        return isBoundStageEvaluationOutput(evaluation) ? evaluation.report : null;
+        return isBoundStageEvaluationOutput(evaluation)
+          ? {
+              role: 'evaluator',
+              binding: {
+                report: evaluation.report,
+                reportIdentity: evaluation.reportIdentity,
+                invocationId: evaluation.invocationId,
+              },
+            }
+          : null;
       }
-      return isBoundStageAuthorOutput(author) ? author.report : null;
+      return isBoundStageAuthorOutput(author)
+        ? {
+            role: 'author',
+            binding: {
+              report: author.report,
+              reportIdentity: author.reportIdentity,
+              invocationId: author.invocationId,
+            },
+          }
+        : null;
     };
+
+    const returning = outcome === 'returnUpstream' ? returningReport() : null;
+    if (returning !== null) {
+      // A return cannot leave this stage without the assessment that explains it: read the
+      // returning role's Markdown through its saved binding, preserving an unusable report as that
+      // role's rejection evidence instead of saving a return whose evidence is missing or changed.
+      await requireReturnReport({
+        issueRoot,
+        workId: selection.taskKey,
+        returned: { stage: settings.stage, role: returning.role, report: returning.binding },
+        context:
+          `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
+          `${selection.taskKey}.`,
+      });
+    }
 
     /**
      * A retained combined return's former problem and consequence text: a current return explains
@@ -379,7 +435,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           ? {
               stage: upstream.stage,
               correction: upstream.correction,
-              report: returningReport(),
+              role: returning?.role ?? null,
+              report: returning?.binding ?? null,
               ...(returningHistory() ?? {}),
             }
           : null,

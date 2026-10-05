@@ -1,19 +1,28 @@
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
+import { messageOf } from '../../../../result.js';
+import { openingNarrativeParagraph } from '../../agent-reports.js';
 import { preparationPublicationFailureDeclaration } from './artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import type { JiraAdapter } from '../../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
+  isBoundStageEvaluationOutput,
   preparationStages,
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
+  stageEvaluationReportText,
   type PreparationResult,
   type PreparationStage,
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
 import {
   readCurrentDecision,
+  readStageArtifact,
   readStageTerminal,
   readStagePlan,
+  requireReturnReport,
+  roundArtifactFile,
   stageRoot,
 } from '../../preparation/storage.js';
 import {
@@ -295,6 +304,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           {
             from: stage,
             to: earliest,
+            role: null,
             report: null,
             problem:
               `The retained ${earliest} decision no longer matches its authored report, ` +
@@ -339,10 +349,28 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       if (next === null) {
         return failed(`The ${stage} stage has no forward stage to advance to.`);
       }
+      // Concise ticket feedback carries the validated evaluation report's opening narrative and
+      // its observed profile; a retained combined evaluation supplies its former narrative. The
+      // fallback names the known outcome and the report instead of inventing findings.
+      const evaluation = decision.decision.evaluation;
+      const profile = isBoundStageEvaluationOutput(evaluation) ? evaluation.profile : null;
+      const reference = isBoundStageEvaluationOutput(evaluation)
+        ? evaluation.report.path
+        : roundArtifactFile(root, plan.round, stageEvaluationArtifact.pathFromArtifactsRoot);
+      let narrative: string | null;
+      try {
+        narrative = openingNarrativeParagraph(await stageEvaluationReportText(evaluation));
+      } catch (error) {
+        return failed(messageOf(error));
+      }
+      const attribution = profile === null ? '' : ` (profile ${profile})`;
       return advanceTo(
         next,
         null,
-        `Preparation ${stage} ${outcome}: ${result.reason ?? 'the stage criteria are met.'}`,
+        narrative === null
+          ? `Preparation ${stage} ${outcome}${attribution}: see the stage evaluation report ` +
+              `at ${reference}.`
+          : `Preparation ${stage} ${outcome}${attribution}: ${narrative}`,
         [...new Set(awaiting)],
       );
     }
@@ -360,6 +388,53 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         );
       }
       const finding = result.returnFinding;
+      const returningRole = finding?.role ?? null;
+      // The returning role's saved Markdown must stay readable with the identity its producer
+      // recorded: an unusable report is preserved as that role's rejection evidence, and the
+      // correction cannot advance without the assessment that explains it.
+      let returning: { readonly narrative: string | null; readonly profile: string | null };
+      try {
+        const text = await requireReturnReport({
+          issueRoot: selection.workspace.root,
+          workId: selection.taskKey,
+          returned: { stage, role: returningRole, report: finding?.report ?? null },
+          context:
+            `Publishing the ${stage} return of round ${String(plan.round)} to ${target} for task ` +
+            `${selection.taskKey}.`,
+        });
+        returning = {
+          narrative: text === null ? null : openingNarrativeParagraph(text),
+          profile:
+            returningRole === 'author'
+              ? ((await readStageArtifact(root, plan.round, stageAuthorArtifact))?.profile ?? null)
+              : returningRole === 'evaluator'
+                ? ((await readStageArtifact(root, plan.round, stageEvaluationArtifact))?.profile ??
+                  null)
+                : null,
+        };
+      } catch (error) {
+        return failed(messageOf(error));
+      }
+      const lines = [
+        `Returning to ${target} for correction: ${finding?.correction ?? 'an upstream input needs correction.'}`,
+      ];
+      if (returning.narrative !== null && returningRole !== null) {
+        const attribution = returning.profile === null ? '' : ` (profile ${returning.profile})`;
+        lines.push(
+          `The returning ${stage} ${returningRole} report${attribution}: ${returning.narrative}`,
+        );
+      } else if (finding?.problem !== undefined) {
+        // A former combined return keeps its problem and consequence text as history.
+        lines.push(
+          `Problem: ${finding.problem}`,
+          ...(finding.consequence === undefined ? [] : [`Consequence: ${finding.consequence}`]),
+        );
+      } else if (returningRole !== null && finding?.report != null) {
+        lines.push(
+          `See the returning ${stage} ${returningRole} report at ${finding.report.report.path} for ` +
+            'the assessment.',
+        );
+      }
       // The correction invalidates the corrected stage's decision and every later decision up to
       // the returning stage: the parent retains them as awaiting a current decision.
       const awaiting = await pendingCorrection(target);
@@ -368,17 +443,16 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         {
           from: stage,
           to: target,
-          // A current return carries the returning role's Markdown report; a former combined
-          // return retains its problem and consequence text as history.
+          role: returningRole,
+          // A current return carries the returning role's saved Markdown binding; a former
+          // combined return retains its problem and consequence text as history.
           report: finding?.report ?? null,
           ...(finding?.problem === undefined ? {} : { problem: finding.problem }),
           ...(finding?.consequence === undefined ? {} : { consequence: finding.consequence }),
           correction:
             finding?.correction ?? 'Correct the named input and return it for reassessment.',
         },
-        `Returning to ${target} for correction: ${
-          finding?.correction ?? 'an upstream input needs correction.'
-        }`,
+        lines.join('\n\n'),
         awaiting,
       );
     }

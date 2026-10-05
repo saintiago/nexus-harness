@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { GitAdapter } from '../../../adapters/git.js';
-import { readBoundReport } from '../agent-reports.js';
+import { readBoundReport, type ReportBinding } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../records.js';
 import type { Selection } from '../select-task/artifacts.js';
@@ -14,6 +14,7 @@ import {
 import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import {
   acceptanceVerdictProblem,
+  evaluationVerdictProblem,
   isBoundStageAuthorOutput,
   isBoundStageEvaluationOutput,
   preparationStages,
@@ -24,6 +25,7 @@ import {
   stageResultArtifact,
   stageTerminalDeclaration,
   stageRoundPlanDeclaration,
+  stageReportScope,
   type AcceptanceBasis,
   type PreparationWorkspace,
   type PreparationStage,
@@ -32,6 +34,7 @@ import {
   type StageRoundPlan,
   type PreparationResult,
 } from './artifacts.js';
+import { projectOfWorkspace, rejectUnusableRecord } from '../report-feedback.js';
 import {
   authoredIdentity,
   recordIdentity,
@@ -385,6 +388,12 @@ export async function requireRetainedDecision(
   if (evaluation.verdict !== verdict) {
     throw new Error('Acceptance requires the evaluator\u2019s applicability decision.');
   }
+  // The retained verdict keeps its functional pairing: only a return-upstream decision carries the
+  // destination and concrete correction. Removed finding-list and narrative checks stay removed.
+  const verdictProblem = evaluationVerdictProblem(evaluation.verdict, evaluation.upstream);
+  if (verdictProblem !== null) {
+    throw new Error(`Acceptance is unusable: ${verdictProblem}.`);
+  }
   const acceptanceProblem = acceptanceVerdictProblem(author.outcome, verdict);
   if (acceptanceProblem !== null) {
     throw new Error(`Acceptance is unusable: ${acceptanceProblem}.`);
@@ -461,4 +470,59 @@ export async function requireCurrentAcceptance(settings: AcceptanceSettings): Pr
     worktree,
     content: basis.content,
   });
+}
+
+/** One published upstream return's report association: the returning stage, role and binding. */
+export type ReturnReportReference = {
+  /** The stage whose round produced the return and owns the report. */
+  readonly stage: PreparationStage;
+  readonly role: 'author' | 'evaluator' | null;
+  readonly report: ReportBinding | null;
+};
+
+/**
+ * Require one published return's Markdown report to stay readable with the identity its producer
+ * saved. The returning role's binding is the only authority for those bytes, so a missing or
+ * changed report is preserved under that role's report responsibility as attributable rejection
+ * evidence before the read fails. A former combined return carries no bound report and keeps its
+ * problem and consequence text as history. Returns the report's Markdown text, or null when the
+ * return binds no report.
+ */
+export async function requireReturnReport(settings: {
+  readonly issueRoot: string;
+  readonly workId: string;
+  readonly returned: ReturnReportReference;
+  readonly context: string;
+}): Promise<string | null> {
+  const { stage, role, report } = settings.returned;
+  if (report === null) {
+    return null;
+  }
+  if (role === null) {
+    throw new Error(
+      `The retained ${stage} return binds a Markdown report without the role that produced it.`,
+    );
+  }
+  try {
+    return (await readBoundReport(report, 'Returning stage report')).text;
+  } catch (error) {
+    const area = stageRoot(settings.issueRoot, stage);
+    return await rejectUnusableRecord({
+      areaRoot: area,
+      scope: stageReportScope({
+        project: projectOfWorkspace(settings.issueRoot),
+        workId: settings.workId,
+        area,
+        stage,
+        role,
+      }),
+      invocationId: report.invocationId,
+      operation: `stage-${role}`,
+      profile: null,
+      context: settings.context,
+      file: report.report.path,
+      error,
+      assignedReport: report.report,
+    });
+  }
 }

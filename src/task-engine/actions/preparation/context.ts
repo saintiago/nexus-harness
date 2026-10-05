@@ -25,6 +25,7 @@ import {
 import {
   readStageArtifact,
   readStagePlan,
+  requireReturnReport,
   roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
@@ -334,13 +335,22 @@ async function returnSection(settings: {
   ];
   if (returned.report !== null) {
     lines.push(
-      `The returning role's Markdown report (its problem and consequence): ${returned.report.path}`,
+      `The returning role's Markdown report (its problem and consequence): ` +
+        `${returned.report.report.path}`,
     );
-    const text = await readDocumentText(returned.report.path, 'Returning stage report');
+    // The report is read through the returning role's saved binding: a missing or changed report
+    // is preserved as that role's rejection evidence and fails this context instead of silently
+    // dropping the assessment or embedding replacement bytes.
+    const text = await requireReturnReport({
+      issueRoot: issueWorkspaceRootOf(settings.selection),
+      workId: settings.selection.taskKey,
+      returned: { stage: returned.from, role: returned.role, report: returned.report },
+      context:
+        `Reading the ${returned.from} return for the ${settings.stage} stage context of task ` +
+        `${settings.selection.taskKey}.`,
+    });
     if (text !== null) {
       lines.push('The complete returning report:', text);
-    } else {
-      lines.push('The returning report is unreadable; the required correction above governs.');
     }
   } else {
     if (returned.problem !== undefined) lines.push(`Problem: ${returned.problem}`);
