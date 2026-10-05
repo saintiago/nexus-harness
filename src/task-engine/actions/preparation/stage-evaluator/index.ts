@@ -51,7 +51,7 @@ import {
 import { stageContextText } from '../context.js';
 import {
   preparationWorktree,
-  readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   readStageTerminal,
   roundArtifactDirectory,
@@ -268,22 +268,16 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     }
 
     async function readAuthor(round: number): Promise<RetainedStageAuthorOutput | null> {
-      try {
-        return await readStageArtifact(root, round, stageAuthorArtifact);
-      } catch (error) {
-        // The unusable record is the author's report: its evidence is retained under the author's
-        // responsibility so the next author invocation receives the correction obligation.
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope: authorScope,
-          invocationId,
-          operation: 'stage-author',
-          profile: authorProfile,
-          context: attribution,
-          file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
-          error,
-        });
-      }
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        round,
+        role: 'author',
+        profile: authorProfile,
+        invocationId,
+        context: attribution,
+      });
     }
     const author = await readAuthor(plan.round);
     if (author === null) {
@@ -298,21 +292,16 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
      * and its next permitted invocation receives the correction obligation.
      */
     async function readEvaluation(round: number): Promise<RetainedStageEvaluationOutput | null> {
-      const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
-      try {
-        return await readStageArtifact(root, round, stageEvaluationArtifact);
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope,
-          invocationId,
-          operation: 'stage-evaluator',
-          profile: evaluatorProfile,
-          context: `${attribution} Reading retained evaluation round ${String(round)}.`,
-          file,
-          error,
-        });
-      }
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        round,
+        role: 'evaluator',
+        profile: evaluatorProfile,
+        invocationId,
+        context: `${attribution} Reading retained evaluation round ${String(round)}.`,
+      });
     }
 
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });

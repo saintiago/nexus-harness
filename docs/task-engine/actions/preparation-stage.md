@@ -159,6 +159,9 @@ metadata, not a claim returned by the evaluator.
 
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) in each
 stage area. The responsible role receives outstanding feedback after recovery or reselection.
+Retained author/evaluator reads preserve malformed outcome bytes and recover available Markdown
+references as producer-attributed rejection evidence before parsing failures propagate or route stale,
+including round opening, finalization, replay, downstream decisions and publication.
 Repaired history alone does not retire feedback; validate and record a usable replacement as its
 correction. Rejection and correction grant no acceptance or extra allowance.
 

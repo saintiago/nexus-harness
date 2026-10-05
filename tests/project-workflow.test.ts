@@ -1474,7 +1474,7 @@ describe('parent preparation publication', () => {
     },
   );
 
-  it.each(['missing', 'directory', 'changed'] as const)(
+  it.each(['missing', 'directory', 'changed', 'incomplete-binding'] as const)(
     'refuses needs-input publication with a %s author report and retains the rejection',
     async (damage) => {
       let area = '';
@@ -1492,9 +1492,10 @@ describe('parent preparation publication', () => {
               ...author,
               outcome: 'needs-input',
               question: 'Which acceptance example governs?',
+              ...(damage === 'incomplete-binding' ? { reportIdentity: undefined } : {}),
             }),
           );
-          await rm(author.report.path);
+          if (damage !== 'incomplete-binding') await rm(author.report.path);
           if (damage === 'directory') await mkdir(author.report.path);
           if (damage === 'changed') await writeFile(author.report.path, 'Replacement bytes.');
         },
@@ -1675,48 +1676,79 @@ describe('parent preparation publication', () => {
     });
   });
 
-  it('fails a return publication whose saved report no longer matches its binding', async () => {
-    const published = await publishPreparation({
-      result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
-      status: 'UX Proposal',
-      beforePublish: async (selectionFile, stage) => {
-        const reportPath = (
-          await writeBoundRound({
-            stageArea: stage,
-            selectionFile,
-            evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
-          })
-        ).evaluationReportPath;
-        // The return binds bytes that no longer match what the returning role saved.
-        await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
-        await writeFile(
-          path.join(stage, 'artifacts', '1', 'result.json'),
-          JSON.stringify({
-            ...accepted,
-            outcome: 'returnUpstream',
-            returnStage: 'requirements',
-            returnFinding: {
-              stage: 'requirements',
-              role: 'evaluator',
-              report: {
-                report: { path: reportPath },
-                reportIdentity: '0'.repeat(64),
-                invocationId: 'evaluator-1',
+  it.each(['changed-report', 'incomplete-binding'] as const)(
+    'fails a return publication with a %s and retains rejection evidence',
+    async (damage) => {
+      let area = '';
+      let producerFile = '';
+      let rejectedOutput = '';
+      let availableReport = '';
+      const published = await publishPreparation({
+        result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stage) => {
+          area = stage;
+          const reportPath = (
+            await writeBoundRound({
+              stageArea: stage,
+              selectionFile,
+              evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
+            })
+          ).evaluationReportPath;
+          // The return binds bytes that no longer match what the returning role saved.
+          producerFile = path.join(stage, 'artifacts/1/evaluation.json');
+          const evaluation = JSON.parse(await readFile(producerFile, 'utf8')) as Record<
+            string,
+            unknown
+          >;
+          availableReport = reportPath;
+          if (damage === 'changed-report') {
+            await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
+          } else {
+            rejectedOutput = JSON.stringify({ ...evaluation, reportIdentity: undefined });
+            await writeFile(producerFile, rejectedOutput);
+          }
+          await writeFile(
+            path.join(stage, 'artifacts', '1', 'result.json'),
+            JSON.stringify({
+              ...accepted,
+              outcome: 'returnUpstream',
+              returnStage: 'requirements',
+              returnFinding: {
+                stage: 'requirements',
+                role: 'evaluator',
+                report: {
+                  report: { path: reportPath },
+                  reportIdentity: evaluation['reportIdentity'],
+                  invocationId: evaluation['invocationId'],
+                },
+                correction: 'Correct the acceptance example.',
               },
-              correction: 'Correct the acceptance example.',
-            },
-            reason: null,
-          }),
-        );
-      },
-    });
+              reason: null,
+            }),
+          );
+        },
+      });
 
-    expect(published.outcome).toBe('failed');
-    expect(published.failures.join('\n')).toContain('does not match the identity recorded');
-    expect(published.comments).toEqual([]);
-    expect(published.status()).toBe('UX Proposal');
-    expect(published.returnFinding()).toBeNull();
-  });
+      expect(published.outcome).toBe('failed');
+      expect(published.failures.join('\n')).toContain(
+        damage === 'changed-report' ? 'does not match the identity recorded' : 'reportIdentity',
+      );
+      const feedback = await readReportFeedback(area);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]!.record).toMatchObject({
+        kind: 'rejection',
+        scope: { role: 'ux-evaluator' },
+        assignedReport: { path: availableReport },
+        ...(damage === 'incomplete-binding'
+          ? { source: { path: producerFile }, output: rejectedOutput }
+          : {}),
+      });
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('UX Proposal');
+      expect(published.returnFinding()).toBeNull();
+    },
+  );
 
   it('preserves an unexpected human status change instead of overwriting it', async () => {
     const published = await publishPreparation({

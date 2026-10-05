@@ -21,6 +21,7 @@ import {
 import {
   preparationWorktree,
   readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   requireCurrentAcceptance,
   requireRetainedDecision,
@@ -97,6 +98,25 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(`No ${settings.stage} round plan exists under "${root}" to finalize.`);
     }
+    const roleContext = {
+      issueRoot,
+      stage: settings.stage,
+      workId: selection.taskKey,
+      round: plan.round,
+      context: `Finalizing ${settings.stage} round ${String(plan.round)} for task ${selection.taskKey}.`,
+    };
+    const readAuthor = () =>
+      readStageRoleArtifact({
+        ...roleContext,
+        role: 'author',
+        profile: plan.profiles.author,
+      });
+    const readEvaluation = () =>
+      readStageRoleArtifact({
+        ...roleContext,
+        role: 'evaluator',
+        profile: plan.profiles.evaluator,
+      });
     const completed = await readStageArtifact(root, plan.round, stageResultArtifact);
     if (completed !== null) {
       if (outcome !== completed.outcome && outcome !== 'exhausted') {
@@ -105,7 +125,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         );
       }
       if (outcome === 'accepted' || outcome === 'skipped') {
-        const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+        const author = await readAuthor();
         if (author === null) {
           throw new Error('A retained acceptance must keep its authored report.');
         }
@@ -119,7 +139,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           round: plan.round,
           verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
           author,
-          evaluation: await readStageArtifact(root, plan.round, stageEvaluationArtifact),
+          evaluation: await readEvaluation(),
           git: settings.git,
         });
       }
@@ -154,7 +174,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         settings.stage === 'prototype' &&
         (completed.outcome === 'accepted' || completed.prototype !== null)
       ) {
-        const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+        const evaluation = await readEvaluation();
         if (evaluation === null) {
           throw new Error('A retained prototype must keep its evaluated decision.');
         }
@@ -195,7 +215,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       );
       return 'saved';
     }
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const author = await readAuthor();
     if (author === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
@@ -211,7 +231,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         authoredRevision: author.revision,
       });
     }
-    const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+    const evaluation = await readEvaluation();
     const upstream = evaluation?.upstream ?? author.upstream;
     // The published reason is action-observed: the author's question the parent must relay, or
     // the exhaustion the workflow retained. Assessment text lives in the Markdown reports, and a

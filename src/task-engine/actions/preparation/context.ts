@@ -15,7 +15,6 @@ import {
   isBoundStageAuthorOutput,
   isBoundStageEvaluationOutput,
   stageAuthorArtifact,
-  stageReportScope,
   stageResultArtifact,
   type PreparationStage,
   type RetainedStageAuthorOutput,
@@ -24,6 +23,7 @@ import {
 } from './artifacts.js';
 import {
   readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   requireReturnReport,
   roundArtifactDirectory,
@@ -34,8 +34,6 @@ import {
 import { prototypeObservationContract } from './observation.js';
 import {
   reportFeedbackContextText,
-  projectOfWorkspace,
-  rejectUnusableRecord,
   type ReportRejection,
   type RetainedReportFeedback,
 } from '../report-feedback.js';
@@ -151,27 +149,15 @@ export async function upstreamReferences(
       if (result !== null) {
         lines.push(`${earlier} stage result (${result.outcome}): ${reference.resultFile}`);
       }
-      let author: RetainedStageAuthorOutput | null;
-      try {
-        author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope: stageReportScope({
-            project: projectOfWorkspace(issueRoot),
-            workId: selection.taskKey,
-            area: root,
-            stage: earlier,
-            role: 'author',
-          }),
-          invocationId: null,
-          operation: 'stage-author',
-          profile: plan.profiles.author,
-          context: `Reading retained ${earlier} author round ${String(plan.round)} for ${stage} context.`,
-          file: roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
-          error,
-        });
-      }
+      const author = await readStageRoleArtifact({
+        issueRoot,
+        stage: earlier,
+        workId: selection.taskKey,
+        round: plan.round,
+        role: 'author',
+        profile: plan.profiles.author,
+        context: `Reading retained ${earlier} author round ${String(plan.round)} for ${stage} context.`,
+      });
       if (author !== null) {
         lines.push(
           `${earlier} retained authored revision ${String(author.revision)}: ` +

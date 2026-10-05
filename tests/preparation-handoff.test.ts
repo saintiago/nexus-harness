@@ -38,7 +38,10 @@ import {
   type StageEvaluationOutput,
   stageAuthorArtifact,
 } from '../src/task-engine/actions/preparation/artifacts.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import {
+  readReportFeedback,
+  outstandingReportFeedback,
+} from '../src/task-engine/actions/report-feedback.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
 const temporaryDirectories: string[] = [];
@@ -1182,7 +1185,7 @@ describe('preparation repair rounds', () => {
 
 /** A new bound round produced through the real author/evaluator actions. */
 async function boundRound(
-  outcome: 'authored' | 'needs-input' = 'authored',
+  outcome: 'authored' | 'needs-input' | 'return-upstream' = 'authored',
   verdict: 'accepted' | 'return-upstream' = 'accepted',
 ) {
   const fixture = await stageWithEvaluation();
@@ -1195,7 +1198,10 @@ async function boundRound(
       plan: [],
       skip: null,
       question: outcome === 'needs-input' ? 'Which acceptance example governs?' : null,
-      upstream: null,
+      upstream:
+        outcome === 'return-upstream'
+          ? { stage: 'requirements', correction: 'Correct the acceptance example.' }
+          : null,
       observation: null,
     },
     {
@@ -1226,6 +1232,132 @@ async function boundRound(
 }
 
 describe('preparation retained outcome usability', () => {
+  it('retains a malformed author binding before round opening can advance the allowance', async () => {
+    const { selectionFile, root, author } = await boundRound();
+    const file = path.join(root, 'artifacts/2/author.json');
+    const damaged = JSON.stringify({ ...author, invocationId: undefined });
+    await writeFile(file, damaged);
+    const open = createStartStageRound({
+      selectionFile,
+      stage: 'ux',
+      profiles: { authors: ['nexus-sol'], evaluator: 'nexus-sol' },
+      maxRounds: 3,
+      publish: () => undefined,
+    });
+    await expect(open({ route: 'next' })).rejects.toThrow(/invocationId/);
+    expect(await readStagePlan(root)).toMatchObject({ round: 2 });
+    const feedback = await readReportFeedback(root);
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]!.record).toMatchObject({
+      kind: 'rejection',
+      scope: { role: 'ux-author' },
+      source: { path: file },
+      output: damaged,
+      assignedReport: author.report,
+    });
+  });
+
+  it.each(['author', 'evaluator'] as const)(
+    'retains malformed %s bindings before acceptance failure, stale reads and completed replay',
+    async (role) => {
+      const { issueRoot, root, selection, git, author, evaluation, finalize } = await boundRound();
+      const producer = role === 'author' ? author : evaluation!;
+      const file = path.join(
+        root,
+        'artifacts/2',
+        role === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      const damaged = JSON.stringify({ ...producer, reportIdentity: undefined }, null, 2);
+      await writeFile(file, damaged);
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/reportIdentity/);
+      await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(file, original);
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      const result = await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8');
+      await writeFile(file, damaged);
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+      ).resolves.toMatchObject({
+        kind: 'stale',
+        reason: expect.stringContaining('reportIdentity'),
+      });
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/reportIdentity/);
+      expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(result);
+      const feedback = await readReportFeedback(root);
+      expect(feedback).toHaveLength(3);
+      for (const entry of feedback) {
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          profile: producer.profile,
+          scope: { workId: selection['taskKey'], role: `ux-${role}` },
+          source: { path: file },
+          output: damaged,
+          assignedReport: producer.report,
+          reason: expect.stringContaining('reportIdentity'),
+        });
+        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
+      }
+      // Repairing history alone neither retires feedback nor rewrites its original evidence.
+      await writeFile(file, original);
+      await writeFile(producer.report.path, 'Later replacement Markdown.');
+      expect(
+        await outstandingReportFeedback({ areaRoot: root, scope: feedback[0]!.record.scope }),
+      ).toHaveLength(3);
+      for (const entry of feedback) {
+        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
+      }
+    },
+  );
+
+  it.each(['needsInput', 'authorReturn', 'evaluatorReturn'] as const)(
+    'retains incomplete producer bindings before %s finalization and replay',
+    async (exit) => {
+      const fixture =
+        exit === 'needsInput'
+          ? await boundRound('needs-input')
+          : exit === 'authorReturn'
+            ? await boundRound('return-upstream')
+            : await boundRound('authored', 'return-upstream');
+      const role = exit === 'evaluatorReturn' ? 'evaluator' : 'author';
+      const producer = role === 'evaluator' ? fixture.evaluation! : fixture.author;
+      const file = path.join(
+        fixture.root,
+        'artifacts/2',
+        role === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      const damaged = JSON.stringify({ ...producer, reportIdentity: undefined });
+      const outcome = exit === 'needsInput' ? 'needsInput' : 'returnUpstream';
+      await writeFile(file, damaged);
+      await expect(fixture.finalize({ outcome })).rejects.toThrow(/reportIdentity/);
+      await expect(artifact(fixture.root, 2, 'result.json')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await writeFile(file, original);
+      await expect(fixture.finalize({ outcome })).resolves.toBe('saved');
+      if (exit === 'needsInput') {
+        await writeFile(file, damaged);
+        await expect(fixture.finalize({ outcome })).rejects.toThrow(/reportIdentity/);
+      }
+      const feedback = await readReportFeedback(fixture.root);
+      expect(feedback).toHaveLength(exit === 'needsInput' ? 2 : 1);
+      for (const entry of feedback) {
+        expect(entry.record).toMatchObject({
+          kind: 'rejection',
+          scope: { role: `ux-${role}` },
+          source: { path: file },
+          output: damaged,
+          assignedReport: producer.report,
+        });
+        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
+      }
+    },
+  );
+
   it('rejects damaged current returns across result, parent handoff and idea input readers', async () => {
     const { root, evaluation, finalize } = await boundRound('authored', 'return-upstream');
     await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');

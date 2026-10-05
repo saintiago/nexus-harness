@@ -57,7 +57,7 @@ import {
 import {
   type PrecedingStageWork,
   preparationWorktree,
-  readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   readStageTerminal,
   roundArtifactDirectory,
@@ -459,34 +459,29 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     }
 
     async function readAuthor(round: number): Promise<RetainedStageAuthorOutput | null> {
-      return readAuthorRecord(
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
         round,
-        roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
-        () => readStageArtifact(root, round, stageAuthorArtifact),
-      );
+        role: 'author',
+        profile: authorProfile,
+        invocationId,
+        context: `${attribution} Reading retained author round ${String(round)}.`,
+      });
     }
 
-    /**
-     * Read one retained evaluation. The evaluation is the evaluator's report: an unusable record
-     * is preserved under the evaluator's responsibility so its next invocation receives the
-     * correction obligation, while this invocation keeps failing on the unreadable evidence.
-     */
     async function readEvaluation(round: number): Promise<RetainedStageEvaluationOutput | null> {
-      const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
-      try {
-        return await readStageArtifact(root, round, stageEvaluationArtifact);
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope: evaluatorScope,
-          invocationId,
-          operation: 'stage-evaluator',
-          profile: evaluatorProfile,
-          context: `${attribution} Reading retained evaluation round ${String(round)}.`,
-          file,
-          error,
-        });
-      }
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        round,
+        role: 'evaluator',
+        profile: evaluatorProfile,
+        invocationId,
+        context: `${attribution} Reading retained evaluation round ${String(round)}.`,
+      });
     }
 
     const author = await readAuthor(plan.round);

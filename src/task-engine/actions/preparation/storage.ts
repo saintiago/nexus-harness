@@ -117,6 +117,52 @@ export async function readStageArtifact<Declaration extends ArtifactDeclaration>
   return content as z.output<Declaration['schema']> | null;
 }
 
+const stageRoleArtifacts = {
+  author: stageAuthorArtifact,
+  evaluator: stageEvaluationArtifact,
+};
+
+/**
+ * Read a retained role outcome through its producer declaration. Parsing failures retain the raw
+ * outcome and any recoverable Markdown under the producing role before the consumer fails or
+ * routes stale. Evidence capture must not depend on a successfully parsed report binding.
+ */
+export async function readStageRoleArtifact<
+  Role extends keyof typeof stageRoleArtifacts,
+>(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly workId: string;
+  readonly round: number;
+  readonly role: Role;
+  readonly profile: string | null;
+  readonly invocationId?: string | null;
+  readonly context: string;
+}): Promise<z.output<(typeof stageRoleArtifacts)[Role]['schema']> | null> {
+  const root = stageRoot(settings.issueRoot, settings.stage);
+  const declaration = stageRoleArtifacts[settings.role];
+  try {
+    return await readStageArtifact(root, settings.round, declaration);
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: root,
+      scope: stageReportScope({
+        project: projectOfWorkspace(settings.issueRoot),
+        workId: settings.workId,
+        area: root,
+        stage: settings.stage,
+        role: settings.role,
+      }),
+      invocationId: settings.invocationId ?? null,
+      operation: `stage-${settings.role}`,
+      profile: settings.profile,
+      context: settings.context,
+      file: roundArtifactFile(root, settings.round, declaration.pathFromArtifactsRoot),
+      error,
+    });
+  }
+}
+
 /** Write one stage round's declared artifact. */
 export async function writeStageArtifact<Declaration extends ArtifactDeclaration>(
   root: string,
@@ -314,8 +360,23 @@ export async function readCurrentDecision(settings: {
     };
   }
   try {
-    const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const attribution = {
+      issueRoot,
+      stage,
+      workId: selection.taskKey,
+      round: plan.round,
+      context: `Reading the retained ${stage} decision for task ${selection.taskKey}.`,
+    };
+    const evaluation = await readStageRoleArtifact({
+      ...attribution,
+      role: 'evaluator',
+      profile: plan.profiles.evaluator,
+    });
+    const author = await readStageRoleArtifact({
+      ...attribution,
+      role: 'author',
+      profile: plan.profiles.author,
+    });
     if (evaluation === null || author === null) {
       return {
         kind: 'missing',
@@ -575,7 +636,16 @@ export async function requireNeedsInputReport(settings: {
 }): Promise<void> {
   const { issueRoot, stage, round, workId } = settings;
   const root = stageRoot(issueRoot, stage);
-  const author = await readStageArtifact(root, round, stageAuthorArtifact);
+  const plan = await readStagePlan(root);
+  const author = await readStageRoleArtifact({
+    issueRoot,
+    stage,
+    workId,
+    round,
+    role: 'author',
+    profile: plan?.profiles.author ?? null,
+    context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
+  });
   if (author === null || author.revision !== settings.authoredRevision) {
     throw new Error('A retained question must keep its exact producing author.');
   }

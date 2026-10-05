@@ -9,7 +9,6 @@ import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   isBoundStageEvaluationOutput,
   preparationStages,
-  stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationReportText,
   type PreparationResult,
@@ -18,7 +17,7 @@ import {
 } from '../../preparation/artifacts.js';
 import {
   readCurrentDecision,
-  readStageArtifact,
+  readStageRoleArtifact,
   readStageTerminal,
   readStagePlan,
   requireReturnReport,
@@ -406,12 +405,19 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         returning = {
           narrative: text === null ? null : openingNarrativeParagraph(text),
           profile:
-            returningRole === 'author'
-              ? ((await readStageArtifact(root, plan.round, stageAuthorArtifact))?.profile ?? null)
-              : returningRole === 'evaluator'
-                ? ((await readStageArtifact(root, plan.round, stageEvaluationArtifact))?.profile ??
-                  null)
-                : null,
+            returningRole === null
+              ? null
+              : ((
+                  await readStageRoleArtifact({
+                    issueRoot: selection.workspace.root,
+                    stage,
+                    workId: selection.taskKey,
+                    round: plan.round,
+                    role: returningRole,
+                    profile: plan.profiles[returningRole],
+                    context: `Publishing the ${stage} ${returningRole} return for task ${selection.taskKey}.`,
+                  })
+                )?.profile ?? null),
         };
       } catch (error) {
         return failed(messageOf(error));
