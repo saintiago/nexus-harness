@@ -22,7 +22,6 @@ import {
   stageTerminalDeclaration,
   stageRoundPlanDeclaration,
   type AcceptanceBasis,
-  type AssessedContent,
   type PreparationWorkspace,
   type PreparationStage,
   type StageAuthorOutput,
@@ -32,13 +31,10 @@ import {
 } from './artifacts.js';
 import {
   authoredIdentity,
-  checkoutRelative,
   recordIdentity,
-  resolveSkipReference,
+  requireDeclaredWork,
   requireEvaluationContent,
-  skipReferenceProblem,
   sourceInputIdentity,
-  type RetainedPrototypeReference,
 } from './evaluation-content.js';
 import { requireRetainedPrototypeEvidence } from './observation.js';
 
@@ -142,27 +138,6 @@ export type PrecedingStageWork = {
   readonly author: StageAuthorOutput;
 };
 
-/**
- * The retained prototype the stage's next skip round may reuse: the immediately preceding
- * completed round's accepted prototype, or null when that round accepted none. Only that
- * immediate acceptance may supply a reuse; a later rejection, return or unfinished round
- * invalidates it.
- */
-export async function retainedStagePrototype(
-  root: string,
-  round: number,
-): Promise<RetainedPrototypeReference | null> {
-  const previousRound = (await stageRounds(root)).filter((candidate) => candidate < round).at(-1);
-  if (previousRound === undefined) {
-    return null;
-  }
-  const result = await readStageArtifact(root, previousRound, stageResultArtifact);
-  if (result === null || (result.outcome !== 'accepted' && result.outcome !== 'skipped')) {
-    return null;
-  }
-  return result.prototype;
-}
-
 /** The upstream-return allowance file: how many returns the stage has stated so far. */
 export const returnCountFile = 'state/returns.json';
 
@@ -231,7 +206,6 @@ export function acceptedResultIdentity(result: PreparationResult): string {
     outcome: result.outcome,
     documents: result.documents,
     sourcePaths: result.sourcePaths,
-    existingDocuments: result.existingDocuments,
     skipReferences: result.skipReferences,
     prototype: result.prototype,
   });
@@ -293,181 +267,6 @@ export function roundArtifactDirectory(root: string, round: number): string {
   return path.join(root, 'artifacts', String(round));
 }
 
-/**
- * The retained content one evaluated skip reuses from the immediately preceding completed round
- * of the same stage: the result's changed documents, stage-owned source paths, the existing input
- * documents an explicit result or applicable prototype bundle keeps, the preceding acceptance's
- * observations of those paths, and any retained prototype this stage owns. Only that immediate
- * acceptance may supply reused assets; a later rejection or upstream return invalidates it, so
- * reuse never searches past an intervening unfinished or invalid round. The observations carry
- * the recorded revision and existence, so a retained deletion is validated as an absence rather
- * than unreadable file bytes.
- *
- * A current repository document cited only by path is a fresh input, even when the preceding
- * result also recorded it under existingDocuments: the new evaluation assesses its current content
- * and no preceding revision binds it. Changed owned documents and source paths keep their complete
- * preceding binding, and an explicit preceding-result or applicable-prototype reference keeps the
- * complete retained bundle; such reuse cannot be downgraded to an input citation.
- */
-export type ReusedPreparationContent = {
-  /** The preceding result's changed documents the skip reuses, as the result recorded them. */
-  readonly documents: readonly { readonly path: string; readonly revision: string }[];
-  /** Existing authoritative documents the preceding skip relied on, without changed ownership. */
-  readonly existingDocuments: PreparationResult['existingDocuments'];
-  /** The preceding result's stage-owned source paths the skip reuses, checkout-relative. */
-  readonly sourcePaths: readonly string[];
-  /** Every reused checkout path in one ordered set. */
-  readonly paths: readonly string[];
-  /** The preceding acceptance's observation of each reused path. */
-  readonly content: readonly AssessedContent[];
-  /** The retained prototype the preceding result recorded, when this stage owns one. */
-  readonly prototype: PreparationResult['prototype'];
-  /** The retained prototype observations the preceding result recorded with that prototype. */
-  readonly prototypeObservations: PreparationResult['prototypeObservations'];
-};
-
-const nothingReused: ReusedPreparationContent = {
-  documents: [],
-  existingDocuments: [],
-  sourcePaths: [],
-  paths: [],
-  content: [],
-  prototype: null,
-  prototypeObservations: [],
-};
-
-/** Resolve the content one skip proposal's references reuse from the preceding round. */
-export async function reusedPreparationContent(settings: {
-  readonly root: string;
-  readonly round: number;
-  readonly worktree: string;
-  readonly stage: PreparationStage;
-  readonly references: readonly string[];
-  /** A validating caller supplies its producer-scoped reader for retained evaluation reports. */
-  readonly readEvaluation?: (round: number) => Promise<StageEvaluationOutput | null>;
-}): Promise<ReusedPreparationContent> {
-  const { root, round, worktree, stage, references } = settings;
-  if (references.length === 0) {
-    return nothingReused;
-  }
-  const previousRound = (await stageRounds(root)).filter((candidate) => candidate < round).at(-1);
-  if (previousRound === undefined) {
-    return nothingReused;
-  }
-  const result = await readStageArtifact(root, previousRound, stageResultArtifact);
-  if (result === null || (result.outcome !== 'accepted' && result.outcome !== 'skipped')) {
-    return nothingReused;
-  }
-  const previousFile = roundArtifactFile(
-    root,
-    previousRound,
-    stageResultArtifact.pathFromArtifactsRoot,
-  );
-  const prototype = result.prototype;
-  // Resolve every reference the same way the evaluation binds it, so a path, a path#section
-  // citation or an absolute checkout path selects the same retained content. A reference the
-  // resolver cannot use selects nothing here; the evaluation's own binding rejects it with an
-  // actionable reason before anything is accepted.
-  const citedDocuments = new Set<string>();
-  const citedFiles = new Set<string>();
-  let citesPrototype = false;
-  for (const reference of references) {
-    const resolution = await resolveSkipReference({
-      worktree,
-      reference,
-      retainedPrototype: prototype,
-    });
-    if (resolution.kind === 'document') citedDocuments.add(resolution.relative);
-    if (resolution.kind === 'evidence') citedFiles.add(resolution.path);
-    if (resolution.kind === 'prototype') citesPrototype = true;
-  }
-  const citesDocument = (declared: string): boolean => {
-    const relative = checkoutRelative(worktree, declared);
-    return relative === null
-      ? citedFiles.has(path.resolve(worktree, declared))
-      : citedDocuments.has(relative);
-  };
-  const reusesResult = citedFiles.has(previousFile);
-  let documents = result.documents.filter(
-    (document) => reusesResult || citesDocument(document.path),
-  );
-  let existingDocuments = result.existingDocuments.filter(
-    (document) => reusesResult || citesDocument(document.path),
-  );
-  let sourcePaths = result.sourcePaths.filter((source) => reusesResult || citesDocument(source));
-  const reusesPrototype =
-    stage === 'prototype' &&
-    prototype !== null &&
-    (reusesResult ||
-      documents.length > 0 ||
-      existingDocuments.length > 0 ||
-      sourcePaths.length > 0 ||
-      citesPrototype);
-  // A retained prototype reference represents the complete assessed asset. Any supported
-  // reference selecting it must keep all its evidence and source ownership, not just one file.
-  if (reusesPrototype) {
-    documents = result.documents;
-    existingDocuments = result.existingDocuments;
-    sourcePaths = result.sourcePaths;
-  } else if (!reusesResult) {
-    // A path-only citation of a document the preceding result listed as an existing input is a
-    // fresh current input, not reuse of a prior asset: the current evaluation binds its content,
-    // so the preceding revision is not a prior binding to validate. Owned documents and source
-    // paths above still keep their complete preceding binding.
-    existingDocuments = [];
-  }
-  for (const document of documents) {
-    if (document.revision === null) {
-      throw new Error('Reused accepted content has no immutable revision.');
-    }
-  }
-  const paths: string[] = [];
-  for (const document of [...documents, ...existingDocuments]) {
-    const relative = checkoutRelative(worktree, document.path);
-    if (relative === null) {
-      throw new Error(`Reused document "${document.path}" lies outside the shared checkout.`);
-    }
-    if (!paths.includes(relative)) {
-      paths.push(relative);
-    }
-  }
-  for (const source of sourcePaths) {
-    if (!paths.includes(source)) {
-      paths.push(source);
-    }
-  }
-  if (paths.length === 0) {
-    return nothingReused;
-  }
-  const evaluation =
-    settings.readEvaluation === undefined
-      ? await readStageArtifact(root, previousRound, stageEvaluationArtifact)
-      : await settings.readEvaluation(previousRound);
-  const observed = new Map((evaluation?.basis.content ?? []).map((entry) => [entry.path, entry]));
-  const content = paths.map((relative) => {
-    const entry = observed.get(relative);
-    if (entry === undefined) {
-      throw new Error(
-        `The preceding ${stage} acceptance does not bind the reused content "${relative}"; ` +
-          'reuse needs a current decision.',
-      );
-    }
-    return entry;
-  });
-  return {
-    documents: documents.map((document) => ({
-      path: document.path,
-      revision: document.revision as string,
-    })),
-    existingDocuments,
-    sourcePaths,
-    paths,
-    content,
-    prototype: reusesPrototype ? prototype : null,
-    prototypeObservations: reusesPrototype ? result.prototypeObservations : [],
-  };
-}
-
 /** One stage's current, fully bound evaluator decision. */
 export type CurrentStageDecision = {
   readonly round: number;
@@ -523,7 +322,7 @@ export async function readCurrentDecision(settings: {
   try {
     const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
-    requireAcceptedReport({
+    requireRetainedDecision({
       issueRoot,
       stage,
       selection,
@@ -566,8 +365,13 @@ type AcceptanceSettings = {
   readonly git: GitAdapter;
 };
 
-/** Validate the report and ticket association, without treating later edits as new findings. */
-function requireAcceptedReport(settings: AcceptanceSettings): StageEvaluationOutput {
+/**
+ * Validate the report and ticket association of a retained accepted or skipped decision, without
+ * treating later document edits or upstream report replacements as new findings. Completion and
+ * downstream reads use this check: a producer-owned saved record keeps working, including a
+ * legacy record that carries no repository observation or per-document binding.
+ */
+export function requireRetainedDecision(settings: AcceptanceSettings): StageEvaluationOutput {
   const { issueRoot, stage, selection, round, verdict, author, evaluation } = settings;
   const root = stageRoot(issueRoot, stage);
   if (evaluation === null || evaluation.assessedRevision !== author.revision) {
@@ -597,11 +401,16 @@ function requireAcceptedReport(settings: AcceptanceSettings): StageEvaluationOut
   return evaluation;
 }
 
-/** Finalize a fresh evaluation before its stage advances; no intervening edits may escape review. */
+/**
+ * Finalize a fresh evaluation before its stage advances. The exact authored report, captured input
+ * and relied-on upstream results must still be current, the evaluated repository revision must
+ * still be the checkout's revision and the declared stage work must still commit the bytes the
+ * evaluator assessed. An unobservable legacy evaluation receives normal reassessment instead.
+ */
 export async function requireCurrentAcceptance(settings: AcceptanceSettings): Promise<void> {
-  const evaluation = requireAcceptedReport(settings);
-  const { issueRoot, stage, round, author, git } = settings;
-  const root = stageRoot(issueRoot, stage);
+  const evaluation = requireRetainedDecision(settings);
+  const { issueRoot, stage, author, git } = settings;
+  const worktree = preparationWorktree(issueRoot);
   const basis = evaluation.basis;
   const upstream = await upstreamResultReferences(issueRoot, stage);
   const reliedOn = upstream.map((reference) => ({
@@ -613,36 +422,30 @@ export async function requireCurrentAcceptance(settings: AcceptanceSettings): Pr
       'A relied-on upstream result changed since evaluation; a current decision is required.',
     );
   }
+  // The evaluation is only current while the exactly observed repository revision is still the
+  // checkout's revision: a later commit moved the assessment basis and needs a fresh decision.
+  // Legacy evaluations that saved no observation receive normal reassessment instead of inventing
+  // one from current content.
+  if (basis.repositoryRevision === undefined) {
+    throw new Error(
+      'The retained evaluation carries no repository observation; a current decision is required.',
+    );
+  }
+  const inspection = await git.inspectRepository(worktree);
+  if (!inspection.ok) {
+    throw new Error(inspection.fault.message);
+  }
+  if (inspection.value.headRevision !== basis.repositoryRevision) {
+    throw new Error(
+      'The repository revision changed since evaluation; a current decision is required.',
+    );
+  }
+  // The declared stage work must still be the committed bytes the evaluator assessed: an
+  // uncommitted edit after the observation is not covered by the saved decision.
+  await requireDeclaredWork({ git, worktree, author, revision: basis.repositoryRevision });
   await requireEvaluationContent({
     git,
-    worktree: preparationWorktree(issueRoot),
+    worktree,
     content: basis.content,
   });
-  // Citations must remain usable, and repository documents must already be bound by the saved
-  // evaluation. Historical skips need reevaluation even if their unbound document disappears;
-  // do not invent a binding from current bytes.
-  const checkout = preparationWorktree(issueRoot);
-  const retainedPrototype = await retainedStagePrototype(root, round);
-  for (const reference of author.skip?.references ?? []) {
-    const resolution = await resolveSkipReference({
-      worktree: checkout,
-      reference,
-      retainedPrototype,
-    });
-    const problem = skipReferenceProblem(resolution);
-    if (problem !== null) {
-      throw new Error(
-        `The evaluated skip reference is unusable: ${problem}; a current decision is required.`,
-      );
-    }
-    if (
-      resolution.kind === 'document' &&
-      !basis.content.some((entry) => entry.path === resolution.relative)
-    ) {
-      throw new Error(
-        `The evaluation does not bind the relied-on document "${resolution.relative}"; ` +
-          'a current decision is required.',
-      );
-    }
-  }
 }

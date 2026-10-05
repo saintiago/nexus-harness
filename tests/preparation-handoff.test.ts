@@ -25,7 +25,6 @@ import {
   preparationWorktree,
   readCurrentDecision,
   readStagePlan,
-  reusedPreparationContent,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import type { Finding } from '../src/task-engine/actions/review/artifacts.js';
@@ -331,7 +330,8 @@ describe('preparation repair rounds', () => {
       findings: [],
       basis: {
         authorIdentity: expect.any(String),
-        content: [{ path: 'docs/ux.md', revision: '2'.repeat(40), exists: true }],
+        repositoryRevision: '2'.repeat(40),
+        content: [],
       },
     });
     expect(saved).not.toHaveProperty('priorFindings');
@@ -575,6 +575,7 @@ describe('preparation repair rounds', () => {
         basis: {
           ...basis,
           authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(retained)),
+          repositoryRevision: '1'.repeat(40),
         },
         verdict: 'accepted-skip',
         reason: 'The existing design still holds.',
@@ -635,7 +636,6 @@ describe('preparation repair rounds', () => {
         outcome: 'accepted',
         authoredRevision: 1,
         documents: [],
-        existingDocuments: [],
         sourcePaths: [],
         skipReferences: [],
         outputs: [{ path: path.join(root, 'artifacts', '1', 'evaluation.json') }],
@@ -768,19 +768,19 @@ describe('preparation repair rounds', () => {
       await open()({ route: 'new' });
       const plan = await readStagePlan(root);
       expect(plan).toMatchObject({ round: 5, route: 'reassess' });
-      await expect(
-        reusedPreparationContent({
-          root,
-          round: 5,
-          worktree: preparationWorktree(issueRoot),
-          stage: 'ux',
-          references: [path.join(root, 'artifacts/3/result.json')],
-        }),
-      ).resolves.toMatchObject({ paths: [] });
       const finalReports = runnerOf([proposal, { ...assessment, assessedRevision: 5 }]);
       await createStageAuthor({ ...common, git, runner: finalReports.runner })({ task: 'propose' });
       await createStageEvaluator({ ...common, git, runner: finalReports.runner })();
       await createStageResult({ ...common, git })({ outcome: 'skipped' });
+      // A new applicability skip is evidence-only: it retains its reason and optional references
+      // without inventing documents or bindings from the preceding acceptance.
+      await expect(artifact(root, 5, 'result.json')).resolves.toMatchObject({
+        outcome: 'skipped',
+        documents: [],
+        sourcePaths: [],
+        skipReferences: ['docs/ux.md'],
+        prototype: null,
+      });
       expect(finalReports.contexts[0]).toContain('The corrected input resolves the contradiction.');
       expect(finalReports.contexts[0]).not.toContain(finding.title);
       expect(finalReports.contexts[1]).toContain('The corrected input resolves the contradiction.');

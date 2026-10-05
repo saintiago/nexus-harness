@@ -366,7 +366,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     }
 
     // The accepted references every ticket names: the changed authoritative documents of the
-    // shared preparation branch and the evaluated skips' existing inputs.
+    // shared preparation branch and the evaluated skips' optional evidence.
     const accepted = await readAcceptedDocuments(root);
     if (accepted.kind === 'invalid') {
       return failed(accepted.reason);
@@ -386,15 +386,8 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           stageResultArtifact.pathFromArtifactsRoot,
         )}; evaluation: ${stageResult.evaluation.path}`,
       );
-      for (const document of stageResult.existingDocuments) {
-        const relative = path.relative(preparationWorktree(root), document.path);
-        existingReferences.push(
-          `- ${relative.startsWith('..') ? document.path : relative} (${stage} existing document ` +
-            `revision ${document.revision})`,
-        );
-      }
       for (const reference of stageResult.skipReferences)
-        existingReferences.push(`- ${stage} accepted existing input: ${reference}`);
+        existingReferences.push(`- ${stage} skip evidence: ${reference}`);
     }
 
     // Create the implementation tickets in topological order, reconciling any retained identity or

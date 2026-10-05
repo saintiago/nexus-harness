@@ -16,16 +16,15 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { upstreamReferences } from '../src/task-engine/actions/preparation/context.js';
-import { requireEvaluationContent } from '../src/task-engine/actions/preparation/evaluation-content.js';
 import {
-  stageAuthorArtifact,
   stageEvaluationArtifact,
+  stagePlanArtifact,
+  stageResultArtifact,
   type PreparationStage,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
   readCurrentDecision,
   readStageArtifact,
-  requireCurrentAcceptance,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
 import {
@@ -619,7 +618,7 @@ it('attributes an unusable upstream context report to its stage author', async (
   await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
 });
 
-it('retains a malformed evaluation encountered through accepted-content reuse', async () => {
+it('evaluates a new round directly without reading a preceding result or evaluation for reuse', async () => {
   const { selectionFile, root } = await stageArea();
   const common = {
     selectionFile,
@@ -640,6 +639,7 @@ it('retains a malformed evaluation encountered through accepted-content reuse', 
       outcome: 'skipped',
       authoredRevision: 2,
       documents: [{ path: 'docs/requirements.md', revision: '1'.repeat(40) }],
+      existingDocuments: [{ path: 'docs/testing.md', revision: '1'.repeat(40) }],
       outputs: [],
       evaluation: { path: file },
       reason: 'The existing requirements satisfy the stage.',
@@ -647,23 +647,128 @@ it('retains a malformed evaluation encountered through accepted-content reuse', 
       returnFinding: null,
     }),
   );
+  // The new round assesses the current worktree: the malformed preceding evaluation is retained
+  // history, never a content source the round depends on.
+  const evaluatorContexts: string[] = [];
   const evaluator = createStageEvaluator({
     ...common,
-    runner: {
-      async run() {
-        throw new Error('Unusable retained content must prevent invocation.');
+    runner: evaluatorRunner(
+      {
+        assessedRevision: 3,
+        verdict: 'accepted-skip',
+        reason: 'The current requirements documents satisfy the stage.',
+        observation: null,
+        findings: [],
+        upstream: null,
       },
-    },
+      evaluatorContexts,
+    ),
   });
-  await expect(evaluator()).rejects.toThrow(/is not valid JSON/);
-  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
-    scope: { area: root, role: 'requirements-evaluator', reportKind: 'stage-evaluation' },
-    source: { path: file },
-    output: malformed,
-    operation: 'stage-evaluator',
-    context: expect.stringContaining('round 2'),
-  });
+  await expect(evaluator()).resolves.toBe('accepted-skip');
+  expect(evaluatorContexts[0]).not.toContain('reused');
+  const saved = JSON.parse(
+    await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
+  ) as { readonly basis: { readonly content: unknown } };
+  expect(saved.basis.content).toEqual([]);
+  // The retained record is untouched history.
+  expect(await readFile(file, 'utf8')).toBe(malformed);
+  await expect(readReportFeedback(root)).resolves.toEqual([]);
 });
+
+it.each([
+  { stage: 'requirements' as const, plan: [] },
+  { stage: 'ux' as const, plan: [] },
+  {
+    stage: 'architecture' as const,
+    plan: [
+      {
+        summary: 'Add the lint gate',
+        scope: 'Configure the lint gate and its check.',
+        completionCriteria: ['The check runs in CI.'],
+        prerequisites: [],
+      },
+    ],
+  },
+])(
+  'evaluates an authored submission declaring no changed files ($stage)',
+  async ({ stage, plan }) => {
+    const { selectionFile, root } = await stageArea(stage);
+    const common = {
+      selectionFile,
+      stage,
+      git: scriptedGit([repositoryState()]).git,
+      publish: () => undefined,
+    };
+    const authorContexts: string[] = [];
+    const authored = {
+      outcome: 'authored',
+      summary: 'The current documents already satisfy the ticket.',
+      documents: [],
+      sourcePaths: [],
+      observation: null,
+      plan,
+      skip: null,
+      question: null,
+      upstream: null,
+    };
+    await expect(
+      createStageAuthor({
+        ...common,
+        runner: authorRunner(authored, authorContexts),
+      })({ task: 'propose' }),
+    ).resolves.toBe('authored');
+    expect(authorContexts[0]).toContain('Unchanged adequate documents may leave both empty');
+
+    // The evaluator still assesses the current worktree against the captured input: an empty
+    // changed-document list restricts nothing, and the observed revision is stated explicitly.
+    const evaluatorContexts: string[] = [];
+    await expect(
+      createStageEvaluator({
+        ...common,
+        runner: evaluatorRunner(
+          {
+            assessedRevision: 3,
+            verdict: 'accepted',
+            reason: 'The current documents cover the captured outcome.',
+            observation: null,
+            findings: [],
+            upstream: null,
+          },
+          evaluatorContexts,
+        ),
+      })(),
+    ).resolves.toBe('accepted');
+    expect(evaluatorContexts[0]).toContain(
+      `The repository revision this evaluation observes: ${repositoryState().headRevision}`,
+    );
+    expect(evaluatorContexts[0]).toContain('does not restrict your scope');
+
+    const savedEvaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
+    expect(savedEvaluation.basis.repositoryRevision).toBe(repositoryState().headRevision);
+    expect(savedEvaluation.basis.content).toEqual([]);
+    await expect(createStageResult(common)({ outcome: 'accepted' })).resolves.toBe('saved');
+    const result = (await readStageArtifact(root, 3, stageResultArtifact))!;
+    expect(result).toMatchObject({
+      outcome: 'accepted',
+      documents: [],
+      sourcePaths: [],
+      skipReferences: [],
+    });
+    if (stage === 'architecture') {
+      expect(await readStageArtifact(root, 3, stagePlanArtifact)).toEqual(plan);
+    }
+    await expect(
+      readCurrentDecision({
+        issueRoot: path.dirname(root),
+        stage,
+        selection: selectionDeclaration.schema.parse(
+          JSON.parse(await readFile(selectionFile, 'utf8')),
+        ),
+        git: common.git,
+      }),
+    ).resolves.toMatchObject({ kind: 'current' });
+  },
+);
 
 it('diagnoses a malformed retained author record without normalizing or overwriting it', async () => {
   const { selectionFile, root } = await stageArea();
@@ -702,7 +807,7 @@ it('diagnoses a malformed retained author record without normalizing or overwrit
   expect(JSON.parse(await readFile(record, 'utf8'))).toEqual(malformed);
 });
 
-it('rejects the captured prototype prose citations while repaired references bind their content', async () => {
+it('rejects the captured prototype prose citations while repaired references stay readable evidence', async () => {
   const { selectionFile, root, worktree } = await prototypeStageArea();
   const revision = '1'.repeat(40);
   const { git } = scriptedGit([repositoryState({ headRevision: revision })], {
@@ -738,15 +843,15 @@ it('rejects the captured prototype prose citations while repaired references bin
     runner: evaluatorRunner({}, []),
   });
   await expect(binding()).rejects.toThrow(
-    'The prototype skip cannot bind its references: the reference ' +
+    'The prototype skip carries unusable evidence: the reference ' +
       '"docs/agent-runtime/report-requirements.md at revision ' +
       '9ec1f78519d6d7f6fa97a5ee70bfa63f1ee3332a \u2014 scope: no reporting-terminal ' +
       'interaction." does not name a readable file',
   );
   await rm(path.join(root, 'artifacts', '1', 'author.json'));
 
-  // The retained repaired report cites the actual documents and reaches evaluation, which binds
-  // every cited document at the checkout revision.
+  // The retained repaired report cites readable documents and reaches evaluation; the references
+  // remain evidence and create no document binding.
   const author = createStageAuthor({
     ...common,
     runner: authorRunner(repairedPrototypeSkip, []),
@@ -769,22 +874,16 @@ it('rejects the captured prototype prose citations while repaired references bin
   await expect(evaluator()).resolves.toBe('accepted-skip');
   const evaluation = JSON.parse(
     await readFile(path.join(root, 'artifacts', '1', 'evaluation.json'), 'utf8'),
-  ) as { readonly basis: { readonly content: readonly { path: string }[] } };
-  expect(evaluation.basis.content.map((entry) => entry.path).sort()).toEqual(
-    [...prototypeDocuments].sort(),
-  );
+  ) as {
+    readonly basis: { readonly content: readonly unknown[]; readonly repositoryRevision: string };
+  };
+  expect(evaluation.basis.content).toEqual([]);
+  expect(evaluation.basis.repositoryRevision).toBe(revision);
 });
 
-it('binds a section citation to its document so a later change needs a current decision', async () => {
+it('reads a section citation as evidence and keeps the completed verdict after the document changes', async () => {
   const { selectionFile, root, worktree } = await stageArea();
-  // The assessed revision's bytes stay readable after the checkout changes.
-  const savedRequirements = await readFile(path.join(worktree, 'docs', 'requirements.md'), 'utf8');
-  const { git } = scriptedGit([repositoryState()], {
-    readFileAtRevision: async (_repository, _revision, file) =>
-      file === 'docs/requirements.md'
-        ? ok(savedRequirements)
-        : ok(await readFile(path.join(worktree, file), 'utf8')),
-  });
+  const { git } = scriptedGit([repositoryState()]);
   const common = { selectionFile, stage, git, publish: () => undefined } as const;
   const author = createStageAuthor({
     ...common,
@@ -817,17 +916,26 @@ it('binds a section citation to its document so a later change needs a current d
   await expect(evaluator()).resolves.toBe('accepted-skip');
   const evaluation = JSON.parse(
     await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
-  ) as { readonly basis: { readonly content: readonly { path: string }[] } };
-  expect(evaluation.basis.content.map((entry) => entry.path)).toContain('docs/requirements.md');
+  ) as {
+    readonly basis: { readonly content: readonly unknown[]; readonly repositoryRevision: string };
+  };
+  expect(evaluation.basis.content).toEqual([]);
+  expect(evaluation.basis.repositoryRevision).toBe('1'.repeat(40));
+  await createStageResult(common)({ outcome: 'skipped' });
 
+  // A later change to the cited document is not a per-document binding: the completed skip stays
+  // current and its decision does not depend on subsequent citation changes.
   await writeFile(path.join(worktree, 'docs', 'requirements.md'), '# Requirements\n\nChanged.\n');
+  const selection = selectionDeclaration.schema.parse(
+    JSON.parse(await readFile(selectionFile, 'utf8')),
+  );
   await expect(
-    requireEvaluationContent({ git, worktree, content: evaluation.basis.content as never }),
-  ).rejects.toThrow('Evaluated content changed');
+    readCurrentDecision({ issueRoot: path.dirname(root), stage, selection, git }),
+  ).resolves.toMatchObject({ kind: 'current' });
 });
 
 it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
-  '%s rejects authored acceptance of a skip and preserves citations for accepted-skip',
+  '%s rejects authored acceptance of a skip and keeps skip evidence without bindings',
   async (stage) => {
     const { selectionFile, root, worktree } = await stageArea(stage);
     const { git } = scriptedGit([repositoryState()], {
@@ -890,10 +998,8 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
     expect(JSON.parse(savedResult)).toMatchObject({
       outcome: 'skipped',
       skipReferences: conformingSkipResponse.skip.references,
-      existingDocuments: conformingSkipResponse.skip.references.map((file) => ({
-        path: path.join(worktree, file),
-        revision: '1'.repeat(40),
-      })),
+      documents: [],
+      sourcePaths: [],
     });
 
     // Historical contradictory evaluations cannot bypass the rule at finalization or reuse.
@@ -928,13 +1034,10 @@ it.each(['requirements', 'ux', 'prototype', 'architecture'] as const)(
 );
 
 it.each(['changed', 'deleted', 'replaced by a directory'])(
-  'checks unbound citations at finalization without cycling completed stages when a document is %s',
+  'keeps the completed skip decision when a cited document is %s',
   async (mutation) => {
     const { selectionFile, root, worktree } = await stageArea();
-    const savedRequirements = await readFile(path.join(worktree, 'docs/requirements.md'), 'utf8');
-    const { git } = scriptedGit([repositoryState()], {
-      readFileAtRevision: async () => ok(savedRequirements),
-    });
+    const { git } = scriptedGit([repositoryState()]);
     const common = { selectionFile, stage, git, publish: () => undefined };
     await createStageAuthor({
       ...common,
@@ -971,27 +1074,6 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
     const decision = () => readCurrentDecision({ issueRoot, stage, selection, git });
     await expect(decision()).resolves.toMatchObject({ kind: 'current' });
 
-    // Recreate the historical parser's unbound fragment citation without changing its identity.
-    const evaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
-    const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
-    const historicalEvaluation = JSON.stringify({
-      ...evaluation,
-      basis: { ...evaluation.basis, content: [] },
-    });
-    await writeFile(evaluationFile, historicalEvaluation);
-    const resultFiles = [
-      path.join(root, 'artifacts', '3', 'result.json'),
-      path.join(root, 'state', 'result.json'),
-    ];
-    const historicalResult = JSON.stringify({
-      ...JSON.parse(await readFile(resultFiles[0]!, 'utf8')),
-      existingDocuments: [],
-    });
-    for (const file of resultFiles) await writeFile(file, historicalResult);
-    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
-    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(
-      'does not bind the relied-on document',
-    );
     const citedFile = path.join(worktree, 'docs/requirements.md');
     if (mutation === 'changed') {
       await writeFile(citedFile, '# Requirements\n\nChanged.\n');
@@ -999,33 +1081,30 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
       await rm(citedFile);
       if (mutation === 'replaced by a directory') await mkdir(citedFile);
     }
-    const problem =
-      mutation === 'changed'
-        ? 'does not bind the relied-on document'
-        : 'does not name a readable file';
+    // The completed verdict depends on the report association and captured input, not on the
+    // later state of a cited document; the recorded result and evidence stay readable.
     await expect(decision()).resolves.toMatchObject({ kind: 'current' });
-    await expect(
-      requireCurrentAcceptance({
-        issueRoot,
-        stage,
-        selection,
-        round: 3,
-        verdict: 'accepted-skip',
-        git,
-        author: (await readStageArtifact(root, 3, stageAuthorArtifact))!,
-        evaluation: await readStageArtifact(root, 3, stageEvaluationArtifact),
-      }),
-    ).rejects.toThrow(problem);
-    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(problem);
-    // Reading the completed decision leaves history intact; fresh finalization still refuses the unbound citation.
-    expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
-    for (const file of resultFiles) expect(await readFile(file, 'utf8')).toBe(historicalResult);
+    await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
 
-    // The same historical evaluation cannot authorize initial finalization either.
-    await rm(resultFiles[0]!);
-    await expect(createStageResult(common)({ outcome: 'skipped' })).rejects.toThrow(problem);
-    await expect(readFile(resultFiles[0]!, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await readFile(evaluationFile, 'utf8')).toBe(historicalEvaluation);
-    expect(await readFile(resultFiles[1]!, 'utf8')).toBe(historicalResult);
+    // A legacy completed evaluation without a repository observation or per-document binding
+    // continues to be readable and replayable.
+    const evaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
+    const evaluationFile = path.join(root, 'artifacts', '3', 'evaluation.json');
+    await writeFile(
+      evaluationFile,
+      JSON.stringify({
+        ...evaluation,
+        basis: { ...evaluation.basis, repositoryRevision: undefined, content: [] },
+      }),
+    );
+    const resultFile = path.join(root, 'artifacts', '3', 'result.json');
+    const historicalResult = {
+      ...JSON.parse(await readFile(resultFile, 'utf8')),
+      existingDocuments: [],
+    };
+    await writeFile(resultFile, JSON.stringify(historicalResult));
+    await writeFile(path.join(root, 'state', 'result.json'), JSON.stringify(historicalResult));
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
+    await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
   },
 );

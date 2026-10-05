@@ -60,7 +60,6 @@ async function completeRound(root: string, round: number, stage: string): Promis
     outcome: 'accepted',
     authoredRevision: round,
     documents: [],
-    existingDocuments: [],
     sourcePaths: [],
     skipReferences: [],
     outputs: [],

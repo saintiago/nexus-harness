@@ -26,6 +26,10 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import {
+  authoredIdentity,
+  sourceInputIdentity,
+} from '../src/task-engine/actions/preparation/evaluation-content.js';
+import {
   readCurrentDecision,
   readStageArtifact,
   roundArtifactDirectory,
@@ -1218,7 +1222,7 @@ describe('prototype observation evidence', () => {
   });
 
   it.each(['missing-record', 'empty', 'omitted'])(
-    'refuses prototype reuse with %s observation evidence',
+    'refuses a retained applicable prototype with %s observation evidence',
     async (mode) => {
       const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
       await mkdir(path.join(worktree, 'stories'), { recursive: true });
@@ -1227,20 +1231,17 @@ describe('prototype observation evidence', () => {
         'stories/journey.stories.js',
         'export const j = 1;\n',
       );
+      const authorObservation = await savePrototypeObservation({
+        roundDirectory,
+        role: 'author',
+        content: [{ path: 'stories/journey.stories.js', revision }],
+      });
       await createStageAuthor({
         selectionFile,
         stage: 'prototype',
         git,
         publish: () => undefined,
-        runner: runnerOf(
-          authoredReport(
-            await savePrototypeObservation({
-              roundDirectory,
-              role: 'author',
-              content: [{ path: 'stories/journey.stories.js', revision }],
-            }),
-          ),
-        ).runner,
+        runner: runnerOf(authoredReport(authorObservation)).runner,
       })({ task: 'propose' });
       const evaluatorObservation = await savePrototypeObservation({
         roundDirectory,
@@ -1261,9 +1262,53 @@ describe('prototype observation evidence', () => {
         publish: () => undefined,
       })({ outcome: 'accepted' });
 
-      // A reassessment skip reuses the preceding acceptance, so its retained evidence must survive.
+      // A former reuse skip retained the applicable prototype bundle, possibly with empty or
+      // omitted observation references; the retained record must still prove both roles' current
+      // evidence before it can authorize the route.
       const stageRoot = path.join(root, 'prototype');
+      const accepted = JSON.parse(
+        await readFile(path.join(stageRoot, 'artifacts', '1', 'result.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
+      const legacyAuthor = {
+        stage: 'prototype',
+        revision: 2,
+        outcome: 'skip-proposed',
+        summary: 'The accepted prototype still matches the corrected input.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: {
+          reason: 'The accepted prototype still matches the corrected input.',
+          references: [],
+        },
+        question: null,
+        upstream: null,
+        observation: null,
+      };
       await mkdir(path.join(stageRoot, 'artifacts', '2'), { recursive: true });
+      const legacyAuthorFile = path.join(stageRoot, 'artifacts', '2', 'author.json');
+      await writeFile(legacyAuthorFile, JSON.stringify(legacyAuthor));
+      const storedAuthor = await readStageArtifact(stageRoot, 2, stageAuthorArtifact);
+      if (storedAuthor === null) throw new Error('the retained author record is unreadable');
+      await writeFile(
+        path.join(stageRoot, 'artifacts', '2', 'evaluation.json'),
+        JSON.stringify({
+          basis: {
+            author: { path: legacyAuthorFile },
+            authorIdentity: authoredIdentity(storedAuthor),
+            sourceIdentity: sourceInputIdentity(selection as never),
+            upstream: [],
+            content: [{ path: 'stories/journey.stories.js', revision, exists: true }],
+          },
+          assessedRevision: 2,
+          verdict: 'accepted-skip',
+          reason: 'The accepted prototype still matches the corrected input.',
+          observation: null,
+          findings: [],
+          upstream: null,
+        }),
+      );
       await writeFile(
         path.join(stageRoot, 'state', 'current-round.json'),
         JSON.stringify({
@@ -1273,83 +1318,148 @@ describe('prototype observation evidence', () => {
           profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
         }),
       );
-      await createStageAuthor({
-        selectionFile,
+      // The former reuse skip kept the preceding acceptance's prototype bundle, so the record
+      // still has to prove both roles' evidence before it can authorize the route.
+      const legacyResult = {
         stage: 'prototype',
-        git,
-        publish: () => undefined,
-        runner: runnerOf({
-          outcome: 'skip-proposed',
-          summary: 'The accepted prototype still matches the corrected input.',
-          documents: [],
-          sourcePaths: [],
-          plan: [],
-          skip: {
-            reason: 'The accepted prototype still matches the corrected input.',
-            references: [path.join(stageRoot, 'artifacts', '1', 'result.json')],
-          },
-          question: null,
-          upstream: null,
-          observation: null,
-        }).runner,
-      })({ task: 'propose' });
+        outcome: 'skipped',
+        authoredRevision: 2,
+        documents: [],
+        sourcePaths: accepted.sourcePaths,
+        skipReferences: [],
+        outputs: [],
+        evaluation: { path: path.join(stageRoot, 'artifacts', '2', 'evaluation.json') },
+        reason: 'The accepted prototype still matches the corrected input.',
+        returnStage: null,
+        returnFinding: null,
+        prototype: accepted.prototype,
+        prototypeObservations: accepted.prototypeObservations,
+      } as Record<string, unknown>;
+      if (mode === 'empty') legacyResult.prototypeObservations = [];
+      if (mode === 'omitted') delete legacyResult.prototypeObservations;
+      if (mode === 'missing-record') await rm(evaluatorObservation);
+      const problem =
+        mode === 'missing-record'
+          ? /retained evaluator prototype observation is unusable/
+          : /missing one role.s saved observation record/;
+      const resultFile = path.join(stageRoot, 'artifacts', '2', 'result.json');
+      await writeFile(resultFile, JSON.stringify(legacyResult));
+      await writeFile(path.join(stageRoot, 'state', 'result.json'), JSON.stringify(legacyResult));
       await expect(
-        createStageEvaluator({
-          selectionFile,
-          stage: 'prototype',
-          git,
-          publish: () => undefined,
-          runner: runnerOf({
-            assessedRevision: 2,
-            verdict: 'accepted-skip',
-            reason: 'The accepted prototype still matches the corrected input.',
-            observation: null,
-            findings: [],
-            upstream: null,
-          }).runner,
-        })(),
-      ).resolves.toBe('accepted-skip');
+        readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+      ).resolves.toMatchObject({ kind: 'stale', reason: expect.stringMatching(problem) });
       const finalize = createStageResult({
         selectionFile,
         stage: 'prototype',
         git,
         publish: () => undefined,
       });
-      let problem: RegExp;
-      if (mode === 'missing-record') {
-        await rm(evaluatorObservation);
-        problem = /retained evaluator prototype observation is unusable/;
-      } else {
-        // Start with actual producer output: the reuse is current with both observations intact.
-        await expect(finalize({ outcome: 'skipped' })).resolves.toBe('saved');
-        const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
-        const current = () =>
-          readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git });
-        await expect(current()).resolves.toMatchObject({ kind: 'current' });
-        const loseReferences = async (file: string) => {
-          const result = JSON.parse(await readFile(file, 'utf8'));
-          if (mode === 'empty') result.prototypeObservations = [];
-          else delete result.prototypeObservations;
-          await writeFile(file, JSON.stringify(result));
-        };
-        const resultFile = path.join(stageRoot, 'artifacts', '2', 'result.json');
-        await loseReferences(resultFile);
-        await loseReferences(path.join(stageRoot, 'state', 'result.json'));
-        await rm(path.join(roundDirectory, 'observations'), { recursive: true });
-        problem = /missing one role.s saved observation record/;
-        // A skip retaining a prototype is still applicable, even with empty/defaulted references.
-        await expect(current()).resolves.toMatchObject({
-          kind: 'stale',
-          reason: expect.stringMatching(problem),
-        });
-        await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(problem);
-        // Fresh finalization also refuses an incomplete preceding acceptance.
-        await loseReferences(path.join(stageRoot, 'artifacts', '1', 'result.json'));
-        await rm(resultFile);
-      }
       await expect(finalize({ outcome: 'skipped' })).rejects.toThrow(problem);
     },
   );
+
+  it('retains no prototype bundle for a new applicability skip', async () => {
+    const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+    await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    const revision = await commitFile(
+      worktree,
+      'stories/journey.stories.js',
+      'export const j = 1;\n',
+    );
+    const authorObservation = await savePrototypeObservation({
+      roundDirectory,
+      role: 'author',
+      content: [{ path: 'stories/journey.stories.js', revision }],
+    });
+    await createStageAuthor({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf(authoredReport(authorObservation)).runner,
+    })({ task: 'propose' });
+    const evaluatorObservation = await savePrototypeObservation({
+      roundDirectory,
+      role: 'evaluator',
+      content: [{ path: 'stories/journey.stories.js', revision }],
+    });
+    await createStageEvaluator({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
+    })();
+    await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+      outcome: 'accepted',
+    });
+
+    // A reassessment may later propose that the stage is irrelevant: the evaluated skip is
+    // evidence-only and never selects the earlier prototype bundle.
+    const stageRoot = path.join(root, 'prototype');
+    await mkdir(path.join(stageRoot, 'artifacts', '2'), { recursive: true });
+    await writeFile(
+      path.join(stageRoot, 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'prototype',
+        round: 2,
+        route: 'reassess',
+        profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
+      }),
+    );
+    await createStageAuthor({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf({
+        outcome: 'skip-proposed',
+        summary: 'No interaction surface changed.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: { reason: 'No interaction surface changed.', references: [] },
+        question: null,
+        upstream: null,
+        observation: null,
+      }).runner,
+    })({ task: 'propose' });
+    await createStageEvaluator({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf({
+        assessedRevision: 2,
+        verdict: 'accepted-skip',
+        reason: 'The corrected scope leaves no prototype to refine.',
+        observation: null,
+        findings: [],
+        upstream: null,
+      }).runner,
+    })();
+    await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+      outcome: 'skipped',
+    });
+    await expect(readStageArtifact(stageRoot, 2, stageResultArtifact)).resolves.toMatchObject({
+      outcome: 'skipped',
+      documents: [],
+      sourcePaths: [],
+      skipReferences: [],
+      prototype: null,
+      prototypeObservations: [],
+    });
+    // Removing the earlier evidence cannot break the completed non-applicable skip.
+    await rm(roundDirectory, { recursive: true, force: true });
+    await expect(
+      readCurrentDecision({
+        issueRoot: root,
+        stage: 'prototype',
+        selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+        git,
+      }),
+    ).resolves.toMatchObject({ kind: 'current' });
+  });
 
   it('rejects truncated or corrupt screenshots instead of trusting their signature', async () => {
     const { worktree, selectionFile, roundDirectory } = await prototypeWorkspace();

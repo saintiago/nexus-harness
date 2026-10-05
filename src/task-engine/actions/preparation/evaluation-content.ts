@@ -60,17 +60,12 @@ export function checkoutRelative(worktree: string, declared: string): string | n
     : relative;
 }
 
-/** The retained prototype identifiers a Storybook Refinement skip may cite for reuse. */
-export type RetainedPrototypeReference = {
-  readonly branch: string;
-  readonly revision: string;
-};
-
 /**
  * One skip reference resolved to what it cites: a document in the shared checkout whose exact
- * revision the evaluation binds, an existing retained file outside the checkout kept as a
- * citation, the retained prototype a Storybook Refinement skip reuses, or why the reference is
- * unusable. Explanatory prose is not a reference; it belongs in the skip's reason or summary.
+ * current content the assessment reads, an existing retained file outside the checkout kept as
+ * attributed evidence, or why the reference is unusable. Explanatory prose is not a reference; it
+ * belongs in the skip's reason or summary. A reference is evidence only: it creates no document
+ * binding, selects no historical approval and authorizes nothing.
  */
 export type SkipReferenceResolution =
   | {
@@ -81,7 +76,6 @@ export type SkipReferenceResolution =
       readonly anchor: string | null;
     }
   | { readonly kind: 'evidence'; readonly path: string }
-  | { readonly kind: 'prototype' }
   | {
       /** A checkout location that does not name a readable file; a report cannot cite one. */
       readonly kind: 'absence';
@@ -90,22 +84,17 @@ export type SkipReferenceResolution =
   | { readonly kind: 'unsupported'; readonly problem: string };
 
 /**
- * Resolve one skip reference to what it cites, consistently for author validation, evaluation
- * binding and retained-result reuse. A citation is a checkout path, optionally with a #section
- * anchor, naming a readable document inside the shared checkout; an existing readable file the
- * stage retains elsewhere; or, for a Storybook Refinement reuse skip, the retained prototype's
- * recorded branch or revision or the shared checkout itself. Anything else - prose, an unreadable
- * path or a location outside the workspace - is unsupported with a concrete reason instead of a
- * filesystem fault.
+ * Resolve one optional skip reference to the readable evidence it cites, consistently for author
+ * validation and evaluation. A citation is a checkout path, optionally with a #section anchor,
+ * naming a readable document inside the shared checkout, or an existing readable file the stage
+ * retains elsewhere. Anything else - prose, an unreadable path or a location outside the
+ * workspace - is unsupported with a concrete reason instead of a filesystem fault.
  */
 export async function resolveSkipReference(settings: {
   readonly worktree: string;
   readonly reference: string;
-  /** The retained prototype this stage owns, when a prototype skip may reuse it. */
-  readonly retainedPrototype?: RetainedPrototypeReference | null;
 }): Promise<SkipReferenceResolution> {
   const { worktree, reference } = settings;
-  const prototype = settings.retainedPrototype ?? null;
   const separator = reference.indexOf('#');
   const named = (separator === -1 ? reference : reference.slice(0, separator)).trim();
   const anchor = separator === -1 ? null : reference.slice(separator + 1).trim();
@@ -115,16 +104,11 @@ export async function resolveSkipReference(settings: {
       problem: `"${reference}" names no repository document or retained file`,
     };
   }
-  if (prototype !== null && (named === prototype.branch || named === prototype.revision)) {
-    return { kind: 'prototype' };
-  }
   if (path.resolve(worktree, named) === path.resolve(worktree)) {
-    return prototype === null
-      ? {
-          kind: 'unsupported',
-          problem: `"${reference}" names the shared checkout, which only a retained prototype reuse cites`,
-        }
-      : { kind: 'prototype' };
+    return {
+      kind: 'unsupported',
+      problem: `"${reference}" names the shared checkout instead of a readable file`,
+    };
   }
   const relative = checkoutRelative(worktree, named);
   if (relative !== null) {
@@ -147,8 +131,7 @@ export async function resolveSkipReference(settings: {
 /** The citation rule the instructions and every diagnostic share. */
 export const skipReferenceRule =
   'a skip reference names a readable file in the shared preparation checkout (a path or a ' +
-  'path#section citation), an existing retained file, or - for a Storybook Refinement reuse skip ' +
-  '- the retained prototype branch, revision or checkout; explanations belong in the skip reason';
+  'path#section citation) or an existing retained file; explanations belong in the skip reason';
 
 /** The actionable reason one skip reference cannot be used, for author rejection and diagnosis. */
 export function skipReferenceProblem(resolution: SkipReferenceResolution): string | null {
@@ -163,29 +146,23 @@ export function skipReferenceProblem(resolution: SkipReferenceResolution): strin
 
 /** The content observed before one evaluation, with the revision it was observed at. */
 export type RetainedEvaluationContent = {
-  readonly revision: string | null;
+  readonly revision: string;
   readonly content: AssessedContent[];
 };
 
 /**
- * Retain the authored report's declared repository paths in one named stage-owned commit and
- * observe their exact revision and existence, or observe the retained revision of the existing
- * repository files an evaluated skip relies on. A path-scoped commit never absorbs unrelated
- * staged work. A named deletion is committed while the checkout still tracks the path; an
- * interrupted evaluation that already committed it is observed instead of re-staged, so a replay
- * neither fails on the absent path nor commits anything else.
+ * Commit the author's declared stage work in one named path-scoped commit, observe the exact
+ * repository revision the evaluation runs against and require optional skip references to name
+ * readable evidence. A path-scoped commit never absorbs unrelated staged work. A named deletion is
+ * committed while the checkout still tracks the path; an interrupted evaluation that already
+ * committed it is observed instead of re-staged, so a replay neither fails on the absent path nor
+ * commits anything else. Only an applicable prototype retains assessed content - its inspected
+ * sources, bound to the observed revision; a document stage writes no per-document binding.
  */
 export async function retainEvaluationContent(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
   readonly author: StageAuthorOutput;
-  /**
-   * The checkout-relative paths a skip proposal reuses from the preceding accepted round. They
-   * are observed like any other relied-on content, including a retained deletion.
-   */
-  readonly reused?: readonly string[];
-  /** The retained prototype this stage owns, when a prototype reuse skip cites it. */
-  readonly retainedPrototype?: RetainedPrototypeReference | null;
 }): Promise<RetainedEvaluationContent> {
   const { git, worktree, author } = settings;
   const declared = [...author.documents.map(({ path: value }) => value), ...author.sourcePaths];
@@ -202,6 +179,10 @@ export async function retainEvaluationContent(settings: {
   const inspection = await git.inspectRepository(worktree);
   if (!inspection.ok) throw new Error(inspection.fault.message);
   const head = inspection.value.headRevision;
+  if (head === null) {
+    throw new Error('The prepared checkout reports no revision to evaluate.');
+  }
+  let revision = head;
   if (author.outcome === 'authored' && paths.length > 0) {
     // An absent declared path is a deletion. It is stageable only while the checkout tracks the
     // path; a deletion an earlier interrupted evaluation already committed is retained by
@@ -212,11 +193,10 @@ export async function retainEvaluationContent(settings: {
         stageable.push(relative);
         continue;
       }
-      if (head !== null && (await git.readFileAtRevision(worktree, head, relative)).ok) {
+      if ((await git.readFileAtRevision(worktree, head, relative)).ok) {
         stageable.push(relative);
       }
     }
-    let revision = head;
     if (stageable.length > 0) {
       const saved = await git.commitPaths(
         worktree,
@@ -224,12 +204,14 @@ export async function retainEvaluationContent(settings: {
         'Retain authored preparation content for evaluation',
       );
       if (!saved.ok) throw new Error(saved.fault.message);
+      if (saved.value.headRevision === null) {
+        throw new Error('The prepared checkout reports no revision for the authored content.');
+      }
       revision = saved.value.headRevision;
     }
-    if (revision === null) {
-      throw new Error('The prepared checkout reports no revision for the authored content.');
-    }
-    const content: AssessedContent[] = [];
+  }
+  const content: AssessedContent[] = [];
+  if (author.outcome === 'authored' && author.stage === 'prototype') {
     for (const relative of paths) {
       content.push({
         path: relative,
@@ -237,42 +219,16 @@ export async function retainEvaluationContent(settings: {
         exists: await isFile(path.join(worktree, relative)),
       });
     }
-    return { revision, content };
   }
-  const revision = head;
-  const content: AssessedContent[] = [];
   if (author.outcome === 'skip-proposed') {
-    for (const relative of settings.reused ?? []) {
-      if (revision === null) {
-        throw new Error('The prepared checkout reports no revision for the relied-on content.');
-      }
-      if (content.some((entry) => entry.path === relative)) continue;
-      content.push({
-        path: relative,
-        revision,
-        exists: await isFile(path.join(worktree, relative)),
-      });
-    }
+    // Supplied references are readable evidence the evaluator may use; an unreadable reference is
+    // invalid and an empty list is valid. They create no binding.
     for (const reference of author.skip?.references ?? []) {
-      const resolution = await resolveSkipReference({
-        worktree,
-        reference,
-        retainedPrototype: settings.retainedPrototype ?? null,
-      });
+      const resolution = await resolveSkipReference({ worktree, reference });
       const problem = skipReferenceProblem(resolution);
       if (problem !== null) {
-        throw new Error(`The ${author.stage} skip cannot bind its references: ${problem}.`);
+        throw new Error(`The ${author.stage} skip carries unusable evidence: ${problem}.`);
       }
-      if (
-        resolution.kind !== 'document' ||
-        content.some((entry) => entry.path === resolution.relative)
-      ) {
-        continue;
-      }
-      if (revision === null) {
-        throw new Error('The prepared checkout reports no revision for the relied-on content.');
-      }
-      content.push({ path: resolution.relative, revision, exists: true });
     }
   }
   return { revision, content };
@@ -283,6 +239,43 @@ function changed(): Error {
   return new Error(
     'Evaluated content changed or has no readable revision; a current decision is required.',
   );
+}
+
+/**
+ * Reject declared stage work that no longer matches the evaluated revision: the documents and
+ * stage-owned sources the author declared must still be the committed bytes the evaluator
+ * assessed. An uncommitted edit or deletion after the observation needs a current decision, while
+ * a submission that declares no changed work has nothing to check.
+ */
+export async function requireDeclaredWork(settings: {
+  readonly git: GitAdapter;
+  readonly worktree: string;
+  readonly author: StageAuthorOutput;
+  readonly revision: string;
+}): Promise<void> {
+  const { git, worktree, author } = settings;
+  if (author.outcome !== 'authored') {
+    return;
+  }
+  const content: AssessedContent[] = [];
+  for (const value of [...author.documents.map(({ path: file }) => file), ...author.sourcePaths]) {
+    const relative = checkoutRelative(worktree, value);
+    if (relative === null) {
+      throw new Error(
+        `Declared path "${value}" lies outside the shared preparation checkout; a current ` +
+          'decision is required.',
+      );
+    }
+    if (content.some((entry) => entry.path === relative)) {
+      continue;
+    }
+    content.push({
+      path: relative,
+      revision: settings.revision,
+      exists: await isFile(path.join(worktree, relative)),
+    });
+  }
+  await requireEvaluationContent({ git, worktree, content });
 }
 
 /**

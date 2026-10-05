@@ -934,6 +934,7 @@ async function publishPreparation(options: {
         authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
         sourceIdentity: sourceInputIdentity(selection as never),
         upstream: [],
+        repositoryRevision: repositoryState().headRevision,
         content: [],
       },
       assessedRevision: author.revision,
@@ -1376,6 +1377,7 @@ async function handoff(options: {
           authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
           sourceIdentity: sourceInputIdentity(fixtureSelection as never),
           upstream: [...upstream],
+          repositoryRevision: '1'.repeat(40),
           content: [
             ...settings.documents
               .filter((document) => document.revision !== null)
@@ -1410,10 +1412,6 @@ async function handoff(options: {
         path: path.join(worktree, document.path),
         revision: document.revision,
       })),
-      existingDocuments:
-        settings.outcome === 'skipped'
-          ? [{ path: path.join(worktree, 'docs/existing.md'), revision: 'f'.repeat(40) }]
-          : [],
       sourcePaths: [...sourcePaths],
       skipReferences: settings.outcome === 'skipped' ? ['docs/existing.md'] : [],
       outputs: [],
@@ -1914,16 +1912,18 @@ describe('architecture implementation handoff', () => {
     expect(dependentDescription).toContain('Prerequisites: NEX-2');
   });
 
-  it('carries concrete accepted existing-document and skip references through a no-change handoff', async () => {
+  it('carries an evaluated skip as evidence without a document binding', async () => {
     const result = await handoff({ skipped: true });
     expect(result.failures).toEqual([]);
     expect(result.outcome).toBe('handed-off');
     const description = JSON.stringify(result.createdFields[0]?.['description']);
-    expect(description).toContain(
-      `docs/existing.md (architecture existing document revision ${'f'.repeat(40)})`,
-    );
+    expect(description).toContain('- architecture evaluated skip: ');
     expect(description).toContain('architecture/artifacts/1/result.json');
     expect(description).toContain('architecture/artifacts/1/evaluation.json');
+    // A supplied reference stays readable evidence: it selects no historical approval, binds no
+    // document revision and never appears among the accepted change set.
+    expect(description).toContain('- architecture skip evidence: docs/existing.md');
+    expect(description).not.toContain('existing document revision');
   });
 
   it('honors a human pause before any ticket effect', async () => {
