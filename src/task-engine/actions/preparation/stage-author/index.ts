@@ -15,6 +15,7 @@ import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   stageAuthorArtifact,
+  stageEvaluationArtifact,
   stageAuthorResponseSchema,
   type PreparationStage,
   type StageAuthorOutput,
@@ -30,6 +31,7 @@ import {
   readStagePlan,
   readStageTerminal,
   stageRoot,
+  stageRounds,
   writeStageArtifact,
 } from '../storage.js';
 
@@ -82,10 +84,14 @@ async function fileExists(worktree: string, relative: string): Promise<boolean> 
 
 /**
  * Why one declared path is not usable, or null. A path must stay inside the shared checkout and
- * either exist now or name a tracked file the author is deleting from the retained repository.
+ * either exist now, name a tracked file being deleted, or retain the stage's recorded deletion.
  */
 async function declaredPathProblem(
-  settings: { readonly git: GitAdapter; readonly worktree: string },
+  settings: {
+    readonly git: GitAdapter;
+    readonly worktree: string;
+    readonly retainedDeletions: ReadonlySet<string>;
+  },
   value: string,
 ): Promise<string | null> {
   const relative = checkoutRelative(settings.worktree, value);
@@ -93,6 +99,9 @@ async function declaredPathProblem(
     return `the declared path "${value}" lies outside the shared preparation checkout`;
   }
   if (await fileExists(settings.worktree, relative)) {
+    return null;
+  }
+  if (settings.retainedDeletions.has(relative)) {
     return null;
   }
   const inspection = await settings.git.inspectRepository(settings.worktree);
@@ -109,10 +118,42 @@ async function declaredPathProblem(
     : `the declared path "${value}" does not exist and was not tracked before this edit`;
 }
 
+/**
+ * Deletions this stage actually declared and retained for evaluation. Ownership survives later
+ * repair, skip and return rounds; it does not authorize absent paths deleted by other stages.
+ * Include the current round so replay after an interrupted evaluation keeps its deletion too.
+ */
+async function retainedStageDeletions(
+  root: string,
+  round: number,
+  worktree: string,
+): Promise<ReadonlySet<string>> {
+  const deleted = new Set<string>();
+  for (const retained of await stageRounds(root)) {
+    if (retained > round) break;
+    const author = await readStageArtifact(root, retained, stageAuthorArtifact);
+    if (author?.outcome !== 'authored') continue;
+    const evaluation = await readStageArtifact(root, retained, stageEvaluationArtifact);
+    const declared = new Set(
+      [...author.documents.map((document) => document.path), ...author.sourcePaths].map((value) =>
+        checkoutRelative(worktree, value),
+      ),
+    );
+    for (const entry of evaluation?.basis.content ?? []) {
+      if (!entry.exists && declared.has(entry.path)) deleted.add(entry.path);
+    }
+  }
+  return deleted;
+}
+
 /** Why the author's report is not a usable proposal, or null. */
 async function reportProblem(
   report: StageAuthorResponse,
-  settings: { readonly git: GitAdapter; readonly worktree: string },
+  settings: {
+    readonly git: GitAdapter;
+    readonly worktree: string;
+    readonly retainedDeletions: ReadonlySet<string>;
+  },
   task: 'propose' | 'respond',
 ): Promise<string | null> {
   if (task === 'respond' && report.outcome === 'skip-proposed') {
@@ -235,7 +276,18 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stageAuthorResponseSchema,
       `${settings.stage} author`,
     );
-    const problem = await reportProblem(report, { git: settings.git, worktree }, task);
+    const problem = await reportProblem(
+      report,
+      {
+        git: settings.git,
+        worktree,
+        retainedDeletions:
+          report.outcome === 'authored'
+            ? await retainedStageDeletions(root, plan.round, worktree)
+            : new Set(),
+      },
+      task,
+    );
     if (problem !== null) {
       throw new Error(`The ${settings.stage} author report is unusable: ${problem}.`);
     }

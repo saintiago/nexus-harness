@@ -306,8 +306,8 @@ export function roundArtifactFile(root: string, round: number, relative: string)
 
 /**
  * The retained content one evaluated skip reuses from the immediately preceding completed round
- * of the same stage: the result's changed documents and stage-owned source paths, the preceding
- * acceptance's observations of those paths, and the retained prototype when the stage owns one.
+ * of the same stage: the result's changed and existing documents, stage-owned source paths, the
+ * preceding acceptance's observations of those paths, and any retained prototype this stage owns.
  * Only that immediate acceptance may supply reused assets; a later rejection or upstream return
  * invalidates it, so reuse never searches past an intervening unfinished or invalid round. The
  * observations carry the recorded revision and existence, so a retained deletion is validated as
@@ -316,6 +316,8 @@ export function roundArtifactFile(root: string, round: number, relative: string)
 export type ReusedPreparationContent = {
   /** The preceding result's changed documents the skip reuses, as the result recorded them. */
   readonly documents: readonly { readonly path: string; readonly revision: string }[];
+  /** Existing authoritative documents the preceding skip relied on, without changed ownership. */
+  readonly existingDocuments: PreparationResult['existingDocuments'];
   /** The preceding result's stage-owned source paths the skip reuses, checkout-relative. */
   readonly sourcePaths: readonly string[];
   /** Every reused checkout path in one ordered set. */
@@ -328,6 +330,7 @@ export type ReusedPreparationContent = {
 
 const nothingReused: ReusedPreparationContent = {
   documents: [],
+  existingDocuments: [],
   sourcePaths: [],
   paths: [],
   content: [],
@@ -362,26 +365,26 @@ export async function reusedPreparationContent(settings: {
   const referencesPath = (reference: string, target: string): boolean =>
     path.resolve(worktree, reference) === target;
   const reusesResult = references.some((reference) => referencesPath(reference, previousFile));
-  const documents = result.documents.filter(
+  let documents = result.documents.filter(
     (document) =>
       reusesResult || references.some((reference) => referencesPath(reference, document.path)),
   );
-  const sourcePaths = result.sourcePaths.filter(
+  let existingDocuments = result.existingDocuments.filter(
+    (document) =>
+      reusesResult || references.some((reference) => referencesPath(reference, document.path)),
+  );
+  let sourcePaths = result.sourcePaths.filter(
     (source) =>
       reusesResult ||
       references.some((reference) => referencesPath(reference, path.join(worktree, source))),
   );
-  for (const document of documents) {
-    if (document.revision === null) {
-      throw new Error('Reused accepted content has no immutable revision.');
-    }
-  }
   const prototype = result.prototype;
   const reusesPrototype =
     stage === 'prototype' &&
     prototype !== null &&
     (reusesResult ||
       documents.length > 0 ||
+      existingDocuments.length > 0 ||
       sourcePaths.length > 0 ||
       references.some(
         (reference) =>
@@ -389,8 +392,20 @@ export async function reusedPreparationContent(settings: {
           reference === prototype.branch ||
           referencesPath(reference, worktree),
       ));
-  const paths: string[] = [];
+  // A retained prototype reference represents the complete assessed asset. Any supported
+  // reference selecting it must keep all its evidence and source ownership, not just one file.
+  if (reusesPrototype) {
+    documents = result.documents;
+    existingDocuments = result.existingDocuments;
+    sourcePaths = result.sourcePaths;
+  }
   for (const document of documents) {
+    if (document.revision === null) {
+      throw new Error('Reused accepted content has no immutable revision.');
+    }
+  }
+  const paths: string[] = [];
+  for (const document of [...documents, ...existingDocuments]) {
     const relative = path.relative(worktree, path.resolve(worktree, document.path));
     if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`Reused document "${document.path}" lies outside the shared checkout.`);
@@ -424,6 +439,7 @@ export async function reusedPreparationContent(settings: {
       path: document.path,
       revision: document.revision as string,
     })),
+    existingDocuments,
     sourcePaths,
     paths,
     content,

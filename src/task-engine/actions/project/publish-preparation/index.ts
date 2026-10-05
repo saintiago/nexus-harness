@@ -262,6 +262,16 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     function indexOf(candidate: PreparationStage): number {
       return preparationStages.indexOf(candidate);
     }
+    /** Add a correction interval without dropping any earlier unfinished correction. */
+    async function pendingCorrection(target: UpstreamStage): Promise<PreparationStage[]> {
+      const retained = await readHandoff(selection.workspace.root);
+      return preparationStages.filter(
+        (candidate) =>
+          retained?.awaitingStages.includes(candidate) ||
+          ((target === 'idea' || indexOf(candidate) >= indexOf(target)) &&
+            indexOf(candidate) <= indexOf(stage)),
+      );
+    }
     if (outcome === 'accepted' || outcome === 'skipped') {
       // The published decision must be current: the exact authored report, captured input, relied-on
       // upstream results and assessed content the evaluator stood behind.
@@ -318,10 +328,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           },
           `Returning to ${earliest} for reconsideration: the accepted ${stage} change is not ` +
             `covered by ${earliest}'s current decision.`,
-          preparationStages.filter(
-            (candidate) =>
-              indexOf(candidate) > indexOf(earliest) && indexOf(candidate) <= indexOf(stage),
-          ),
+          [...new Set([...(await pendingCorrection(earliest)), ...invalidated])],
         );
       }
       const awaiting = [
@@ -378,12 +385,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       const finding = result.returnFinding;
       // The correction invalidates the corrected stage's decision and every later decision up to
       // the returning stage: the parent retains them as awaiting a current decision.
-      const destination = order.indexOf(target);
-      const awaiting = preparationStages.filter(
-        (candidate) =>
-          order.indexOf(candidate) > destination &&
-          order.indexOf(candidate) <= order.indexOf(stage),
-      );
+      const awaiting = await pendingCorrection(target);
       return advanceTo(
         target,
         {

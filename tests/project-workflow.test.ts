@@ -916,7 +916,7 @@ describe('parent preparation publication', () => {
     expect(published.stage()).toBe('requirements');
     // The correction invalidates the corrected stage and every later decision up to the returning
     // stage; the parent retains them as awaiting a current decision across restarts.
-    expect(published.awaiting()).toEqual(['ux']);
+    expect(published.awaiting()).toEqual(['requirements', 'ux']);
   });
 
   it('retains every downstream stage awaiting reassessment when Architecture returns', async () => {
@@ -933,7 +933,7 @@ describe('parent preparation publication', () => {
 
     expect(published.outcome).toBe('advanced');
     expect(published.stage()).toBe('ux');
-    expect(published.awaiting()).toEqual(['prototype', 'architecture']);
+    expect(published.awaiting()).toEqual(['ux', 'prototype', 'architecture']);
   });
 
   it('establishes active Idea Refinement when returning directly to its child', async () => {

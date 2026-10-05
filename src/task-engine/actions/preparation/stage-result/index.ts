@@ -256,7 +256,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
 
     // Existing authoritative documents an evaluated skip relied on that this round does not
     // already report as reused documents, with their saved revisions.
-    const existingDocuments: PreparationResult['existingDocuments'] = [];
+    const existingDocuments: PreparationResult['existingDocuments'] = [...reuse.existingDocuments];
     if (outcome === 'skipped') {
       const reused = new Set(reuse.paths.map((relative) => path.resolve(worktree, relative)));
       for (const entry of evaluation?.basis.content ?? []) {

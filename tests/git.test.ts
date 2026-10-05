@@ -26,6 +26,7 @@ import {
   requireCurrentAcceptance,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import {
   prepareDocumentationPublication,
@@ -683,6 +684,7 @@ describe('Git adapter', () => {
     readonly route?: 'new' | 'next' | 'reassess';
     readonly author: Record<string, unknown>;
     readonly verdict?: 'accepted' | 'accepted-skip';
+    readonly invokeAuthor?: boolean;
   }): Promise<Record<string, unknown>> {
     const stageRoot = path.join(settings.root, settings.stage);
     const artifacts = path.join(stageRoot, 'artifacts', String(settings.round));
@@ -697,10 +699,20 @@ describe('Git adapter', () => {
         profiles: { author: 'a', evaluator: 'e' },
       }),
     );
-    await writeFile(
-      path.join(artifacts, 'author.json'),
-      JSON.stringify({ stage: settings.stage, revision: settings.round, ...settings.author }),
-    );
+    if (settings.invokeAuthor) {
+      await createStageAuthor({
+        selectionFile: settings.selectionFile,
+        stage: settings.stage,
+        git,
+        publish: () => undefined,
+        runner: { run: async () => ok({ output: JSON.stringify(settings.author) }) },
+      })({ task: settings.route === 'next' ? 'respond' : 'propose' });
+    } else {
+      await writeFile(
+        path.join(artifacts, 'author.json'),
+        JSON.stringify({ stage: settings.stage, revision: settings.round, ...settings.author }),
+      );
+    }
     const evaluator = createStageEvaluator({
       selectionFile: settings.selectionFile,
       stage: settings.stage,
@@ -1070,6 +1082,20 @@ describe('Git adapter', () => {
       .revision;
     const uxRevision = (ux.documents as { readonly revision: string }[])[0]!.revision;
 
+    // An outer correction remains pending while UX triggers another content-based return.
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/handoff.json'),
+      JSON.stringify({
+        stage: 'ux',
+        upstreamReturns: 1,
+        feedback: null,
+        return: null,
+        awaitingStages: ['architecture'],
+        tickets: [],
+        publications: [],
+      }),
+    );
     // Publishing UX finds that the Requirements acceptance no longer covers the edited document:
     // the route returns to the earliest responsible stage instead of advancing on a stale
     // decision, and UX re-confirms its own decision afterwards.
@@ -1082,7 +1108,7 @@ describe('Git adapter', () => {
     });
     expect(returned.outcome).toBe('advanced');
     expect(returned.stage()).toBe('requirements');
-    expect(returned.awaiting()).toEqual(['ux']);
+    expect(returned.awaiting()).toEqual(['requirements', 'ux', 'architecture']);
     expect(returned.returnFinding()).toMatchObject({ from: 'ux', to: 'requirements' });
 
     // Requirements reassesses the current retained content; unchanged content keeps the revision
@@ -1112,9 +1138,9 @@ describe('Git adapter', () => {
     });
     expect(requirementAdvance.outcome).toBe('advanced');
     expect(requirementAdvance.stage()).toBe('ux');
-    expect(requirementAdvance.awaiting()).toEqual(['ux']);
+    expect(requirementAdvance.awaiting()).toEqual(['ux', 'architecture']);
 
-    // UX reuses its unchanged acceptance explicitly and the route continues with nothing pending.
+    // UX reuses its unchanged acceptance; the outer Architecture reassessment remains pending.
     await acceptedRound({
       selectionFile,
       root,
@@ -1146,7 +1172,7 @@ describe('Git adapter', () => {
     });
     expect(uxAdvance.outcome).toBe('advanced');
     expect(uxAdvance.stage()).toBe('prototype');
-    expect(uxAdvance.awaiting()).toEqual([]);
+    expect(uxAdvance.awaiting()).toEqual(['architecture']);
 
     // Storybook Refinement concludes an evaluated skip on the existing documents and Architecture
     // accepts its design, so the handoff finds no pending reassessment and clears Architecture's.
@@ -1198,128 +1224,222 @@ describe('Git adapter', () => {
     expect(handedOff.awaiting()).toEqual([]);
   });
 
-  it('binds reused prototype content and retains its source paths across consecutive skips', async () => {
-    const workspace = await preparationWorkspace();
-    const { origin, root, worktree, selectionFile } = workspace;
-    const prepare = createPrepareStage({
+  it.each(['result', 'document', 'source', 'revision', 'branch', 'checkout'])(
+    'binds complete reused prototype content through a %s reference and consecutive skips',
+    async (referenceKind) => {
+      const workspace = await preparationWorkspace();
+      const { origin, root, worktree, selectionFile } = workspace;
+      const prepare = createPrepareStage({
+        selectionFile,
+        repository: { source: origin, mainBranch: 'main' },
+        git,
+        publish: () => undefined,
+      });
+      await expect(prepare({ stage: 'prototype' })).resolves.toBe('prepared');
+      await mkdir(path.join(worktree, 'docs'), { recursive: true });
+      await mkdir(path.join(worktree, 'stories'), { recursive: true });
+      await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n');
+      await writeFile(
+        path.join(worktree, 'stories', 'ux.stories.ts'),
+        'export const journey = 1;\n',
+      );
+      // Round 1 authors the changed document and the stage-owned Storybook story the prototype owns.
+      const first = await acceptedRound({
+        selectionFile,
+        root,
+        stage: 'prototype',
+        round: 1,
+        author: {
+          outcome: 'authored',
+          summary: 'The prototype journey.',
+          documents: [{ path: 'docs/ux.md', description: 'the journey' }],
+          sourcePaths: ['stories/ux.stories.ts'],
+          plan: [],
+          skip: null,
+          question: null,
+          upstream: null,
+          findingResponses: [],
+        },
+      });
+      const prototypeRevision = (first.prototype as { readonly revision: string }).revision;
+      expect(
+        await git.readFileAtRevision(worktree, prototypeRevision, 'stories/ux.stories.ts'),
+      ).toEqual({ ok: true, value: 'export const journey = 1;\n' });
+      await expect(readAcceptedDocuments(root)).resolves.toMatchObject({
+        kind: 'documents',
+        retained: ['stories/ux.stories.ts'],
+      });
+      await expect(
+        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
+      ).resolves.toMatchObject({ kind: 'prepared' });
+
+      /** The result file one round's skip reuses. */
+      const resultFile = (round: number) =>
+        path.join(root, 'prototype', 'artifacts', String(round), 'result.json');
+      /** One reuse skip report referencing the preceding round's retained result. */
+      const reuseSkip = (round: number) => ({
+        outcome: 'skip-proposed',
+        summary: 'The retained prototype still suffices.',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: {
+          reason: 'The retained prototype still suffices.',
+          references: [
+            round !== 2 || referenceKind === 'result'
+              ? resultFile(round - 1)
+              : referenceKind === 'document'
+                ? 'docs/ux.md'
+                : referenceKind === 'source'
+                  ? 'stories/ux.stories.ts'
+                  : referenceKind === 'revision'
+                    ? prototypeRevision
+                    : referenceKind === 'branch'
+                      ? (first.prototype as { branch: string }).branch
+                      : worktree,
+          ],
+        },
+        question: null,
+        upstream: null,
+        findingResponses: [],
+      });
+
+      // Round 2 resolves the result reference into the complete reused content: the new acceptance
+      // binds the document and the story, and the result keeps the prototype and its source paths.
+      const second = await acceptedRound({
+        selectionFile,
+        root,
+        stage: 'prototype',
+        round: 2,
+        verdict: 'accepted-skip',
+        author: reuseSkip(2),
+      });
+      expect(second.documents).toEqual(first.documents);
+      expect(second.sourcePaths).toEqual(['stories/ux.stories.ts']);
+      expect(second.prototype).toEqual(first.prototype);
+      expect(
+        (
+          JSON.parse(
+            await readFile(path.join(root, 'prototype', 'artifacts/2/evaluation.json'), 'utf8'),
+          ) as { readonly basis: { readonly content: unknown } }
+        ).basis.content,
+      ).toEqual(
+        expect.arrayContaining([
+          { path: 'docs/ux.md', revision: prototypeRevision, exists: true },
+          { path: 'stories/ux.stories.ts', revision: prototypeRevision, exists: true },
+        ]),
+      );
+      // The unchanged story stays a declared stage-owned path of the reused acceptance.
+      await expect(readAcceptedDocuments(root)).resolves.toMatchObject({
+        kind: 'documents',
+        retained: ['stories/ux.stories.ts'],
+      });
+      await expect(
+        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
+      ).resolves.toMatchObject({ kind: 'prepared' });
+
+      // A consecutive reuse keeps the retained work and its ownership intact.
+      const third = await acceptedRound({
+        selectionFile,
+        root,
+        stage: 'prototype',
+        round: 3,
+        verdict: 'accepted-skip',
+        author: reuseSkip(3),
+      });
+      expect(third).toMatchObject({
+        documents: first.documents,
+        sourcePaths: ['stories/ux.stories.ts'],
+        prototype: first.prototype,
+      });
+
+      // A later change to the retained story invalidates the skip, and another reuse of the older
+      // acceptance cannot authorize the changed content.
+      await writeFile(
+        path.join(worktree, 'stories', 'ux.stories.ts'),
+        'export const journey = 2;\n',
+      );
+      await gitCommand(['add', 'stories/ux.stories.ts'], worktree);
+      await gitCommand(['commit', '--quiet', '--message', 'change the story'], worktree);
+      expect(await decisionContentChanged({ issueRoot: root, stage: 'prototype', git })).toBe(true);
+      await expect(
+        readCurrentDecision({
+          issueRoot: root,
+          stage: 'prototype',
+          selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+          git,
+        }),
+      ).resolves.toMatchObject({ kind: 'stale' });
+      await expect(
+        acceptedRound({
+          selectionFile,
+          root,
+          stage: 'prototype',
+          round: 4,
+          verdict: 'accepted-skip',
+          author: reuseSkip(4),
+        }),
+      ).rejects.toThrow(/current decision is required/);
+    },
+  );
+
+  it('preserves existing-document evidence through consecutive result-reference skips', async () => {
+    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+    await createPrepareStage({
       selectionFile,
       repository: { source: origin, mainBranch: 'main' },
       git,
       publish: () => undefined,
-    });
-    await expect(prepare({ stage: 'prototype' })).resolves.toBe('prepared');
-    await mkdir(path.join(worktree, 'docs'), { recursive: true });
-    await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n');
-    await writeFile(path.join(worktree, 'stories', 'ux.stories.ts'), 'export const journey = 1;\n');
-    // Round 1 authors the changed document and the stage-owned Storybook story the prototype owns.
-    const first = await acceptedRound({
-      selectionFile,
-      root,
-      stage: 'prototype',
-      round: 1,
-      author: {
-        outcome: 'authored',
-        summary: 'The prototype journey.',
-        documents: [{ path: 'docs/ux.md', description: 'the journey' }],
-        sourcePaths: ['stories/ux.stories.ts'],
-        plan: [],
-        skip: null,
-        question: null,
-        upstream: null,
-        findingResponses: [],
-      },
-    });
-    const prototypeRevision = (first.prototype as { readonly revision: string }).revision;
-    expect(
-      await git.readFileAtRevision(worktree, prototypeRevision, 'stories/ux.stories.ts'),
-    ).toEqual({ ok: true, value: 'export const journey = 1;\n' });
-    await expect(readAcceptedDocuments(root)).resolves.toMatchObject({
-      kind: 'documents',
-      retained: ['stories/ux.stories.ts'],
-    });
-    await expect(
-      prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-    ).resolves.toMatchObject({ kind: 'prepared' });
-
-    /** The result file one round's skip reuses. */
-    const resultFile = (round: number) =>
-      path.join(root, 'prototype', 'artifacts', String(round), 'result.json');
-    /** One reuse skip report referencing the preceding round's retained result. */
-    const reuseSkip = (round: number) => ({
+    })({ stage: 'requirements' });
+    const skip = (references: string[]) => ({
       outcome: 'skip-proposed',
-      summary: 'The retained prototype still suffices.',
+      summary: 'Existing requirements suffice.',
       documents: [],
       sourcePaths: [],
       plan: [],
-      skip: {
-        reason: 'The retained prototype still suffices.',
-        references: [resultFile(round - 1)],
-      },
+      skip: { reason: 'Existing requirements suffice.', references },
       question: null,
       upstream: null,
       findingResponses: [],
     });
-
-    // Round 2 resolves the result reference into the complete reused content: the new acceptance
-    // binds the document and the story, and the result keeps the prototype and its source paths.
-    const second = await acceptedRound({
+    const first = await acceptedRound({
       selectionFile,
       root,
-      stage: 'prototype',
-      round: 2,
+      stage: 'requirements',
+      round: 1,
       verdict: 'accepted-skip',
-      author: reuseSkip(2),
+      author: skip(['readme.md']),
     });
-    expect(second.documents).toEqual(first.documents);
-    expect(second.sourcePaths).toEqual(['stories/ux.stories.ts']);
-    expect(second.prototype).toEqual(first.prototype);
-    expect(
-      (
-        JSON.parse(
-          await readFile(path.join(root, 'prototype', 'artifacts/2/evaluation.json'), 'utf8'),
-        ) as { readonly basis: { readonly content: unknown } }
-      ).basis.content,
-    ).toEqual(
-      expect.arrayContaining([
-        { path: 'docs/ux.md', revision: prototypeRevision, exists: true },
-        { path: 'stories/ux.stories.ts', revision: prototypeRevision, exists: true },
-      ]),
-    );
-    // The unchanged story stays a declared stage-owned path of the reused acceptance.
-    await expect(readAcceptedDocuments(root)).resolves.toMatchObject({
-      kind: 'documents',
-      retained: ['stories/ux.stories.ts'],
-    });
-    await expect(
-      prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
-    ).resolves.toMatchObject({ kind: 'prepared' });
-
-    // A consecutive reuse keeps the retained work and its ownership intact.
-    const third = await acceptedRound({
-      selectionFile,
-      root,
-      stage: 'prototype',
-      round: 3,
-      verdict: 'accepted-skip',
-      author: reuseSkip(3),
-    });
-    expect(third).toMatchObject({
-      documents: first.documents,
-      sourcePaths: ['stories/ux.stories.ts'],
-      prototype: first.prototype,
-    });
-
-    // A later change to the retained story invalidates the skip, and another reuse of the older
-    // acceptance cannot authorize the changed content.
-    await writeFile(path.join(worktree, 'stories', 'ux.stories.ts'), 'export const journey = 2;\n');
-    await gitCommand(['add', 'stories/ux.stories.ts'], worktree);
-    await gitCommand(['commit', '--quiet', '--message', 'change the story'], worktree);
-    expect(await decisionContentChanged({ issueRoot: root, stage: 'prototype', git })).toBe(true);
+    await commitFile(worktree, 'unrelated.md', 'unrelated change\n');
+    for (const round of [2, 3]) {
+      const result = await acceptedRound({
+        selectionFile,
+        root,
+        stage: 'requirements',
+        round,
+        verdict: 'accepted-skip',
+        author: skip([
+          path.join(root, 'requirements', 'artifacts', String(round - 1), 'result.json'),
+        ]),
+      });
+      expect(result.existingDocuments).toEqual(first.existingDocuments);
+      expect(result.documents).toEqual([]);
+      expect(
+        stageEvaluationArtifact.schema.parse(
+          JSON.parse(
+            await readFile(
+              path.join(root, 'requirements', 'artifacts', String(round), 'evaluation.json'),
+              'utf8',
+            ),
+          ),
+        ).basis.content,
+      ).toEqual([{ path: 'readme.md', revision: await headOf(worktree), exists: true }]);
+    }
+    await writeFile(path.join(worktree, 'readme.md'), 'changed requirements\n');
     await expect(
       readCurrentDecision({
         issueRoot: root,
-        stage: 'prototype',
+        stage: 'requirements',
         selection: JSON.parse(await readFile(selectionFile, 'utf8')),
         git,
       }),
@@ -1328,10 +1448,10 @@ describe('Git adapter', () => {
       acceptedRound({
         selectionFile,
         root,
-        stage: 'prototype',
+        stage: 'requirements',
         round: 4,
         verdict: 'accepted-skip',
-        author: reuseSkip(4),
+        author: skip([path.join(root, 'requirements', 'artifacts/3/result.json')]),
       }),
     ).rejects.toThrow(/current decision is required/);
   });
@@ -1340,6 +1460,7 @@ describe('Git adapter', () => {
     const workspace = await preparationWorkspace();
     const { origin, source, root, worktree, selectionFile } = workspace;
     await publish(source, 'legacy.md', 'legacy\n', 'add legacy');
+    await publish(source, 'legacy.ts', 'export const legacy = true;\n', 'add legacy source');
     const prepare = createPrepareStage({
       selectionFile,
       repository: { source: origin, mainBranch: 'main' },
@@ -1349,6 +1470,7 @@ describe('Git adapter', () => {
     await expect(prepare({ stage: 'requirements' })).resolves.toBe('prepared');
     await writeFile(path.join(worktree, 'readme.md'), 'requirements revision\n');
     await rm(path.join(worktree, 'legacy.md'));
+    await rm(path.join(worktree, 'legacy.ts'));
     const author = {
       outcome: 'authored',
       summary: 'The requirements revision retires the legacy document.',
@@ -1356,7 +1478,7 @@ describe('Git adapter', () => {
         { path: 'readme.md', description: 'the requirements' },
         { path: 'legacy.md', description: 'the retired document' },
       ],
-      sourcePaths: [],
+      sourcePaths: ['legacy.ts'],
       plan: [],
       skip: null,
       question: null,
@@ -1424,6 +1546,67 @@ describe('Git adapter', () => {
     await expect(
       prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
     ).resolves.toMatchObject({ kind: 'prepared' });
+
+    // Authored repair and reassessment keep deletions even after an intervening reuse round.
+    for (const [round, route] of [
+      [3, 'next'],
+      [4, 'reassess'],
+    ] as const) {
+      await writeFile(path.join(worktree, 'readme.md'), `requirements revision ${String(round)}\n`);
+      const corrected = await acceptedRound({
+        selectionFile,
+        root,
+        stage: 'requirements',
+        round,
+        route,
+        author,
+        invokeAuthor: true,
+      });
+      expect(corrected.sourcePaths).toEqual(['legacy.ts']);
+      expect(
+        stageEvaluationArtifact.schema.parse(
+          JSON.parse(
+            await readFile(
+              path.join(root, 'requirements', 'artifacts', String(round), 'evaluation.json'),
+              'utf8',
+            ),
+          ),
+        ).basis.content,
+      ).toEqual(
+        expect.arrayContaining([
+          { path: 'legacy.md', revision: await headOf(worktree), exists: false },
+          { path: 'legacy.ts', revision: await headOf(worktree), exists: false },
+        ]),
+      );
+      await expect(
+        prepareDocumentationPublication({ root, baseBranch: 'main', taskKey: 'NEX-1', git }),
+      ).resolves.toMatchObject({ kind: 'prepared' });
+    }
+    // Historical stage ownership never permits arbitrary nonexistent or another stage's paths.
+    await expect(
+      acceptedRound({
+        selectionFile,
+        root,
+        stage: 'requirements',
+        round: 5,
+        route: 'reassess',
+        invokeAuthor: true,
+        author: {
+          ...author,
+          documents: [{ path: 'never-existed.md', description: 'not tracked' }],
+        },
+      }),
+    ).rejects.toThrow(/was not tracked before this edit/);
+    await expect(
+      acceptedRound({
+        selectionFile,
+        root,
+        stage: 'ux',
+        round: 1,
+        invokeAuthor: true,
+        author,
+      }),
+    ).rejects.toThrow(/was not tracked before this edit/);
   });
 
   it('binds an evaluated skip to the existing document revision and refuses dirty evidence', async () => {
