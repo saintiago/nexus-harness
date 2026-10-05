@@ -167,14 +167,21 @@ function parseCycleArtifact<Declaration extends ArtifactDeclaration>(
   return parsed.content as ArtifactContent<Declaration>;
 }
 
+/** Read one artifact at its declared path, or null when it does not exist. */
+export async function readArtifactFile<Declaration extends ArtifactDeclaration>(
+  file: string,
+  declaration: Declaration,
+): Promise<ArtifactContent<Declaration> | null> {
+  const text = await readDocumentText(file, 'Artifact');
+  return text === null ? null : parseCycleArtifact(file, declaration, text);
+}
+
 /** Read one cycle artifact, or null when the cycle did not produce it. */
 export async function readCycleArtifact<Declaration extends ArtifactDeclaration>(
   cycleRoot: string,
   declaration: Declaration,
 ): Promise<ArtifactContent<Declaration> | null> {
-  const file = path.join(cycleRoot, declaration.pathFromArtifactsRoot);
-  const text = await readDocumentText(file, 'Artifact');
-  return text === null ? null : parseCycleArtifact(file, declaration, text);
+  return readArtifactFile(path.join(cycleRoot, declaration.pathFromArtifactsRoot), declaration);
 }
 
 /** Write one cycle artifact and return its path. */

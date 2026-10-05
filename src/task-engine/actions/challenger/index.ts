@@ -179,12 +179,8 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
         : `The editor outcome you review (${ideaReportReference(
             turn,
             ideaReportContracts.editorTurn,
-          )}):\n${turn.narrative}\nFunctional editor-turn data: ` +
-          JSON.stringify({
-            disposition: turn.value.disposition,
-            reason: turn.value.reason,
-            help: turn.value.help,
-          }),
+            editorResponseArtifact,
+          )}):\n${turn.narrative}`,
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(challengerResponseSchema),
     ].join('\n\n');

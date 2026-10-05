@@ -85,6 +85,9 @@ export const projectGuideArtifact = {
   pathFromArtifactsRoot: 'project-guide.json',
   schema: retainedProjectGuideContributionSchema,
   legacyNarrative: legacyProjectGuideNarrative,
+  functionalData(record) {
+    return { question: record.question };
+  },
 } satisfies IdeaReportDeclaration<
   typeof retainedProjectGuideContributionSchema,
   LegacyProjectGuideContribution
@@ -95,6 +98,9 @@ export const projectGuideFollowUpArtifact = {
   pathFromArtifactsRoot: 'project-guide-follow-up.json',
   schema: retainedProjectGuideContributionSchema,
   legacyNarrative: legacyProjectGuideNarrative,
+  functionalData(record) {
+    return { question: record.question };
+  },
 } satisfies IdeaReportDeclaration<
   typeof retainedProjectGuideContributionSchema,
   LegacyProjectGuideContribution

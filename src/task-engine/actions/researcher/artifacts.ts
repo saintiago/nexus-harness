@@ -85,6 +85,9 @@ export const researchArtifact = {
   pathFromArtifactsRoot: 'researcher.json',
   schema: retainedResearchContributionSchema,
   legacyNarrative: legacyResearchNarrative,
+  functionalData(record) {
+    return { question: record.question };
+  },
 } satisfies IdeaReportDeclaration<
   typeof retainedResearchContributionSchema,
   LegacyResearchContribution
@@ -95,6 +98,9 @@ export const researchFollowUpArtifact = {
   pathFromArtifactsRoot: 'researcher-follow-up.json',
   schema: retainedResearchContributionSchema,
   legacyNarrative: legacyResearchNarrative,
+  functionalData(record) {
+    return { question: record.question };
+  },
 } satisfies IdeaReportDeclaration<
   typeof retainedResearchContributionSchema,
   LegacyResearchContribution

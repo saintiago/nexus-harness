@@ -285,7 +285,7 @@ async function contributionsText(
       );
     }
     contributions.push(
-      `${label} contribution (${ideaReportReference(contribution, contract)}):\n` +
+      `${label} contribution (${ideaReportReference(contribution, contract, artifact)}):\n` +
         contribution.narrative,
     );
   }
@@ -313,7 +313,7 @@ async function focusedText(root: string, plan: IdeaRoundPlan, workId: string): P
     });
     if (contribution !== null) {
       focused.push(
-        `Focused contribution (${ideaReportReference(contribution, contract)}):\n` +
+        `Focused contribution (${ideaReportReference(contribution, contract, artifact)}):\n` +
           contribution.narrative,
       );
     }
@@ -661,12 +661,8 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       `The Challenger result to answer (${ideaReportReference(
         discussion,
         ideaReportContracts.challenge,
-      )}):\n${discussion.narrative}\nFunctional Challenger data: ` +
-        JSON.stringify({
-          verdict: discussion.value.verdict,
-          obstacle: discussion.value.obstacle,
-          revision: discussion.value.revision,
-        }),
+        challengerArtifact,
+      )}):\n${discussion.narrative}`,
       ...focused,
       ...(guidance === null ? [] : [guidance]),
       ...(await recoveryText(root, plan, taskKey)),

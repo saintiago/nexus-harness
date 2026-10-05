@@ -29,15 +29,16 @@ import {
   type RefinedIdeaRead,
 } from './idea-editor/artifacts.js';
 import {
+  readArtifactFile,
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
   listIdeaCycles,
   listIdeaSubmissions,
-  readCycleArtifact,
 } from './idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
+import { readRecord } from './records.js';
 import {
   finishSuppliedCorrection,
   outstandingReportFeedback,
@@ -187,6 +188,12 @@ export type IdeaReportDeclaration<Schema extends z.ZodType = z.ZodType, Legacy =
   readonly pathFromArtifactsRoot: string;
   readonly schema: Schema;
   readonly legacyNarrative: (record: Legacy) => string;
+  /**
+   * The machine outcome fields a consumer needs beside the Markdown narrative, or null when the
+   * record shape states none. The producer owns this selection, so no narrative field reaches a
+   * consumer as machine data.
+   */
+  functionalData?(record: z.output<Schema>): Record<string, unknown> | null;
 };
 
 /** A report declaration the shared reader accepts, with the record types erased. */
@@ -358,17 +365,39 @@ function reportBindingIn(value: unknown): ReportBinding | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** The readable attribution of one retained idea report, with its Markdown reference when bound. */
+/**
+ * The functional machine-outcome data one retained report carries beside its Markdown, rendered
+ * as compact JSON, or null when the producer declares none. The producer's declaration owns the
+ * selection, so history and direct context expose the same fields.
+ */
+function functionalDataText(
+  read: RetainedIdeaReport<AnyIdeaReportDeclaration>,
+  declaration: AnyIdeaReportDeclaration,
+): string | null {
+  const data = declaration.functionalData?.(read.value) ?? null;
+  return data === null || Object.keys(data).length === 0 ? null : JSON.stringify(data);
+}
+
+/**
+ * The readable attribution of one retained idea report: its producer, profile, invocation and
+ * Markdown reference when bound, together with the functional outcome data the producer declares.
+ * A current saved outcome is reachable through its Markdown; a former combined record stays at its
+ * own path.
+ */
 export function ideaReportReference(
   read: RetainedIdeaReport<AnyIdeaReportDeclaration>,
   contract: IdeaReportContract,
+  declaration: AnyIdeaReportDeclaration,
 ): string {
   const profile = observedProfileOf(read.value);
   const fields = [contract.role, ...(profile === null ? [] : [`profile ${profile}`])];
-  return read.binding === null
-    ? `${fields.join(', ')}, retained combined record: ${read.file}`
-    : `${fields.join(', ')}, invocation ${read.binding.invocationId}, ` +
+  const reference =
+    read.binding === null
+      ? `${fields.join(', ')}, retained combined record: ${read.file}`
+      : `${fields.join(', ')}, invocation ${read.binding.invocationId}, ` +
         `Markdown report: ${read.binding.report.path}`;
+  const functional = functionalDataText(read, declaration);
+  return functional === null ? reference : `${reference}; functional data: ${functional}`;
 }
 
 /**
@@ -439,7 +468,8 @@ export async function retainedHistoryText(
           continue;
         }
         lines.push(
-          `  - cycle ${String(cycle)} ${entry.label}: ${ideaReportReference(read, entry.contract)}`,
+          `  - cycle ${String(cycle)} ${entry.label}: ` +
+            ideaReportReference(read, entry.contract, entry.declaration),
         );
       }
     }
@@ -549,11 +579,8 @@ export async function capturedIdeaText(
           `The editor\u2019s framing of this submission (${ideaReportReference(
             framing,
             ideaReportContracts.framing,
-          )}):\n${framing.narrative}\nFunctional framing data: ` +
-            JSON.stringify({
-              questions: framing.value.questions,
-              authorDecision: framing.value.authorDecision,
-            }),
+            framingArtifact,
+          )}):\n${framing.narrative}`,
         ]),
     ...(revision === null
       ? []
@@ -643,25 +670,45 @@ async function readRetainedIdeaText(settings: {
 }
 
 /**
- * Read one cycle's retained idea report through its producer declaration. A current saved outcome
- * requires its bound Markdown to be readable with the recorded identity and to answer this work
- * item; a retained combined record stays readable history under its producer's own renderer. An
- * unusable record is preserved as rejection evidence under its producer's report responsibility
- * before the read fails, instead of silently letting a later repair drop the correction
- * obligation.
+ * The producer invocation and profile one unusable retained outcome still names, recovered
+ * independently of full schema validity so retained rejection evidence keeps its original
+ * attribution instead of inheriting the reading action's profile. Metadata the damaged record
+ * cannot state stays explicitly unknown.
  */
-export async function readRetainedIdeaReport<
+async function observedAttributionOf(file: string): Promise<{
+  readonly invocationId: string | null;
+  readonly profile: string | null;
+}> {
+  const producer = await readRecord(file, {
+    file,
+    schema: z.object({
+      invocationId: z.string().trim().min(1).nullable().catch(null),
+      profile: z.string().trim().min(1).nullable().catch(null),
+    }),
+  }).catch(() => null);
+  return { invocationId: producer?.invocationId ?? null, profile: producer?.profile ?? null };
+}
+
+/**
+ * Read one retained idea report through its producer declaration at an explicit path. A current
+ * saved outcome requires its bound Markdown to be readable with the recorded identity and to
+ * answer this work item; a retained combined record stays readable history under its producer's
+ * own renderer. An unusable record is preserved as rejection evidence under its producer's report
+ * responsibility before the read fails, instead of silently letting a later repair drop the
+ * correction obligation.
+ */
+export async function readRetainedIdeaReportAtFile<
   Declaration extends AnyIdeaReportDeclaration,
 >(settings: {
   readonly root: string;
   readonly workId: string;
   readonly plan: IdeaRoundPlan;
-  readonly cycleRoot: string;
+  readonly file: string;
   readonly declaration: Declaration;
   readonly contract: IdeaReportContract;
   readonly context: string;
 }): Promise<RetainedIdeaReport<Declaration> | null> {
-  const file = path.join(settings.cycleRoot, settings.declaration.pathFromArtifactsRoot);
+  const { file } = settings;
   const scope = ideaReportScope({
     root: settings.root,
     workId: settings.workId,
@@ -670,14 +717,15 @@ export async function readRetainedIdeaReport<
   });
   let value: ArtifactContent<Declaration> | null;
   try {
-    value = await readCycleArtifact(settings.cycleRoot, settings.declaration);
+    value = await readArtifactFile(file, settings.declaration);
   } catch (error) {
+    const producer = await observedAttributionOf(file);
     return await rejectUnusableRecord({
       areaRoot: settings.root,
       scope,
-      invocationId: null,
+      invocationId: producer.invocationId,
       operation: settings.contract.operation,
-      profile: settings.plan.profiles[settings.contract.role] ?? null,
+      profile: producer.profile ?? settings.plan.profiles[settings.contract.role] ?? null,
       context: settings.context,
       file,
       error,
@@ -729,6 +777,27 @@ export async function readRetainedIdeaReport<
     });
   }
   return { file, value, narrative: report.text, binding };
+}
+
+/**
+ * Read one cycle's retained idea report through its producer declaration at the declaration's
+ * path within the cycle.
+ */
+export async function readRetainedIdeaReport<
+  Declaration extends AnyIdeaReportDeclaration,
+>(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly cycleRoot: string;
+  readonly declaration: Declaration;
+  readonly contract: IdeaReportContract;
+  readonly context: string;
+}): Promise<RetainedIdeaReport<Declaration> | null> {
+  return readRetainedIdeaReportAtFile({
+    ...settings,
+    file: path.join(settings.cycleRoot, settings.declaration.pathFromArtifactsRoot),
+  });
 }
 
 /**

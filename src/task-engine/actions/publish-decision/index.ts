@@ -4,7 +4,6 @@ import type { BoundAction, EventPublisher } from '../../index.js';
 import {
   challengerArtifact,
   isBoundChallengerReport,
-  retainedChallengerReportSchema,
   type ChallengerReport,
 } from '../challenger/artifacts.js';
 import {
@@ -12,8 +11,6 @@ import {
   framingArtifact,
   readRefinedIdeaRevision,
   refinedIdeaIdentity,
-  retainedEditorTurnSchema,
-  retainedFramingSchema,
   type RefinedIdea,
   type RefinedIdeaRead,
   type RetainedFraming,
@@ -22,7 +19,9 @@ import {
   ideaReportContracts,
   publishIdeaOutcome,
   readRetainedIdeaReport,
+  readRetainedIdeaReportAtFile,
   readRetainedRefinedIdea,
+  type AnyIdeaReportDeclaration,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
@@ -39,6 +38,7 @@ import { recordIdentity } from '../report-feedback.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
 import type { IdeaInput } from '../select-idea/artifacts.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
+import type { IdeaRoundPlan } from '../start-idea-round/artifacts.js';
 import {
   applyTransition,
   publishDocument,
@@ -267,6 +267,91 @@ function binds(
   );
 }
 
+/**
+ * Require the exact evidence one recorded approval rests on: the refined idea revision it names,
+ * the editor outcome and bound Markdown the Challenger assessed, the Challenger result with its
+ * bound Markdown, and the framing the cycle falls back to. A missing or changed artifact is an
+ * unusable approval preserved as its producer's rejection evidence, so neither retained replay
+ * nor parent publication can reuse an approval of content that is no longer readable. The
+ * framing is the editor outcome itself when the revision stood alone and otherwise its fallback,
+ * which recording also required to be usable when the cycle states one.
+ */
+async function requireRecordedApproval(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly record: IdeaDecisionRecord;
+  readonly context: string;
+}): Promise<RefinedIdeaRead> {
+  const { record } = settings;
+  if (record.refinedIdea === null || record.challenger === null) {
+    throw new Error('The retained approval has no refined idea or Challenger reference.');
+  }
+  const idea = await readRefinedIdeaRevision(path.dirname(record.refinedIdea));
+  if (idea === null || idea.path !== record.refinedIdea) {
+    throw new Error(
+      `The retained approval names no refined idea revision at "${record.refinedIdea}".`,
+    );
+  }
+  const assessed = await readRetainedIdeaReportAtFile({
+    root: settings.root,
+    workId: settings.workId,
+    plan: settings.plan,
+    file: record.challenger,
+    declaration: challengerArtifact,
+    contract: ideaReportContracts.challenge,
+    context: `${settings.context} Reading the Challenger result it rests on.`,
+  });
+  if (assessed === null) {
+    throw new Error(`The retained approval names no Challenger result at "${record.challenger}".`);
+  }
+  const standalone = assessed.value.editorResponse === null;
+  if (!standalone) {
+    await readRetainedIdeaReport({
+      root: settings.root,
+      workId: settings.workId,
+      plan: settings.plan,
+      cycleRoot: ideaCycleDirectory(settings.root, settings.plan.submission, settings.plan.cycle),
+      declaration: framingArtifact,
+      contract: ideaReportContracts.framing,
+      context: `${settings.context} Reading the framing the approval falls back to.`,
+    });
+  }
+  const declaration: AnyIdeaReportDeclaration = standalone
+    ? framingArtifact
+    : editorResponseArtifact;
+  const editor = await readRetainedIdeaReportAtFile({
+    root: settings.root,
+    workId: settings.workId,
+    plan: settings.plan,
+    file: record.editor,
+    declaration,
+    contract: standalone ? ideaReportContracts.framing : ideaReportContracts.editorTurn,
+    context:
+      `${settings.context} Reading the editor ` +
+      `${standalone ? 'framing' : 'outcome'} the approval assessed.`,
+  });
+  if (editor === null) {
+    throw new Error(
+      `The retained approval names no editor ${standalone ? 'framing' : 'outcome'} at ` +
+        `"${record.editor}".`,
+    );
+  }
+  if (
+    idea.value.revision !== record.revision ||
+    !isBoundChallengerReport(assessed.value) ||
+    assessed.value.verdict !== 'approve' ||
+    !binds(
+      assessed.value,
+      idea,
+      standalone ? null : { file: editor.file, identity: recordIdentity(editor.value) },
+    )
+  ) {
+    throw new Error('The retained approval does not bind its refined idea and editor outcome.');
+  }
+  return idea;
+}
+
 /** The retained artifact paths one approved handoff references, in cycle order. */
 async function handoffReferences(
   root: string,
@@ -331,59 +416,21 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
         );
       }
       if (existing.decision === 'approved') {
-        if (existing.refinedIdea === null || existing.challenger === null) {
-          throw new Error('The retained approval has no refined idea or Challenger reference.');
-        }
-        const idea = await readRefinedIdeaRevision(path.dirname(existing.refinedIdea));
-        if (idea === null || idea.path !== existing.refinedIdea) {
-          throw new Error(
-            `The retained approval names no refined idea revision at "${existing.refinedIdea}".`,
-          );
-        }
-        const assessed = await readRequiredRecord(
-          existing.challenger,
-          {
-            file: existing.challenger,
-            schema: retainedChallengerReportSchema,
-          },
-          'Approval assessment',
-        );
-        const editor =
-          assessed.editorResponse === null
-            ? null
-            : await readRequiredRecord(
-                existing.editor,
-                { file: existing.editor, schema: retainedEditorTurnSchema },
-                'Approved editor outcome',
-              );
-        if (assessed.editorResponse === null) {
-          // The approved revision stood alone; the record still names the framing it fell back to.
-          await readRequiredRecord(
-            existing.editor,
-            { file: existing.editor, schema: retainedFramingSchema },
-            'Approved editor framing',
-          );
-        }
-        if (
-          idea.value.revision !== existing.revision ||
-          !isBoundChallengerReport(assessed) ||
-          assessed.verdict !== 'approve' ||
-          !binds(
-            assessed,
-            idea,
-            editor === null ? null : { file: existing.editor, identity: recordIdentity(editor) },
-          )
-        ) {
-          throw new Error(
-            'The retained approval does not bind its refined idea and editor outcome.',
-          );
-        }
+        const approval = await requireRecordedApproval({
+          root,
+          workId: selection.taskKey,
+          plan,
+          record: existing,
+          context:
+            `RecordIdeaDecision replaying the recorded approval of submission ` +
+            `${String(plan.submission)} for idea ${selection.taskKey}.`,
+        });
         await writeHandoff(
           selection,
           root,
           plan.submission,
           plan.cycle,
-          existing.refinedIdea,
+          approval.path,
           decisionFile,
         );
       }
@@ -607,25 +654,42 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
 
     const issue = await readIssue(jira, settings.selection.source.issueId);
     const status = statusNameOf(issue);
+    if (
+      status !== target &&
+      settings.expected !== undefined &&
+      (status === null || !settings.expected.includes(status))
+    ) {
+      // A human pause is preserved and reported before local evidence is judged: nothing is
+      // published while the issue is not in a status this publication may write from.
+      publish({
+        source: 'publish-decision',
+        type: 'failed',
+        data: {
+          reason:
+            `Issue ${settings.selection.taskKey} is in status "${status ?? 'unknown'}" while ` +
+            `the idea publication expected one of ` +
+            `${settings.expected.map((value) => `"${value}"`).join(', ')}; an unexpected human ` +
+            'change is preserved instead of overwritten.',
+        },
+      });
+      return 'failed';
+    }
+    if (record.decision === 'approved') {
+      // Publication revalidates the approval it reuses before any source write: a bound report
+      // removed or changed after the decision was recorded must fail here instead of authorizing
+      // the approved transition or reusing the retained comment.
+      await requireRecordedApproval({
+        root,
+        workId: settings.selection.taskKey,
+        plan,
+        record,
+        context:
+          `PublishDecision reusing the recorded approval of submission ` +
+          `${String(plan.submission)} for idea ${settings.selection.taskKey}.`,
+      });
+    }
     let transitionId: string | null = null;
     if (status !== target) {
-      if (
-        settings.expected !== undefined &&
-        (status === null || !settings.expected.includes(status))
-      ) {
-        publish({
-          source: 'publish-decision',
-          type: 'failed',
-          data: {
-            reason:
-              `Issue ${settings.selection.taskKey} is in status "${status ?? 'unknown'}" while ` +
-              `the idea publication expected one of ` +
-              `${settings.expected.map((value) => `"${value}"`).join(', ')}; an unexpected human ` +
-              'change is preserved instead of overwritten.',
-          },
-        });
-        return 'failed';
-      }
       const found = await transitionInto(jira, issue, target);
       if (found.kind === 'blocked') {
         publish({ source: 'publish-decision', type: 'failed', data: { reason: found.reason } });

@@ -131,4 +131,7 @@ export const challengerArtifact = {
   pathFromArtifactsRoot: 'challenger.json',
   schema: retainedChallengerReportSchema,
   legacyNarrative: legacyChallengerNarrative,
+  functionalData(record) {
+    return { verdict: record.verdict, obstacle: record.obstacle, revision: record.revision };
+  },
 } satisfies IdeaReportDeclaration<typeof retainedChallengerReportSchema, LegacyChallengerReport>;

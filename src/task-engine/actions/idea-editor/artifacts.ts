@@ -168,6 +168,13 @@ export const framingArtifact = {
   pathFromArtifactsRoot: 'editor-framing.json',
   schema: retainedFramingSchema,
   legacyNarrative: legacyFramingNarrative,
+  functionalData(record) {
+    return {
+      framing: record.framing,
+      questions: record.questions,
+      authorDecision: record.authorDecision,
+    };
+  },
 } satisfies IdeaReportDeclaration<typeof retainedFramingSchema, LegacyFramingRecord>;
 
 /** What the editor did with the Challenger's concern. */
@@ -294,6 +301,9 @@ export const editorResponseArtifact = {
   pathFromArtifactsRoot: 'editor-response.json',
   schema: retainedEditorTurnSchema,
   legacyNarrative: legacyEditorTurnNarrative,
+  functionalData(record) {
+    return { disposition: record.disposition, reason: record.reason, help: record.help };
+  },
 } satisfies IdeaReportDeclaration<typeof retainedEditorTurnSchema, LegacyEditorTurnRecord>;
 
 /** The editor's focused help request for the cycle, answered by the named contributors. */
@@ -301,6 +311,9 @@ export const editorHelpArtifact = {
   pathFromArtifactsRoot: 'editor-help-request.json',
   schema: retainedEditorTurnSchema,
   legacyNarrative: legacyEditorTurnNarrative,
+  functionalData(record) {
+    return { disposition: record.disposition, reason: record.reason, help: record.help };
+  },
 } satisfies IdeaReportDeclaration<typeof retainedEditorTurnSchema, LegacyEditorTurnRecord>;
 
 /**

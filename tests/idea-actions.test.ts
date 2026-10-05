@@ -55,6 +55,7 @@ import {
 import {
   outstandingReportFeedback,
   projectOfWorkspace,
+  recordIdentity,
   readReportFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import {
@@ -1061,6 +1062,65 @@ describe('idea editor', () => {
       });
     },
   );
+
+  it('supplies the focused question as data beside the focused contribution Markdown', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const revision = await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    await writeChallenge(area, {
+      cycle: 1,
+      verdict: 'discuss',
+      obstacle: 'The gate may slow local work.',
+      markdown: 'The speed concern is unresolved.',
+      refinedIdea: revision,
+      revision: 1,
+    });
+    await area.writeReported(
+      2,
+      editorHelpArtifact.pathFromArtifactsRoot,
+      {
+        taskKey: 'NEX-1',
+        role: 'idea-editor',
+        profile: 'nexus-editor',
+        disposition: 'help-requested',
+        reason: null,
+        help: { researcher: 'Can full source checks stay fast?', projectGuide: null },
+      },
+      '# Editor help request\n',
+      'editor-help-2',
+    );
+    await area.writeReported(
+      2,
+      researchFollowUpArtifact.pathFromArtifactsRoot,
+      {
+        taskKey: 'NEX-1',
+        role: 'researcher',
+        profile: 'nexus-research',
+        question: 'Can full source checks stay fast?',
+      },
+      '# Focused research\n\nThe narrative reports the findings without restating the request.\n',
+      'researcher-follow-up-2',
+    );
+    const agent = scriptedRuntime([answeredTurn()]);
+    const editor = createIdeaEditor({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(editor({ task: 'respond-after-help' })).resolves.toBe('responded');
+
+    // The question is functional outcome data, so the post-help turn receives it even though the
+    // contribution's Markdown narrative does not restate it.
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain('"question":"Can full source checks stay fast?"');
+    // The retained-history reference for the same contribution stays readable as its outcome.
+    expect(context).toContain('cycle 2 focused research: researcher, profile nexus-research');
+  });
 });
 
 describe('Researcher and Project guide', () => {
@@ -1099,6 +1159,39 @@ describe('Researcher and Project guide', () => {
       type: 'outcome',
       data: { outcome: 'contributed', detail: null },
     });
+  });
+
+  it('supplies the saved framing interpretation as data beside its Markdown narrative', async () => {
+    const area = await refinementArea();
+    await area.writeReported(
+      1,
+      framingArtifact.pathFromArtifactsRoot,
+      {
+        taskKey: 'NEX-1',
+        role: 'idea-editor',
+        profile: 'nexus-editor',
+        framing: 'The author wants a gate framed as a change to review practice.',
+        questions: ['Is generated code in scope?'],
+        authorDecision: null,
+      },
+      '# Framing narrative\n\nThe narrative omits the functional interpretation.\n',
+      'editor-framing-1',
+    );
+    const agent = scriptedRuntime([researchResponse], researchReport);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+
+    // The functional framing reaches the invocation through the framing outcome, not through its
+    // Markdown narrative.
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain('The author wants a gate framed as a change to review practice.');
+    expect(context).toContain('"questions":["Is generated code in scope?"]');
+    expect(context).toContain('functional data: {"framing":');
   });
 
   it('answers the editor’s focused question and skips a request aimed elsewhere', async () => {
@@ -1517,7 +1610,7 @@ describe('decision publication', () => {
   }
 
   /** The child's record action and the parent's publication over one refinement area. */
-  function publication(
+  function decisionActions(
     area: Awaited<ReturnType<typeof refinementArea>>,
     jira: ReturnType<typeof source>,
     selectionFile: string,
@@ -1543,6 +1636,17 @@ describe('decision publication', () => {
       jira: jira.jira,
       publish: (event) => area.events.push(event),
     });
+    return { record, publishDecision };
+  }
+
+  /** The composed child-record and parent-publication one publication test drives. */
+  function publication(
+    area: Awaited<ReturnType<typeof refinementArea>>,
+    jira: ReturnType<typeof source>,
+    selectionFile: string,
+    expected?: readonly string[],
+  ) {
+    const { record, publishDecision } = decisionActions(area, jira, selectionFile, expected);
     return async (input?: unknown) => {
       await record(input);
       return publishDecision();
@@ -1772,6 +1876,220 @@ describe('decision publication', () => {
     );
     await expect(decide({ decision: 'approved' })).resolves.toBe('failed');
   });
+
+  /** The child's selection file beside one refinement area. */
+  async function selectionFileFor(area: RefinementArea): Promise<string> {
+    const selectionFile = path.join(path.dirname(area.root), 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        task: capturedInput.issue,
+        conversation: [],
+        workspace: { root: path.dirname(area.root) },
+        stage: 'idea',
+      }),
+    );
+    return selectionFile;
+  }
+
+  /**
+   * The approved decision's evidence paths, read from the records it names: the Challenger
+   * result's Markdown and the editor outcome's Markdown.
+   */
+  async function approvalBindings(area: RefinementArea): Promise<{
+    readonly decision: IdeaDecisionRecord;
+    readonly challenger: string;
+    readonly editor: string;
+  }> {
+    const decision = JSON.parse(
+      await readFile(path.join(area.root, 'artifacts/submissions/1/decision.json'), 'utf8'),
+    ) as IdeaDecisionRecord;
+    if (decision.challenger === null) {
+      throw new Error('The fixture approval needs a Challenger result.');
+    }
+    const challenger = JSON.parse(await readFile(decision.challenger, 'utf8')) as {
+      readonly report: { readonly path: string };
+    };
+    const editor = JSON.parse(await readFile(decision.editor, 'utf8')) as {
+      readonly report: { readonly path: string };
+    };
+    return { decision, challenger: challenger.report.path, editor: editor.report.path };
+  }
+
+  it.each([
+    ['the Challenger result', 'challenger', 'challenger', 'challenge'],
+    ['the editor framing', 'editor', 'idea-editor', 'idea-framing'],
+  ] as const)(
+    'rejects reusing an approval whose %s has no bound Markdown',
+    async (_label, target, role, reportKind) => {
+      const area = await refinementArea();
+      await approvedCycle(area);
+      const selectionFile = await selectionFileFor(area);
+      const jira = source();
+      const { record, publishDecision } = decisionActions(area, jira, selectionFile);
+      await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
+      const bindings = await approvalBindings(area);
+
+      await rm(bindings[target]);
+      await expect(record({ decision: 'approved' })).rejects.toThrow(/does not exist/u);
+      const scope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role,
+        reportKind,
+      };
+      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        operation: role === 'challenger' ? 'Challenger' : 'FrameIdea',
+        invocationId: role === 'challenger' ? 'challenger-1' : 'editor-framing-1',
+        profile: role === 'challenger' ? 'nexus-challenger' : 'nexus-editor',
+        source: {
+          path: target === 'challenger' ? bindings.decision.challenger : bindings.decision.editor,
+        },
+        assignedReport: { path: bindings[target] },
+      });
+      // The recorded approval and its handoff stay untouched by the failed reuse.
+      const retained = await approvalBindings(area);
+      expect(retained.decision).toEqual(bindings.decision);
+      await expect(readFile(path.join(area.root, ideaHandoffFile), 'utf8')).resolves.toContain(
+        bindings.decision.refinedIdea ?? '',
+      );
+
+      // Parent publication revalidates the same binding before it writes any source state.
+      await expect(publishDecision()).rejects.toThrow(/does not exist/u);
+      expect(jira.transitions).toEqual([]);
+      expect(jira.comments).toEqual([]);
+    },
+  );
+
+  it('rejects reusing an approval whose bound Markdown bytes changed', async () => {
+    const area = await refinementArea();
+    await approvedCycle(area);
+    const selectionFile = await selectionFileFor(area);
+    const jira = source();
+    const { record } = decisionActions(area, jira, selectionFile);
+    await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
+    const bindings = await approvalBindings(area);
+
+    await writeFile(bindings.editor, '# Unexamined framing\n', 'utf8');
+    await expect(record({ decision: 'approved' })).rejects.toThrow(/does not match the identity/u);
+    const scope = {
+      project: projectOfWorkspace(path.dirname(area.root)),
+      workId: 'NEX-1',
+      area: area.root,
+      role: 'idea-editor',
+      reportKind: 'idea-framing',
+    };
+    const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+    expect(feedback[0]?.record).toMatchObject({
+      invocationId: 'editor-framing-1',
+      output: expect.stringContaining('"framing"'),
+      reason: expect.stringContaining('does not match the identity'),
+    });
+  });
+
+  /**
+   * Record a cycle-1 approval whose editor outcome is a turn and whose framing is usable; the
+   * returned report paths are the turn's and the framing's bound Markdown.
+   */
+  async function recordedTurnApproval(area: RefinementArea): Promise<{
+    readonly record: (input?: unknown) => Promise<string>;
+    readonly publishDecision: () => Promise<string>;
+    readonly jira: ReturnType<typeof source>;
+    readonly turnReport: string;
+    readonly framingReport: string;
+  }> {
+    await area.writeReported(
+      1,
+      framingArtifact.pathFromArtifactsRoot,
+      {
+        taskKey: 'NEX-1',
+        role: 'idea-editor',
+        profile: 'nexus-editor',
+        framing: framingFixture.framing,
+        questions: framingFixture.questions,
+        authorDecision: null,
+      },
+      '# Framing\n',
+      'editor-framing-1',
+    );
+    await area.write(1, refinedIdeaArtifact.pathFromArtifactsRoot, {
+      ...revisedTurn(1).refinedIdea,
+      revision: 1,
+      submission: 1,
+      cycle: 1,
+    });
+    const turnFile = await area.writeReported(
+      1,
+      editorResponseArtifact.pathFromArtifactsRoot,
+      {
+        taskKey: 'NEX-1',
+        role: 'idea-editor',
+        profile: 'nexus-editor',
+        disposition: 'revised',
+        reason: null,
+        help: null,
+      },
+      '# The editor turn that wrote revision 1\n',
+      'editor-turn-1',
+    );
+    await writeChallenge(area, {
+      cycle: 1,
+      verdict: 'approve',
+      obstacle: null,
+      markdown: 'Revision 1 is worth pursuing.',
+      refinedIdea: path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot),
+      revision: 1,
+      editorResponse: turnFile,
+      editorIdentity: recordIdentity(JSON.parse(await readFile(turnFile, 'utf8')) as unknown),
+    });
+    const selectionFile = await selectionFileFor(area);
+    const jira = source();
+    const { record, publishDecision } = decisionActions(area, jira, selectionFile);
+    await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
+    const bindings = await approvalBindings(area);
+    expect(bindings.decision.editor).toBe(turnFile);
+    const framing = JSON.parse(
+      await readFile(path.join(area.cycleRoot(), framingArtifact.pathFromArtifactsRoot), 'utf8'),
+    ) as { readonly report: { readonly path: string } };
+    return {
+      record,
+      publishDecision,
+      jira,
+      turnReport: bindings.editor,
+      framingReport: framing.report.path,
+    };
+  }
+
+  it.each([
+    ['the editor turn', 'turn', 'idea-editor-turn', 'EditorTurn', 'editor-turn-1'],
+    ['the fallback framing', 'framing', 'idea-framing', 'FrameIdea', 'editor-framing-1'],
+  ] as const)(
+    'revalidates %s an approval names before reusing or publishing it',
+    async (_label, target, reportKind, operation, invocationId) => {
+      const area = await refinementArea();
+      const approval = await recordedTurnApproval(area);
+      await rm(target === 'turn' ? approval.turnReport : approval.framingReport);
+
+      await expect(approval.record({ decision: 'approved' })).rejects.toThrow(/does not exist/u);
+      await expect(approval.publishDecision()).rejects.toThrow(/does not exist/u);
+      expect(approval.jira.transitions).toEqual([]);
+      expect(approval.jira.comments).toEqual([]);
+      const scope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: 'idea-editor',
+        reportKind,
+      };
+      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
+      expect(feedback[0]?.record).toMatchObject({ operation, invocationId });
+    },
+  );
 });
 
 describe('retained idea reports', () => {
@@ -2089,6 +2407,53 @@ describe('retained idea reports', () => {
     expect(context).toContain('Outstanding report rejection');
     expect(context).toContain('is not valid JSON');
     expect(context).toContain(malformed);
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+  });
+
+  it('keeps a damaged outcome’s own invocation and profile attribution in retained feedback', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(path.dirname(file), { recursive: true });
+    // The record is valid JSON but its report binding is incomplete; its observed attribution
+    // stays readable even though the outcome no longer parses.
+    const damaged = {
+      taskKey: 'NEX-1',
+      role: 'researcher',
+      profile: 'nexus-research-history',
+      question: 'Which earlier evidence mattered?',
+      report: { path: path.join(area.cycleRoot(), 'reports', 'historical', 'researcher.md') },
+      invocationId: 'researcher-history-1',
+    };
+    await writeFile(file, JSON.stringify(damaged), 'utf8');
+    const settings = {
+      workspace: { root: area.root },
+      runner: runnerOf(scriptedRuntime([]).runtime),
+      publish: (event: EngineEvent) => area.events.push(event),
+    };
+    const researcher = createResearcher(settings);
+
+    await expect(researcher({ phase: 'initial' })).rejects.toThrow(/declared content type/u);
+    const scope = scopeOf(area, 'researcher', 'research');
+    const retained = (await outstandingReportFeedback({ areaRoot: area.root, scope }))[0];
+    expect(retained?.record).toMatchObject({
+      scope,
+      operation: 'Researcher',
+      invocationId: 'researcher-history-1',
+      profile: 'nexus-research-history',
+      source: { path: file },
+    });
+
+    // A continuation under a different configured profile still receives and retires the
+    // rejection under its original attribution.
+    await rm(file);
+    area.plan.profiles.researcher = 'nexus-research-next';
+    await writeFile(path.join(area.root, ideaRoundPlanFile), JSON.stringify(area.plan));
+    const recovery = scriptedRuntime([researchResponse], researchReport);
+    const next = createResearcher({ ...settings, runner: runnerOf(recovery.runtime) });
+    await expect(next({ phase: 'initial' })).resolves.toBe('contributed');
+    const context = recovery.requests[0]?.context ?? '';
+    expect(context).toContain('researcher-history-1');
+    expect(context).toContain('nexus-research-history');
     await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
   });
 
