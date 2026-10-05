@@ -50,12 +50,15 @@ dependencies in the worker. Actions use AgentRuntime for delivery, idea refineme
 Adapters are modules at external boundaries, not a registry or additional service.
 
 Workspace and configuration are data designs. One issue workspace retains artifacts across
-workflows. WorkspaceRef identifies the active workflow area; each workflow owns its artifact layout
-and later workflows can read retained artifacts from the shared issue root.
+workflows. Repository WorkspaceRef and artifact ownership are separate. Preparation stages share one
+checkout and branch while retaining stage areas. The first implementation uses that repository
+reference with its own issue's delivery artifacts; later implementations use the merged base.
+Later workflows can read immutable retained artifacts from the preparation issue root.
 
 [Memory](memory/architecture.md) supplies optional historical experience. Application composes the
 shared service client and configures the [AMEM MCP tools](memory/integration.md#agent-use) agents
-use explicitly; completion experience is analyzed asynchronously after confirmed completion.
+use explicitly, including every preparation author/evaluator. AnalyzeExperience is the sole automatic
+consumer after selected-work terminal handoffs.
 Workflow routing, direct hand-offs and authoritative artifacts remain unchanged.
 
 ## Application and configuration
@@ -180,7 +183,10 @@ Jira status; interrupted execution restores the parent and active child snapshot
 Preparation children are Idea Refinement, Requirements, UX Proposal, Storybook Refinement and
 Architecture. Each owns its agent loops and outputs. Architecture hands the original issue off to
 linked implementation tickets. Finite Delivery runs for each selected implementation ticket and
-retains development, verification, delivery, review, repair and merge/check behavior. Parent-owned
+publishes a separate PR for each, with committed preparation in the first. There is no combined
+preparation-document review/assembly or preparation-only PR. Stage evaluators own their current
+content/input decisions; upstream correction revisits affected decisions in the retained checkout.
+Finite Delivery retains development, verification, delivery, review, repair and merge/check behavior. Parent-owned
 boundary actors supply source refresh/publication acknowledgements where coding rounds need them.
 The parent completes the implementation issue only after the child's merge/check evidence.
 

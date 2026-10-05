@@ -39,7 +39,8 @@ catalogue path is included in the templates.
 
 Profiles layer over the base Codex configuration. They do not replace it or exclude arbitrary
 inherited MCP servers and plugins. Before use, inspect the selected profile's effective tool
-catalogue and disable inherited tools outside shell, files and the three research services.
+catalogue and disable inherited tools outside shell, files, the three research services and the
+browser/image capabilities below where needed.
 Repeat that check when changing the base configuration. Explicit per-app settings can override
 the default app exclusion. Nexus adds the AMEM memory MCP server to memory-enabled invocations
 through the provider's native settings ([Memory integration](../memory/integration.md#agent-use));
@@ -49,5 +50,36 @@ Verify connectivity to each research service and provider authentication on the 
 Keep credentials and machine-specific settings out of the repository.
 
 Preparation and delivery assignments follow the [project workflow](../project-workflow.md#profiles).
-Prototype evaluation requires browser and image-inspection tools. Jira credentials and source
+Both prototype roles require browser and image-inspection tools. Jira credentials and source
 publication tools are not supplied to stage roles.
+
+## Prototype browser and image setup
+
+Use Playwright MCP for real browser interaction and screenshot image responses. Install a pinned
+`@playwright/mcp` release and its matching Chromium browser on the WSL execution host; make its
+`playwright-mcp` executable available on PATH. Record the tested package/browser versions in the
+installation evidence. Native tool settings select this stdio server for both prototype roles:
+
+```toml
+[mcp_servers.playwright]
+command = "playwright-mcp"
+args = ["--headless"]
+```
+
+The setup must expose navigation, interaction, browser diagnostics and rendered screenshots as
+images the selected model can inspect. Shell/preview permissions allow starting the project's
+Storybook server. Use separate browser sessions for author and evaluator, and release preview/browser
+processes after the observation. Keep project-specific start commands in supplied prototype context,
+not profile settings. No Nexus browser adapter or tool dispatcher is needed; native MCP transport
+remains provider-owned.
+
+Verify the effective tool catalogue and image delivery using each assigned prototype profile,
+including the author ladder's entries. Successful installation or a screenshot filename is not
+evidence that the model received and inspected the image. An unsupported model/image path or broken
+server is an execution setup failure, not a usability verdict or applicability skip.
+
+An isolated, test-consumed Storybook fixture validates this capability for internal Nexus changes.
+Exercise a small journey with a state change, inspect screenshots/layout and retain each role's
+observation against the fixture commit. The fixture does not add product UI or external-service
+navigation. See [preparation observations](../task-engine/actions/preparation-stage.md#prototype-observations)
+for the evidence contract.

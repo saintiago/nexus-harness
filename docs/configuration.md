@@ -128,7 +128,7 @@ profiles and workflows. Project settings own eligibility, status mappings and im
 creation/link/label settings. No artifact-path override or workflow graph belongs in project settings.
 Reuse existing source workspace/PR fields; preparation needs no additional Jira custom field.
 
-KAN maps ready delivery work to Implementation. HARN can retain To Do during bootstrap. The parent
+KAN maps ready delivery work to Implementation. HARN maps ready delivery work to To Do. The parent
 selects mapped preparation and implementation work in one ranked queue. Waiting for Feedback and
 Done are not automatically selected. Persist feedback return destinations in the issue source
 handoff record. Role assignments and the Flash/Sol/Astra models follow the workflow's Profiles section.

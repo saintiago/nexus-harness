@@ -33,14 +33,16 @@ type DeliveryOutput = {
 - failed: an observed delivery condition prevents publication, with its reason retained for recovery.
 
 Only published produces a usable deliveryArtifact; it publishes the
-[action outcome event](architecture.md#action-outcome-events) referencing the saved record and naming
+[action outcome event](../architecture.md#action-outcome-events) referencing the saved record and naming
 the pull request. failed saves no delivery record; it retains its reason at
 artifacts/&lt;round&gt;/delivery-failure.json and publishes it, so the terminal handoff states it after
 a restart. API or command failures are execution errors.
 
 ## Behavior
 
-Require successful verification for the current committed head. Publish the branch with a normal
+Require successful verification for the current committed head. Use
+PreparedWorkspace.repositoryWorkspace for repository operations. Each implementation ticket owns
+its own PR; the first PR includes the preparation commits carried by its branch. Publish with a normal
 non-forced push and confirm the remote branch head. Find the task's existing pull request or its matching branch; decide whether to create
 or update it. A closed or unrelated pull request is not silently reused.
 

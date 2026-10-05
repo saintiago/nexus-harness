@@ -168,11 +168,13 @@ A resume decision restarts the worker with the same project configuration and th
 by recovery.
 
 For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to the configured implementation-ready status
-immediately after it. Recovery discards the broken finite delivery worktree, round artifacts and state within the
-shared issue workspace, preserving other workflow areas. It clears the active source pointer and
+immediately after it. Recovery discards disposable finite delivery work and preserves preparation
+repositories and immutable handoffs, following the continuation rules in
+[PrepareWorkspace](task-engine/actions/prepare-workspace.md#behavior). It clears the active source pointer and
 selection, then resets queue execution to initial selection. The normal workflow processes the
-blocker, then starts the interrupted task anew from updated main. Cleanup of the discarded attempt
-follows the RecoveryRole contract. Application has no special blocker execution mode or return target.
+blocker, then starts an ordinary interrupted task anew from updated base. A first implementation
+continues the recorded preparation repository; incompatible continuation needs attention.
+Cleanup follows the RecoveryRole contract. Application has no special blocker execution mode or return target.
 
 Each recovery invocation consumes the configured allowance for this execution. Worker restarts and
 queue reordering do not reset it. Exhaustion, failed recovery or a needs-attention decision ends execution

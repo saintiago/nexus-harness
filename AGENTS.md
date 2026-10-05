@@ -68,6 +68,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Finite workflow](workflows/finite-delivery.ts): XState definition for finite delivery and Stately visualization.
 - [Idea refinement specification](docs/idea-refinement/spec.md): Nexus design and behavior for the cross-project idea refinement workflow: purpose, four-role conversation, routing, artifacts and XState pseudocode; authoritative for implementing Nexus and relevant evidence for ideas about this workflow, not per-run role instructions.
 - [Preparation stage actions](docs/task-engine/actions/preparation-stage.md): applicability, round artifacts, evaluation and preparation results.
+- [Implementation handoff](docs/task-engine/actions/implementation-handoff.md): linked tasks, duplicate-safe admission and preparation repository continuation.
 - [Preparation roles](docs/agent-runtime/preparation-roles.md): requirements, UX, prototype and architecture author/evaluator instructions.
 - [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [SelectWork design](docs/task-engine/actions/select-task.md): source selection, stage routing, task input and retained workspace reference.

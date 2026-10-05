@@ -13,6 +13,26 @@ This workflow covers preparation through finite delivery. Configured integrated 
 required. Separate test-deployment and production-promotion workflows are outside this workflow.
 Preparation completion does not establish that a feature was shipped.
 
+## Affected categories and journey
+
+The affected categories are preparation ownership, workspace continuity, evaluation and correction,
+prototype observation, implementation handoff and delivery protection. The operator's journey is:
+select preparation work -> evaluate Requirements -> evaluate UX -> evaluate Storybook -> evaluate
+Architecture and its implementation plan -> hand off linked implementation tickets -> deliver each
+ticket separately. Evaluated skips and upstream corrections are part of that journey.
+
+The activities are authoring and committing stage-owned documents, assessing their exact revisions,
+repairing findings, observing applicable prototypes, correcting earlier inputs, creating the linked
+handoff and verifying, reviewing and completing each implementation PR. Requirements govern these
+observable outcomes; Architecture owns supporting contracts, storage layout and tool choices.
+
+Nexus applicability follows [Nexus UX and UI](ux-ui.md). This internal workflow change retains the
+existing reporting terminal and requires evaluated UX and prototype skips. Browser/image-verification
+capability work remains required; validate it during implementation with an isolated test fixture
+running a real Storybook preview, browser interactions and image/layout inspection. That fixture
+does not establish a Nexus UI proposal or authorize terminal redesign or external-service navigation
+mocks.
+
 ## Parent responsibilities
 
 SelectWork searches configured eligible stages in source rank order, captures the issue and complete
@@ -92,6 +112,21 @@ current revision and responses; earlier approval cannot approve changed content.
 answer or rebut mistaken findings. Evaluators explicitly resolve prior findings and distinguish
 necessary changes from optional suggestions.
 
+Each stage updates and commits its relevant authoritative documentation in one retained checkout
+and branch, then passes that same workspace forward. Stage-owned round artifacts and evaluations
+remain attributable to their stage. Both author and evaluator run in the actual retained checkout.
+Requirements evaluates requirements, UX evaluates UX, Storybook evaluates the prototype, and
+Architecture evaluates architecture and the implementation plan only. There is no combined
+documentation assembly or review after these stage evaluations.
+
+Every stage can return a concrete input problem to an allowed earlier stage, including Idea.
+Correction and reevaluation use the retained workspace. Reevaluate acceptances whose content or
+relied-on inputs changed before advancing; unchanged, still-valid work remains reusable. A later
+stage's unrelated commit does not itself invalidate an earlier acceptance. An evaluated skip cannot
+resurrect work invalidated by a correction. Restart retains the workspace, findings, revision/input
+identities, completed round history and cumulative allowances rather than starting a new approval
+history.
+
 Seek improvements as well as omissions: simpler rules, clearer journeys, lower user effort, fewer
 unnecessary interactions and maintainable designs. Click count alone is not a goal; preserve clarity,
 accessibility and error prevention. Acceptance means stage criteria are met, not that no imaginable
@@ -122,16 +157,22 @@ assessment is required. Outputs are the accepted proposal and questions for the 
 ## Storybook Refinement
 
 Prototype Developer builds/adapts the proposed journey with representative data and relevant states.
-Prototype Evaluator runs and interacts with the preview through browser and image-inspection tools,
-using acceptance examples and UX questions. Save observed evidence with findings. Text-only review
-or an unavailable preview cannot establish inspected usability. Build/tool failures are repaired here,
-not by reopening unrelated requirements.
+Both Prototype Developer and Prototype Evaluator run and interact with the preview using working
+browser and image-inspection capabilities. Exercise relevant journeys and states from the acceptance
+examples and UX questions, and inspect rendered images and layout. Acceptance of an applicable
+prototype requires concrete observations identifying the inspected prototype revision, preview,
+journeys/states, interactions and image/layout evidence. Text-only review, controlled test responses
+or an unavailable preview cannot establish inspected usability.
+
+Failed observations enter the prototype author/evaluator repair loop, or return to the responsible
+earlier stage when its input needs correction. Build/tool failures are repaired at their owning
+boundary; they are not new product requirements or a reason to invent an applicability skip.
 
 Revise the prototype and UX documentation together when an interaction decision changes. No useful
 prototype work permits an evaluated skip. Outputs identify stories/preview, the retained prototype
 revision and evaluation evidence. Mocked behavior establishes usability, not persistence, account
 isolation, service integration or deployed behavior. Prototype code stays on retained preparation
-work and is supplied to implementation for reuse; it is not merged in a documentation-only release.
+work and is supplied to implementation for reuse.
 
 ## Architecture
 
@@ -149,26 +190,27 @@ role or Jira status.
 
 ## Documentation and implementation handoff
 
-Publish changed authoritative documents in a documentation-only PR and confirm merge/check evidence
-before creating implementation tickets. Determine publication necessity from the actual document
-contribution reconciled with the current base. Unrelated base changes are not publication changes.
-An empty document diff opens no PR; a previously started publication still completes its exact-revision merge/check gates on replay.
-If existing documents already suffice, reference their accepted revision and skip evidence; do not
-create an empty PR. Existing repository gates remain;
-there is no additional approval gate beyond essential author decisions. The existing repository
-reviewer assesses the exact assembled documentation revision within the Architecture child; the
-deterministic parent publishes that saved assessment's actual Lens review/check verdict under the
-[Review contract](task-engine/actions/review.md#output). Reviewer invocation faults and unusable child
-assessments follow existing execution-error recovery and cannot authorize merge or implementation-ticket creation.
-Retained negative evidence is preserved and requests repairs, never replaced with deterministic
-approval. Validate the entire publication diff against accepted document paths.
+After Architecture and its implementation plan are accepted, the parent creates and links one or
+more concise implementation tickets from that plan. Architecture owns the plan; the parent retains
+all source creation and linking operations. Tickets reference the source issue, accepted document
+revisions and any retained prototype evidence. There is no preparation-only PR publication or merge
+gate before this handoff. If existing documents suffice, keep their accepted references and evaluated
+skip evidence without manufacturing changes.
 
-The parent creates concise implementation tickets linked to merged documents, source issue and any
-retained prototype references. Validate the dependency graph before applying handoff effects and
-create tasks in a topological order. Rank prerequisites before dependent tasks using actual Jira
+The first planned implementation ticket continues the preparation checkout and branch, preserving
+its committed documents and retained prototype work. Its PR publishes the committed preparation
+documents together with that ticket's implementation. Later planned tickets start from the merged
+base containing the earlier delivered work. Each implementation ticket has its own PR; do not
+accumulate the plan's implementation into one final feature PR. Checkout reconciliation preserves
+retained work and reports incompatible repository or branch identity rather than silently replacing
+it. The precise workspace and admission contracts belong to Architecture.
+
+Validate the dependency graph before applying handoff effects and create tasks in a topological
+order. Rank prerequisites before dependent tasks using actual Jira
 rank order, moving a premature dependent after its last prerequisite without moving it ahead of
-unrelated higher-ranked work. Retain created ticket identities as operations succeed. Reconcile
-uncertain creation against the source issue and planned task before retrying; interruption must not
+unrelated higher-ranked work. A dependent ticket cannot start implementation before its prerequisites
+have completed with merge/check evidence. Retain created ticket identities as operations succeed.
+Reconcile uncertain creation against the source issue and planned task before retrying; interruption must not
 duplicate tickets. Record each new ticket's initial admission status separately from later source
 changes. On replay, accept that recorded initial state while admission is unfinished, or the
 already-applied configured ready status. An unexpected retained status requests attention and is
@@ -192,15 +234,18 @@ coding round. An active child restored from a snapshot keeps its checkpoint. Com
 merge/check evidence; the parent marks the ticket Done only afterward. Parent-owned actors refresh source input
 at the coding boundaries that need it and publish milestone feedback before the child proceeds.
 
-The existing queue command runs the project parent. HARN delivery-only configuration can bootstrap
-this change through its existing To Do ready mapping. There is no parallel legacy Jira selector.
+The existing queue command runs the project parent. HARN uses its configured To Do ready mapping.
+There is no parallel legacy Jira selector.
 
 ## Profiles
 
 Separate author/evaluator invocations even when their profile is identical. Profiles configure model,
 effort and tools; roles own complete constant instructions. Stage context supplies declared inputs
-and findings. Jira publication is outside role tools. Prototype evaluation requires browser/image
-inspection tools on its profile.
+and findings. Jira publication is outside role tools. Both prototype roles require working
+browser/image inspection capabilities. Every preparation author and evaluator has explicit shared
+memory search/save access when memory is enabled, under the
+[Memory integration](memory/integration.md#agent-use) guidance. AnalyzeExperience remains the sole
+automatic memory consumer.
 
 | Workflow | Author roles | Evaluator |
 | --- | --- | --- |
@@ -233,3 +278,35 @@ return/reassessment, feedback resumption, finite limits, missing inputs, source-
 duplicate-free ticket creation and restart during a child or its handoff. Run children with supplied
 inputs and no Jira dependency. Preserve all finite delivery review/merge/check guarantees. Controlled
 responses verify orchestration; actual Storybook usability requires observed browser interaction.
+
+Nexus/HARN documentation must describe this workflow consistently, including preparation role memory
+access and removal of obsolete bootstrap and preparation-publication behavior. Architecture aligns
+the affected component contracts and their owning documents. All development uses WSL checkouts;
+Nexus runs in a separate visible terminal attached to WSL with `TERM=xterm-256color` and
+`COLORTERM=truecolor`. Retain checkout reconciliation and these terminal requirements in app-change
+guidance without adding another approval or retry mechanism. Do not restore inconclusive review
+verdicts.
+
+## Observable acceptance examples
+
+| Given / activity | Observable result |
+| --- | --- |
+| Requirements commits a rule and UX then changes the same document | UX sees the Requirements commit in the same real Git checkout and branch. Storybook and Architecture receive that accumulated history; no cross-checkout assembly overwrites either change. Runtime author/evaluator working directories resolve to the real checkout. |
+| A stage authors work, receives findings and responds | Its evaluator assesses the current committed content and complete responses, explicitly resolves earlier findings and can accept adequate work despite optional suggestions. No combined documentation review follows Architecture. |
+| Existing inputs suffice, or no useful UX/prototype work applies | The author supplies concrete references and the evaluator accepts or rejects the skip. An accepted skip advances without an invented document, prototype or browser observation. |
+| Nexus preparation changes internal workflow without an explicit reporting-terminal change | UX and Prototype propose skips under docs/ux-ui.md and their evaluators assess applicability. The existing reporting terminal is retained; no terminal redesign or mock Jira/PR navigation is added. |
+| A stage discovers an earlier input must change | It returns the concrete problem to its owning earlier stage. Correction occurs in the same retained workspace, and affected downstream outputs are reevaluated before handoff. Old approval cannot authorize changed content or changed relied-on inputs. |
+| A human scope correction removes previously accepted UI scope from an internal Nexus task | Requirements is corrected and evaluated, then UX and Prototype reconcile their obsolete contributions and obtain evaluated skips before Architecture resumes. Historical revisions and observations remain attributable evidence; affected acceptances are invalidated and cannot authorize reuse of the removed work. |
+| Execution restarts during correction, a stage handoff or allowance exhaustion | The retained checkout/branch, completed history, findings, input/revision identities and consumed finite allowances remain available. Restart neither revives stale acceptance nor grants extra rounds/returns. |
+| An applicable Storybook prototype represents a journey and its relevant states | Both roles use a running preview with actual browser interaction and image/layout inspection. Saved evidence identifies what was inspected and observed at the accepted revision; simulated responses alone cannot establish acceptance. |
+| Preview interaction reveals a navigation/layout failure or a wrong upstream assumption | The prototype returns to its repair loop or the responsible earlier stage and requires fresh observation after correction. An unavailable browser/preview yields no acceptance or manufactured applicability skip. |
+| Nexus implements browser/image-verification capabilities while its own prototype stage is skipped | An isolated implementation test fixture supplies a running Storybook preview with a journey and relevant states. Both prototype author and evaluator capabilities perform real browser interaction and image/layout inspection with concrete evidence. Fixture observations verify those capabilities without reviving the removed Nexus UI mock or replacing the evaluated applicability skip. |
+| Architecture accepts a plan with two implementation tickets | Both tickets are created and linked to the source and accepted evidence; the original becomes Done as a handoff. No preparation-only PR is opened, and no claim of feature delivery is made. |
+| Ticket creation/linking or the original Done update is interrupted | Replay reconciles recorded/source identities and performs missing effects. Exactly the planned tickets and links exist; unexpected human status changes remain preserved. |
+| The two planned tickets are delivered, with the second depending on the first | The first continues the actual preparation checkout/branch and delivers its committed documents with implementation in PR 1. After its merge/check completion, the second starts from that merged base and delivers PR 2. Dependencies and normal source ranking are respected; there is no final aggregate PR. |
+| An implementation head changes after review, verification fails, a required check fails, or merge/post-merge evidence is absent | Earlier review approval cannot authorize the changed head, and the ticket cannot complete without current verification, actual revision-specific review and required merge/check evidence. Invocation faults produce no invented verdict or unrelated retry path. |
+| Preparation roles run with memory enabled and Nexus is launched for development | Every author/evaluator can explicitly search/save shared memory; no new automatic recall/ingestion is introduced. Documentation reflects these roles and the workflow, and Nexus uses a visible WSL terminal with color support. |
+
+No product decision is left unsettled by these requirements. Supporting workspace contracts,
+browser/image tooling and implementation-task decomposition are Architecture decisions, not new
+product scope.
