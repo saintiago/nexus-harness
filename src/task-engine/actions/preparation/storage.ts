@@ -327,12 +327,19 @@ export function roundArtifactDirectory(root: string, round: number): string {
 
 /**
  * The retained content one evaluated skip reuses from the immediately preceding completed round
- * of the same stage: the result's changed and existing documents, stage-owned source paths, the
- * preceding acceptance's observations of those paths, and any retained prototype this stage owns.
- * Only that immediate acceptance may supply reused assets; a later rejection or upstream return
- * invalidates it, so reuse never searches past an intervening unfinished or invalid round. The
- * observations carry the recorded revision and existence, so a retained deletion is validated as
- * an absence rather than unreadable file bytes.
+ * of the same stage: the result's changed documents, stage-owned source paths, the existing input
+ * documents an explicit result or applicable prototype bundle keeps, the preceding acceptance's
+ * observations of those paths, and any retained prototype this stage owns. Only that immediate
+ * acceptance may supply reused assets; a later rejection or upstream return invalidates it, so
+ * reuse never searches past an intervening unfinished or invalid round. The observations carry
+ * the recorded revision and existence, so a retained deletion is validated as an absence rather
+ * than unreadable file bytes.
+ *
+ * A current repository document cited only by path is a fresh input, even when the preceding
+ * result also recorded it under existingDocuments: the new evaluation assesses its current content
+ * and no preceding revision binds it. Changed owned documents and source paths keep their complete
+ * preceding binding, and an explicit preceding-result or applicable-prototype reference keeps the
+ * complete retained bundle; such reuse cannot be downgraded to an input citation.
  */
 export type ReusedPreparationContent = {
   /** The preceding result's changed documents the skip reuses, as the result recorded them. */
@@ -434,6 +441,12 @@ export async function reusedPreparationContent(settings: {
     documents = result.documents;
     existingDocuments = result.existingDocuments;
     sourcePaths = result.sourcePaths;
+  } else if (!reusesResult) {
+    // A path-only citation of a document the preceding result listed as an existing input is a
+    // fresh current input, not reuse of a prior asset: the current evaluation binds its content,
+    // so the preceding revision is not a prior binding to validate. Owned documents and source
+    // paths above still keep their complete preceding binding.
+    existingDocuments = [];
   }
   for (const document of documents) {
     if (document.revision === null) {

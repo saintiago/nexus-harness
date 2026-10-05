@@ -131,7 +131,13 @@ Proceed forward through pending stages in order. Where content and relied-on inp
 reuse the accepted result and observation references explicitly. If an upstream report changed,
 the stage's evaluator can confirm that unchanged work remains adequate against the corrected input
 in a normal bounded round; the new evaluation records that basis. A proposed reuse/skip does not
-approve changed content. When the changed input affects the stage, repair and reevaluate it. No
+itself approve changed content. Fresh evaluation of current repository document citations can accept
+their changed content, even when an earlier accepted skip cited the same paths. Finalization uses
+that current assessment rather than requiring those citations to match the preceding skip's basis.
+This differs from reusing prior stage-owned documents, sources or a retained prototype: reuse must
+preserve their complete, still-valid content and applicable observation evidence. Repeating a
+document citation does not by itself establish reuse of a prior owned asset.
+When the changed input affects the stage, repair and reevaluate it. No
 semantic dependency engine or extra reviewer is required. Optional suggestions remain non-blocking.
 Before final handoff, validate every required stage's current decision and clear pending work;
 a mismatching reference routes to the earliest responsible stage, without reviving an older approval.
@@ -142,6 +148,88 @@ finding evidence until a later evaluation explicitly resolves or withdraws it. A
 must not search past an intervening invalid or unfinished round. Import the existing
 [findings contract](findings.md); authors may answer or rebut as well as edit, and evaluators explicitly
 resolve prior findings. Evaluated applicability skips remain valid when their basis remains valid.
+
+### Reassessment and finalization requirements
+
+Affected categories are document-citation assessment, retained-asset reuse, stage finalization and
+retained-work continuation. Participants are preparation authors/evaluators and operators resuming
+an interrupted stage. The journey is: changed cited content -> stage reassessment -> current
+evaluation -> finalization -> normal downstream validation and handoff.
+
+Finalization must retain the current evaluation and assessed citation revisions. Changes to the
+author report, cited content or relied-on inputs after that evaluation still require a new decision;
+an older acceptance cannot fill a missing or unreadable current binding. Genuinely stale,
+unassessed reuse remains rejected. Retaining an applicable prototype still requires its complete
+source and both roles' current observation evidence under the rules below.
+
+Observable acceptance examples:
+
+| Situation | Observable result |
+| --- | --- |
+| A non-applicable prototype previously cited a role document that a later stage changed; both roles reassess it and obtain a current accepted skip | Finalization succeeds with the newly assessed document revisions. With no retained prototype, no browser evidence is required. The old evaluation remains historical evidence. |
+| A requirements skip cites testing, CI/CD and stack documents changed by Architecture while the requirements document remains unchanged; the current evaluator accepts the reassessment | Finalization succeeds for the current citations, including section citations to the same files named by the prior skip. It does not renew downstream decisions. |
+| Cited content changes after the current evaluator assessed it, or its binding is missing or unreadable | Finalization, replay and downstream acceptance reject the stale or incomplete decision and require current evaluation. |
+| A proposal reuses a prior result or owned asset whose content changed without reassessment | The preceding acceptance cannot authorize the changed asset; stale reuse remains rejected. |
+| A skip retains an applicable prototype but its sources changed or either role's observation evidence is missing, unusable or stale | The skip cannot finalize or be reused as current acceptance. Unchanged assets with complete valid evidence remain reusable. |
+
+Regression coverage must reproduce both reassessment patterns and genuinely stale, unassessed
+reuse. Deliver through normal verification, review, merge and required post-merge checks. The
+initiating task activates the checked merged runtime only after its current users exit, following
+[installation activation](../../application.md#installation-activation), then resumes the affected
+checkpoints without replacing their checkout/branch, histories, findings or consumed allowances.
+Resumption proceeds through normal gates and does not itself establish acceptance.
+
+No material product decision is unsettled. This changes no reporting-terminal interaction and adds
+no unrelated retry machinery. Evidence representation, reuse classification and activation
+mechanisms belong to Architecture and delivery.
+
+### Citation assessment and retained-asset resolution
+
+Preparation owns reference classification. Author validation, evaluation binding and finalization
+use the same reference resolution: relative paths, absolute in-checkout paths and section citations
+identify one canonical repository path. A section citation binds the whole file. An external retained
+file remains evidence; only a reference to the immediately preceding accepted or skipped result
+selects that result for reuse. Other historical reports do not select an older acceptance.
+
+Use the existing result distinctions to classify references; no new report field or persisted reuse
+state is needed:
+
+| Reference | Assessment and retained output |
+| --- | --- |
+| Current repository document, including a path found only in the preceding result's `existingDocuments`, with no applicable retained prototype selected | Assess current content as an input. Retain it in the new `existingDocuments` at the current evaluation's revision; do not copy the preceding revision or include it in prior-asset validation. |
+| Document or source path owned by the preceding result (`documents` or `sourcePaths`) | Retain the selected owned asset only with its complete preceding content binding and a current evaluation binding. Its content must still match the preceding acceptance. Changed owned work requires an authored correction. |
+| Immediately preceding accepted or skipped result | Select its full retained content, including `existingDocuments`, sources and any prototype evidence. Validate the complete preceding bindings as well as the current assessment. |
+| Applicable retained prototype, selected by its branch, revision, checkout or a document/source carried by its preceding result | Retain the complete prototype bundle, including all documents, input documents, sources and both observation references. A partial citation cannot discard the rest of its evidence. |
+
+The prototype rule preserves complete bundle selection, including selection through an input document
+carried with that prototype. A non-applicable prototype result has no such bundle: its repeated
+document citations are current inputs. A reference selecting an owned asset or complete result cannot
+be downgraded to an input citation to bypass stale-reuse checks.
+
+Evaluation observes all current input citations and all paths selected for asset reuse before invoking
+the evaluator, then saves the existing acceptance basis. Resolving fresh citations needs no preceding
+content binding; a missing historical binding cannot prevent a new complete assessment of those
+inputs. Resolving actual reuse does require the preceding binding for every selected path, including
+retained deletions. Reuse remains limited to the immediately preceding completed acceptance.
+
+Finalization first validates the exact current author/evaluation pair, source and upstream identities,
+usable citations and current content bindings. It then validates preceding content only for selected
+retained assets. Each reused path must also occur in the current basis. Fresh input revisions come
+only from that basis; reused owned-document revisions and prototype observations retain their
+preceding provenance. Deduplicate by canonical path, with owned assets retaining their ownership.
+An unrelated HEAD change is harmless only while the bound file content remains equal.
+
+Keep the response, evaluation and result contracts compatible with retained rounds. Reassessment
+writes a new decision; it never edits historical author reports, evaluations, results or observation
+records to make them current. Existing finalization replay and downstream current-decision validation
+continue to reject changed inputs/content or incomplete bindings. Valid fresh citation finalization
+does not renew any downstream stage's decision.
+
+An interrupted finalization with a complete current evaluation can resume at its saved checkpoint
+without opening another author/evaluator round. If that evaluation is no longer current, normal
+reassessment is required. Installation activation follows the existing Application contract above;
+the initiating task performs it after delivery and after runtime users exit, then resumes the exact
+affected checkpoints. No action gains an installation switch, checkpoint reset or retry mechanism.
 
 ## Prototype observations
 
