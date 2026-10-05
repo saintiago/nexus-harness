@@ -10,18 +10,28 @@ import {
   type BoundAction,
   type EventPublisher,
 } from '../../../index.js';
-import { parseAgentReport, responseFormatText } from '../../agent-reports.js';
+import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  parseAgentReport,
+  readAssignedReport,
+  responseFormatText,
+} from '../../agent-reports.js';
 import { readRecord, readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
+  isBoundStageAuthorOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
+  stagePlanArtifact,
   stageAuthorResponseSchema,
+  stageResultArtifact,
   stageReportScope,
   type PreparationStage,
+  type RetainedStageAuthorOutput,
+  type RetainedStageEvaluationOutput,
   type StageAuthorOutput,
   type StageAuthorResponse,
-  type StageEvaluationOutput,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import {
@@ -48,7 +58,7 @@ import {
 import {
   type PrecedingStageWork,
   preparationWorktree,
-  readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   readStageTerminal,
   roundArtifactDirectory,
@@ -60,10 +70,10 @@ import {
 
 /**
  * StageAuthor is the evaluated preparation stages' author invocation: it proposes work or a skip
- * with reasons and references, or revises the work in response to the evaluator's findings. It
- * saves the authored revision, its documents, plan, skip proposal, question or upstream request
- * and the narrative summary that explains repairs, disagreements and remaining problems. Provider
- * and unusable-output failures are execution errors.
+ * with evidence references, or revises the work in response to the evaluator's findings. It
+ * saves the authored revision, its functional outcome, plan, skip proposal, question or upstream
+ * request bound to the invocation's assigned Markdown report. Provider and unusable-output
+ * failures are execution errors.
  */
 
 export type StageAuthorSettings = {
@@ -171,9 +181,13 @@ async function retainedStageDeletions(
     readonly round: number;
     readonly worktree: string;
   },
-  readAuthor: (round: number) => Promise<StageAuthorOutput | null>,
-  readEvaluation: (round: number) => Promise<StageEvaluationOutput | null>,
-  readObservation: (round: number, file: string) => Promise<PrototypeObservation | null>,
+  readAuthor: (round: number) => Promise<RetainedStageAuthorOutput | null>,
+  readEvaluation: (round: number) => Promise<RetainedStageEvaluationOutput | null>,
+  readObservation: (
+    round: number,
+    file: string,
+    author: RetainedStageAuthorOutput,
+  ) => Promise<PrototypeObservation | null>,
 ): Promise<ReadonlySet<string>> {
   const { git, root, round, worktree } = settings;
   const deleted = new Set<string>();
@@ -194,7 +208,7 @@ async function retainedStageDeletions(
         author.observation.path,
       );
       if (file !== null) {
-        const observation = await readObservation(retained, file);
+        const observation = await readObservation(retained, file, author);
         if (observation?.role === 'author') content = observation.content;
       }
     }
@@ -333,7 +347,7 @@ async function reportProblem(
   }
   if (report.outcome === 'skip-proposed') {
     if (report.skip === null) {
-      return 'a proposed skip needs its reason and optional supporting references';
+      return 'a proposed skip needs its skip declaration, while an empty references list is valid';
     }
     for (const reference of report.skip.references) {
       const resolution = await resolveSkipReference({ worktree: settings.worktree, reference });
@@ -350,7 +364,7 @@ async function reportProblem(
       : null;
   }
   return report.upstream === null
-    ? 'a return-upstream outcome needs the problematic input, consequence and correction'
+    ? 'a return-upstream outcome needs the earlier stage and the concrete correction'
     : null;
 }
 
@@ -391,6 +405,44 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     const attribution =
       `Preparation ${settings.stage} author, round ${String(plan.round)} ` +
       `(route ${plan.route}), task ${selection.taskKey}, task ${task}.`;
+    // The invocation's own Markdown report, assigned before it runs so the agent writes the
+    // narrative there and returns only the minimal outcome.
+    const assignedReport = await assignReportPath(
+      roundArtifactDirectory(root, plan.round),
+      invocationId,
+      'author',
+    );
+
+    /**
+     * Preserve an unreadable bound producer report as that producer's rejection evidence, then
+     * fail: the responsible role receives the correction obligation instead of the evidence
+     * silently disappearing.
+     */
+    async function rejectUnreadableReport(settings: {
+      readonly role: 'author' | 'evaluator';
+      readonly round: number;
+      readonly report: { readonly path: string };
+      readonly invocationId: string;
+      readonly profile: string;
+      readonly error: Error;
+    }): Promise<never> {
+      const byAuthor = settings.role === 'author';
+      return rejectUnusableRecord({
+        areaRoot: root,
+        scope: byAuthor ? scope : evaluatorScope,
+        invocationId: settings.invocationId,
+        operation: byAuthor ? 'stage-author' : 'stage-evaluator',
+        profile: settings.profile,
+        context: `${attribution} Reading the ${settings.role} report bound to round ${String(settings.round)}.`,
+        file: roundArtifactFile(
+          root,
+          settings.round,
+          (byAuthor ? stageAuthorArtifact : stageEvaluationArtifact).pathFromArtifactsRoot,
+        ),
+        error: settings.error,
+        assignedReport: settings.report,
+      });
+    }
 
     /**
      * Read one retained authored report. An unusable retained record is preserved as rejection
@@ -400,6 +452,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       round: number,
       file: string,
       read: () => Promise<Value>,
+      producer: RetainedStageAuthorOutput,
     ): Promise<Value> {
       try {
         return await read();
@@ -407,9 +460,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         return await rejectUnusableRecord({
           areaRoot: root,
           scope,
-          invocationId,
+          invocationId: isBoundStageAuthorOutput(producer) ? producer.invocationId : null,
           operation: 'stage-author',
-          profile: authorProfile,
+          profile: isBoundStageAuthorOutput(producer) ? producer.profile : null,
           context: `${attribution} Reading retained author round ${String(round)}.`,
           file,
           error,
@@ -417,35 +470,28 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       }
     }
 
-    async function readAuthor(round: number): Promise<StageAuthorOutput | null> {
-      return readAuthorRecord(
+    async function readAuthor(round: number): Promise<RetainedStageAuthorOutput | null> {
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
         round,
-        roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
-        () => readStageArtifact(root, round, stageAuthorArtifact),
-      );
+        role: 'author',
+        profile: authorProfile,
+        context: `${attribution} Reading retained author round ${String(round)}.`,
+      });
     }
 
-    /**
-     * Read one retained evaluation. The evaluation is the evaluator's report: an unusable record
-     * is preserved under the evaluator's responsibility so its next invocation receives the
-     * correction obligation, while this invocation keeps failing on the unreadable evidence.
-     */
-    async function readEvaluation(round: number): Promise<StageEvaluationOutput | null> {
-      const file = roundArtifactFile(root, round, stageEvaluationArtifact.pathFromArtifactsRoot);
-      try {
-        return await readStageArtifact(root, round, stageEvaluationArtifact);
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope: evaluatorScope,
-          invocationId,
-          operation: 'stage-evaluator',
-          profile: evaluatorProfile,
-          context: `${attribution} Reading retained evaluation round ${String(round)}.`,
-          file,
-          error,
-        });
-      }
+    async function readEvaluation(round: number): Promise<RetainedStageEvaluationOutput | null> {
+      return readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        round,
+        role: 'evaluator',
+        profile: evaluatorProfile,
+        context: `${attribution} Reading retained evaluation round ${String(round)}.`,
+      });
     }
 
     const author = await readAuthor(plan.round);
@@ -468,12 +514,14 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     // The most recent preceding evaluation supplies the repair context for this round; an
     // unusable record is preserved under the evaluator responsibility instead of failing without
     // evidence.
-    let precedingEvaluation: StageEvaluationOutput | null = null;
+    let precedingEvaluation: RetainedStageEvaluationOutput | null = null;
+    let precedingEvaluationRound: number | null = null;
     if (plan.route !== 'new') {
       for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
         const retained = await readEvaluation(earlier);
         if (retained !== null) {
           precedingEvaluation = retained;
+          precedingEvaluationRound = earlier;
           break;
         }
       }
@@ -489,7 +537,10 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stageRoot: root,
       worktree,
       author: revising ? (preceding?.author ?? author) : author,
+      authorRound: revising ? (preceding?.round ?? plan.round) : plan.round,
       evaluation: revising ? precedingEvaluation : null,
+      evaluationRound: revising ? precedingEvaluationRound : null,
+      report: assignedReport,
       retained:
         plan.route === 'reassess'
           ? await (async () => {
@@ -500,6 +551,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             })()
           : null,
       feedback: outstanding,
+      rejectUnreadableReport,
     });
     // The pre-invocation revision is the evidence that a deletion committed during the invocation
     // was tracked before this edit; the post-invocation head no longer retains it.
@@ -521,21 +573,25 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             ? 'Propose the current decision for this reassessed work: repair what changed and leave adequate current documents unchanged; a submission may declare no changed files.'
             : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to the current findings, explaining ' +
-            'corrections, disagreements and remaining problems in the summary. When the findings ' +
-            'show that the corrected scope makes the stage irrelevant, you may propose an ' +
-            'applicability skip instead of further work; evaluation decides its applicability.',
-        'Return the response object only; do not write or overwrite the action-owned stage records ' +
-          '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
-          'adds the stage and authored revision metadata and persists your report.',
+            'corrections, disagreements and remaining problems in the assigned Markdown report. ' +
+            'When the findings show that the corrected scope makes the stage irrelevant, you may ' +
+            'propose an applicability skip instead of further work; evaluation decides its ' +
+            'applicability.',
+        `Assigned Markdown report: ${assignedReport.path}`,
+        'Write the complete narrative report to that path before returning: what you authored or ' +
+          'proposed, declaration explanations, the skip rationale, corrections, disagreements and ' +
+          'remaining problems, using the supplied previous reports as context. Return the minimal ' +
+          'response object only; the action adds the observed identity, revision and report ' +
+          'binding.',
         'An authored outcome declares the changed authoritative documents in documents and any ' +
           'additional stage-owned authored files it commits in sourcePaths; never declare files ' +
           'that were merely read. Unchanged adequate documents may leave both empty: the ' +
           'evaluator inspects the current worktree regardless of who wrote it. A skip-proposed, ' +
           'needs-input or return-upstream outcome carries empty documents and sourcePaths, and a ' +
-          'proposed skip needs its reason with optional supporting references in skip.references. ' +
-          'Each supplied reference cites a readable file in the shared checkout (a path, or a ' +
-          'path#section citation) or an existing retained file; an unreadable reference rejects ' +
-          'the report and an empty list is valid.',
+          'proposed skip explains its inapplicability in the report and carries its optional ' +
+          'supporting evidence in skip.references. Each supplied reference cites a readable file ' +
+          'in the shared checkout (a path, or a path#section citation) or an existing retained ' +
+          'file; an unreadable reference rejects the report and an empty list is valid.',
         'Only the Architecture stage supplies plan entries: an authored or skip-proposed ' +
           'Architecture report carries the nonempty implementation plan the handoff requires. ' +
           'Every other stage, and a needs-input or return-upstream outcome, returns an empty ' +
@@ -545,9 +601,15 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             'observation contract above states the record and the round artifact area.'
           : 'The observation field is null; only the Storybook Refinement stage retains an ' +
             'observation record.',
-        'Use the supplied previous reports as context: explain what you corrected, what you ' +
-          'disagree with and any remaining problem in the narrative summary. There are no finding ' +
-          'IDs, response arrays or disposition records to answer.',
+        'The outcome carries only the functional declaration, plan, question, skip references or ' +
+          'upstream destination and correction. There are no finding IDs, response arrays, ' +
+          'disposition records or narrative summaries in it.',
+        actionOwnedRecordsText([
+          roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stagePlanArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stageEvaluationArtifact.pathFromArtifactsRoot),
+          roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
+        ]),
         responseFormatText(stageAuthorResponseSchema),
       ].join('\n\n'),
       outputSchema: z.toJSONSchema(stageAuthorResponseSchema),
@@ -573,6 +635,26 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           context: attribution,
           source: null,
           output: result.value.output,
+          assignedReport,
+          reason: messageOf(error),
+          cause: error,
+        });
+      }
+    })();
+    const reportFile = await (async () => {
+      try {
+        return await readAssignedReport(assignedReport.path, 'Assigned author report');
+      } catch (error) {
+        return await rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId,
+          operation: 'stage-author',
+          profile: authorProfile,
+          context: attribution,
+          source: null,
+          output: result.value.output,
+          assignedReport,
           reason: messageOf(error),
           cause: error,
         });
@@ -590,9 +672,12 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
               { git: settings.git, root, round: plan.round, worktree },
               readAuthor,
               readEvaluation,
-              (round, file) =>
-                readAuthorRecord(round, file, () =>
-                  readRecord(file, { file, schema: prototypeObservationSchema }),
+              (round, file, producer) =>
+                readAuthorRecord(
+                  round,
+                  file,
+                  () => readRecord(file, { file, schema: prototypeObservationSchema }),
+                  producer,
                 ),
             )
           : new Set(),
@@ -607,6 +692,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         context: attribution,
         source: null,
         output: result.value.output,
+        assignedReport,
         reason: `The ${settings.stage} author report is unusable: ${problem}.`,
       });
     }
@@ -617,6 +703,12 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       stage: settings.stage,
       revision,
       ...report,
+      taskKey: selection.taskKey,
+      profile: authorProfile,
+      role: 'author',
+      report: assignedReport,
+      reportIdentity: reportFile.identity,
+      invocationId,
     };
     await writeStageArtifact(root, plan.round, stageAuthorArtifact, output);
     const artifact = path.join(

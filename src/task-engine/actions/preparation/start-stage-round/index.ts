@@ -9,7 +9,6 @@ import {
 } from '../../select-work/artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import {
-  stageAuthorArtifact,
   stageRoundExhaustionFile,
   stageRoundPlanDeclaration,
   type PreparationStage,
@@ -17,7 +16,7 @@ import {
 } from '../artifacts.js';
 import {
   ensureStageRound,
-  readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   readStageResult,
   stageRoot,
@@ -147,7 +146,15 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
         current !== null &&
         current.stage === settings.stage &&
         previousResult === null &&
-        (await readStageArtifact(root, current.round, stageAuthorArtifact)) === null
+        (await readStageRoleArtifact({
+          issueRoot: selection.workspace.root,
+          stage: settings.stage,
+          workId: selection.taskKey,
+          round: current.round,
+          role: 'author',
+          profile: current.profiles.author,
+          context: `Opening the ${settings.stage} round for task ${selection.taskKey}.`,
+        })) === null
       ) {
         // This stage visit already opened its round and has not finished it; the replay continues
         // that round instead of allocating another one.
@@ -183,7 +190,17 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
           'opened round.',
       );
     }
-    if ((await readStageArtifact(root, current.round, stageAuthorArtifact)) === null) {
+    if (
+      (await readStageRoleArtifact({
+        issueRoot: selection.workspace.root,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        round: current.round,
+        role: 'author',
+        profile: current.profiles.author,
+        context: `Opening the ${settings.stage} round for task ${selection.taskKey}.`,
+      })) === null
+    ) {
       // This route opened the round but the author has not responded yet; the replay reuses it.
       return opened(current);
     }

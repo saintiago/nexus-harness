@@ -42,6 +42,7 @@ import { researchArtifact, researchFollowUpArtifact } from './researcher/artifac
 import { issueSummary } from './source.js';
 import type { IdeaInput } from './select-idea/artifacts.js';
 import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
+import { requireReturnReport } from './preparation/storage.js';
 
 /**
  * The context every idea refinement role receives: the current captured author input as the
@@ -363,21 +364,48 @@ export async function capturedIdeaText(
     parentInput === undefined ||
     (parentInput.question === null && parentInput.returnFinding === null)
       ? null
-      : [
-          'Retained parent correction for this selection (it governs what this refinement must ' +
-            'address):',
-          ...(parentInput.returnFinding === null
-            ? []
-            : [
-                `The ${parentInput.returnFinding.from} stage returned this idea for correction: ` +
-                  parentInput.returnFinding.problem,
-                `Consequence: ${parentInput.returnFinding.consequence}`,
-                `Required correction: ${parentInput.returnFinding.correction}`,
-              ]),
-          ...(parentInput.question === null
-            ? []
-            : [`The retained human question is: ${parentInput.question}`]),
-        ].join('\n');
+      : await (async (): Promise<string> => {
+          const lines = [
+            'Retained parent correction for this selection (it governs what this refinement must ' +
+              'address):',
+          ];
+          const returned = parentInput.returnFinding;
+          if (returned !== null) {
+            lines.push(
+              `The ${returned.from} stage returned this idea for correction.`,
+              ...(returned.problem === undefined ? [] : [`Problem: ${returned.problem}`]),
+              ...(returned.consequence === undefined
+                ? []
+                : [`Consequence: ${returned.consequence}`]),
+              `Required correction: ${returned.correction}`,
+            );
+            if (returned.report !== null) {
+              lines.push(`The returning role's Markdown report: ${returned.report.report.path}`);
+              // The refinement area sits beside the stage areas under the issue workspace: the
+              // report is read through the returning role's saved binding, so a missing or changed
+              // report is preserved as that role's rejection evidence instead of being embedded.
+              const text = await requireReturnReport({
+                issueRoot: path.dirname(root),
+                workId: input.taskKey,
+                returned: {
+                  stage: returned.from,
+                  role: returned.role,
+                  report: returned.report,
+                },
+                context:
+                  `Reading the ${returned.from} return for the captured idea context of ` +
+                  `${input.taskKey}.`,
+              });
+              if (text !== null) {
+                lines.push('The complete returning report:', text);
+              }
+            }
+          }
+          if (parentInput.question !== null) {
+            lines.push(`The retained human question is: ${parentInput.question}`);
+          }
+          return lines.join('\n');
+        })();
   return [
     `Current captured idea: ${input.taskKey}`,
     'The captured input below is authoritative for what the author now proposes; earlier',

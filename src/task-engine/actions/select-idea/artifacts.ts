@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { returnEvidenceSchema } from '../preparation/artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 
 /**
@@ -12,8 +13,10 @@ export const ideaInputFile = 'input.json';
 
 /**
  * The parent's retained correction for one selection: the specific question an item waited on and
- * the concrete upstream return a later preparation stage stated. The parent supplies it with the
- * captured input; older submissions retain no correction.
+ * the concrete upstream return a later preparation stage stated, with the returning role's
+ * Markdown report that explains its problem and consequence. Former combined returns retain their
+ * problem and consequence text as history. The parent supplies the correction with the captured
+ * input; older submissions retain no correction.
  */
 export const ideaParentInputSchema = z.object({
   /** The human question the item waited on, when the parent retained one for this stage. */
@@ -22,10 +25,9 @@ export const ideaParentInputSchema = z.object({
   returnFinding: z
     .object({
       from: z.enum(['requirements', 'ux', 'prototype', 'architecture']),
-      problem: z.string().min(1),
-      consequence: z.string().min(1),
       correction: z.string().min(1),
     })
+    .and(returnEvidenceSchema)
     .nullable(),
 });
 

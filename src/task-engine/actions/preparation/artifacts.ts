@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
+import {
+  artifactRefSchema,
+  readBoundReport,
+  reportBindingFields,
+  reportBindingSchema,
+} from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
@@ -88,7 +94,6 @@ export const stageRoundExhaustionDeclaration = {
 /** One authoritative document the author produced or revised, relative to the stage worktree. */
 export const authoredDocumentSchema = z.strictObject({
   path: z.string().trim().min(1).describe('The document path inside the shared checkout.'),
-  description: z.string().trim().min(1).describe('Why this document changed.'),
 });
 
 /** One bounded implementation task the Architect planned. */
@@ -106,23 +111,24 @@ export const plannedTaskSchema = z.strictObject({
 
 export type PlannedTask = z.infer<typeof plannedTaskSchema>;
 
-/** One upstream return: the problematic input, its consequence and the correction needed. */
+/** One upstream return: the earlier stage to correct and the concrete correction it needs. */
 export const upstreamRequestSchema = z.strictObject({
   stage: z.enum(upstreamStages).describe('The earlier stage whose input needs correction.'),
-  problem: z.string().trim().min(1).describe('The problematic input.'),
-  consequence: z.string().trim().min(1).describe('What the input prevents or contradicts.'),
-  correction: z.string().trim().min(1).describe('The concrete correction that is needed.'),
+  correction: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The concrete input correction handed to the earlier stage.'),
 });
 
 export type UpstreamRequest = z.infer<typeof upstreamRequestSchema>;
 
-/** One applicability skip the author proposes, with an optional reason and optional evidence. */
+/** One applicability skip the author proposes, with optional supporting evidence. */
 export const skipProposalSchema = z.strictObject({
-  reason: z.string().trim().min(1).describe('Why the stage is irrelevant.'),
   references: z
     .array(z.string().trim().min(1))
     .describe(
-      'Optional evidence supporting the reason: each reference cites a readable file in the shared checkout (a path, or a path#section citation) or an existing retained file. Explanations belong in reason; an unreadable reference is rejected and an empty list is valid. They stay evidence: a reference neither commits nor excludes anything from evaluation and creates no document binding.',
+      'Optional evidence supporting the inapplicability explained in the Markdown report: each reference cites a readable file in the shared checkout (a path, or a path#section citation) or an existing retained file. An unreadable reference is rejected and an empty list is valid. They stay evidence: a reference neither commits nor excludes anything from evaluation and creates no document binding.',
     ),
 });
 
@@ -132,8 +138,10 @@ export const artifactReferenceSchema = z.strictObject({
 });
 
 /**
- * The author's report: the proposal or revision plus its documents, skip proposal, question or
- * upstream request. Repairs, disagreements and remaining problems belong in the narrative summary.
+ * The author's response: the minimal outcome its workflow consumes, plus the functional
+ * declarations, plan, observation, skip references, question or upstream request. What was
+ * authored, declaration explanations, corrections, disagreements and remaining problems belong
+ * in the assigned Markdown report.
  */
 export const stageAuthorResponseSchema = z.strictObject({
   outcome: z
@@ -141,11 +149,10 @@ export const stageAuthorResponseSchema = z.strictObject({
     .describe(
       'What this round did: authored the stage work, proposed an evaluated skip, needs an author decision, or returns the work to an earlier stage.',
     ),
-  summary: z.string().describe('What was authored, proposed or found, in one short account.'),
   documents: z
     .array(authoredDocumentSchema)
     .describe(
-      'The authoritative documents this revision changed, each with why it changed. Unchanged adequate documents need no entry: the evaluator inspects the current worktree regardless of authorship.',
+      'The authoritative documents this revision changed. Unchanged adequate documents need no entry and may leave the array empty: the evaluator inspects the current worktree regardless of authorship, without citations.',
     ),
   /**
    * Additional non-document paths the stage owns and commits in the shared checkout, such as the
@@ -169,12 +176,12 @@ export const stageAuthorResponseSchema = z.strictObject({
   plan: z
     .array(plannedTaskSchema)
     .describe(
-      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture report; empty for every other stage and outcome.',
+      'The Architecture author\u2019s bounded implementation tasks, nonempty for an authored or skip-proposed Architecture response; empty for every other stage and outcome.',
     ),
   skip: skipProposalSchema
     .nullable()
     .describe(
-      'The applicability skip proposal, or null unless the outcome is skip-proposed. A repair round may propose an applicability skip when the corrected scope makes the stage irrelevant; evaluation decides its applicability.',
+      'The applicability skip proposal, or null unless the outcome is skip-proposed. Its rationale belongs in the Markdown report; a repair round may propose an applicability skip when the corrected scope makes the stage irrelevant, and evaluation decides its applicability.',
     ),
   question: z
     .string()
@@ -183,114 +190,134 @@ export const stageAuthorResponseSchema = z.strictObject({
   upstream: upstreamRequestSchema
     .nullable()
     .describe(
-      'The problematic input, its consequence and the required correction, or null unless the outcome is return-upstream.',
+      'The earlier stage to correct and the concrete correction it needs, or null unless the outcome is return-upstream. The problem and consequence belong in the Markdown report.',
     ),
 });
 
 export type StageAuthorResponse = z.infer<typeof stageAuthorResponseSchema>;
 
 /**
- * The saved author artifact: the report bound to the stage and its authored revision. The
- * producer-owned reader preserves a former finding-response array as retained data without
- * validating or answering it.
+ * The saved author artifact: the minimal response bound to its stage, authored revision, observed
+ * task/profile identity and assigned Markdown report. The action observes the identity, revision
+ * and report bytes; none of it is agent output.
  */
-export const stageAuthorOutputSchema = z.object({
+export const stageAuthorOutputSchema = z.strictObject({
   ...stageAuthorResponseSchema.shape,
-  findingResponses: z.unknown().optional(),
   stage: z.enum(preparationStages),
   revision: z.number().int().positive(),
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
+  profile: z.string().trim().min(1).describe('The author profile that produced this report.'),
+  role: z.literal('author'),
+  ...reportBindingFields,
 });
 
 export type StageAuthorOutput = z.infer<typeof stageAuthorOutputSchema>;
 
+/**
+ * One retained combined author report from before the narrative/outcome separation: its former
+ * summary, declaration explanations and skip reason stay readable as history without their removed
+ * rules. Declared in the former schema's field order so a retained record's identity is reproduced
+ * for its existing evaluation association, and with the current binding fields declared as absent
+ * so a damaged current record never falls back to legacy parsing.
+ */
+const legacyStageAuthorDocumentSchema = z.strictObject({
+  path: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+});
+
+const legacyUpstreamRequestSchema = z.strictObject({
+  stage: z.enum(upstreamStages),
+  problem: z.string().trim().min(1),
+  consequence: z.string().trim().min(1),
+  correction: z.string().trim().min(1),
+});
+
+const legacySkipProposalSchema = z.strictObject({
+  reason: z.string().trim().min(1),
+  references: z.array(z.string().trim().min(1)),
+});
+
+export const legacyStageAuthorOutputSchema = z.object({
+  outcome: z.enum(['authored', 'skip-proposed', 'needs-input', 'return-upstream']),
+  summary: z.string().describe('The former combined narrative this report used to carry.'),
+  documents: z.array(legacyStageAuthorDocumentSchema),
+  sourcePaths: z.array(z.string().trim().min(1)),
+  observation: artifactReferenceSchema.nullable(),
+  plan: z.array(plannedTaskSchema),
+  skip: legacySkipProposalSchema.nullable(),
+  question: z.string().nullable(),
+  upstream: legacyUpstreamRequestSchema.nullable(),
+  findingResponses: z.unknown().optional(),
+  stage: z.enum(preparationStages),
+  revision: z.number().int().positive(),
+  report: z.never().optional(),
+  reportIdentity: z.never().optional(),
+  invocationId: z.never().optional(),
+  taskKey: z.never().optional(),
+  profile: z.never().optional(),
+  role: z.never().optional(),
+});
+
+export type LegacyStageAuthorOutput = z.infer<typeof legacyStageAuthorOutputSchema>;
+
+/**
+ * The producer-owned reader: a current outcome requires its report binding, while a retained
+ * combined report stays readable as history. A record carrying any binding field must satisfy the
+ * current schema; a damaged new record never falls back to legacy parsing.
+ */
+export const retainedStageAuthorOutputSchema = z.union([
+  stageAuthorOutputSchema,
+  legacyStageAuthorOutputSchema,
+]);
+
+export type RetainedStageAuthorOutput = z.infer<typeof retainedStageAuthorOutputSchema>;
+
+/** True when one retained author outcome carries the current report binding. */
+export function isBoundStageAuthorOutput(
+  author: RetainedStageAuthorOutput,
+): author is StageAuthorOutput {
+  return 'report' in author;
+}
+
 export const stageAuthorArtifact = {
   pathFromArtifactsRoot: 'author.json',
-  schema: stageAuthorOutputSchema,
-} satisfies ArtifactDeclaration<typeof stageAuthorOutputSchema>;
+  schema: retainedStageAuthorOutputSchema,
+} satisfies ArtifactDeclaration<typeof retainedStageAuthorOutputSchema>;
 
 /**
- * One affected location's fields: its file, and its line in the assessed revision when the
- * location has one.
+ * One former combined finding a retained evaluation may still carry: the shape the removed
+ * structured finding list used, including its former stable ID. It stays readable as history and
+ * no current rule reads, matches or validates it.
  */
-const findingLocationFields = {
-  path: z.string().describe('The affected file in the assessed revision.'),
-  line: z.number().int().positive().describe('The one-based line in the assessed revision.'),
-};
-
-/** One location in a saved finding: a location without a line leaves the field out. */
-const findingLocationSchema = z.strictObject({
-  ...findingLocationFields,
-  line: findingLocationFields.line.optional(),
+const legacyFindingLocationSchema = z.strictObject({
+  path: z.string(),
+  line: z.number().int().positive().optional(),
 });
 
-/**
- * One location as the evaluator reports it. The provider's strict structured-output schema
- * requires every property, so a location without a line reports null; the action turns that null
- * back into an absent line before saving the finding.
- */
-const reportedLocationSchema = z.strictObject({
-  ...findingLocationFields,
-  line: findingLocationFields.line
-    .nullable()
-    .describe('The assessed revision\u2019s line, or null when the location has no line.'),
-});
-
-/** One defect finding present in the assessed revision. */
-export const findingSchema = z.strictObject({
-  title: z.string().describe('A short title for the defect.'),
-  severity: z
-    .enum(['blocking', 'non-blocking'])
-    .describe('Whether the finding prevents acceptance.'),
-  basis: z.string().describe('The requirement or expected behavior that is violated.'),
-  evidence: z
-    .string()
-    .describe(
-      'The observed or reproducible failure, related occurrences inspected and material uncertainty.',
-    ),
-  impact: z.string().describe('The consequence of the defect.'),
-  repairGuidance: z.string().describe('The required correction.'),
-  locations: z.array(findingLocationSchema).describe('The affected locations; may be empty.'),
-});
-
-export type Finding = z.infer<typeof findingSchema>;
-
-/**
- * One finding as a retained evaluation may still carry it: the current shape plus the removed
- * stable ID. The producer's saved-record reader preserves it as historical data, and no current
- * rule reads, matches or validates it.
- */
-export const retainedFindingSchema = z.strictObject({
+const legacyFindingSchema = z.strictObject({
   id: z.string().optional(),
-  ...findingSchema.shape,
+  title: z.string(),
+  severity: z.enum(['blocking', 'non-blocking']),
+  basis: z.string(),
+  evidence: z.string(),
+  impact: z.string(),
+  repairGuidance: z.string(),
+  locations: z.array(legacyFindingLocationSchema),
 });
-
-/** One current finding as the evaluator reports it: a location without a line reports null. */
-export const reportedFindingSchema = findingSchema.extend({
-  locations: z
-    .array(reportedLocationSchema)
-    .describe('The affected locations; may be empty. A location without a line reports null.'),
-});
-
-export type ReportedFinding = z.infer<typeof reportedFindingSchema>;
 
 /**
- * The evaluator's report: the exact revision it assessed, its verdict, the findings present in
- * that revision and any upstream request. A skip may only be accepted when the author proposed
- * one.
+ * The evaluator's response: the minimal verdict its workflow consumes, plus the applicable
+ * observation reference and concrete upstream correction. The assessment, current findings,
+ * verdict explanation and evidence belong in the assigned Markdown report. A skip may only be
+ * accepted when the author proposed one.
  */
 export const stageEvaluationResponseSchema = z.strictObject({
-  assessedRevision: z
-    .number()
-    .int()
-    .positive()
-    .describe('The authored revision number this decision assesses.'),
   verdict: z
     .enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream'])
     .describe(
       'Accepted for authored work, accepted-skip for the author\u2019s proposed skip, ' +
         'changes-requested or return-upstream.',
     ),
-  reason: z.string().describe('Why the evidence and current findings support this verdict.'),
   /**
    * The Storybook Refinement evaluator's own saved prototype observation record, or null for every
    * other stage and for an evaluated applicability skip. Accepting applicable prototype work
@@ -302,13 +329,10 @@ export const stageEvaluationResponseSchema = z.strictObject({
     .describe(
       'The Storybook Refinement evaluator\u2019s own saved browser observation record inside the round artifact area, or null. Accepting applicable prototype work needs it; an evaluated applicability skip carries none.',
     ),
-  findings: z
-    .array(reportedFindingSchema)
-    .describe('The findings present in the assessed revision, including newly discovered ones.'),
   upstream: upstreamRequestSchema
     .nullable()
     .describe(
-      'The problematic input, its consequence and the required correction, or null unless the verdict is return-upstream.',
+      'The earlier stage to correct and the concrete correction it needs, or null unless the verdict is return-upstream. The problem and consequence belong in the Markdown report.',
     ),
 });
 
@@ -316,7 +340,7 @@ export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSche
 
 /** Acceptance preserves the author's distinction between authored work and a proposed skip. */
 export function acceptanceVerdictProblem(
-  outcome: StageAuthorOutput['outcome'],
+  outcome: RetainedStageAuthorOutput['outcome'],
   verdict: StageEvaluationResponse['verdict'],
 ): string | null {
   if (verdict === 'accepted-skip' && outcome !== 'skip-proposed') {
@@ -369,116 +393,229 @@ export const acceptanceBasisSchema = z.object({
 export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
 
 /**
- * The saved evaluation artifact: reported findings with their absent lines normalized away. The
- * producer-owned reader preserves former finding IDs and dispositions as retained data without
- * matching or validating them, and rejects a report whose verdict contradicts its current
- * findings or upstream request, so continuation and downstream consumers see a consistent record.
+ * The saved evaluation artifact: the observed acceptance basis, the assessed authored revision,
+ * the verdict and the evaluator's applicable observation, bound to its stage, task/profile
+ * identity and assigned Markdown report. The action observes the basis, revision and report
+ * bytes; none of it is agent output.
  */
-export const stageEvaluationOutputSchema = z
-  .object({
-    /** The exact authored report, captured input and assessed content this decision is bound to. */
-    basis: acceptanceBasisSchema,
-    assessedRevision: z.number().int().positive(),
-    verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
-    reason: z.string(),
-    /** The evaluator's own saved prototype observation record the decision retains, if any. */
-    observation: artifactReferenceSchema.nullable(),
-    findings: z.array(retainedFindingSchema),
-    priorFindings: z.unknown().optional(),
-    upstream: upstreamRequestSchema.nullable(),
-  })
-  .superRefine((evaluation, context) => {
-    const problem = evaluationVerdictProblem(
-      evaluation.verdict,
-      evaluation.findings,
-      evaluation.upstream,
-    );
-    if (problem !== null) {
-      context.addIssue({ code: 'custom', path: ['verdict'], message: problem });
-    }
-  });
+export const stageEvaluationOutputSchema = z.strictObject({
+  /** The exact authored report, captured input and assessed content this decision is bound to. */
+  basis: acceptanceBasisSchema,
+  assessedRevision: z.number().int().positive(),
+  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
+  /** The evaluator's own saved prototype observation record the decision retains, if any. */
+  observation: artifactReferenceSchema.nullable(),
+  upstream: upstreamRequestSchema.nullable(),
+  stage: z.enum(preparationStages),
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
+  profile: z.string().trim().min(1).describe('The evaluator profile that produced this verdict.'),
+  role: z.literal('evaluator'),
+  ...reportBindingFields,
+});
 
 export type StageEvaluationOutput = z.infer<typeof stageEvaluationOutputSchema>;
 
+/**
+ * One retained combined evaluation from before the narrative/outcome separation: its former
+ * reason, finding list and prior-finding dispositions stay readable as history without their
+ * removed matching or consistency rules. The current binding fields are declared absent so a
+ * damaged current record never falls back to legacy parsing.
+ */
+export const legacyStageEvaluationOutputSchema = z.object({
+  basis: acceptanceBasisSchema,
+  assessedRevision: z.number().int().positive(),
+  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
+  reason: z.string().describe('The former combined assessment this report used to carry.'),
+  observation: artifactReferenceSchema.nullable(),
+  findings: z.array(legacyFindingSchema),
+  priorFindings: z.unknown().optional(),
+  upstream: legacyUpstreamRequestSchema.nullable(),
+  report: z.never().optional(),
+  reportIdentity: z.never().optional(),
+  invocationId: z.never().optional(),
+  stage: z.never().optional(),
+  taskKey: z.never().optional(),
+  profile: z.never().optional(),
+  role: z.never().optional(),
+});
+
+export type LegacyStageEvaluationOutput = z.infer<typeof legacyStageEvaluationOutputSchema>;
+
+/**
+ * The producer-owned reader: a current verdict requires its report binding, while a retained
+ * combined evaluation stays readable as history. A record carrying any binding field must satisfy
+ * the current schema; a damaged new record never falls back to legacy parsing.
+ */
+export const retainedStageEvaluationOutputSchema = z
+  .union([stageEvaluationOutputSchema, legacyStageEvaluationOutputSchema])
+  .superRefine((evaluation, context) => {
+    const problem = evaluationVerdictProblem(evaluation.verdict, evaluation.upstream);
+    if (problem !== null) {
+      context.addIssue({ code: 'custom', path: ['upstream'], message: problem });
+    }
+  });
+
+export type RetainedStageEvaluationOutput = z.infer<typeof retainedStageEvaluationOutputSchema>;
+
+/** True when one retained evaluation carries the current report binding. */
+export function isBoundStageEvaluationOutput(
+  evaluation: RetainedStageEvaluationOutput,
+): evaluation is StageEvaluationOutput {
+  return 'report' in evaluation;
+}
+
+/**
+ * One retained evaluation report's readable narrative: its bound Markdown, or the former combined
+ * reason. Callers validate the binding they rely on; this reads the exact bytes the producer saved.
+ */
+export async function stageEvaluationReportText(
+  evaluation: RetainedStageEvaluationOutput,
+): Promise<string> {
+  return isBoundStageEvaluationOutput(evaluation)
+    ? (await readBoundReport(evaluation, 'Stage evaluation report')).text
+    : evaluation.reason;
+}
+
 export const stageEvaluationArtifact = {
   pathFromArtifactsRoot: 'evaluation.json',
-  schema: stageEvaluationOutputSchema,
-} satisfies ArtifactDeclaration<typeof stageEvaluationOutputSchema>;
+  schema: retainedStageEvaluationOutputSchema,
+} satisfies ArtifactDeclaration<typeof retainedStageEvaluationOutputSchema>;
 
 /**
  * Why one evaluation verdict is unsupported by the report it carries, or null. The evaluator's
- * response and a retained saved evaluation state a verdict their current findings and upstream
- * request support.
+ * response pairs the verdict with its concrete upstream request: a return needs an earlier stage
+ * and correction, and only a return carries one.
  */
 export function evaluationVerdictProblem(
-  verdict: StageEvaluationOutput['verdict'],
-  findings: readonly { readonly severity: Finding['severity'] }[],
+  verdict: StageEvaluationResponse['verdict'],
   upstream: UpstreamRequest | null,
 ): string | null {
   if (verdict === 'return-upstream' && upstream === null) {
-    return 'a return-upstream verdict needs the problematic input, consequence and correction';
+    return 'a return-upstream verdict needs the earlier stage and the concrete correction';
   }
   if (upstream !== null && verdict !== 'return-upstream') {
     return 'only a return-upstream verdict carries the upstream request';
   }
-  const blockingCount = findings.filter((finding) => finding.severity === 'blocking').length;
-  if ((verdict === 'accepted' || verdict === 'accepted-skip') && blockingCount > 0) {
-    return 'the report accepts the revision while reporting a blocking finding';
-  }
-  if (verdict === 'changes-requested' && blockingCount === 0) {
-    return 'a changes-requested verdict needs at least one current blocking finding';
-  }
   return null;
 }
 
-/** The terminal result the parent publication reads and the child returns a reference to. */
-export const preparationResultSchema = z.object({
-  stage: z.enum(preparationStages),
-  outcome: z.enum(['accepted', 'skipped', 'returnUpstream', 'needsInput', 'exhausted']),
-  authoredRevision: z.number().int().positive(),
-  /**
-   * The changed authoritative documents this stage currently accepted with the revision that
-   * produced them. An accepted submission may change nothing, and an evaluated skip never adds
-   * documents: unchanged adequate documents need no citation and are not inferred from earlier
-   * results. The parent's implementation handoff references exactly this set; the broader outputs
-   * below stay available to consumers that need every artifact.
-   */
-  documents: z.array(
-    z.object({
-      path: z.string().min(1),
-      revision: z.string().min(1).nullable(),
-    }),
-  ),
-  /**
-   * Stage-owned paths outside the authoritative documents that stay on the retained preparation
-   * branch for implementation reuse, relative to the shared checkout.
-   */
-  sourcePaths: z.array(z.string().min(1)).default([]),
-  skipReferences: z.array(z.string().min(1)).default([]),
-  outputs: z.array(z.object({ path: z.string().min(1) })),
-  evaluation: z.object({ path: z.string().min(1) }),
-  reason: z.string().nullable(),
-  returnStage: z.enum(upstreamStages).nullable(),
-  /** The concrete upstream problem, consequence and needed correction a return carries. */
-  returnFinding: upstreamRequestSchema.nullable(),
-  /**
-   * The retained prototype the Storybook Refinement stage built, when it produced one: the
-   * worktree branch and revision implementation tickets reference for reuse. Prototype code is not
-   * an authoritative document and never enters ticket admission as one.
-   */
-  prototype: z
-    .object({ branch: z.string().min(1), revision: z.string().min(1) })
-    .nullable()
-    .default(null),
-  /**
-   * The prototype author's and evaluator's retained observation records, in role order. They stay
-   * empty for every other stage, for an evaluated applicability skip and for a prototype result
-   * that retained no evidence.
-   */
-  prototypeObservations: z
-    .array(z.object({ role: z.enum(['author', 'evaluator']), path: z.string().min(1) }))
-    .default([]),
+/** The returning outcome's location and producer metadata accompany its Markdown binding. */
+export const returnReportSchema = reportBindingSchema.extend({
+  outcome: artifactRefSchema,
+  profile: z.string().min(1),
 });
+
+export type ReturnReport = z.infer<typeof returnReportSchema>;
+
+/**
+ * A current return requires its producing role and complete Markdown binding together. Legacy
+ * combined and action-generated corrections carry their required problem/consequence instead;
+ * deleting a current binding cannot turn a damaged return into one of these unbound variants.
+ */
+export const returnEvidenceSchema = z
+  .object({
+    role: z.enum(['author', 'evaluator']).nullable().default(null),
+    report: returnReportSchema.nullable().default(null),
+    problem: z.string().min(1).optional(),
+    consequence: z.string().min(1).optional(),
+  })
+  .superRefine((returned, context) => {
+    if (returned.role !== null && returned.report === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['report'],
+        message: 'A current return requires the producing role’s complete report binding.',
+      });
+    } else if (returned.report !== null && returned.role === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['role'],
+        message: 'A bound return requires the role that produced its report.',
+      });
+    } else if (
+      returned.role === null &&
+      (returned.problem === undefined || returned.consequence === undefined)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'An unbound return requires its historical or action-generated problem and consequence.',
+      });
+    }
+  });
+
+/** The terminal result the parent publication reads and the child returns a reference to. */
+export const preparationResultSchema = z
+  .object({
+    stage: z.enum(preparationStages),
+    outcome: z.enum(['accepted', 'skipped', 'returnUpstream', 'needsInput', 'exhausted']),
+    authoredRevision: z.number().int().positive(),
+    /**
+     * The changed authoritative documents this stage currently accepted with the revision that
+     * produced them. An accepted submission may change nothing, and an evaluated skip never adds
+     * documents: unchanged adequate documents need no citation and are not inferred from earlier
+     * results. The parent's implementation handoff references exactly this set; the broader outputs
+     * below stay available to consumers that need every artifact.
+     */
+    documents: z.array(
+      z.object({
+        path: z.string().min(1),
+        revision: z.string().min(1).nullable(),
+      }),
+    ),
+    /**
+     * Stage-owned paths outside the authoritative documents that stay on the retained preparation
+     * branch for implementation reuse, relative to the shared checkout.
+     */
+    sourcePaths: z.array(z.string().min(1)).default([]),
+    skipReferences: z.array(z.string().min(1)).default([]),
+    outputs: z.array(z.object({ path: z.string().min(1) })),
+    evaluation: z.object({ path: z.string().min(1) }),
+    reason: z.string().nullable(),
+    returnStage: z.enum(upstreamStages).nullable(),
+    /**
+     * The concrete upstream correction a return carries, with the returning role's Markdown report
+     * binding and that role that explains its problem and consequence. Former combined results
+     * retain their problem and consequence fields as history; current returns carry the binding
+     * instead, so every consumer reads the assessment through the identity its producer saved.
+     */
+    returnFinding: z
+      .object({
+        stage: z.enum(upstreamStages),
+        correction: z.string().min(1),
+      })
+      .and(returnEvidenceSchema)
+      .nullable(),
+    /**
+     * The retained prototype the Storybook Refinement stage built, when it produced one: the
+     * worktree branch and revision implementation tickets reference for reuse. Prototype code is not
+     * an authoritative document and never enters ticket admission as one.
+     */
+    prototype: z
+      .object({ branch: z.string().min(1), revision: z.string().min(1) })
+      .nullable()
+      .default(null),
+    /**
+     * The prototype author's and evaluator's retained observation records, in role order. They stay
+     * empty for every other stage, for an evaluated applicability skip and for a prototype result
+     * that retained no evidence.
+     */
+    prototypeObservations: z
+      .array(z.object({ role: z.enum(['author', 'evaluator']), path: z.string().min(1) }))
+      .default([]),
+  })
+  .superRefine((result, context) => {
+    if (
+      result.outcome === 'returnUpstream' &&
+      (result.returnFinding === null || result.returnStage !== result.returnFinding.stage)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['returnFinding'],
+        message: 'An upstream result requires its correction and matching destination.',
+      });
+    }
+  });
 
 export type PreparationResult = z.infer<typeof preparationResultSchema>;
 
@@ -495,18 +632,6 @@ export const stagePlanArtifact = {
   pathFromArtifactsRoot: 'plan.json',
   schema: plannedTasksSchema,
 } satisfies ArtifactDeclaration<typeof plannedTasksSchema>;
-
-/** Normalize the evaluator's reported findings into the shared saved Finding shape. */
-export function toFindings(
-  reported: StageEvaluationResponse['findings'],
-): StageEvaluationOutput['findings'] {
-  return reported.map((finding) => ({
-    ...finding,
-    locations: finding.locations.map(({ path, line }) =>
-      line === null ? { path } : { path, line },
-    ),
-  }));
-}
 
 /** The most recent terminal invocation, separate from immutable completed-round history. */
 export const stageTerminalDeclaration = {

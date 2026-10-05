@@ -39,6 +39,7 @@ import {
   readReportFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 const environment = {
   PATH: process.env.PATH ?? '',
@@ -173,6 +174,7 @@ function runnerOf(report: unknown): {
     runner: {
       run: async (request) => {
         contexts.push(request.context);
+        await writeAssignedReport(request.context, '# Controlled prototype report\n');
         return ok({ output: JSON.stringify(report) });
       },
     },
@@ -183,7 +185,6 @@ function runnerOf(report: unknown): {
 function authoredReport(observation: string): Record<string, unknown> {
   return {
     outcome: 'authored',
-    summary: 'The prototype journey.',
     documents: [],
     sourcePaths: ['stories/journey.stories.js'],
     plan: [],
@@ -197,11 +198,8 @@ function authoredReport(observation: string): Record<string, unknown> {
 /** One evaluator report for the current authored revision. */
 function evaluationReport(verdict: string, observation: string | null): Record<string, unknown> {
   return {
-    assessedRevision: 1,
     verdict,
-    reason: 'Assessed the exact retained prototype.',
     observation: observation === null ? null : { path: observation },
-    findings: [],
     upstream: null,
   };
 }
@@ -285,6 +283,7 @@ describe('prototype observation evidence', () => {
       expect(feedback[0]?.record).toMatchObject({
         kind: 'rejection',
         scope: authorScope,
+        invocationId: (JSON.parse(originalAuthor) as { invocationId: string }).invocationId,
         operation: 'stage-author',
         profile: 'nexus-flash',
         source: { path: source },
@@ -422,11 +421,10 @@ describe('prototype observation evidence', () => {
     await expect(
       prototypeAuthor({
         outcome: 'skip-proposed',
-        summary: 'No useful prototype work applies.',
         documents: [],
         sourcePaths: [],
         plan: [],
-        skip: { reason: 'No useful prototype work applies.', references: ['readme.md'] },
+        skip: { references: ['readme.md'] },
         question: null,
         upstream: null,
         observation: { path: record },
@@ -453,8 +451,7 @@ describe('prototype observation evidence', () => {
         publish: () => undefined,
         runner: runnerOf({
           outcome: 'authored',
-          summary: 'The requirements.',
-          documents: [{ path: 'readme.md', description: 'the requirements' }],
+          documents: [{ path: 'readme.md' }],
           sourcePaths: [],
           plan: [],
           skip: null,
@@ -599,6 +596,7 @@ describe('prototype observation evidence', () => {
         runner: {
           async run(request) {
             acceptedContexts.push(request.context);
+            await writeAssignedReport(request.context, '# Accepted evaluator report\n');
             return ok({
               output: JSON.stringify(evaluationReport('accepted', evaluatorObservation)),
             });
@@ -655,11 +653,10 @@ describe('prototype observation evidence', () => {
       publish: () => undefined,
       runner: runnerOf({
         outcome: 'skip-proposed',
-        summary: 'No useful prototype work applies.',
         documents: [],
         sourcePaths: [],
         plan: [],
-        skip: { reason: 'No useful prototype work applies.', references: ['docs/ux.md'] },
+        skip: { references: ['docs/ux.md'] },
         question: null,
         upstream: null,
         observation: null,
@@ -823,8 +820,7 @@ describe('prototype observation evidence', () => {
     );
     const requirements = runnerOf({
       outcome: 'authored',
-      summary: 'The requirements.',
-      documents: [{ path: 'readme.md', description: 'the requirements' }],
+      documents: [{ path: 'readme.md' }],
       sourcePaths: [],
       plan: [],
       skip: null,
@@ -851,7 +847,8 @@ describe('prototype observation evidence', () => {
     let record = '';
     let deletion = '';
     const runner: AgentRoleRunner = {
-      async run() {
+      async run(request) {
+        await writeAssignedReport(request.context, '# Removed the adapted story\n');
         await rm(path.join(worktree, 'stories', 'journey.stories.js'));
         await gitCommand(['add', 'stories/journey.stories.js'], worktree);
         await gitCommand(['commit', '--quiet', '--message', 'remove the adapted story'], worktree);
@@ -943,15 +940,15 @@ describe('prototype observation evidence', () => {
     // The real author commits the inspected deletion before it returns its report; the checkout's
     // post-invocation head no longer tracks the path the pre-invocation revision still tracked.
     const runner: AgentRoleRunner = {
-      async run() {
+      async run(request) {
+        await writeAssignedReport(request.context, '# Removed the stale UX note\n');
         await rm(path.join(worktree, 'docs', 'ux.md'));
         await gitCommand(['add', 'docs/ux.md'], worktree);
         await gitCommand(['commit', '--quiet', '--message', 'remove the stale UX note'], worktree);
         return ok({
           output: JSON.stringify({
             outcome: 'authored',
-            summary: 'Removed the stale UX note the requirements no longer carry.',
-            documents: [{ path: 'docs/ux.md', description: 'the removed note' }],
+            documents: [{ path: 'docs/ux.md' }],
             sourcePaths: [],
             plan: [],
             skip: null,
@@ -994,7 +991,7 @@ describe('prototype observation evidence', () => {
     // An ancestral deletion commit establishes absence, but does not transfer Requirements'
     // ownership to a fresh prototype author. Both document and source declarations reject it.
     for (const declaration of [
-      { documents: [{ path: 'docs/ux.md', description: 'removed UX' }], sourcePaths: [] },
+      { documents: [{ path: 'docs/ux.md' }], sourcePaths: [] },
       { documents: [], sourcePaths: ['docs/ux.md'] },
     ]) {
       await expect(
@@ -1047,24 +1044,11 @@ describe('prototype observation evidence', () => {
         publish: () => undefined,
         runner: runnerOf(report).runner,
       })();
-    const finding = {
-      title: 'The journey skips its running state',
-      severity: 'blocking',
-      basis: 'The prototype must show the running state as the journey advances.',
-      evidence: 'The observed interaction jumped from idle to complete.',
-      impact: 'The promised journey is not inspectable.',
-      repairGuidance: 'Keep the running state visible before completion.',
-      locations: [],
-    };
-
     // A defect report with its own observed evidence resolves and retains the reference.
     await expect(
       evaluator({
-        assessedRevision: 1,
         verdict: 'changes-requested',
-        reason: 'The observed journey skips a state.',
         observation: { path: evaluatorObservation },
-        findings: [finding],
         upstream: null,
       }),
     ).resolves.toBe('changes-requested');
@@ -1083,11 +1067,8 @@ describe('prototype observation evidence', () => {
     });
     await expect(
       evaluator({
-        assessedRevision: 1,
         verdict: 'changes-requested',
-        reason: 'The observed journey skips a state.',
         observation: { path: stale },
-        findings: [finding],
         upstream: null,
       }),
     ).rejects.toThrow(/differs from the evaluated revision/);
@@ -1095,15 +1076,10 @@ describe('prototype observation evidence', () => {
     // An upstream return that performed a preview keeps the observed evidence too.
     await expect(
       evaluator({
-        assessedRevision: 1,
         verdict: 'return-upstream',
-        reason: 'The captured input contradicts the journey.',
         observation: { path: evaluatorObservation },
-        findings: [],
         upstream: {
           stage: 'requirements',
-          problem: 'The captured input omits the running state.',
-          consequence: 'The journey cannot be prototyped as promised.',
           correction: 'Capture the running state in the acceptance examples.',
         },
       }),
@@ -1414,11 +1390,10 @@ describe('prototype observation evidence', () => {
       publish: () => undefined,
       runner: runnerOf({
         outcome: 'skip-proposed',
-        summary: 'No interaction surface changed.',
         documents: [],
         sourcePaths: [],
         plan: [],
-        skip: { reason: 'No interaction surface changed.', references: [] },
+        skip: { references: [] },
         question: null,
         upstream: null,
         observation: null,
@@ -1430,11 +1405,8 @@ describe('prototype observation evidence', () => {
       git,
       publish: () => undefined,
       runner: runnerOf({
-        assessedRevision: 2,
         verdict: 'accepted-skip',
-        reason: 'The corrected scope leaves no prototype to refine.',
         observation: null,
-        findings: [],
         upstream: null,
       }).runner,
     })();

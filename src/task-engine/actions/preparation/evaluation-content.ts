@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { GitAdapter } from '../../../adapters/git.js';
 import { recordIdentity } from '../report-feedback.js';
 import type { Selection } from '../select-task/artifacts.js';
-import type { AssessedContent, StageAuthorOutput } from './artifacts.js';
+import type { AssessedContent, RetainedStageAuthorOutput } from './artifacts.js';
 
 /**
  * The observation and validation of the repository content and input identities one preparation
@@ -15,7 +15,7 @@ import type { AssessedContent, StageAuthorOutput } from './artifacts.js';
 export { recordIdentity };
 
 /** The authored report's plan, applicability and references are also part of its revision. */
-export function authoredIdentity(author: StageAuthorOutput): string {
+export function authoredIdentity(author: RetainedStageAuthorOutput): string {
   return recordIdentity(author);
 }
 
@@ -162,7 +162,7 @@ export type RetainedEvaluationContent = {
 export async function retainEvaluationContent(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
-  readonly author: StageAuthorOutput;
+  readonly author: RetainedStageAuthorOutput;
 }): Promise<RetainedEvaluationContent> {
   const { git, worktree, author } = settings;
   const declared = [...author.documents.map(({ path: value }) => value), ...author.sourcePaths];
@@ -253,7 +253,7 @@ function changed(): Error {
 export async function requireDeclaredWork(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
-  readonly author: StageAuthorOutput;
+  readonly author: RetainedStageAuthorOutput;
   readonly revision: string;
 }): Promise<void> {
   const { git, worktree, author } = settings;

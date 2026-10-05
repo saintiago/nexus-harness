@@ -5,6 +5,8 @@ import { readRecord, readRequiredRecord, writeRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import { terminalReasonSchema } from '../../terminal-reason.js';
 import {
+  isBoundStageAuthorOutput,
+  isBoundStageEvaluationOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -13,15 +15,20 @@ import {
   stageReturnExhaustionFile,
   stageRoundExhaustionFile,
   type PreparationResult,
+  type ReturnReport,
   type PreparationStage,
 } from '../artifacts.js';
 import {
   preparationWorktree,
   readStageArtifact,
+  readStageRoleArtifact,
   readStagePlan,
   requireCurrentAcceptance,
   requireRetainedDecision,
+  requireReturnReport,
+  requireNeedsInputReport,
   roundArtifactDirectory,
+  roundArtifactFile,
   stageRoot,
   writeStageArtifact,
 } from '../storage.js';
@@ -29,11 +36,12 @@ import { evidenceFilePath, requireRetainedPrototypeEvidence } from '../observati
 
 /**
  * StageResult saves the terminal result envelope of one evaluated preparation stage: its outcome,
- * the assessed authored revision, its output references, the evaluation reference and a concrete
- * reason with the upstream destination when one applies. The parent publication reads this saved
- * result; the child returns only its outcome and this reference. Acceptance validates the
- * evaluation's complete basis, so changed authored reports, inputs or assessed content cannot be
- * published from a stale decision.
+ * the assessed authored revision, its output references, the evaluation reference, the
+ * action-observed reason for a question or exhaustion, and the upstream destination, correction
+ * and returning Markdown report when one applies. The parent publication reads this saved result;
+ * the child returns only its outcome and this reference. Acceptance validates the evaluation's
+ * complete basis, so changed authored reports, inputs or assessed content cannot be published
+ * from a stale decision.
  */
 
 export type StageResultSettings = {
@@ -91,6 +99,25 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(`No ${settings.stage} round plan exists under "${root}" to finalize.`);
     }
+    const roleContext = {
+      issueRoot,
+      stage: settings.stage,
+      workId: selection.taskKey,
+      round: plan.round,
+      context: `Finalizing ${settings.stage} round ${String(plan.round)} for task ${selection.taskKey}.`,
+    };
+    const readAuthor = () =>
+      readStageRoleArtifact({
+        ...roleContext,
+        role: 'author',
+        profile: plan.profiles.author,
+      });
+    const readEvaluation = () =>
+      readStageRoleArtifact({
+        ...roleContext,
+        role: 'evaluator',
+        profile: plan.profiles.evaluator,
+      });
     const completed = await readStageArtifact(root, plan.round, stageResultArtifact);
     if (completed !== null) {
       if (outcome !== completed.outcome && outcome !== 'exhausted') {
@@ -99,22 +126,48 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         );
       }
       if (outcome === 'accepted' || outcome === 'skipped') {
-        const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+        const author = await readAuthor();
         if (author === null) {
           throw new Error('A retained acceptance must keep its authored report.');
         }
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        requireRetainedDecision({
+        await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
           round: plan.round,
           verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
           author,
-          evaluation: await readStageArtifact(root, plan.round, stageEvaluationArtifact),
+          evaluation: await readEvaluation(),
           git: settings.git,
+        });
+      }
+      if (outcome === 'needsInput') {
+        await requireNeedsInputReport({
+          issueRoot,
+          stage: settings.stage,
+          round: plan.round,
+          workId: selection.taskKey,
+          authoredRevision: completed.authoredRevision,
+        });
+      }
+      if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
+        // A replayed return keeps its returning role's Markdown readable through the producer's
+        // saved binding: an unusable report is preserved as that role's rejection evidence instead
+        // of replaying a correction whose assessment is missing or changed.
+        await requireReturnReport({
+          issueRoot,
+          workId: selection.taskKey,
+          returned: {
+            stage: settings.stage,
+            role: completed.returnFinding.role ?? null,
+            report: completed.returnFinding.report,
+          },
+          context:
+            `Replaying the retained ${settings.stage} return of round ${String(plan.round)} for ` +
+            `task ${selection.taskKey}.`,
         });
       }
       if (
@@ -122,7 +175,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         settings.stage === 'prototype' &&
         (completed.outcome === 'accepted' || completed.prototype !== null)
       ) {
-        const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+        const evaluation = await readEvaluation();
         if (evaluation === null) {
           throw new Error('A retained prototype must keep its evaluated decision.');
         }
@@ -163,27 +216,124 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       );
       return 'saved';
     }
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+    const author = await readAuthor();
     if (author === null) {
       throw new Error(
         `Round ${String(plan.round)} of the ${settings.stage} stage has no authored revision to ` +
           'report.',
       );
     }
-    const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+    if (outcome === 'needsInput') {
+      await requireNeedsInputReport({
+        issueRoot,
+        stage: settings.stage,
+        round: plan.round,
+        workId: selection.taskKey,
+        authoredRevision: author.revision,
+      });
+    }
+    const evaluation = await readEvaluation();
     const upstream = evaluation?.upstream ?? author.upstream;
+    // The published reason is action-observed: the author's question the parent must relay, or
+    // the exhaustion the workflow retained. Assessment text lives in the Markdown reports, and a
+    // return's concrete correction travels in the return finding.
     const reason =
-      outcome === 'skipped'
-        ? (author.skip?.reason ?? evaluation?.reason ?? author.summary)
-        : outcome === 'returnUpstream'
-          ? upstream === null
-            ? author.summary
-            : `${upstream.problem}; needed correction: ${upstream.correction}`
-          : outcome === 'needsInput'
-            ? (author.question ?? author.summary)
-            : outcome === 'exhausted'
-              ? ((await readExhaustionReason(root)) ?? evaluation?.reason ?? author.summary)
-              : (evaluation?.reason ?? author.summary);
+      outcome === 'needsInput'
+        ? author.question
+        : outcome === 'exhausted'
+          ? await readExhaustionReason(root)
+          : null;
+
+    /**
+     * The returning role's saved Markdown report binding: the evaluator's when its verdict carried
+     * the upstream request, otherwise the author's. A retained combined record has no report
+     * binding and returns null; its former problem and consequence travel through the return
+     * finding instead.
+     */
+    const returningReport = (): {
+      readonly role: 'author' | 'evaluator';
+      readonly binding: ReturnReport;
+    } | null => {
+      if (upstream === null) {
+        return null;
+      }
+      if (evaluation !== null && evaluation.upstream !== null) {
+        return isBoundStageEvaluationOutput(evaluation)
+          ? {
+              role: 'evaluator',
+              binding: {
+                outcome: {
+                  path: roundArtifactFile(
+                    root,
+                    plan.round,
+                    stageEvaluationArtifact.pathFromArtifactsRoot,
+                  ),
+                },
+                profile: evaluation.profile,
+                report: evaluation.report,
+                reportIdentity: evaluation.reportIdentity,
+                invocationId: evaluation.invocationId,
+              },
+            }
+          : null;
+      }
+      return isBoundStageAuthorOutput(author)
+        ? {
+            role: 'author',
+            binding: {
+              outcome: {
+                path: roundArtifactFile(
+                  root,
+                  plan.round,
+                  stageAuthorArtifact.pathFromArtifactsRoot,
+                ),
+              },
+              profile: author.profile,
+              report: author.report,
+              reportIdentity: author.reportIdentity,
+              invocationId: author.invocationId,
+            },
+          }
+        : null;
+    };
+
+    const returning = outcome === 'returnUpstream' ? returningReport() : null;
+    if (returning !== null) {
+      // A return cannot leave this stage without the assessment that explains it: read the
+      // returning role's Markdown through its saved binding, preserving an unusable report as that
+      // role's rejection evidence instead of saving a return whose evidence is missing or changed.
+      await requireReturnReport({
+        issueRoot,
+        workId: selection.taskKey,
+        returned: { stage: settings.stage, role: returning.role, report: returning.binding },
+        context:
+          `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
+          `${selection.taskKey}.`,
+      });
+    }
+
+    /**
+     * A retained combined return's former problem and consequence text: a current return explains
+     * both in the returning role's Markdown report, while the legacy record has no report and
+     * keeps its text as history for the destination stage.
+     */
+    const returningHistory = (): {
+      readonly problem: string;
+      readonly consequence: string;
+    } | null => {
+      if (upstream === null) {
+        return null;
+      }
+      if (evaluation !== null && evaluation.upstream !== null) {
+        return isBoundStageEvaluationOutput(evaluation)
+          ? null
+          : { problem: evaluation.upstream.problem, consequence: evaluation.upstream.consequence };
+      }
+      if (isBoundStageAuthorOutput(author) || author.upstream === null) {
+        return null;
+      }
+      return { problem: author.upstream.problem, consequence: author.upstream.consequence };
+    };
 
     if (outcome === 'accepted' || outcome === 'skipped') {
       const verdict = outcome === 'accepted' ? 'accepted' : 'accepted-skip';
@@ -336,7 +486,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       evaluation: { path: evaluationRef },
       reason,
       returnStage: outcome === 'returnUpstream' ? (upstream?.stage ?? null) : null,
-      returnFinding: outcome === 'returnUpstream' ? upstream : null,
+      returnFinding:
+        outcome === 'returnUpstream' && upstream !== null
+          ? {
+              stage: upstream.stage,
+              correction: upstream.correction,
+              role: returning?.role ?? null,
+              report: returning?.binding ?? null,
+              ...(returningHistory() ?? {}),
+            }
+          : null,
       prototype,
       prototypeObservations: retainedObservations,
     };

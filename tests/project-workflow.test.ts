@@ -32,6 +32,8 @@ import { createImplementationHandoff } from '../src/task-engine/actions/project/
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
   acceptedResultIdentity,
@@ -48,6 +50,7 @@ import { repositoryState, scriptedGit } from './support/git.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
 import { scriptedJira } from './support/jira.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 
 type ActionStub = BoundAction;
 
@@ -562,8 +565,7 @@ describe('preparation binding dispatch', () => {
     const outputs: unknown[] = [
       {
         outcome: 'authored',
-        summary: 'The journey proposal.',
-        documents: [{ path: 'docs/ux.md', description: 'The proposed journey.' }],
+        documents: [{ path: 'docs/ux.md' }],
         sourcePaths: [],
         plan: [],
         skip: null,
@@ -572,11 +574,8 @@ describe('preparation binding dispatch', () => {
         observation: null,
       },
       {
-        assessedRevision: 1,
         verdict: 'accepted',
-        reason: 'The revision is adequate.',
         observation: null,
-        findings: [],
         upstream: null,
       },
     ];
@@ -588,6 +587,7 @@ describe('preparation binding dispatch', () => {
         if (output === undefined) {
           throw new Error('No scripted provider output remains for this invocation.');
         }
+        await writeAssignedReport(request.prompt, '# Controlled preparation report\n');
         return ok({ output: JSON.stringify(output) });
       },
     };
@@ -688,7 +688,6 @@ describe('preparation binding dispatch', () => {
     /** One author's controlled skip proposal over the stage's current checkout document. */
     const skipProposal = (stage: PreparationStage): unknown => ({
       outcome: 'skip-proposed',
-      summary: `The retained ${stage} documents already satisfy the stage.`,
       documents: [],
       sourcePaths: [],
       plan:
@@ -702,10 +701,7 @@ describe('preparation binding dispatch', () => {
               },
             ]
           : [],
-      skip: {
-        reason: `docs/${stage}.md states the current ${stage} intent.`,
-        references: [`docs/${stage}.md`],
-      },
+      skip: { references: [`docs/${stage}.md`] },
       question: null,
       upstream: null,
       observation: null,
@@ -742,11 +738,8 @@ describe('preparation binding dispatch', () => {
         profile: evaluators[stage],
         instructions: preparationRoleInstructions[roles.evaluator],
         output: {
-          assessedRevision: round,
           verdict: 'accepted-skip',
-          reason: 'The proposal cites the current document and needs no change.',
           observation: null,
-          findings: [],
           upstream: null,
         },
       });
@@ -762,6 +755,7 @@ describe('preparation binding dispatch', () => {
         if (planned === undefined) {
           throw new Error('No scripted provider output remains for this invocation.');
         }
+        await writeAssignedReport(request.prompt, `# Controlled ${planned.part} report\n`);
         return ok({ output: JSON.stringify(planned.output) });
       },
     };
@@ -953,7 +947,12 @@ async function publishPreparation(options: {
   const author = {
     stage: selectedStage,
     revision: Number(options.result.authoredRevision ?? 1),
-    outcome: options.result.outcome === 'skipped' ? 'skip-proposed' : 'authored',
+    outcome:
+      options.result.outcome === 'skipped'
+        ? 'skip-proposed'
+        : options.result.outcome === 'needsInput'
+          ? 'needs-input'
+          : 'authored',
     summary: 'The proposed work.',
     documents: [],
     sourcePaths: [],
@@ -962,7 +961,7 @@ async function publishPreparation(options: {
       options.result.outcome === 'skipped'
         ? { reason: 'The stage is inapplicable.', references: [] }
         : null,
-    question: null,
+    question: options.result.outcome === 'needsInput' ? options.result.reason : null,
     upstream: null,
     observation: null,
   };
@@ -1094,6 +1093,89 @@ async function publishPreparation(options: {
   };
 }
 
+/**
+ * Write one current bound author/evaluation pair with readable Markdown into an existing stage
+ * area, so publication reads the producing report through the identity its producer recorded.
+ */
+async function writeBoundRound(options: {
+  readonly stageArea: string;
+  readonly selectionFile: string;
+  readonly stage?: string;
+  readonly skipped?: boolean;
+  readonly evaluationMarkdown?: string;
+}): Promise<{ readonly evaluationReportPath: string }> {
+  const stage = options.stage ?? 'ux';
+  const selection = JSON.parse(await readFile(options.selectionFile, 'utf8')) as never;
+  const authorReportPath = path.join(
+    options.stageArea,
+    'artifacts',
+    '1',
+    'reports',
+    'author-1',
+    'author.md',
+  );
+  const evaluationReportPath = path.join(
+    options.stageArea,
+    'artifacts',
+    '1',
+    'reports',
+    'evaluator-1',
+    'evaluator.md',
+  );
+  await mkdir(path.dirname(authorReportPath), { recursive: true });
+  await mkdir(path.dirname(evaluationReportPath), { recursive: true });
+  const authorMarkdown = '# Author\n\nThe authored work.\n';
+  const evaluationMarkdown = options.evaluationMarkdown ?? '# Evaluation\n\nAccepted.\n';
+  await writeFile(authorReportPath, authorMarkdown, 'utf8');
+  await writeFile(evaluationReportPath, evaluationMarkdown, 'utf8');
+  const author = {
+    stage,
+    revision: 1,
+    outcome: options.skipped === true ? 'skip-proposed' : 'authored',
+    documents: [],
+    sourcePaths: [],
+    observation: null,
+    plan: [],
+    skip: options.skipped === true ? { references: [] } : null,
+    question: null,
+    upstream: null,
+    taskKey: 'NEX-1',
+    profile: 'nexus-sol',
+    role: 'author',
+    report: { path: authorReportPath },
+    reportIdentity: reportIdentityOf(Buffer.from(authorMarkdown, 'utf8')),
+    invocationId: 'author-1',
+  };
+  const authorFile = path.join(options.stageArea, 'artifacts', '1', 'author.json');
+  await writeFile(authorFile, JSON.stringify(author));
+  const evaluation = {
+    basis: {
+      author: { path: authorFile },
+      authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
+      sourceIdentity: sourceInputIdentity(selection),
+      upstream: [],
+      repositoryRevision: repositoryState().headRevision,
+      content: [],
+    },
+    assessedRevision: 1,
+    verdict: options.skipped === true ? 'accepted-skip' : 'accepted',
+    observation: null,
+    upstream: null,
+    stage,
+    taskKey: 'NEX-1',
+    profile: 'nexus-sol',
+    role: 'evaluator',
+    report: { path: evaluationReportPath },
+    reportIdentity: reportIdentityOf(Buffer.from(evaluationMarkdown, 'utf8')),
+    invocationId: 'evaluator-1',
+  };
+  await writeFile(
+    path.join(options.stageArea, 'artifacts', '1', 'evaluation.json'),
+    JSON.stringify(evaluation),
+  );
+  return { evaluationReportPath };
+}
+
 describe('parent preparation publication', () => {
   const accepted = {
     stage: 'ux',
@@ -1206,6 +1288,12 @@ describe('parent preparation publication', () => {
         ...accepted,
         outcome: 'returnUpstream',
         returnStage: 'requirements',
+        returnFinding: {
+          stage: 'requirements',
+          correction: 'The acceptance example contradicts the requirement.',
+          problem: 'The acceptance example contradicts the requirement.',
+          consequence: 'The route needs corrected input.',
+        },
         reason: 'The acceptance example contradicts the requirement.',
       },
       status: 'UX Proposal',
@@ -1226,6 +1314,12 @@ describe('parent preparation publication', () => {
         stage: 'architecture',
         outcome: 'returnUpstream',
         returnStage: 'ux',
+        returnFinding: {
+          stage: 'ux',
+          correction: 'The proposed navigation cannot support the acceptance example.',
+          problem: 'The proposed navigation cannot support the acceptance example.',
+          consequence: 'The route needs corrected input.',
+        },
         reason: 'The proposed navigation cannot support the acceptance example.',
       },
       status: 'Architecture',
@@ -1242,6 +1336,12 @@ describe('parent preparation publication', () => {
         ...accepted,
         outcome: 'returnUpstream',
         returnStage: 'idea',
+        returnFinding: {
+          stage: 'idea',
+          correction: 'Correct the idea.',
+          problem: 'Correct the idea.',
+          consequence: 'The route needs corrected input.',
+        },
         reason: 'Correct the idea.',
       },
       status: 'UX Proposal',
@@ -1323,6 +1423,123 @@ describe('parent preparation publication', () => {
     });
   });
 
+  it('publishes a current bound author question through the normal waiting route', async () => {
+    const question = 'Which acceptance example governs?';
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'needsInput', reason: question },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stageArea) => {
+        await writeBoundRound({ stageArea, selectionFile });
+        const file = path.join(stageArea, 'artifacts/1/author.json');
+        const author = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+        await writeFile(file, JSON.stringify({ ...author, outcome: 'needs-input', question }));
+      },
+    });
+    expect(published.outcome).toBe('waiting');
+    expect(published.status()).toBe('Waiting for Feedback');
+    expect(published.feedback()).toEqual({ stage: 'ux', question });
+  });
+
+  it.each(['author', 'evaluator'] as const)(
+    'retains the %s rejection when a completed acceptance cannot be published',
+    async (role) => {
+      let area = '';
+      const published = await publishPreparation({
+        result: accepted,
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stageArea) => {
+          area = stageArea;
+          await writeBoundRound({ stageArea, selectionFile });
+          const file = path.join(
+            stageArea,
+            'artifacts/1',
+            role === 'author' ? 'author.json' : 'evaluation.json',
+          );
+          const producer = JSON.parse(await readFile(file, 'utf8')) as { report: { path: string } };
+          await rm(producer.report.path);
+        },
+      });
+      expect(published.outcome).toBe('failed');
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('UX Proposal');
+      expect(await readReportFeedback(area)).toMatchObject([
+        {
+          record: {
+            kind: 'rejection',
+            scope: { role: `ux-${role}` },
+            reason: expect.stringContaining('does not exist'),
+          },
+        },
+      ]);
+    },
+  );
+
+  it.each(['missing', 'directory', 'changed', 'incomplete-binding'] as const)(
+    'refuses needs-input publication with a %s author report and retains the rejection',
+    async (damage) => {
+      let area = '';
+      const published = await publishPreparation({
+        result: { ...accepted, outcome: 'needsInput', reason: 'Which acceptance example governs?' },
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stageArea) => {
+          area = stageArea;
+          await writeBoundRound({ stageArea, selectionFile });
+          const file = path.join(stageArea, 'artifacts/1/author.json');
+          const author = JSON.parse(await readFile(file, 'utf8')) as { report: { path: string } };
+          await writeFile(
+            file,
+            JSON.stringify({
+              ...author,
+              outcome: 'needs-input',
+              question: 'Which acceptance example governs?',
+              ...(damage === 'incomplete-binding' ? { reportIdentity: undefined } : {}),
+            }),
+          );
+          if (damage !== 'incomplete-binding') await rm(author.report.path);
+          if (damage === 'directory') await mkdir(author.report.path);
+          if (damage === 'changed') await writeFile(author.report.path, 'Replacement bytes.');
+        },
+      });
+      expect(published.outcome).toBe('failed');
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('UX Proposal');
+      expect(published.feedback()).toBeNull();
+      expect(await readReportFeedback(area)).toMatchObject([
+        {
+          record: {
+            kind: 'rejection',
+            scope: { role: 'ux-author' },
+          },
+        },
+      ]);
+    },
+  );
+
+  it('rejects a damaged current return before publication writes source or handoff state', async () => {
+    let area = '';
+    await expect(
+      publishPreparation({
+        result: {
+          ...accepted,
+          outcome: 'returnUpstream',
+          returnStage: 'requirements',
+          returnFinding: {
+            stage: 'requirements',
+            role: 'evaluator',
+            correction: 'Correct the example.',
+          },
+        },
+        status: 'UX Proposal',
+        beforePublish: async (_selectionFile, stageArea) => {
+          area = stageArea;
+        },
+      }),
+    ).rejects.toThrow(/complete report binding/);
+    await expect(
+      readFile(path.join(path.dirname(area), 'parent/handoff.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('retains the concrete return finding for the destination stage', async () => {
     const published = await publishPreparation({
       result: {
@@ -1345,11 +1562,197 @@ describe('parent preparation publication', () => {
     expect(published.returnFinding()).toEqual({
       from: 'ux',
       to: 'requirements',
+      role: null,
       problem: 'The acceptance example contradicts the requirement.',
       consequence: 'UX cannot propose one consistent journey.',
       correction: 'Correct the acceptance example.',
+      report: null,
     });
   });
+
+  it.each(['accepted', 'skipped'] as const)(
+    'publishes the %s stage from the evaluation report\u2019s opening narrative and profile',
+    async (outcome) => {
+      const published = await publishPreparation({
+        result: { ...accepted, outcome },
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stage) => {
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            skipped: outcome === 'skipped',
+            evaluationMarkdown: '# Evaluation\n\nThe controlled narrative.\n',
+          });
+        },
+      });
+
+      expect(published.outcome).toBe('advanced');
+      expect(published.failures).toEqual([]);
+      expect(JSON.stringify(published.comments[0]?.body)).toContain(
+        `Preparation ux ${outcome} (profile nexus-sol): The controlled narrative.`,
+      );
+    },
+  );
+
+  it('names the evaluation report when its Markdown carries no opening narrative', async () => {
+    let reportPath = '';
+    const published = await publishPreparation({
+      result: accepted,
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Evaluation\n\n- The lifecycle is complete.\n',
+          })
+        ).evaluationReportPath;
+      },
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(JSON.stringify(published.comments[0]?.body)).toContain(
+      `Preparation ux accepted (profile nexus-sol): see the stage evaluation report at ` +
+        `${reportPath}.`,
+    );
+  });
+
+  it('publishes a bound return with the returning report\u2019s narrative and binding', async () => {
+    let reportPath = '';
+    let returnFinding: unknown = null;
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Assessment\n\nThe controlled narrative.\n',
+          })
+        ).evaluationReportPath;
+        const evaluation = JSON.parse(
+          await readFile(path.join(stage, 'artifacts', '1', 'evaluation.json'), 'utf8'),
+        ) as { readonly reportIdentity: string; readonly invocationId: string };
+        returnFinding = {
+          stage: 'requirements',
+          role: 'evaluator',
+          report: {
+            report: { path: reportPath },
+            outcome: { path: path.join(stage, 'artifacts/1/evaluation.json') },
+            profile: 'nexus-sol',
+            reportIdentity: evaluation.reportIdentity,
+            invocationId: evaluation.invocationId,
+          },
+          correction: 'Correct the acceptance example.',
+        };
+        await writeFile(
+          path.join(stage, 'artifacts', '1', 'result.json'),
+          JSON.stringify({
+            ...accepted,
+            outcome: 'returnUpstream',
+            returnStage: 'requirements',
+            returnFinding,
+            reason: null,
+          }),
+        );
+      },
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(published.failures).toEqual([]);
+    expect(published.stage()).toBe('requirements');
+    const body = JSON.stringify(published.comments[0]?.body);
+    expect(body).toContain(
+      'Returning to requirements for correction: Correct the acceptance example.',
+    );
+    expect(body).toContain(
+      'The returning ux evaluator report (profile nexus-sol): The controlled narrative.',
+    );
+    expect(published.returnFinding()).toMatchObject({
+      from: 'ux',
+      to: 'requirements',
+      role: 'evaluator',
+      report: { report: { path: reportPath }, reportIdentity: expect.any(String) },
+      correction: 'Correct the acceptance example.',
+    });
+  });
+
+  it.each(['changed-report', 'incomplete-binding'] as const)(
+    'fails a return publication with a %s and retains rejection evidence',
+    async (damage) => {
+      let area = '';
+      let producerFile = '';
+      let rejectedOutput = '';
+      let availableReport = '';
+      const published = await publishPreparation({
+        result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+        status: 'UX Proposal',
+        beforePublish: async (selectionFile, stage) => {
+          area = stage;
+          const reportPath = (
+            await writeBoundRound({
+              stageArea: stage,
+              selectionFile,
+              evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
+            })
+          ).evaluationReportPath;
+          // The return binds bytes that no longer match what the returning role saved.
+          producerFile = path.join(stage, 'artifacts/1/evaluation.json');
+          const evaluation = JSON.parse(await readFile(producerFile, 'utf8')) as Record<
+            string,
+            unknown
+          >;
+          availableReport = reportPath;
+          rejectedOutput = await readFile(producerFile, 'utf8');
+          if (damage === 'changed-report') {
+            await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
+          } else {
+            rejectedOutput = JSON.stringify({ ...evaluation, reportIdentity: undefined });
+            await writeFile(producerFile, rejectedOutput);
+          }
+          await writeFile(
+            path.join(stage, 'artifacts', '1', 'result.json'),
+            JSON.stringify({
+              ...accepted,
+              outcome: 'returnUpstream',
+              returnStage: 'requirements',
+              returnFinding: {
+                stage: 'requirements',
+                role: 'evaluator',
+                report: {
+                  report: { path: reportPath },
+                  outcome: { path: producerFile },
+                  profile: evaluation['profile'],
+                  reportIdentity: evaluation['reportIdentity'],
+                  invocationId: evaluation['invocationId'],
+                },
+                correction: 'Correct the acceptance example.',
+              },
+              reason: null,
+            }),
+          );
+        },
+      });
+
+      expect(published.outcome).toBe('failed');
+      expect(published.failures.join('\n')).toContain(
+        damage === 'changed-report' ? 'does not match the identity recorded' : 'reportIdentity',
+      );
+      const feedback = await readReportFeedback(area);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]!.record).toMatchObject({
+        kind: 'rejection',
+        scope: { role: 'ux-evaluator' },
+        assignedReport: { path: availableReport },
+        source: { path: producerFile },
+        output: rejectedOutput,
+      });
+      expect(published.comments).toEqual([]);
+      expect(published.status()).toBe('UX Proposal');
+      expect(published.returnFinding()).toBeNull();
+    },
+  );
 
   it('preserves an unexpected human status change instead of overwriting it', async () => {
     const published = await publishPreparation({
