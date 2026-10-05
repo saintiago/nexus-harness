@@ -60,6 +60,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [Memory component](docs/memory/architecture.md): shared service access, observations, receipts and migration.
 - [Memory integration](docs/memory/integration.md): agent MCP use and shared terminal experience analysis.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
+- [Nexus UX and UI](docs/ux-ui.md): reporting-terminal scope and UX/prototype applicability; consult before proposing UX or prototype work for Nexus.
 - [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
 - [Project workflow](docs/project-workflow.md): parent selection, child workflows, evaluation, Jira handoffs and implementation ticket creation.
 - [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
