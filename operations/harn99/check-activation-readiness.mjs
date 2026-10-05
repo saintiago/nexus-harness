@@ -101,7 +101,11 @@ async function runtimeUsers() {
     } catch {
       continue;
     }
-    if (!(command.includes('/application/cli.js') || command.includes('/application/worker.js'))) {
+    if (!(
+      command.includes('/application/cli.js') ||
+      command.includes('/application/worker.js') ||
+      command.includes('/harn99/run-retained-queue.mjs')
+    )) {
       continue;
     }
     let environment = '';

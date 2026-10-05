@@ -139,7 +139,12 @@ async function activeQueueProcesses() {
     } catch {
       continue;
     }
-    if (command.includes('cli.js queue run') && command.includes('magic-collection-keeper')) {
+    if (
+      (command.includes('cli.js queue run') &&
+        (command.includes('magic-collection-keeper') ||
+          command.includes('kan76-scoped.project.json'))) ||
+      command.includes('/harn99/run-retained-queue.mjs')
+    ) {
       matches.push({ pid: Number(entry), command: command.trim() });
     }
   }

@@ -31,16 +31,21 @@ scripts edits product documentation, and none of them is run by validation.
   record, fast-forwards and builds the installation, verifies the resolved launch target and
   profile parity, rehearses the recovery-allowance carry on the rebuilt installation, records the
   activation evidence and then runs the normal queue scoped to KAN-76. `Application.execute`
-  records a fresh allowance (`invocations: 0`) before the first worker starts, so the script
-  supervises that startup: when the rewrite appears it pauses the queue parent, restores KAN-76's
-  retained count, resumes it and records the before/after records (with hashes) in
-  `kan76-resumption.json`. The run fails explicitly when the final count is below the retained one.
-- `activate-and-resume.mjs --rehearse [--dist <build>]` — runs no queue and touches no KAN-76 state:
-  it drives the real operator command, Application and recovery lifecycle over a temporary storage
-  root with a faulting worker and a recording recovery runtime, once without the carry (the startup
-  reset grants a fresh invocation) and once with it (the retained count reaches `recover()` with no
-  invocation spent), and pauses a real child process while carrying. Evidence:
-  `recovery-carry-rehearsal.json`.
+  records a fresh allowance (`invocations: 0`) before the first worker starts. The operational
+  entry `run-retained-queue.mjs` wraps Application's awaited worker launcher: it restores and
+  verifies the retained count inside the queue parent before launching the first worker. If the
+  startup record is unexpected, or restoration, verification or evidence writing fails, it throws
+  out of execution and the command exits 1 without invoking a worker or recovery. Subsequent worker
+  restarts use the consumed count normally. Startup evidence (original/reset/carried records with
+  hashes) lives in `kan76-startup-carry.json`; final evidence lives in `kan76-resumption.json`.
+- `activate-and-resume.mjs --rehearse [--dist <build>]` — touches no real KAN-76 state: it drives the
+  real operator command, Application, recovery lifecycle and worker/process launcher in separate
+  disposable processes. The worker launch fails immediately with ENOENT, while supervisor
+  observation is delayed 100ms at the first-launch boundary. The control run consumes an extra
+  invocation; the carried run retains 3/3 with zero recovery invocations. An unexpected startup
+  record proves refusal stops before either worker launch or recovery. The fixture
+  `rehearse-retained-queue.mjs` substitutes only the recovery runtime and faulting worker target.
+  Evidence: `recovery-carry-rehearsal.json`.
 
 ## Remaining for the initiating task
 
@@ -60,7 +65,7 @@ scripts edits product documentation, and none of them is run by validation.
   shorter than a full workflow invocation; a compliant probe does not guarantee every future turn.
 - Resumption itself is not claimed here: the reconciled feedback only reaches the author when the
   queue resumes under the activated installation.
-- The carry relies on the queue parent's startup rewrite of `recovery/execution.json`; the script
-  refuses to carry when that record changes to anything but the startup reset and reports the
-  retained count as not preserved, so a failed carry stays explicit instead of silently granting
-  a fresh allowance.
+- The carry requires the inspected Application ordering: `begin()` publishes the startup reset,
+  then awaits its worker launcher before recovery. The rehearsal verifies this ordering against the
+  rebuilt installation before actual resumption. A changed startup record prevents continuation.
+  The final count is supplementary evidence; it cannot by itself prove no extra invocation ran.

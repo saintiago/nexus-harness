@@ -10,31 +10,20 @@
  * scoped KAN-76 queue.
  *
  * Application.execute records a fresh recovery allowance (invocations: 0) before the first worker
- * starts. The carry supervisor waits for that rewrite, pauses the queue parent, restores KAN-76's
- * retained count and resumes it, so no recovery invocation can read a reset count.
+ * starts. The operational queue entry restores the retained count inside the queue parent before
+ * its first worker launch. A failed carry throws out of execute() without work or recovery running.
  *
  * Usage:
  *   node operations/harn99/activate-and-resume.mjs <merged-revision> [kan-project-config]
  *   node operations/harn99/activate-and-resume.mjs --rehearse [--dist <build>]
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import {
-  cp,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { readRecoveryRecord } from './run-retained-queue.mjs';
 
 const argv = process.argv.slice(2);
 const options = new Map();
@@ -80,6 +69,7 @@ const settings = {
 settings.dist = path.resolve(option('--dist', path.join(settings.installation, 'dist')));
 settings.recoveryRecord = path.join(settings.executionDir, 'recovery/execution.json');
 const scopedConfig = path.join(settings.evidence, 'kan76-scoped.project.json');
+const retainedQueueEntry = fileURLToPath(new URL('./run-retained-queue.mjs', import.meta.url));
 if (!rehearse && (revision === undefined || revision.trim() === '')) {
   process.stderr.write(
     'usage: node operations/harn99/activate-and-resume.mjs <merged-revision> [kan-project-config]\n' +
@@ -99,199 +89,9 @@ const exists = async (file) => {
     throw error;
   }
 };
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const git = (...args) =>
   execFileSync('git', args, { cwd: settings.installation, encoding: 'utf8' }).trim();
-
-/** What one execution's retained recovery record holds: its request and consumed invocations. */
-function recoveryRecordProblem(value) {
-  if (typeof value !== 'object' || value === null) {
-    return 'it is not an object';
-  }
-  const { request, invocations } = value;
-  if (
-    typeof request !== 'object' ||
-    request === null ||
-    typeof request.projectConfigPath !== 'string'
-  ) {
-    return 'it names no request project configuration';
-  }
-  if (!Number.isInteger(invocations) || invocations < 0) {
-    return 'its invocation count is not a non-negative integer';
-  }
-  return null;
-}
-
-/** One execution's retained recovery record with the bytes and hash that evidence it. */
-async function readRecoveryRecord(file) {
-  const bytes = await readFile(file);
-  let value;
-  try {
-    value = JSON.parse(bytes.toString('utf8'));
-  } catch (error) {
-    throw new Error(
-      `The recovery execution record at ${file} is not valid JSON: ${messageOf(error)}`,
-      { cause: error },
-    );
-  }
-  const problem = recoveryRecordProblem(value);
-  if (problem !== null) {
-    throw new Error(`The recovery execution record at ${file} is unusable: ${problem}.`);
-  }
-  return { file, bytes, sha256: sha256(bytes), record: value };
-}
-
-/** The retained recovery record's readable content, or null while it is absent or mid-write. */
-async function peekRecoveryRecord(file) {
-  try {
-    return await readRecoveryRecord(file);
-  } catch {
-    return null;
-  }
-}
-
-/** Replace one recovery record the way the merged writer publishes it. */
-async function writeRecoveryRecord(file, record) {
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
-/** One process's scheduler state from /proc, or null once it has exited. */
-function processState(pid) {
-  try {
-    const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
-  } catch {
-    return null;
-  }
-}
-
-/** Pause one process; true only once it reports the stopped state before it exits. */
-async function stopProcess(pid) {
-  try {
-    process.kill(pid, 'SIGSTOP');
-  } catch (error) {
-    if (error.code === 'ESRCH') {
-      return false;
-    }
-    throw error;
-  }
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const state = processState(pid);
-    if (state === null) {
-      return false;
-    }
-    if (state === 'T' || state === 't') {
-      return true;
-    }
-    await delay(1);
-  }
-  return false;
-}
-
-/** Resume one paused process; a process that already exited is left alone. */
-function continueProcess(pid) {
-  try {
-    process.kill(pid, 'SIGCONT');
-  } catch (error) {
-    if (error.code !== 'ESRCH') {
-      throw error;
-    }
-  }
-}
-
-/**
- * Carry a retained recovery invocation count through one queue startup. The queue parent rewrites
- * its execution record with invocations: 0 before the first worker starts; the supervisor waits
- * for that rewrite, pauses the parent while it restores the retained count (so no recovery
- * invocation can read the reset count), resumes it and reports the exact before/after records.
- * `carry: false` observes the startup rewrite without touching it, for the rehearsal's control run.
- */
-function superviseRecoveryCarry({
-  recordFile,
-  retained,
-  request,
-  pid = null,
-  alive = () => true,
-  carry = true,
-  timeoutMs = 120_000,
-}) {
-  const startedAt = new Date().toISOString();
-  const result = (async () => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (!alive()) {
-        return {
-          carried: false,
-          reason: 'the queue exited before its startup record was observed',
-          startedAt,
-        };
-      }
-      const current = await peekRecoveryRecord(recordFile);
-      if (current !== null && !current.bytes.equals(retained.bytes)) {
-        const isStartupReset =
-          current.record.invocations === 0 &&
-          path.resolve(current.record.request.projectConfigPath) === path.resolve(request);
-        if (!isStartupReset) {
-          return {
-            carried: false,
-            reason:
-              'the execution record changed to a value other than the startup reset; the ' +
-              'retained count was not carried',
-            observed: current.record,
-            startedAt,
-          };
-        }
-        if (!carry) {
-          return { carried: false, observed: current.record, observedReset: true, startedAt };
-        }
-        const carriedRecord = {
-          request: { projectConfigPath: request },
-          invocations: retained.record.invocations,
-        };
-        const paused = pid === null ? false : await stopProcess(pid);
-        try {
-          await writeRecoveryRecord(recordFile, carriedRecord);
-        } finally {
-          if (paused) {
-            continueProcess(pid);
-          }
-        }
-        const after = await readRecoveryRecord(recordFile);
-        const carried = after.record.invocations === retained.record.invocations;
-        return {
-          carried,
-          ...(carried
-            ? {}
-            : { reason: 'the recorded count changed while the retained count was carried' }),
-          observedReset: true,
-          observed: current.record,
-          carriedRecord: after.record,
-          paused,
-          startedAt,
-          carriedAt: new Date().toISOString(),
-          observedSha256: current.sha256,
-          carriedSha256: after.sha256,
-        };
-      }
-      await delay(2);
-    }
-    return {
-      carried: false,
-      reason: 'the queue startup record was not observed before the timeout',
-      startedAt,
-    };
-  })();
-  return { result };
-}
 
 /** Every running Nexus process, which keeps the installation in use. */
 async function runtimeUsers() {
@@ -306,7 +106,11 @@ async function runtimeUsers() {
     } catch {
       continue;
     }
-    if (command.includes('/application/cli.js') || command.includes('/application/worker.js')) {
+    if (
+      command.includes('/application/cli.js') ||
+      command.includes('/application/worker.js') ||
+      command.includes('/harn99/run-retained-queue.mjs')
+    ) {
       users.push({ pid: Number(entry), command });
     }
   }
@@ -314,19 +118,11 @@ async function runtimeUsers() {
 }
 
 /**
- * Rehearse one queue startup against a temporary storage root with the real operator command, the
- * real Application and the real recovery lifecycle: a retained nonzero count, a faulting worker
- * launch and a recording recovery runtime. The control run observes the startup reset and the
- * invocation it grants; the carried run proves the retained count reaches recover() with no
- * invocation spent. Neither run touches KAN-76's real execution or workspace state.
+ * Separate-process rehearsal using the real command/Application/recovery lifecycle and real worker
+ * launcher with immediate ENOENT. The recording recovery runtime is the only agent substitute.
+ * Supervision is deliberately delayed; preservation must hold without timely supervisor action.
  */
 async function rehearseRecoveryCarry(dist = settings.dist) {
-  const { runOperatorCommand } = await import(
-    pathToFileURL(path.join(dist, 'src/application/command.js')).href
-  );
-  const { createApplication } = await import(
-    pathToFileURL(path.join(dist, 'src/application/index.js')).href
-  );
   const base = JSON.parse(await readFile(settings.nexusConfig, 'utf8'));
   const retained = await readRecoveryRecord(settings.recoveryRecord);
   if (!(await exists(scopedConfig))) {
@@ -347,9 +143,7 @@ async function rehearseRecoveryCarry(dist = settings.dist) {
   const project = JSON.parse(await readFile(scopedConfig, 'utf8'));
   const projectName = project.taskSource?.project;
   if (typeof projectName !== 'string' || projectName.trim() === '') {
-    throw new Error(
-      `The scoped KAN-76 configuration ${scopedConfig} names no task-source project.`,
-    );
+    throw new Error(`The scoped configuration ${scopedConfig} names no task-source project.`);
   }
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-harn99-carry-'));
   const nexusConfigFile = path.join(root, 'nexus.config.json');
@@ -358,127 +152,88 @@ async function rehearseRecoveryCarry(dist = settings.dist) {
     `${JSON.stringify({ ...base, workflow, storage: { ...base.storage, root } }, null, 2)}\n`,
   );
   const recordFile = path.join(root, 'executions', projectName, 'recovery', 'execution.json');
-  const workerProblem = 'HARN-99 rehearsal: the worker never starts.';
-
-  /** One startup with the real command and Application over the temporary execution directory. */
-  const runStartup = async (carry) => {
+  const fixture = fileURLToPath(new URL('./rehearse-retained-queue.mjs', import.meta.url));
+  const runStartup = async (mode) => {
     await mkdir(path.dirname(recordFile), { recursive: true });
     await writeFile(recordFile, retained.bytes);
-    const invocations = [];
-    const runtime = {
-      async invoke() {
-        invocations.push(new Date().toISOString());
-        return { ok: false, fault: { message: 'the rehearsal recovery runtime was consulted' } };
+    const resultFile = path.join(root, `${mode}.json`);
+    const child = spawn(
+      process.execPath,
+      [fixture, dist, scopedConfig, recordFile, resultFile, mode],
+      {
+        env: { ...process.env, NEXUS_CONFIG: nexusConfigFile },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       },
-      async notify() {
-        return { ok: true, value: { messageId: 'harn99-rehearsal' } };
-      },
-    };
-    const output = {
-      text: '',
-      isTTY: false,
-      write(chunk) {
-        this.text += chunk;
-      },
-    };
-    const diagnostics = {
-      text: '',
-      write(chunk) {
-        this.text += chunk;
-      },
-    };
-    const supervisor = superviseRecoveryCarry({
-      recordFile,
-      retained,
-      request: scopedConfig,
-      carry,
-      timeoutMs: 10_000,
+    );
+    const completion = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => resolve({ code, signal }));
     });
-    const exitCode = await runOperatorCommand({
-      args: ['queue', 'run', '--project-config', scopedConfig],
-      workingDirectory: process.cwd(),
-      environment: { ...process.env, NEXUS_CONFIG: nexusConfigFile },
-      output,
-      diagnostics,
-      application: (applicationSettings) =>
-        createApplication({
-          ...applicationSettings,
-          launchWorker: async () => {
-            // A real worker is a separate process; its launch and failure take longer than this.
-            await delay(250);
-            return { result: null, exitCode: null, problem: workerProblem, diagnostics: '' };
-          },
-          recovery: () => runtime,
-        }),
+    let diagnostics = '';
+    child.stdout.resume();
+    child.stderr.on('data', (chunk) => {
+      diagnostics += chunk;
     });
-    const carryEvidence = await supervisor.result;
+    // Delay supervision at the first launch boundary, allowing an immediate launch failure and
+    // recovery to finish before the parent reads anything. The child's barrier needs no release.
+    const supervision = new Promise((resolve) => {
+      let reachedBoundary = false;
+      child.once('message', async () => {
+        reachedBoundary = true;
+        await delay(100);
+        resolve({ reachedBoundary, delayMs: 100, observedAt: new Date().toISOString() });
+      });
+      child.once('exit', () => {
+        if (!reachedBoundary) {
+          resolve({ reachedBoundary: false });
+        }
+      });
+    });
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    let finished;
+    try {
+      finished = await completion;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (finished.signal !== null || !(await exists(resultFile))) {
+      throw new Error(`Rehearsal ${mode} failed: ${JSON.stringify(finished)} ${diagnostics}`);
+    }
+    const supervisor = await supervision;
+    if (!supervisor.reachedBoundary) {
+      throw new Error(`Rehearsal ${mode} exited before the worker launch boundary: ${diagnostics}`);
+    }
+    const result = JSON.parse(await readFile(resultFile, 'utf8'));
     const final = await readRecoveryRecord(recordFile);
     return {
-      exitCode,
-      recoveryInvocations: invocations,
-      carryEvidence,
+      ...result,
+      processExit: finished.code,
+      supervisor,
       final: final.record,
       finalSha256: final.sha256,
-      diagnostics: diagnostics.text.trim(),
-      output: output.text.length,
     };
   };
-
-  const control = await runStartup(false);
-  if (control.carryEvidence.observedReset !== true || control.final.invocations !== 1) {
-    throw new Error(
-      'The rehearsal control run did not observe the startup reset granting a fresh invocation.',
-    );
+  const control = await runStartup('control');
+  if (control.recoveryInvocations.length !== 1 || control.final.invocations !== 1) {
+    throw new Error('The rehearsal control did not demonstrate the reset granting recovery.');
   }
-  const carried = await runStartup(true);
+  const carried = await runStartup('carried');
   if (
     carried.carryEvidence.carried !== true ||
+    carried.workerLaunches !== 1 ||
     carried.recoveryInvocations.length !== 0 ||
     carried.final.invocations !== retained.record.invocations
   ) {
-    throw new Error(
-      'The rehearsal did not carry the retained recovery count through startup: ' +
-        JSON.stringify(carried.carryEvidence),
-    );
+    throw new Error(`The separate-process carry failed: ${JSON.stringify(carried)}`);
   }
-  // The supervisor's production path over a real child process: it pauses the queue parent while
-  // restoring the retained count and resumes it, so no work can read the reset count.
-  const pauseRecord = path.join(root, 'pause-check', 'recovery', 'execution.json');
-  const pauseChildFile = path.join(root, 'pause-check-child.mjs');
-  await mkdir(path.dirname(pauseRecord), { recursive: true });
-  await writeFile(pauseRecord, retained.bytes);
-  await writeFile(
-    pauseChildFile,
-    [
-      "import { mkdir, writeFile } from 'node:fs/promises';",
-      `await mkdir(${JSON.stringify(path.dirname(pauseRecord))}, { recursive: true });`,
-      `await writeFile(`,
-      `  ${JSON.stringify(pauseRecord)},`,
-      `  JSON.stringify({ request: { projectConfigPath: ${JSON.stringify(scopedConfig)} }, invocations: 0 }) + '\\n',`,
-      `);`,
-      'await new Promise((resolve) => setTimeout(resolve, 30_000));',
-      '',
-    ].join('\n'),
-  );
-  const pauseChild = spawn(process.execPath, [pauseChildFile], { stdio: 'ignore' });
-  const pauseCheck = await superviseRecoveryCarry({
-    recordFile: pauseRecord,
-    retained,
-    request: scopedConfig,
-    pid: pauseChild.pid ?? null,
-    alive: () => pauseChild.exitCode === null && pauseChild.signalCode === null,
-  }).result;
-  pauseChild.kill('SIGKILL');
-  await new Promise((resolve) => pauseChild.on('exit', resolve));
+  const refused = await runStartup('invalid-reset');
   if (
-    pauseCheck.carried !== true ||
-    pauseCheck.paused !== true ||
-    pauseCheck.observedReset !== true
+    refused.processExit !== 1 ||
+    refused.workerLaunches !== 0 ||
+    refused.recoveryInvocations.length !== 0 ||
+    refused.carryEvidence.carried !== false
   ) {
-    throw new Error(
-      'The rehearsal did not pause a real queue parent while carrying the retained count: ' +
-        JSON.stringify(pauseCheck),
-    );
+    throw new Error(`A failed carry did not prevent continuation: ${JSON.stringify(refused)}`);
   }
   const evidenceFile = path.join(settings.evidence, 'recovery-carry-rehearsal.json');
   await mkdir(settings.evidence, { recursive: true });
@@ -493,12 +248,9 @@ async function rehearseRecoveryCarry(dist = settings.dist) {
         projectConfig: scopedConfig,
         recordFile,
         retained: { record: retained.record, sha256: retained.sha256 },
-        control: { ...control, note: 'No carry: the startup reset grants a fresh invocation.' },
-        carried: { ...carried, note: 'The retained count reaches recover() with no invocation.' },
-        pauseCheck: {
-          ...pauseCheck,
-          note: 'A real child process was paused while the retained count was restored.',
-        },
+        control,
+        carried,
+        refused,
       },
       null,
       2,
@@ -509,7 +261,7 @@ async function rehearseRecoveryCarry(dist = settings.dist) {
     retainedInvocations: retained.record.invocations,
     control,
     carried,
-    pauseCheck,
+    refused,
   };
 }
 
@@ -524,7 +276,7 @@ async function main() {
           retainedInvocations: rehearsal.retainedInvocations,
           control: {
             exitCode: rehearsal.control.exitCode,
-            observedReset: rehearsal.control.carryEvidence.observedReset === true,
+            workerLaunches: rehearsal.control.workerLaunches,
             recoveryInvocations: rehearsal.control.recoveryInvocations.length,
             finalInvocations: rehearsal.control.final.invocations,
           },
@@ -534,9 +286,10 @@ async function main() {
             recoveryInvocations: rehearsal.carried.recoveryInvocations.length,
             finalInvocations: rehearsal.carried.final.invocations,
           },
-          pausedChild: {
-            carried: rehearsal.pauseCheck.carried === true,
-            paused: rehearsal.pauseCheck.paused === true,
+          refused: {
+            exitCode: rehearsal.refused.exitCode,
+            workerLaunches: rehearsal.refused.workerLaunches,
+            recoveryInvocations: rehearsal.refused.recoveryInvocations.length,
           },
         },
         null,
@@ -685,6 +438,7 @@ async function main() {
         builtAt: new Date().toISOString(),
         backup,
         launchTarget: cli,
+        resumptionEntry: retainedQueueEntry,
         workflowPaths,
         ttyProof: path.join(settings.evidence, 'activation-tty-proof.json'),
         kanConfig: scopedConfig,
@@ -708,31 +462,34 @@ async function main() {
 
   // Resume KAN-76 through the normal queue, scoped to its retained checkpoint, in this terminal.
   process.stdout.write('\nResuming KAN-76 through the scoped queue; exit to stop.\n\n');
+  await rm(path.join(settings.evidence, 'kan76-startup-carry.json'), { force: true });
   const resume = spawn(
     'bash',
     [
       '-c',
-      'source "$HOME/.config/nexus/runtime-env.sh"; exec node "$1" queue run --project-config "$2"',
+      'source "$HOME/.config/nexus/runtime-env.sh"; exec node "$1" "$2" "$3" "$4" "$5" "$6"',
       'bash',
-      cli,
+      retainedQueueEntry,
+      path.join(settings.installation, 'dist'),
       scopedConfig,
+      settings.recoveryRecord,
+      path.join(backup, '3-kan-recovery-execution.json'),
+      path.join(settings.evidence, 'kan76-startup-carry.json'),
     ],
     { cwd: settings.installation, stdio: 'inherit' },
   );
-  const completion = new Promise((resolve) => {
-    resume.on('exit', (code, signal) => resolve({ code, signal }));
+  const finished = await new Promise((resolve, reject) => {
+    resume.once('error', reject);
+    resume.once('exit', (code, signal) => resolve({ code, signal }));
   });
-  const carry = await superviseRecoveryCarry({
-    recordFile: settings.recoveryRecord,
-    retained: retainedRecovery,
-    request: scopedConfig,
-    pid: resume.pid ?? null,
-    alive: () => resume.exitCode === null && resume.signalCode === null,
-  }).result;
-  const finished = await completion;
+  const carryFile = path.join(settings.evidence, 'kan76-startup-carry.json');
+  const carry = (await exists(carryFile))
+    ? JSON.parse(await readFile(carryFile, 'utf8'))
+    : { carried: false, reason: 'the queue did not publish startup carry evidence' };
   const exitCode = finished.code ?? 1;
   const finalRecovery = await readRecoveryRecord(settings.recoveryRecord);
   const carriedThroughStartup =
+    carry.carried === true &&
     finalRecovery.record.invocations >= retainedRecovery.record.invocations;
   await writeFile(
     path.join(settings.evidence, 'kan76-resumption.json'),
@@ -765,7 +522,7 @@ async function main() {
   let finalExitCode = exitCode;
   if (!carriedThroughStartup) {
     process.stderr.write(
-      'The recovery allowance was reset below the retained count; the retained record is ' +
+      'The startup carry failed or the final count is below the retained count; the record is ' +
         `preserved at ${path.join(backup, '3-kan-recovery-execution.json')} and the run evidence ` +
         'is in kan76-resumption.json.\n',
     );
