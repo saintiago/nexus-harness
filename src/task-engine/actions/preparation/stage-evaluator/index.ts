@@ -35,6 +35,7 @@ import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
   acceptanceVerdictProblem,
   evaluationVerdictProblem,
+  isBoundStageAuthorOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageEvaluationResponseSchema,
@@ -54,6 +55,7 @@ import {
   readStageRoleArtifact,
   readStagePlan,
   readStageTerminal,
+  requireStageReport,
   roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
@@ -526,6 +528,20 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       content: retained.content,
     });
     const currentAuthor = await readAuthor(plan.round);
+    // An invalid binding must retain author rejection evidence before an identity change can
+    // request ordinary reevaluation. Recheck even when the saved outcome itself is unchanged.
+    if (currentAuthor !== null && isBoundStageAuthorOutput(currentAuthor)) {
+      await requireStageReport({
+        issueRoot: selection.workspace.root,
+        workId: selection.taskKey,
+        stage: settings.stage,
+        role: 'author',
+        binding: currentAuthor,
+        profile: currentAuthor.profile,
+        file: roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+        context: `${attribution} Validating the author report after assessment.`,
+      });
+    }
     if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {

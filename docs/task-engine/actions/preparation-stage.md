@@ -268,7 +268,8 @@ return and repair context reads, rather than checking acceptance alone. New outc
 legacy combined records stay readable without a retroactive Markdown requirement or finding-list
 checks. Acceptance and author questions validate their producing reports at finalization, completed
 replay and publication. Validate bound reports before author/evaluation, revision or input association
-checks can short-circuit rejection retention; valid changed inputs still follow ordinary stale routing.
+checks can short-circuit rejection retention, including the author reread after evaluator invocation;
+valid changed inputs still follow ordinary stale routing or reevaluation.
 Report failures retain the available outcome/report and producer-attributed
 rejection before failing or marking a completed decision stale; recovery cannot lose the correction
 obligation by repairing the old artifact alone.

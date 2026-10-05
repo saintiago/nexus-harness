@@ -21,6 +21,7 @@ import {
   stagePlanArtifact,
   stageResultArtifact,
   type PreparationStage,
+  type StageAuthorOutput,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
   readCurrentDecision,
@@ -592,6 +593,91 @@ it('retains an author report corrupted during evaluation under the author respon
   });
   await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.toBeNull();
 });
+
+it.each(['binding', 'markdown', 'legitimate'] as const)(
+  'rechecks the author after a %s change during evaluation',
+  async (change) => {
+    const { selectionFile, root } = await stageArea();
+    const common = {
+      selectionFile,
+      stage,
+      git: scriptedGit([repositoryState()]).git,
+      publish: () => undefined,
+    };
+    const authorContexts: string[] = [];
+    const author = createStageAuthor({
+      ...common,
+      runner: authorRunner(conformingSkipResponse, authorContexts),
+    });
+    await author({ task: 'propose' });
+    const file = path.join(root, 'artifacts', '3', 'author.json');
+    const original = await readFile(file, 'utf8');
+    const saved = JSON.parse(original) as StageAuthorOutput;
+    const markdown = await readFile(saved.report.path, 'utf8');
+    const changed =
+      change === 'binding'
+        ? JSON.stringify({ ...saved, reportIdentity: '0'.repeat(64) })
+        : change === 'legitimate'
+          ? JSON.stringify({ ...saved, skip: { references: [] } })
+          : original;
+    const response = { verdict: 'accepted-skip', observation: null, upstream: null };
+    const evaluator = createStageEvaluator({
+      ...common,
+      runner: {
+        async run(request) {
+          await writeAssignedReport(request.context, '# Evaluation\n\nThe skip is adequate.\n');
+          await writeFile(file, changed);
+          if (change === 'markdown') await writeFile(saved.report.path, 'Replacement report.\n');
+          return ok({ output: JSON.stringify(response) });
+        },
+      },
+    });
+    await expect(evaluator()).rejects.toThrow(
+      change === 'legitimate' ? /reevaluation is required/ : /does not match/,
+    );
+    await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.toBeNull();
+    const feedback = await readReportFeedback(root);
+    if (change === 'legitimate') {
+      expect(feedback).toEqual([]);
+    } else {
+      expect(feedback).toHaveLength(1);
+      const rejection = feedback[0]!.record;
+      expect(rejection).toMatchObject({
+        kind: 'rejection',
+        scope: { area: root, workId: 'KAN-76', role: 'requirements-author' },
+        invocationId: saved.invocationId,
+        profile: saved.profile,
+        source: { path: file },
+        output: changed,
+        assignedReport: saved.report,
+        operation: 'stage-author',
+        reason: expect.stringContaining('does not match'),
+      });
+      if (rejection.kind !== 'rejection' || rejection.report === null) {
+        throw new Error('Expected retained author Markdown.');
+      }
+      const rejectedMarkdown = change === 'markdown' ? 'Replacement report.\n' : markdown;
+      await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(rejectedMarkdown);
+      // Repairing history and reevaluating cannot retire the responsible author's obligation.
+      await writeFile(file, original);
+      await writeFile(saved.report.path, markdown);
+      await expect(
+        createStageEvaluator({ ...common, runner: evaluatorRunner(response, []) })(),
+      ).resolves.toBe('accepted-skip');
+      await expect(
+        outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+      ).resolves.toHaveLength(1);
+      await author({ task: 'propose' });
+      expect(authorContexts[1]).toContain('does not match');
+      expect(authorContexts[1]).toContain(feedback[0]!.path);
+      expect(authorContexts[1]).toContain(rejection.report.path);
+      await expect(
+        outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+      ).resolves.toEqual([]);
+      await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(rejectedMarkdown);
+    }
+  },
+);
 
 it('attributes an unusable upstream context report to its stage author', async () => {
   const { selectionFile, root } = await stageArea();

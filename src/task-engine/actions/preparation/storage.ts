@@ -591,7 +591,7 @@ export async function requireReturnReport(settings: {
 }
 
 /** Read a producing role's bound report, retaining attributable evidence before any failure. */
-async function requireStageReport(settings: {
+export async function requireStageReport(settings: {
   readonly issueRoot: string;
   readonly workId: string;
   readonly stage: PreparationStage;
