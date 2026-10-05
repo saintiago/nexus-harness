@@ -212,6 +212,8 @@ be downgraded to an input citation to bypass stale-reuse checks.
 When a later stage changes an earlier stage's owned document, the owning stage corrects its authored
 work against the complete current file, retaining compatible later-stage additions within the
 accepted scope. Its new evaluation binds that complete file, including the retained additions.
+The correction is an authored document output: its result records the revision assessed by the new
+evaluation, rather than carrying forward the preceding owned asset's revision as reuse.
 Subsequent stages confirm or repair their decisions against that corrected input through the existing
 pending reassessment route. Neither fresh citation assessment nor the owner's new acceptance renews
 downstream decisions.
