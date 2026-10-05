@@ -23,6 +23,28 @@ export const stageAreas: Readonly<Record<PreparationStage, string>> = {
   architecture: 'architecture',
 };
 
+/**
+ * The shared preparation repository record: the configured repository, the workspace reference
+ * whose worktree/ holds the one checkout every stage edits, the retained preparation branch and
+ * the comparison base preparation started from. PrepareStage owns it under the preparation issue
+ * workspace's parent area.
+ */
+export const preparationRepositoryFile = 'parent/prepared-repository.json';
+
+export const preparationWorkspaceSchema = z.object({
+  repository: z.string().min(1),
+  repositoryWorkspace: z.object({ root: z.string().min(1) }),
+  branch: z.string().min(1),
+  baseRevision: z.string().min(1),
+});
+
+export type PreparationWorkspace = z.infer<typeof preparationWorkspaceSchema>;
+
+export const preparationWorkspaceDeclaration = {
+  file: preparationRepositoryFile,
+  schema: preparationWorkspaceSchema,
+} satisfies RecordDeclaration<typeof preparationWorkspaceSchema>;
+
 /** The earlier stages a preparation result may return work to. */
 export const upstreamStages = ['idea', 'requirements', 'ux', 'prototype'] as const;
 
@@ -34,7 +56,7 @@ export const stageRoundPlanFile = 'state/current-round.json';
 export const stageRoundPlanSchema = z.object({
   stage: z.enum(preparationStages),
   round: z.number().int().positive(),
-  route: z.enum(['new', 'next']),
+  route: z.enum(['new', 'next', 'reassess']),
   profiles: z.object({
     author: z.string().trim().min(1),
     evaluator: z.string().trim().min(1),
@@ -115,6 +137,11 @@ export const stageAuthorResponseSchema = z.object({
   outcome: z.enum(['authored', 'skip-proposed', 'needs-input', 'return-upstream']),
   summary: z.string(),
   documents: z.array(authoredDocumentSchema),
+  /**
+   * Additional non-document paths the stage owns and commits in the shared checkout, such as the
+   * prototype's Storybook stories. They are stage-owned work, never authoritative documents.
+   */
+  sourcePaths: z.array(z.string().trim().min(1)),
   plan: z.array(plannedTaskSchema),
   skip: skipProposalSchema.nullable(),
   question: z.string().nullable(),
@@ -153,15 +180,46 @@ export const stageEvaluationResponseSchema = z.object({
 
 export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSchema>;
 
+/** One repository path the evaluator assessed or relied on: its observed revision and existence. */
+export const assessedContentSchema = z.object({
+  /** The canonical checkout-relative path of the assessed repository content. */
+  path: z.string().min(1),
+  /** The revision at which the content was observed; it must stay readable while retained. */
+  revision: z.string().min(1),
+  /** False when the assessed revision deletes the path; a deletion is retained, not replaced. */
+  exists: z.boolean(),
+});
+
+export type AssessedContent = z.infer<typeof assessedContentSchema>;
+
+/**
+ * The evaluation's acceptance basis, observed by the stage action rather than trusted from an
+ * agent: the complete authored report, the captured source input, the relied-on upstream results
+ * and the exact repository content the evaluator assessed. A changed author report, input or
+ * assessed content needs a current evaluator decision.
+ */
+export const acceptanceBasisSchema = z.object({
+  author: z.object({ path: z.string().min(1) }),
+  authorIdentity: z.string().min(1),
+  sourceIdentity: z.string().min(1),
+  upstream: z.array(
+    z.object({
+      result: z.object({ path: z.string().min(1) }),
+      identity: z.string().min(1),
+    }),
+  ),
+  content: z.array(assessedContentSchema),
+});
+
+export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
+
 /**
  * The saved evaluation artifact: reported findings with their absent lines normalized away, and
  * one disposition for every finding the assessed revision inherited.
  */
 export const stageEvaluationOutputSchema = z.object({
-  /** Repository content retained before the assessment, never inferred at acceptance. */
-  contentRevision: z.string().min(1).nullable().default(null),
-  contentPaths: z.array(z.string().min(1)).default([]),
-  authorIdentity: z.string().min(1).nullable().default(null),
+  /** The exact authored report, captured input and assessed content this decision is bound to. */
+  basis: acceptanceBasisSchema,
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string(),
@@ -196,6 +254,11 @@ export const preparationResultSchema = z.object({
   existingDocuments: z
     .array(z.object({ path: z.string().min(1), revision: z.string().min(1) }))
     .default([]),
+  /**
+   * Stage-owned paths outside the authoritative documents that stay on the retained preparation
+   * branch for implementation reuse, relative to the shared checkout.
+   */
+  sourcePaths: z.array(z.string().min(1)).default([]),
   skipReferences: z.array(z.string().min(1)).default([]),
   outputs: z.array(z.object({ path: z.string().min(1) })),
   evaluation: z.object({ path: z.string().min(1) }),

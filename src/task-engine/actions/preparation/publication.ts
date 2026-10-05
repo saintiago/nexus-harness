@@ -1,56 +1,73 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../adapters/git.js';
-import { preparationStages, stageResultArtifact, type PreparationStage } from './artifacts.js';
-import { readStageArtifact, readStagePlan, stageRoot, stageWorktree } from './storage.js';
+import { preparationStages, type PreparationStage } from './artifacts.js';
+import { preparationWorktree, readStagePlan, readStageTerminal, stageRoot } from './storage.js';
 
-/** Preparation's shared accepted-document assembly; all publication uses immutable content. */
+/**
+ * The retained preparation branch's accepted content: the authoritative documents every accepted
+ * or skipped stage retained and the stage-owned source paths that stay available for
+ * implementation reuse. All of it lives in the one shared checkout and branch; there is no
+ * cross-stage copying.
+ */
+
 export type AcceptedDocument = {
-  /** The document's path relative to the repository root, as publication and tickets name it. */
+  /** The document's path relative to the repository root, as consumers and tickets name it. */
   readonly path: string;
-  /** The stage worktree file the accepted revision lives in. */
+  /** The checkout file the accepted revision lives in. */
   readonly source: string;
-  /** The producer's exact revision of the changed document, when it observed one. */
+  /** The producer's exact revision of the changed document. */
   readonly revision: string | null;
+  /** False when the accepted change deletes the path. */
+  readonly exists: boolean;
   /** The stage whose evaluated result accepted this revision. */
   readonly stage: PreparationStage;
 };
 
-export async function readAcceptedDocuments(
-  root: string,
-): Promise<
-  | { readonly kind: 'documents'; readonly documents: AcceptedDocument[] }
+/** The accepted content of every stage that reached a current accepted or skipped decision. */
+export async function readAcceptedDocuments(root: string): Promise<
+  | {
+      readonly kind: 'documents';
+      readonly documents: AcceptedDocument[];
+      readonly retained: string[];
+    }
   | { readonly kind: 'invalid'; readonly reason: string }
 > {
+  const worktree = preparationWorktree(root);
   const byPath = new Map<string, AcceptedDocument>();
+  const retained = new Set<string>();
   for (const stage of preparationStages) {
     const areaRoot = stageRoot(root, stage);
     const stagePlan = await readStagePlan(areaRoot);
     if (stagePlan === null) {
       continue;
     }
-    const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
+    const stageResult = await readStageTerminal(areaRoot);
     if (
       stageResult === null ||
       (stageResult.outcome !== 'accepted' && stageResult.outcome !== 'skipped')
     ) {
       continue;
     }
-    const tree = stageWorktree(root, stage);
+    for (const value of stageResult.sourcePaths) {
+      retained.add(value);
+    }
     for (const document of stageResult.documents) {
-      const relative = path.relative(tree, document.path);
+      const relative = path.relative(worktree, document.path);
       if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
         return {
           kind: 'invalid',
           reason:
-            `The accepted ${stage} document "${document.path}" lies outside the stage ` +
-            `worktree "${tree}"; the handoff cannot publish it.`,
+            `The accepted ${stage} document "${document.path}" lies outside the shared ` +
+            `preparation checkout "${worktree}"; the handoff cannot use it.`,
         };
       }
       byPath.set(relative, {
         path: relative,
         source: document.path,
         revision: document.revision,
+        // A declared document that no file backs is the retained deletion of that path.
+        exists: await fileExists(path.join(worktree, relative)),
         stage,
       });
     }
@@ -58,10 +75,48 @@ export async function readAcceptedDocuments(
   return {
     kind: 'documents',
     documents: [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path)),
+    retained: [...retained].sort((left, right) => left.localeCompare(right)),
   };
 }
 
-/** Assemble and save the exact documentation revision reviewed by the Architecture child. */
+/** True when the path currently names a regular file. */
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    return (await stat(target)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/** True when the checkout's current content still equals the accepted revision. */
+async function acceptedContentMatches(
+  git: GitAdapter,
+  worktree: string,
+  document: AcceptedDocument,
+): Promise<boolean> {
+  if (!document.exists) {
+    return !(await fileExists(path.join(worktree, document.path)));
+  }
+  if (document.revision === null) return false;
+  const saved = await git.readFileAtRevision(worktree, document.revision, document.path);
+  if (!saved.ok) return false;
+  try {
+    return (await readFile(path.join(worktree, document.path), 'utf8')) === saved.value;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Observe the retained preparation branch's contribution against the configured base: the exact
+ * accepted documents and stage-owned source paths the branch adds. The accepted content is
+ * already committed on that branch, so this verifies the contribution rather than assembling a
+ * second copy, and no unrelated path may be published.
+ */
 export async function prepareDocumentationPublication(settings: {
   readonly root: string;
   readonly baseBranch: string;
@@ -73,59 +128,44 @@ export async function prepareDocumentationPublication(settings: {
   if (accepted.kind === 'invalid') return { kind: 'failed' as const, reason: accepted.reason };
   const documents = accepted.documents;
   if (documents.length === 0) return { kind: 'unchanged' as const };
-  const worktree = stageWorktree(root, 'architecture');
+  const worktree = preparationWorktree(root);
   const inspection = await git.inspectRepository(worktree);
   if (!inspection.ok) return { kind: 'failed' as const, reason: inspection.fault.message };
   const branch = inspection.value.branch;
-  if (branch === null || branch === settings.baseBranch)
+  const head = inspection.value.headRevision;
+  if (branch === null || branch === settings.baseBranch || head === null)
     return {
       kind: 'failed' as const,
       reason:
-        'Documentation publication requires a retained area branch, not the configured base branch.',
+        'Preparation publication requires a retained preparation branch with a committed head, ' +
+        'not the configured base branch.',
     };
   for (const document of documents) {
-    if (document.revision === null)
+    if (!(await acceptedContentMatches(git, worktree, document))) {
       return {
         kind: 'failed' as const,
-        reason: `Accepted document "${document.path}" has no immutable revision.`,
+        reason:
+          `The accepted document "${document.path}" no longer matches its accepted revision; a ` +
+          'current decision is required before publication.',
       };
-    const content = await git.readFileAtRevision(
-      stageWorktree(root, document.stage),
-      document.revision,
-      document.path,
-    );
-    if (!content.ok) return { kind: 'failed' as const, reason: content.fault.message };
-    const target = path.join(worktree, document.path);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, content.value);
+    }
   }
-  const committed = await git.commitPaths(
-    worktree,
-    documents.map((document) => document.path),
-    `Publish preparation documents for ${settings.taskKey}`,
-  );
-  if (!committed.ok) return { kind: 'failed' as const, reason: committed.fault.message };
-  const head = committed.value.headRevision;
-  if (head === null)
-    return {
-      kind: 'failed' as const,
-      reason: 'The architecture worktree has no revision to publish.',
-    };
   const base = await git.fetchRevision(worktree, 'origin', settings.baseBranch);
   if (!base.ok) return { kind: 'failed' as const, reason: base.fault.message };
   const ancestor = await git.readMergeBase(worktree, base.value, head);
   if (!ancestor.ok) return { kind: 'failed' as const, reason: ancestor.fault.message };
   const changed = await git.readChangedPaths(worktree, ancestor.value, head);
   if (!changed.ok) return { kind: 'failed' as const, reason: changed.fault.message };
-  const paths = new Set(documents.map((document) => document.path));
-  if (changed.value.some((file) => !paths.has(file)))
+  const allowed = new Set([...documents.map((document) => document.path), ...accepted.retained]);
+  if (changed.value.some((file) => !allowed.has(file)))
     return {
       kind: 'failed' as const,
       reason:
-        'The complete publication diff contains paths outside the accepted authoritative documents.',
+        'The preparation branch contains paths outside the accepted documents and declared ' +
+        'stage-owned source paths.',
     };
-  // Upstream-only paths do not belong to this branch. Compare its contribution with the
-  // current base too, since an accepted change may already have landed independently.
+  // Upstream-only paths do not belong to this branch. Compare its contribution with the current
+  // base too, since an accepted change may already have landed independently.
   const current = await git.readChangedPaths(worktree, base.value, head);
   if (!current.ok) return { kind: 'failed' as const, reason: current.fault.message };
   if (!changed.value.some((file) => current.value.includes(file)))

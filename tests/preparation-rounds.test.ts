@@ -61,6 +61,7 @@ async function completeRound(root: string, round: number, stage: string): Promis
     authoredRevision: round,
     documents: [],
     existingDocuments: [],
+    sourcePaths: [],
     skipReferences: [],
     outputs: [],
     evaluation: { path: path.join(artifacts, 'evaluation.json') },
@@ -89,6 +90,7 @@ async function authorRound(
       outcome: 'authored',
       summary: 'The revision addresses the current findings.',
       documents: [],
+      sourcePaths: [],
       existingDocuments: [],
       skipReferences: [],
       plan: [],
@@ -143,6 +145,41 @@ describe('StartStageRound', () => {
     await round({ stage: 'ux', route: 'new' });
 
     expect(await planOf(root)).toMatchObject({ round: 1, route: 'new' });
+  });
+
+  it('opens a retained pending reassessment across a restart without resetting the allowance', async () => {
+    const { selectionFile, root } = await stageArea('ux');
+    const round = createStartStageRound({
+      selectionFile,
+      stage: 'ux',
+      profiles: { authors: ['nexus-sol'], evaluator: 'nexus-sol' },
+      maxRounds: 2,
+      publish: () => undefined,
+    });
+    await expect(round({ stage: 'ux', route: 'new' })).resolves.toBe('opened');
+    await completeRound(root, 1, 'ux');
+    // A restart re-reads the parent's retained correction: the stage's decision awaits a current
+    // decision, so the new visit opens as a reassessment rather than a fresh proposal.
+    const issueRoot = path.dirname(root);
+    await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(issueRoot, 'parent', 'handoff.json'),
+      JSON.stringify({
+        stage: 'ux',
+        upstreamReturns: 1,
+        feedback: null,
+        return: null,
+        awaitingStages: ['ux'],
+        tickets: [],
+        publications: [],
+      }),
+    );
+
+    await expect(round({ stage: 'ux', route: 'new' })).resolves.toBe('opened');
+    expect(await planOf(root)).toMatchObject({ round: 2, route: 'reassess' });
+    await completeRound(root, 2, 'ux');
+    // Consumed rounds stay consumed: the restarted visit cannot exceed the configured allowance.
+    await expect(round({ stage: 'ux', route: 'new' })).resolves.toBe('exhausted');
   });
 
   it('escalates the prototype author along its ladder and never downgrades', async () => {

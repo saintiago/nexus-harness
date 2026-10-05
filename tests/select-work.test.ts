@@ -18,7 +18,10 @@ import {
 import { createTaskEngine } from '../src/task-engine/index.js';
 import { preparation } from '../workflows/preparation.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
-import { authoredIdentity } from '../src/task-engine/actions/preparation/evaluation-content.js';
+import {
+  authoredIdentity,
+  sourceInputIdentity,
+} from '../src/task-engine/actions/preparation/evaluation-content.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
@@ -228,6 +231,7 @@ describe('SelectWork admission and routing', () => {
               outcome: 'skip-proposed',
               summary: 'Existing requirements suffice.',
               documents: [],
+              sourcePaths: [],
               plan: [],
               skip: {
                 reason: 'Existing requirements suffice.',
@@ -241,16 +245,22 @@ describe('SelectWork admission and routing', () => {
           return 'skip-proposed';
         },
         StageEvaluator: async () => {
+          const authorFile = path.join(artifacts, 'author.json');
+          const author = stageAuthorArtifact.schema.parse(
+            JSON.parse(await readFile(authorFile, 'utf8')),
+          );
           await writeFile(
             path.join(artifacts, 'evaluation.json'),
             JSON.stringify({
+              basis: {
+                author: { path: authorFile },
+                authorIdentity: authoredIdentity(author),
+                sourceIdentity: sourceInputIdentity(selected.selection as never),
+                upstream: [],
+                content: [],
+              },
               assessedRevision: 1,
               verdict: 'accepted-skip',
-              authorIdentity: authoredIdentity(
-                stageAuthorArtifact.schema.parse(
-                  JSON.parse(await readFile(path.join(artifacts, 'author.json'), 'utf8')),
-                ),
-              ),
               reason: 'Examples are covered.',
               findings: [],
               priorFindings: [],
@@ -278,6 +288,7 @@ describe('SelectWork admission and routing', () => {
       },
       waitingForFeedback: 'Waiting for Feedback',
       ideaActive: 'Idea Refinement',
+      git: scriptedGit([repositoryState()]).git,
       jira,
       publish: () => undefined,
     });

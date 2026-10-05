@@ -5,6 +5,7 @@ import {
   authoredIdentity,
   retainEvaluationContent,
   requireEvaluationContent,
+  sourceInputIdentity,
 } from '../evaluation-content.js';
 import {
   actionOutcomeEvent,
@@ -27,10 +28,13 @@ import { stageContextText } from '../context.js';
 import {
   precedingStageWork,
   priorStageFindings,
+  preparationWorktree,
   readStageArtifact,
   readStagePlan,
+  readStageTerminal,
+  roundArtifactFile,
   stageRoot,
-  stageWorktree,
+  upstreamResultReferences,
   writeStageArtifact,
 } from '../storage.js';
 
@@ -139,7 +143,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       'Selection',
     );
     const root = stageRoot(selection.workspace.root, settings.stage);
-    const worktree = stageWorktree(selection.workspace.root, settings.stage);
+    const worktree = preparationWorktree(selection.workspace.root);
     const plan = await readStagePlan(root);
     if (plan === null || plan.stage !== settings.stage) {
       throw new Error(
@@ -162,19 +166,31 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         ? ((await precedingStageWork(root, plan.round))?.evaluation ?? null)
         : null;
 
-    const contentRevision = await retainEvaluationContent({
+    const retained = await retainEvaluationContent({
       git: settings.git,
       worktree,
-      stage: settings.stage,
       author,
     });
-    const contentPaths = await requireEvaluationContent({
-      git: settings.git,
-      worktree,
-      stage: settings.stage,
-      author,
-      revision: contentRevision,
-    });
+    const upstream = await upstreamResultReferences(selection.workspace.root, settings.stage);
+    const basis = {
+      author: { path: roundArtifactFile(root, plan.round, 'author.json') },
+      authorIdentity: authoredIdentity(author),
+      sourceIdentity: sourceInputIdentity(selection),
+      upstream: upstream.map((reference) => ({
+        result: { path: reference.resultFile },
+        identity: reference.identity,
+      })),
+      content: retained.content,
+    };
+    const retainedDecision =
+      plan.route === 'reassess'
+        ? await (async () => {
+            const terminal = await readStageTerminal(root);
+            return terminal === null
+              ? null
+              : { outcome: terminal.outcome, reason: terminal.reason };
+          })()
+        : null;
     const context = await stageContextText({
       selection,
       plan,
@@ -182,17 +198,23 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       worktree,
       author,
       evaluation: previous,
+      retained: retainedDecision,
     });
     const result = await settings.runner.run({
       operation: 'stage-evaluator',
       profile: plan.profiles.evaluator,
-      // The invocation's workspace is the stage area root; AgentRuntime resolves its worktree/.
-      workspace: { root },
+      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
+      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
+      workspace: { root: selection.workspace.root },
       context: [
         context,
         `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
           'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
           'return; separate necessary changes from optional suggestions.',
+        'The assessed repository content retained for this evaluation (path at revision, or a ' +
+          'retained deletion): ' +
+          JSON.stringify(basis.content),
+        'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
         findings.length === 0
           ? 'No prior findings are inherited by this round; return an empty priorFindings array.'
           : `Eligible prior finding IDs: ${findings
@@ -228,18 +250,13 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     await requireEvaluationContent({
       git: settings.git,
       worktree,
-      stage: settings.stage,
-      author,
-      revision: contentRevision,
-      paths: contentPaths,
+      content: retained.content,
     });
     const currentAuthor = await readStageArtifact(root, plan.round, stageAuthorArtifact);
     if (currentAuthor === null || authoredIdentity(currentAuthor) !== authoredIdentity(author))
       throw new Error('The authored report changed during assessment; reevaluation is required.');
     const output: StageEvaluationOutput = {
-      contentRevision,
-      contentPaths,
-      authorIdentity: authoredIdentity(author),
+      basis,
       assessedRevision: report.assessedRevision,
       verdict: report.verdict,
       reason: report.reason,

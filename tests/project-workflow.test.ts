@@ -23,10 +23,19 @@ import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { createReviewPreparationPublication } from '../src/task-engine/actions/preparation/review-publication/index.js';
 import { documentationReviewsDirectory } from '../src/task-engine/actions/preparation/review-publication/artifacts.js';
+import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
-import { stageRoot } from '../src/task-engine/actions/preparation/storage.js';
+import {
+  acceptedResultIdentity,
+  preparationWorktree,
+  stageRoot,
+} from '../src/task-engine/actions/preparation/storage.js';
+import {
+  authoredIdentity,
+  sourceInputIdentity,
+} from '../src/task-engine/actions/preparation/evaluation-content.js';
 import { project } from '../workflows/project.js';
 import { preparation } from '../workflows/preparation.js';
 import { repositoryState, scriptedGit } from './support/git.js';
@@ -464,44 +473,48 @@ describe('preparation binding dispatch', () => {
     );
 
     await expect(actions['PrepareStage']?.({ stage: 'ux' })).resolves.toBe('prepared');
-    // The fresh clone probes the configured repository and creates the area branch on it, so a
-    // first-time preparation never publishes from the base branch.
-    expect(gitCalls).toContain(`remote:${path.resolve(directory, 'repository.git')}:task/NEX-1-ux`);
+    // The fresh clone probes the configured repository and creates the one preparation branch on
+    // it, so first-time preparation never publishes from the base branch.
+    expect(gitCalls).toContain(`remote:${path.resolve(directory, 'repository.git')}:task/NEX-1`);
     expect(
-      gitCalls.some((call) => call.startsWith('create:') && call.includes('task/NEX-1-ux@')),
+      gitCalls.some((call) => call.startsWith('create:') && call.includes('task/NEX-1@')),
     ).toBe(true);
-    // The ux stage area received its own worktree, not another stage's.
+    // Every stage shares the root-level checkout, and no stage area owns a worktree.
     await expect(
-      readFile(path.join(root, 'ux', 'state', 'current-round.json'), 'utf8'),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(
-      readFile(path.join(root, 'requirements', 'state', 'current-round.json'), 'utf8'),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+      readFile(path.join(root, 'parent', 'prepared-repository.json'), 'utf8'),
+    ).resolves.toContain('"branch": "task/NEX-1"');
+    expect(gitCalls).toContain(
+      `clone:${path.resolve(directory, 'repository.git')}:${path.join(root, 'worktree')}`,
+    );
+    await expect(stat(path.join(root, 'ux', 'worktree'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(stat(path.join(root, 'requirements', 'worktree'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
-  it('runs each preparation role in the retained stage checkout resolved exactly once', async () => {
+  it('runs each preparation role in the one shared checkout resolved exactly once', async () => {
     const directory = await temporaryDirectory();
     const root = path.join(directory, 'NEX-1');
     const selectionFile = path.join(directory, 'selection.json');
-    const uxWorktree = path.join(root, 'ux', 'worktree');
-    const architectureWorktree = path.join(root, 'architecture', 'worktree');
+    const worktree = preparationWorktree(root);
     const contentRevision = 'a'.repeat(40);
     const publicationHead = 'b'.repeat(40);
     const baseRevision = 'c'.repeat(40);
-    await writeFile(
-      selectionFile,
-      JSON.stringify({
-        taskKey: 'NEX-1',
-        source: { kind: 'jira', issueId: '1' },
-        task: { id: '1', key: 'NEX-1', fields: {} },
-        conversation: [],
-        workspace: { root },
-        stage: 'ux',
-      }),
-    );
-    // The ux stage holds the prepared checkout and an open round the author proposes into.
-    await mkdir(path.join(uxWorktree, 'docs'), { recursive: true });
-    await writeFile(path.join(uxWorktree, 'docs', 'ux.md'), '# UX\n');
+    const selection = {
+      taskKey: 'NEX-1',
+      source: { kind: 'jira', issueId: '1' },
+      task: { id: '1', key: 'NEX-1', fields: {} },
+      conversation: [],
+      workspace: { root },
+      stage: 'ux',
+    };
+    await writeFile(selectionFile, JSON.stringify(selection));
+    // The ux stage has an open round the author proposes into, over the shared checkout.
+    await mkdir(path.join(worktree, 'docs'), { recursive: true });
+    await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n');
+    await writeFile(path.join(worktree, 'docs', 'architecture.md'), '# Architecture\n');
     await mkdir(path.join(root, 'ux', 'state'), { recursive: true });
     await writeFile(
       path.join(root, 'ux', 'state', 'current-round.json'),
@@ -513,9 +526,7 @@ describe('preparation binding dispatch', () => {
       }),
     );
     await mkdir(path.join(root, 'ux', 'artifacts', '1'), { recursive: true });
-    // Architecture retains an accepted document, so publication assembles and reviews it.
-    await mkdir(path.join(architectureWorktree, 'docs'), { recursive: true });
-    await writeFile(path.join(architectureWorktree, 'docs', 'architecture.md'), '# Architecture\n');
+    // Architecture retains an accepted document with its basis, so publication reviews it.
     await mkdir(path.join(root, 'architecture', 'state'), { recursive: true });
     await writeFile(
       path.join(root, 'architecture', 'state', 'current-round.json'),
@@ -527,19 +538,50 @@ describe('preparation binding dispatch', () => {
       }),
     );
     await mkdir(path.join(root, 'architecture', 'artifacts', '1'), { recursive: true });
+    const architectureAuthor = {
+      stage: 'architecture',
+      revision: 1,
+      outcome: 'authored',
+      summary: 'The architecture revision.',
+      documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
+      sourcePaths: [],
+      plan: [],
+      skip: null,
+      question: null,
+      upstream: null,
+      findingResponses: [],
+    };
+    const architectureAuthorFile = path.join(root, 'architecture', 'artifacts', '1', 'author.json');
+    await writeFile(architectureAuthorFile, JSON.stringify(architectureAuthor));
+    await writeFile(
+      path.join(root, 'architecture', 'artifacts', '1', 'evaluation.json'),
+      JSON.stringify({
+        basis: {
+          author: { path: architectureAuthorFile },
+          authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(architectureAuthor)),
+          sourceIdentity: sourceInputIdentity(selection as never),
+          upstream: [],
+          content: [{ path: 'docs/architecture.md', revision: contentRevision, exists: true }],
+        },
+        assessedRevision: 1,
+        verdict: 'accepted',
+        reason: 'Accepted.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      }),
+    );
     await writeFile(
       path.join(root, 'architecture', 'artifacts', '1', 'result.json'),
       JSON.stringify({
         stage: 'architecture',
         outcome: 'accepted',
         authoredRevision: 1,
-        // StageResult retains each accepted document by its absolute worktree path.
+        // StageResult retains each accepted document by its absolute checkout path.
         documents: [
-          {
-            path: path.join(architectureWorktree, 'docs', 'architecture.md'),
-            revision: contentRevision,
-          },
+          { path: path.join(worktree, 'docs', 'architecture.md'), revision: contentRevision },
         ],
+        sourcePaths: [],
         outputs: [],
         evaluation: { path: path.join(root, 'architecture', 'artifacts', '1', 'evaluation.json') },
         reason: 'Accepted.',
@@ -553,6 +595,7 @@ describe('preparation binding dispatch', () => {
         outcome: 'authored',
         summary: 'The journey proposal.',
         documents: [{ path: 'docs/ux.md', description: 'The proposed journey.' }],
+        sourcePaths: [],
         plan: [],
         skip: null,
         question: null,
@@ -589,16 +632,12 @@ describe('preparation binding dispatch', () => {
       [
         repositoryState({
           remoteUrl: path.resolve(directory, 'repository.git'),
-          branch: 'task/NEX-1-architecture',
+          branch: 'task/NEX-1',
           headRevision: publicationHead,
         }),
       ],
       {
-        commitPaths: (repository) =>
-          ok({
-            branch: repository === uxWorktree ? 'task/NEX-1-ux' : 'task/NEX-1-architecture',
-            headRevision: repository === uxWorktree ? contentRevision : publicationHead,
-          }),
+        commitPaths: () => ok({ branch: 'task/NEX-1', headRevision: contentRevision }),
         readFileAtRevision: async (repository, _revision, file) =>
           ok(await readFile(path.join(repository, file), 'utf8')),
         fetchRevision: () => ok(baseRevision),
@@ -636,15 +675,11 @@ describe('preparation binding dispatch', () => {
     await expect(actions['ReviewPreparationPublication']?.()).resolves.toBe('approved');
 
     // The real AgentRuntime appends worktree/ to the supplied area root: every provider runs in
-    // the existing checkout, never in a second worktree/ level under it.
-    expect(requests.map((request) => request.directory)).toEqual([
-      uxWorktree,
-      uxWorktree,
-      architectureWorktree,
-    ]);
-    for (const worktree of [uxWorktree, architectureWorktree]) {
-      expect((await stat(worktree)).isDirectory()).toBe(true);
-    }
+    // the one shared preparation checkout, never in a second worktree/ level under it.
+    expect(requests.map((request) => request.directory)).toEqual([worktree, worktree, worktree]);
+    await expect(stat(path.join(root, 'ux', 'worktree'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 });
 
@@ -660,6 +695,8 @@ async function publishPreparation(options: {
   readonly stage: () => string | undefined;
   readonly feedback: () => unknown;
   readonly returnFinding: () => unknown;
+  readonly awaiting: () => readonly string[];
+  readonly captured: () => unknown;
 }> {
   const directory = await temporaryDirectory();
   const root = path.join(directory, 'NEX-1');
@@ -678,15 +715,47 @@ async function publishPreparation(options: {
   );
   await writeFile(path.join(stage, 'artifacts/1/result.json'), JSON.stringify(options.result));
   const selectionFile = path.join(directory, 'selection.json');
+  const selection = {
+    taskKey: 'NEX-1',
+    source: { kind: 'jira', issueId: '1' },
+    task: { id: '1', key: 'NEX-1', fields: {} },
+    conversation: [],
+    workspace: { root },
+    stage: selectedStage,
+  };
+  await writeFile(selectionFile, JSON.stringify(selection));
+  // The publication validates the current acceptance basis of every accepted or skipped result.
+  const author = {
+    stage: selectedStage,
+    revision: Number(options.result.authoredRevision ?? 1),
+    outcome: 'authored',
+    summary: 'The proposed work.',
+    documents: [],
+    sourcePaths: [],
+    plan: [],
+    skip: null,
+    question: null,
+    upstream: null,
+    findingResponses: [],
+  };
+  const authorFile = path.join(stage, 'artifacts/1/author.json');
+  await writeFile(authorFile, JSON.stringify(author));
   await writeFile(
-    selectionFile,
+    path.join(stage, 'artifacts/1/evaluation.json'),
     JSON.stringify({
-      taskKey: 'NEX-1',
-      source: { kind: 'jira', issueId: '1' },
-      task: { id: '1', key: 'NEX-1', fields: {} },
-      conversation: [],
-      workspace: { root },
-      stage: selectedStage,
+      basis: {
+        author: { path: authorFile },
+        authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
+        sourceIdentity: sourceInputIdentity(selection as never),
+        upstream: [],
+        content: [],
+      },
+      assessedRevision: author.revision,
+      verdict: options.result.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
+      reason: 'Accepted.',
+      findings: [],
+      priorFindings: [],
+      upstream: null,
     }),
   );
 
@@ -701,7 +770,10 @@ async function publishPreparation(options: {
     ],
     Draft: [],
     'Storybook Refinement': [],
-    Architecture: [],
+    Architecture: [
+      { id: '43', name: 'Return to UX', to: { id: '4', name: 'UX Proposal' } },
+      { id: '44', name: 'Wait', to: { id: '5', name: 'Waiting for Feedback' } },
+    ],
     'Waiting for Feedback': [],
   };
   const { jira, calls } = scriptedJira({
@@ -744,19 +816,30 @@ async function publishPreparation(options: {
     },
     waitingForFeedback: 'Waiting for Feedback',
     ideaActive: 'Idea Refinement',
+    git: scriptedGit([repositoryState()]).git,
     jira,
     publish: () => undefined,
   });
   const outcome = await publish({ stage: selectedStage });
   const saved = JSON.parse(await readFile(selectionFile, 'utf8')) as {
     readonly stage: string;
+    readonly task: unknown;
+    readonly conversation: unknown;
   };
   // A failed publication writes no handoff, so the helper reads whichever record the outcome left.
-  let handoff: { readonly feedback: unknown; readonly return: unknown } | null = null;
+  let handoff: {
+    readonly feedback: unknown;
+    readonly return: unknown;
+    readonly awaitingStages: readonly string[];
+  } | null = null;
   try {
     handoff = JSON.parse(
       await readFile(path.join(root, parentAreaDirectory, 'handoff.json'), 'utf8'),
-    ) as { readonly feedback: unknown; readonly return: unknown };
+    ) as {
+      readonly feedback: unknown;
+      readonly return: unknown;
+      readonly awaitingStages: readonly string[];
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
@@ -770,6 +853,8 @@ async function publishPreparation(options: {
     stage: () => saved.stage,
     feedback: () => handoff?.feedback ?? null,
     returnFinding: () => handoff?.return ?? null,
+    awaiting: () => handoff?.awaitingStages ?? [],
+    captured: () => ({ task: saved.task, conversation: saved.conversation }),
   };
 }
 
@@ -793,6 +878,13 @@ describe('parent preparation publication', () => {
     expect(published.status()).toBe('Storybook Refinement');
     expect(published.stage()).toBe('prototype');
     expect(published.comments).toHaveLength(1);
+    // A publication acknowledgement never replaces the captured source input: the decision's
+    // identity basis stays stable and the next stage reads the same captured conversation.
+    expect(published.captured()).toEqual({
+      task: { id: '1', key: 'NEX-1', fields: {} },
+      conversation: [],
+    });
+    expect(published.awaiting()).toEqual([]);
   });
 
   it('returns an upstream result to the named earlier stage', async () => {
@@ -809,6 +901,26 @@ describe('parent preparation publication', () => {
     expect(published.outcome).toBe('advanced');
     expect(published.status()).toBe('Draft');
     expect(published.stage()).toBe('requirements');
+    // The correction invalidates the corrected stage and every later decision up to the returning
+    // stage; the parent retains them as awaiting a current decision across restarts.
+    expect(published.awaiting()).toEqual(['ux']);
+  });
+
+  it('retains every downstream stage awaiting reassessment when Architecture returns', async () => {
+    const published = await publishPreparation({
+      result: {
+        ...accepted,
+        stage: 'architecture',
+        outcome: 'returnUpstream',
+        returnStage: 'ux',
+        reason: 'The proposed navigation cannot support the acceptance example.',
+      },
+      status: 'Architecture',
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(published.stage()).toBe('ux');
+    expect(published.awaiting()).toEqual(['prototype', 'architecture']);
   });
 
   it('establishes active Idea Refinement when returning directly to its child', async () => {
@@ -948,108 +1060,160 @@ async function handoff(options: {
   const directory = await temporaryDirectory();
   const root = path.join(directory, 'NEX-1');
   const stage = stageRoot(root, 'architecture');
-  await mkdir(path.join(stage, 'state'), { recursive: true });
-  await mkdir(path.join(stage, 'artifacts', '1'), { recursive: true });
-  await mkdir(path.join(stage, 'worktree'), { recursive: true });
-  await writeFile(
-    path.join(stage, 'state/current-round.json'),
-    JSON.stringify({
-      stage: 'architecture',
-      round: 1,
-      route: 'new',
-      profiles: { author: 'a', evaluator: 'e' },
-    }),
-  );
-  await writeFile(
-    path.join(stage, 'artifacts/1/result.json'),
-    JSON.stringify({
-      stage: 'architecture',
-      outcome: options.skipped ? 'skipped' : 'accepted',
+  const worktree = path.join(root, 'worktree');
+  await mkdir(path.join(worktree, 'docs'), { recursive: true });
+  /** The captured input the fixture's stage decisions are bound to. */
+  const fixtureSelection = {
+    taskKey: 'NEX-1',
+    source: { kind: 'jira', issueId: '1' },
+    task: { id: '1', key: 'NEX-1', fields: {} },
+    conversation: [],
+    workspace: { root },
+    stage: 'architecture',
+  };
+  /** The earlier accepted results each later stage's decision binds, in route order. */
+  const upstream: { readonly result: { readonly path: string }; readonly identity: string }[] = [];
+
+  /** Write one stage's accepted or skipped decision with its complete acceptance basis. */
+  async function writeStageDecision(settings: {
+    readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture';
+    readonly outcome: 'accepted' | 'skipped';
+    readonly documents: readonly { readonly path: string; readonly revision: string | null }[];
+    readonly sourcePaths?: readonly string[];
+    readonly existing?: readonly { readonly path: string; readonly revision: string }[];
+    readonly skipReferences?: readonly string[];
+    readonly prototype?: { readonly branch: string; readonly revision: string } | null;
+  }): Promise<void> {
+    const area = stageRoot(root, settings.stage);
+    const artifacts = path.join(area, 'artifacts', '1');
+    await mkdir(path.join(area, 'state'), { recursive: true });
+    await mkdir(artifacts, { recursive: true });
+    await writeFile(
+      path.join(area, 'state/current-round.json'),
+      JSON.stringify({
+        stage: settings.stage,
+        round: 1,
+        route: 'new',
+        profiles: { author: 'a', evaluator: 'e' },
+      }),
+    );
+    const author = {
+      stage: settings.stage,
+      revision: 1,
+      outcome: settings.outcome === 'skipped' ? 'skip-proposed' : 'authored',
+      summary: 'The evaluated stage work.',
+      documents: settings.documents.map((document) => ({
+        path: document.path,
+        description: 'the changed document',
+      })),
+      sourcePaths: [...(settings.sourcePaths ?? [])],
+      plan: [],
+      skip:
+        settings.outcome === 'skipped'
+          ? {
+              reason: 'Existing input suffices.',
+              references: [...(settings.skipReferences ?? [])],
+            }
+          : null,
+      question: null,
+      upstream: null,
+      findingResponses: [],
+    };
+    const authorFile = path.join(artifacts, 'author.json');
+    await writeFile(authorFile, JSON.stringify(author));
+    const content = [
+      ...settings.documents
+        .filter((document) => document.revision !== null)
+        .map((document) => ({
+          path: document.path,
+          revision: document.revision as string,
+          exists: true,
+        })),
+      ...(settings.existing ?? []).map((document) => ({
+        path: document.path,
+        revision: document.revision,
+        exists: true,
+      })),
+    ];
+    await writeFile(
+      path.join(artifacts, 'evaluation.json'),
+      JSON.stringify({
+        basis: {
+          author: { path: authorFile },
+          authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
+          sourceIdentity: sourceInputIdentity(fixtureSelection as never),
+          upstream: [...upstream],
+          content,
+        },
+        assessedRevision: 1,
+        verdict: settings.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
+        reason: 'Assessed the exact retained content.',
+        findings: [],
+        priorFindings: [],
+        upstream: null,
+      }),
+    );
+    const result = {
+      stage: settings.stage,
+      outcome: settings.outcome,
       authoredRevision: 1,
-      existingDocuments: options.skipped
-        ? [{ path: path.join(stage, 'worktree', 'docs/existing.md'), revision: 'f'.repeat(40) }]
-        : [],
-      skipReferences: options.skipped ? ['docs/existing.md'] : [],
-      documents: options.documents
-        ? [{ path: path.join(stage, 'worktree', 'docs/architecture.md'), revision: 'b'.repeat(40) }]
-        : [],
+      documents: settings.documents.map((document) => ({
+        path: path.join(worktree, document.path),
+        revision: document.revision,
+      })),
+      existingDocuments: (settings.existing ?? []).map((document) => ({
+        path: path.join(worktree, document.path),
+        revision: document.revision,
+      })),
+      sourcePaths: [...(settings.sourcePaths ?? [])],
+      skipReferences: [...(settings.skipReferences ?? [])],
       outputs: [],
-      evaluation: { path: '/evaluation.json' },
+      evaluation: { path: path.join(artifacts, 'evaluation.json') },
       reason: 'The design and plan cover the accepted outcome.',
       returnStage: null,
       returnFinding: null,
-      prototype: null,
-    }),
-  );
+      prototype: settings.prototype ?? null,
+    };
+    await writeFile(path.join(artifacts, 'result.json'), JSON.stringify(result));
+    upstream.push({
+      result: { path: path.join(artifacts, 'result.json') },
+      identity: acceptedResultIdentity(result as never),
+    });
+  }
+
+  if (options.documents) {
+    // An accepted earlier stage's changed document lives in the same shared publication.
+    await writeStageDecision({
+      stage: 'requirements',
+      outcome: 'accepted',
+      documents: [{ path: 'docs/requirements.md', revision: 'a'.repeat(40) }],
+    });
+    await writeFile(path.join(worktree, 'docs/requirements.md'), '# Requirements\n');
+  }
   if (options.prototype !== undefined && options.prototype !== null) {
     // The Storybook Refinement stage retained a prototype revision implementation tickets reuse.
-    const prototypeArea = stageRoot(root, 'prototype');
-    await mkdir(path.join(prototypeArea, 'state'), { recursive: true });
-    await mkdir(path.join(prototypeArea, 'artifacts', '1'), { recursive: true });
-    await writeFile(
-      path.join(prototypeArea, 'state/current-round.json'),
-      JSON.stringify({
-        stage: 'prototype',
-        round: 1,
-        route: 'new',
-        profiles: { author: 'a', evaluator: 'e' },
-      }),
-    );
-    await writeFile(
-      path.join(prototypeArea, 'artifacts/1/result.json'),
-      JSON.stringify({
-        stage: 'prototype',
-        outcome: 'accepted',
-        authoredRevision: 1,
-        documents: [],
-        outputs: [],
-        evaluation: { path: '/evaluation.json' },
-        reason: 'The prototype journey was inspected.',
-        returnStage: null,
-        returnFinding: null,
-        prototype: options.prototype,
-      }),
-    );
+    await writeStageDecision({
+      stage: 'prototype',
+      outcome: 'accepted',
+      documents: [],
+      prototype: options.prototype,
+    });
   }
-  if (options.documents) {
-    // An accepted earlier stage's changed document is assembled into the same publication.
-    const requirements = stageRoot(root, 'requirements');
-    await mkdir(path.join(requirements, 'state'), { recursive: true });
-    await mkdir(path.join(requirements, 'artifacts', '1'), { recursive: true });
-    await mkdir(path.join(requirements, 'worktree', 'docs'), { recursive: true });
-    await writeFile(
-      path.join(requirements, 'state/current-round.json'),
-      JSON.stringify({
-        stage: 'requirements',
-        round: 1,
-        route: 'new',
-        profiles: { author: 'a', evaluator: 'e' },
-      }),
-    );
-    await writeFile(
-      path.join(requirements, 'artifacts/1/result.json'),
-      JSON.stringify({
-        stage: 'requirements',
-        outcome: 'accepted',
-        authoredRevision: 1,
-        documents: [
-          {
-            path: path.join(requirements, 'worktree', 'docs/requirements.md'),
-            revision: 'a'.repeat(40),
-          },
-        ],
-        outputs: [],
-        evaluation: { path: '/evaluation.json' },
-        reason: 'The requirements cover the accepted outcome.',
-        returnStage: null,
-        returnFinding: null,
-        prototype: null,
-      }),
-    );
-    await writeFile(
-      path.join(requirements, 'worktree', 'docs/requirements.md'),
-      '# Requirements\n',
-    );
+  await writeStageDecision({
+    stage: 'architecture',
+    outcome: options.skipped ? 'skipped' : 'accepted',
+    documents:
+      options.documents && !options.skipped
+        ? [{ path: 'docs/architecture.md', revision: 'b'.repeat(40) }]
+        : [],
+    existing: options.skipped ? [{ path: 'docs/existing.md', revision: 'f'.repeat(40) }] : [],
+    skipReferences: options.skipped ? ['docs/existing.md'] : [],
+  });
+  if (options.documents && !options.skipped) {
+    await writeFile(path.join(worktree, 'docs/architecture.md'), '# Architecture\n');
+  }
+  if (options.skipped) {
+    await writeFile(path.join(worktree, 'docs/existing.md'), '# Existing design\n');
   }
   await writeFile(
     path.join(stage, 'artifacts/1/plan.json'),
@@ -1071,17 +1235,7 @@ async function handoff(options: {
     ),
   );
   const selectionFile = path.join(directory, 'selection.json');
-  await writeFile(
-    selectionFile,
-    JSON.stringify({
-      taskKey: 'NEX-1',
-      source: { kind: 'jira', issueId: '1' },
-      task: { id: '1', key: 'NEX-1', fields: {} },
-      conversation: [],
-      workspace: { root },
-      stage: 'architecture',
-    }),
-  );
+  await writeFile(selectionFile, JSON.stringify(fixtureSelection));
 
   let status = options.sourceStatus ?? 'Architecture';
   const transitions: JiraTransition[] = [
@@ -1191,7 +1345,8 @@ async function handoff(options: {
       }),
     ],
     {
-      readFileAtRevision: (_repository, _revision, file) => ok(`# Accepted ${file}\n`),
+      readFileAtRevision: async (_repository, _revision, file) =>
+        ok(await readFile(path.join(worktree, file), 'utf8')),
       fetchRevision: () => ok('1'.repeat(40)),
       readMergeBase: () => ok('1'.repeat(40)),
       readChangedPaths: () =>
@@ -1465,6 +1620,7 @@ describe('architecture implementation handoff', () => {
   it('creates the linked tickets, ranks the dependent and closes the original', async () => {
     const handedOff = await handoff({ documents: false });
 
+    expect(handedOff.failures).toEqual([]);
     expect(handedOff.outcome).toBe('handed-off');
     expect(handedOff.tickets.map((ticket) => ticket.summary)).toEqual([
       'Add the lint gate',
@@ -1483,18 +1639,21 @@ describe('architecture implementation handoff', () => {
   it('publishes changed documents as a documentation-only pull request first', async () => {
     const handedOff = await handoff({ documents: true });
 
+    expect(handedOff.failures).toEqual([]);
     // The PR merged with its required checks before any ticket was created and linked.
     expect(handedOff.outcome).toBe('handed-off');
     expect(handedOff.tickets).toHaveLength(2);
     expect(handedOff.status()).toBe('Done');
   });
 
-  it('assembles the accepted document set across stages and commits only those paths', async () => {
+  it('publishes the accepted document set of every stage from the shared branch', async () => {
     const handedOff = await handoff({ documents: true });
 
     // The requirements stage's changed document is published together with the architecture one,
-    // and the paths committed are exactly the accepted set, not the whole worktree.
-    expect(handedOff.committedPaths).toEqual(['docs/architecture.md', 'docs/requirements.md']);
+    // and the shared branch already carries exactly the accepted set: the publication commits no
+    // second copy and never absorbs the whole worktree.
+    expect(handedOff.committedPaths).toEqual([]);
+    expect(handedOff.failures).toEqual([]);
     expect(handedOff.published.reviews).toBe(1);
     expect(handedOff.published.checks).toBe(1);
     expect(handedOff.published.autoMerge).toBe(true);
@@ -1605,7 +1764,7 @@ describe('architecture implementation handoff', () => {
       `docs/existing.md (architecture existing document revision ${'f'.repeat(40)})`,
     );
     expect(description).toContain('architecture/artifacts/1/result.json');
-    expect(description).toContain('evaluation: /evaluation.json');
+    expect(description).toContain('architecture/artifacts/1/evaluation.json');
     expect(result.published.pullRequests).toBe(0);
   });
 

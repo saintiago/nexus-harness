@@ -1,15 +1,25 @@
 import path from 'node:path';
+import type { GitAdapter } from '../../../../adapters/git.js';
 import { preparationPublicationFailureDeclaration } from './artifacts.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import type { JiraAdapter } from '../../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
+  stageAuthorArtifact,
+  stageEvaluationArtifact,
   type PreparationResult,
   type PreparationStage,
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
-import { readStageTerminal, readStagePlan, stageRoot } from '../../preparation/storage.js';
+import {
+  decisionContentChanged,
+  readStageArtifact,
+  readStageTerminal,
+  readStagePlan,
+  requireCurrentAcceptance,
+  stageRoot,
+} from '../../preparation/storage.js';
 import {
   publishComment,
   readComments,
@@ -17,15 +27,15 @@ import {
   statusNameOf,
   transitionInto,
 } from '../../source.js';
-import type { Selection, WorkflowStage } from '../../select-task/artifacts.js';
+import type { WorkflowStage } from '../../select-task/artifacts.js';
 import type { StageReturn } from '../../select-work/artifacts.js';
 import { applyTransition } from '../../source.js';
 import {
   advanceStage,
   readHandoff,
   readSelection,
+  writeAwaitingStages,
   writeHandoff,
-  writeSelection,
 } from '../state.js';
 
 /**
@@ -51,6 +61,7 @@ export type PublishPreparationSettings = {
   /** The configured statuses the parent uses for feedback and returned ideas. */
   readonly waitingForFeedback: string;
   readonly ideaActive: string;
+  readonly git: GitAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
 };
@@ -95,9 +106,10 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     if (result === null) {
       throw new Error(`No ${stage} result exists under "${root}" to publish.`);
     }
-    // Read the source state this publication writes from once: the human-facing comment, the
-    // expected-status validation and the refreshed capture the routed child receives all rest on
-    // the same observation.
+    // Read the source state this publication writes from once: the human-facing comment and the
+    // expected-status validation rest on the same observation. The captured source input is not
+    // rewritten here, so Nexus's own publication acknowledgement cannot invalidate a current
+    // decision's input identity.
     const issue = await readIssue(settings.jira, selection.source.issueId);
     const comments = await readComments(settings.jira, selection.source.issueId);
 
@@ -163,27 +175,18 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
     }
 
     /**
-     * Refresh the retained capture after the publication: the destination child reads the human
-     * conversation this publication observed, so a later route never works from a stale snapshot.
-     */
-    async function refreshCapture(retained: Selection): Promise<void> {
-      await writeSelection(settings.selectionFile, {
-        ...retained,
-        task: issue,
-        conversation: [...comments],
-      });
-    }
-
-    /**
      * Publish one advance to a forward or upstream stage. A return supplies the concrete finding
-     * the destination stage must correct; a forward advance clears any consumed return. The status
-     * move is validated before the comment is published, so an unexpected human state preserves
-     * both the status and the conversation.
+     * the destination stage must correct; a forward advance clears any consumed return. The
+     * publication does not rewrite the captured source input: Nexus's own publication comment is
+     * not new author input, and SelectWork re-captures refreshed human input on the next
+     * selection. The status move is validated before the comment is published, so an unexpected
+     * human state preserves both the status and the conversation.
      */
     async function advanceTo(
       target: PreparationStage | 'idea',
       returnFinding: StageReturn | null,
       text: string,
+      awaitingStages: readonly PreparationStage[],
     ): Promise<'advanced' | 'failed'> {
       const status = statusOf(target);
       if (status === null) {
@@ -204,7 +207,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         target as WorkflowStage,
         returnFinding,
       );
-      await refreshCapture(updated);
+      await writeAwaitingStages(updated.workspace.root, awaitingStages);
       return 'advanced';
     }
 
@@ -225,15 +228,65 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         upstreamReturns: handoff?.upstreamReturns ?? 0,
         feedback: { stage, question },
         return: handoff?.return ?? null,
+        awaitingStages: handoff?.awaitingStages ?? [],
         tickets: handoff?.tickets ?? [],
         publications: handoff?.publications ?? [],
       });
-      await refreshCapture(selection);
       return 'waiting';
     }
 
     const outcome: PreparationResult['outcome'] = result.outcome;
+    /**
+     * The stages after this one whose retained decisions no longer cover the checkout content: a
+     * later stage's edit of an earlier accepted document requires that stage's current decision.
+     */
+    async function contentChangedStages(): Promise<PreparationStage[]> {
+      const later = preparationStages.slice(preparationStages.indexOf(stage) + 1);
+      const changed: PreparationStage[] = [];
+      for (const candidate of later) {
+        if (
+          await decisionContentChanged({
+            issueRoot: selection.workspace.root,
+            stage: candidate,
+            git: settings.git,
+          })
+        )
+          changed.push(candidate);
+      }
+      return changed;
+    }
     if (outcome === 'accepted' || outcome === 'skipped') {
+      // The published decision must be current: the exact authored report, captured input, relied-on
+      // upstream results and assessed content the evaluator stood behind.
+      const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+      const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+      if (author === null) {
+        return await failed(
+          `The ${stage} result has no authored report to validate before publication.`,
+        );
+      }
+      try {
+        await requireCurrentAcceptance({
+          issueRoot: selection.workspace.root,
+          stage,
+          selection,
+          round: plan.round,
+          verdict: outcome === 'skipped' ? 'accepted-skip' : 'accepted',
+          author,
+          evaluation,
+          git: settings.git,
+        });
+      } catch (error) {
+        return await failed(
+          `The ${stage} result is not a current decision: ` +
+            `${error instanceof Error ? error.message : String(error)}.`,
+        );
+      }
+      const retained = await readHandoff(selection.workspace.root);
+      const awaiting = [
+        ...(retained?.awaitingStages ?? []).filter((candidate) => candidate !== stage),
+        ...(await contentChangedStages()),
+      ];
       if (stage === 'architecture') {
         if (statusNameOf(issue) !== statusOf(stage)) {
           return failed(
@@ -251,6 +304,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         next,
         null,
         `Preparation ${stage} ${outcome}: ${result.reason ?? 'the stage criteria are met.'}`,
+        [...new Set(awaiting)],
       );
     }
     if (outcome === 'returnUpstream') {
@@ -267,6 +321,14 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         );
       }
       const finding = result.returnFinding;
+      // The correction invalidates the corrected stage's decision and every later decision up to
+      // the returning stage: the parent retains them as awaiting a current decision.
+      const destination = order.indexOf(target);
+      const awaiting = preparationStages.filter(
+        (candidate) =>
+          order.indexOf(candidate) > destination &&
+          order.indexOf(candidate) <= order.indexOf(stage),
+      );
       return advanceTo(
         target,
         {
@@ -282,6 +344,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         `Returning to ${target} for correction: ${
           result.reason ?? 'an upstream input needs ' + 'correction.'
         }`,
+        awaiting,
       );
     }
     if (outcome === 'needsInput') {

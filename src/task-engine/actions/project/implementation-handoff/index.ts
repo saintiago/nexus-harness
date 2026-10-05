@@ -17,10 +17,11 @@ import {
   type PreparationResult,
 } from '../../preparation/artifacts.js';
 import {
+  preparationWorktree,
+  readCurrentDecision,
   readStageArtifact,
   readStagePlan,
   stageRoot,
-  stageWorktree,
 } from '../../preparation/storage.js';
 import {
   applyTransition,
@@ -191,7 +192,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
   return async () => {
     const selection = await readSelection(settings.selectionFile);
     const root = selection.workspace.root;
-    const worktree = stageWorktree(root, 'architecture');
+    const worktree = preparationWorktree(root);
     const architectureRoot = stageRoot(root, 'architecture');
     const plan = await readStagePlan(architectureRoot);
     if (plan === null) {
@@ -217,6 +218,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       upstreamReturns: 0,
       feedback: null,
       return: null,
+      awaitingStages: [],
       tickets: [],
       publications: [],
     };
@@ -246,6 +248,31 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     }
     const sourceState = await sourceProblem();
     if (sourceState !== null) return failed(sourceState);
+    // Freeze only current stage decisions: changed authored reports, refreshed inputs, corrected
+    // upstream results, unreadable revisions or pending reassessments must be resolved through
+    // preparation before the handoff commits any source effect.
+    if (handoff.awaitingStages.length > 0) {
+      return failed(
+        `Preparation is awaiting a current decision for the ` +
+          `${handoff.awaitingStages.join(', ')} stage(s); reassessment must complete ` +
+          'before the handoff.',
+      );
+    }
+    for (const stage of preparationStages) {
+      const plan = await readStagePlan(stageRoot(root, stage));
+      if (plan === null) continue;
+      const decision = await readCurrentDecision({
+        issueRoot: root,
+        stage,
+        selection,
+        git: settings.git,
+      });
+      if (decision.kind === 'current') continue;
+      return failed(
+        `The ${stage} stage has no current preparation decision (${decision.reason}); ` +
+          'reevaluation is required before the handoff.',
+      );
+    }
     // Validate every dependency identity and derive a stable topological creation order. The
     // retained source identity remains the task's original plan index, including forward references.
     for (const [index, task] of tasks.entries()) {
@@ -311,8 +338,10 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         `- ${stage} evaluated skip: ${path.join(area, 'artifacts', String(stagePlan.round), stageResultArtifact.pathFromArtifactsRoot)}; evaluation: ${stageResult.evaluation.path}`,
       );
       for (const document of stageResult.existingDocuments) {
+        const relative = path.relative(worktree, document.path);
         existingReferences.push(
-          `- ${path.relative(stageWorktree(root, stage), document.path)} (${stage} existing document revision ${document.revision})`,
+          `- ${relative.startsWith('..') ? document.path : relative} (${stage} existing document ` +
+            `revision ${document.revision})`,
         );
       }
       for (const reference of stageResult.skipReferences)

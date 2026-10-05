@@ -59,14 +59,14 @@ export function createReviewPreparationPublication(settings: {
       const assessment = await settings.reviewer.run({
         operation: 'review',
         profile: settings.reviewerProfile,
-        // The reviewer's workspace is the architecture area root; AgentRuntime resolves its
-        // worktree/.
-        workspace: { root: stageRoot(root, 'architecture') },
+        // The reviewer's workspace is the preparation issue root; AgentRuntime resolves its one
+        // shared worktree/ checkout.
+        workspace: { root },
         context: [
-          `Review the assembled documentation publication for ${selection.taskKey} at exact revision ${head}, comparison base ${baseRevision}.`,
+          `Review the retained preparation publication for ${selection.taskKey} at exact revision ${head}, comparison base ${baseRevision}.`,
           `Source input: ${JSON.stringify(selection.task)}\nConversation: ${JSON.stringify(selection.conversation)}`,
           `Accepted document references: ${JSON.stringify(documents)}. Read their stage results and evaluations under ${root}.`,
-          'Assess the complete publication for consistency with accepted requirements, UX and architecture and the documentation-only boundary. No prior findings are supplied; return an empty priorFindings array.',
+          'Assess the complete publication for consistency with the accepted stage decisions and that it contains only accepted documents and their declared stage-owned source paths. No prior findings are supplied; return an empty priorFindings array.',
           diff.value,
           responseFormatText(reviewResponseSchema),
         ].join('\n\n'),

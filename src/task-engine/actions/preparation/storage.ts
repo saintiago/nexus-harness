@@ -1,31 +1,48 @@
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import type { GitAdapter } from '../../../adapters/git.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../records.js';
+import type { Selection } from '../select-task/artifacts.js';
 import {
   ensureRoundDirectory,
   readCurrentPlan,
   saveCurrentPlan,
   listNumberedHistory,
 } from '../round-storage.js';
+import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import {
+  preparationStages,
+  preparationWorkspaceDeclaration,
   stageAreas,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stageResultArtifact,
   stageTerminalDeclaration,
   stageRoundPlanDeclaration,
+  type AcceptanceBasis,
+  type PreparationWorkspace,
   type PreparationStage,
   type StageAuthorOutput,
   type StageEvaluationOutput,
   type StageRoundPlan,
   type PreparationResult,
 } from './artifacts.js';
+import {
+  authoredIdentity,
+  checkoutRelative,
+  recordIdentity,
+  requireContentReadable,
+  requireEvaluationContent,
+  sourceInputIdentity,
+} from './evaluation-content.js';
 
 /**
- * The evaluated preparation stages' round storage: each stage area keeps a worktree, its
- * current-round plan and numbered rounds under artifacts/. The helpers read and write the stage's
- * own declarations; they choose no roles, count no rounds and route nothing.
+ * The evaluated preparation stages' shared storage: one checkout and branch under the preparation
+ * issue root's worktree/, with each stage area retaining its own current-round plan and numbered
+ * rounds under artifacts/. The helpers read and write the producer declarations; they choose no
+ * roles, count no rounds and route nothing.
  */
 
 /** The stage area root under the shared issue workspace root. */
@@ -33,9 +50,30 @@ export function stageRoot(issueWorkspaceRoot: string, stage: PreparationStage): 
   return path.join(issueWorkspaceRoot, stageAreas[stage]);
 }
 
-/** The stage's project worktree the roles read and revise documents in. */
-export function stageWorktree(issueWorkspaceRoot: string, stage: PreparationStage): string {
-  return path.join(stageRoot(issueWorkspaceRoot, stage), 'worktree');
+/**
+ * The one preparation checkout every stage role and Git operation works in. The stage areas are
+ * artifact storage, never separate checkouts.
+ */
+export function preparationWorktree(issueWorkspaceRoot: string): string {
+  return path.join(issueWorkspaceRoot, 'worktree');
+}
+
+/** Read the retained shared preparation repository record; null before preparation starts. */
+export async function readPreparationWorkspace(
+  issueWorkspaceRoot: string,
+): Promise<PreparationWorkspace | null> {
+  return readRecord(
+    path.join(issueWorkspaceRoot, preparationWorkspaceDeclaration.file),
+    preparationWorkspaceDeclaration,
+  );
+}
+
+/** Persist the shared preparation repository record. */
+export async function writePreparationWorkspace(
+  issueWorkspaceRoot: string,
+  workspace: PreparationWorkspace,
+): Promise<void> {
+  await writeRecord(path.join(issueWorkspaceRoot, preparationWorkspaceDeclaration.file), workspace);
 }
 
 /** Read the stage's current-round plan; null before the first round exists. */
@@ -184,4 +222,280 @@ export async function readStageTerminal(root: string): Promise<PreparationResult
   if (result !== null) return result;
   const plan = await readStagePlan(root);
   return plan === null ? null : readStageResult(root, plan.round);
+}
+
+/** One immutable upstream result a later stage builds on, with its retained identity. */
+export type UpstreamResultReference = {
+  /** The producing idea or preparation stage. */
+  readonly stage: string;
+  /** The saved artifact file the consumer may read. */
+  readonly resultFile: string;
+  /** The identity of that complete saved report. */
+  readonly identity: string;
+};
+
+/**
+ * The identity of one stage's accepted work as a later stage relies on it: its outcome and the
+ * exact content it retained, not the round that recorded it. Repeating an acceptance with
+ * identical content therefore keeps the relied-on identity stable, while a changed document set
+ * or outcome invalidates the decisions taken against it.
+ */
+export function acceptedResultIdentity(result: PreparationResult): string {
+  return recordIdentity({
+    stage: result.stage,
+    outcome: result.outcome,
+    documents: result.documents,
+    sourcePaths: result.sourcePaths,
+    existingDocuments: result.existingDocuments,
+    skipReferences: result.skipReferences,
+    prototype: result.prototype,
+  });
+}
+
+/**
+ * The retained upstream results one stage builds on, in route order: the approved idea handoff
+ * and every earlier preparation stage's current terminal result. A stage's acceptance is bound to
+ * these identities, so a corrected upstream report invalidates a decision taken against it.
+ */
+export async function upstreamResultReferences(
+  issueRoot: string,
+  stage: PreparationStage,
+): Promise<UpstreamResultReference[]> {
+  const references: UpstreamResultReference[] = [];
+  const ideaHandoff = path.join(issueRoot, 'refinement', ideaHandoffFile);
+  const approvedIdea = await readRecord(ideaHandoff, {
+    file: ideaHandoffFile,
+    schema: handoffSchema,
+  });
+  if (approvedIdea !== null) {
+    references.push({
+      stage: 'idea',
+      resultFile: ideaHandoff,
+      identity: recordIdentity(approvedIdea),
+    });
+  }
+  for (const earlier of preparationStages) {
+    if (earlier === stage) {
+      break;
+    }
+    const root = stageRoot(issueRoot, earlier);
+    const plan = await readStagePlan(root);
+    if (plan === null) {
+      continue;
+    }
+    // Read each retained result through its producer declaration: its outcome says whether the
+    // stage accepted, skipped, returned or exhausted the work, so a consumer is never directed to
+    // a result presented as accepted when it was not.
+    const result = await readStageArtifact(root, plan.round, stageResultArtifact);
+    if (result !== null) {
+      references.push({
+        stage: earlier,
+        resultFile: roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
+        identity: acceptedResultIdentity(result),
+      });
+    }
+  }
+  return references;
+}
+
+/** One stage round artifact's filepath. */
+export function roundArtifactFile(root: string, round: number, relative: string): string {
+  return path.join(root, 'artifacts', String(round), relative);
+}
+
+/** One stage's current, fully bound evaluator decision. */
+export type CurrentStageDecision = {
+  readonly round: number;
+  readonly result: PreparationResult;
+  readonly evaluation: StageEvaluationOutput;
+  readonly author: StageAuthorOutput;
+};
+
+/** The state of one stage's current decision: current, missing, or stale against its basis. */
+export type CurrentDecisionState =
+  | { readonly kind: 'current'; readonly decision: CurrentStageDecision }
+  | { readonly kind: 'missing'; readonly reason: string }
+  | { readonly kind: 'stale'; readonly reason: string };
+
+/**
+ * Read one stage's current terminal decision and validate the identities its acceptance basis
+ * binds: the complete authored report, the captured source input, the relied-on upstream results
+ * and the readability of every assessed revision. A changed author report, refreshed input,
+ * corrected upstream result or rewritten history makes the decision stale and requires a current
+ * evaluator decision; a changed working path is caught where the decision is asserted, reused or
+ * published.
+ */
+export async function readCurrentDecision(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly selection: Selection;
+  readonly git: GitAdapter;
+}): Promise<CurrentDecisionState> {
+  const { issueRoot, stage, selection, git } = settings;
+  const root = stageRoot(issueRoot, stage);
+  const plan = await readStagePlan(root);
+  if (plan === null || plan.stage !== stage) {
+    return { kind: 'missing', reason: `the ${stage} stage opened no round` };
+  }
+  const result = await readStageTerminal(root);
+  if (result === null) {
+    return { kind: 'missing', reason: `the ${stage} stage retained no terminal result` };
+  }
+  if (result.outcome !== 'accepted' && result.outcome !== 'skipped') {
+    return {
+      kind: 'missing',
+      reason: `the ${stage} stage's current result is "${result.outcome}"`,
+    };
+  }
+  const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+  const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+  if (evaluation === null || author === null) {
+    return {
+      kind: 'missing',
+      reason: `the ${stage} stage's current round retains no evaluated authored revision`,
+    };
+  }
+  if (author.revision !== result.authoredRevision) {
+    return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
+  }
+  try {
+    const basis = evaluation.basis;
+    const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
+    if (evaluation.assessedRevision !== author.revision || evaluation.verdict !== verdict) {
+      throw new Error(`the ${stage} result does not match its saved evaluation`);
+    }
+    if (basis.author.path !== roundArtifactFile(root, plan.round, 'author.json')) {
+      throw new Error(`the ${stage} evaluation does not name the authored report it assessed`);
+    }
+    if (basis.authorIdentity !== authoredIdentity(author)) {
+      throw new Error(`the ${stage} authored report changed since evaluation`);
+    }
+    if (basis.sourceIdentity !== sourceInputIdentity(selection)) {
+      throw new Error(`the captured issue input changed since the ${stage} evaluation`);
+    }
+    const upstream = await upstreamResultReferences(issueRoot, stage);
+    const reliedOn = upstream.map((reference) => ({
+      result: { path: reference.resultFile },
+      identity: reference.identity,
+    }));
+    if (JSON.stringify(reliedOn) !== JSON.stringify(basis.upstream)) {
+      throw new Error(`a relied-on upstream result changed since the ${stage} evaluation`);
+    }
+    await requireContentReadable({
+      git,
+      worktree: preparationWorktree(issueRoot),
+      content: basis.content,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      return { kind: 'stale', reason: error.message };
+    }
+    throw error;
+  }
+  return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
+}
+
+/**
+ * Require a complete acceptance basis for one evaluated round: the exact authored report, the
+ * captured source input, the relied-on upstream results and the assessed repository content. A
+ * changed author report, refreshed input, corrected upstream result or changed path throws.
+ */
+export async function requireCurrentAcceptance(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly selection: Selection;
+  readonly round: number;
+  readonly verdict: 'accepted' | 'accepted-skip';
+  readonly author: StageAuthorOutput;
+  readonly evaluation: StageEvaluationOutput | null;
+  readonly git: GitAdapter;
+}): Promise<void> {
+  const { issueRoot, stage, selection, round, verdict, author, evaluation, git } = settings;
+  const root = stageRoot(issueRoot, stage);
+  if (evaluation === null || evaluation.assessedRevision !== author.revision) {
+    throw new Error('Acceptance requires evaluation of the exact authored revision.');
+  }
+  if (evaluation.verdict !== verdict) {
+    throw new Error('Acceptance requires the evaluator\u2019s applicability decision.');
+  }
+  const basis: AcceptanceBasis = evaluation.basis;
+  if (basis.author.path !== roundArtifactFile(root, round, 'author.json')) {
+    throw new Error('The evaluation does not name the authored report it assessed.');
+  }
+  if (basis.authorIdentity !== authoredIdentity(author)) {
+    throw new Error(
+      'The authored report changed since evaluation; a current decision is required.',
+    );
+  }
+  if (basis.sourceIdentity !== sourceInputIdentity(selection)) {
+    throw new Error(
+      'The captured issue input changed since evaluation; a current decision is required.',
+    );
+  }
+  const upstream = await upstreamResultReferences(issueRoot, stage);
+  const reliedOn = upstream.map((reference) => ({
+    result: { path: reference.resultFile },
+    identity: reference.identity,
+  }));
+  if (JSON.stringify(reliedOn) !== JSON.stringify(basis.upstream)) {
+    throw new Error(
+      'A relied-on upstream result changed since evaluation; a current decision is required.',
+    );
+  }
+  await requireEvaluationContent({
+    git,
+    worktree: preparationWorktree(issueRoot),
+    content: basis.content,
+  });
+  // A document an evaluated skip relied on that appeared only after the assessment is a changed
+  // relied-on input too: the skip was not taken against it.
+  const checkout = preparationWorktree(issueRoot);
+  for (const reference of author.skip?.references ?? []) {
+    const relative = checkoutRelative(checkout, reference);
+    if (relative === null) continue;
+    let present = false;
+    try {
+      present = (await stat(path.join(checkout, relative))).isFile();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (present && !basis.content.some((entry) => entry.path === relative)) {
+      throw new Error(
+        'A relied-on document appeared since evaluation; a current decision is required.',
+      );
+    }
+  }
+}
+
+/**
+ * Whether one stage's accepted decision no longer covers the checkout content it assessed, for
+ * example because a later stage edited the same file. Such a stage needs a current decision
+ * before the route relies on the edited content.
+ */
+export async function decisionContentChanged(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly git: GitAdapter;
+}): Promise<boolean> {
+  const { issueRoot, stage, git } = settings;
+  const root = stageRoot(issueRoot, stage);
+  const plan = await readStagePlan(root);
+  if (plan === null) return false;
+  const result = await readStageTerminal(root);
+  if (result === null || (result.outcome !== 'accepted' && result.outcome !== 'skipped')) {
+    return false;
+  }
+  const evaluation = await readStageArtifact(root, plan.round, stageEvaluationArtifact);
+  if (evaluation === null) return true;
+  try {
+    await requireEvaluationContent({
+      git,
+      worktree: preparationWorktree(issueRoot),
+      content: evaluation.basis.content,
+    });
+    return false;
+  } catch (error) {
+    if (error instanceof Error) return true;
+    throw error;
+  }
 }

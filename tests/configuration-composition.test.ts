@@ -18,6 +18,7 @@ import {
   challengerRoleInstructions,
   developmentRoleInstructions,
   ideaEditorRoleInstructions,
+  memoryUseGuidance,
   preparationRoleInstructions,
   projectGuideRoleInstructions,
   recoveryRoleInstructions,
@@ -241,6 +242,44 @@ describe('AgentRuntime construction', () => {
       expect(settings.profiles.find((candidate) => candidate.id === profile)?.instructions).toEqual(
         [...preparationRoleInstructions['prototype-author'], ...configured.instructions],
       );
+    }
+  });
+
+  it('gives every preparation author and evaluator the explicit shared memory tools', async () => {
+    const configured = nexusConfiguration();
+    configured.memory = {
+      enabled: true,
+      serviceUrl: 'http://127.0.0.1:8081',
+      mcp: { command: 'npx', args: ['-y', 'amem-mcp'], directory: '/opt/amem' },
+      analysisProfile: 'nexus-astra',
+    };
+    const configuration = parseNexusConfiguration(configured, installationDirectory);
+    const profiles = configuration.preparation.profiles;
+    const selected: readonly { readonly role: ProfileRole; readonly profile: string }[] = [
+      { role: 'requirements-author', profile: profiles.requirements.author },
+      { role: 'requirements-evaluator', profile: profiles.requirements.evaluator },
+      { role: 'ux-author', profile: profiles.ux.author },
+      { role: 'ux-evaluator', profile: profiles.ux.evaluator },
+      ...profiles.prototype.authors.map(
+        (profile): { readonly role: ProfileRole; readonly profile: string } => ({
+          role: 'prototype-author',
+          profile,
+        }),
+      ),
+      { role: 'prototype-evaluator', profile: profiles.prototype.evaluator },
+      { role: 'architecture-author', profile: profiles.architecture.author },
+      { role: 'architecture-evaluator', profile: profiles.architecture.evaluator },
+    ];
+
+    for (const { role, profile } of selected) {
+      const { runtime, settings, requests } = harness(configuration, role);
+      await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
+      const tools = settings.profiles.find((candidate) => candidate.id === profile)!.toolSettings;
+      // Search and save are both available: no `enabled_tools` restriction narrows the server to
+      // the analysis role's search-only access.
+      expect(tools).toMatchObject({ config: { 'mcp_servers.amem.enabled': true } });
+      expect(JSON.stringify(tools)).not.toContain('enabled_tools');
+      expect(requests.at(-1)!.prompt).toContain(memoryUseGuidance);
     }
   });
 

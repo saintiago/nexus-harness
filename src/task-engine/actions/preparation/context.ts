@@ -8,10 +8,8 @@ import {
   parentHandoffDeclaration,
   type ParentHandoff,
 } from '../select-work/artifacts.js';
-import { handoffSchema, ideaHandoffFile } from '../publish-decision/artifacts.js';
 import { readRecord } from '../records.js';
 import {
-  preparationStages,
   stageAuthorArtifact,
   stageResultArtifact,
   type PreparationStage,
@@ -19,7 +17,13 @@ import {
   type StageEvaluationOutput,
   type StageRoundPlan,
 } from './artifacts.js';
-import { readStageArtifact, readStagePlan, stageRoot } from './storage.js';
+import {
+  readStageArtifact,
+  readStagePlan,
+  roundArtifactFile,
+  stageRoot,
+  upstreamResultReferences,
+} from './storage.js';
 
 /**
  * The context every evaluated preparation role receives: the shared preparation instructions, the
@@ -34,11 +38,13 @@ import { readStageArtifact, readStagePlan, stageRoot } from './storage.js';
  * role-specific context. The preparation roles document owns the wording.
  */
 export const preparationSharedInstructions = [
-  'Preparation role (shared by every evaluated preparation stage): use the connected worktree,',
-  'the captured author input, attributed conversation, accepted upstream outputs and project',
-  'documents. Human intent governs; agent summaries are revisable history. Keep source attribution',
-  'and material uncertainty. Do not retrieve Jira, publish source comments, change issue status or',
-  'create implementation issues; source operations belong to the parent.',
+  'Preparation role (shared by every evaluated preparation stage): use the supplied shared',
+  'repository for edits and inspection; each stage retains its own artifact area. Use the captured',
+  'author input, attributed conversation, accepted upstream outputs and project documents. Human',
+  'intent governs; agent summaries are revisable history. Keep source attribution and material',
+  'uncertainty. Do not retrieve Jira, publish source comments, change issue status or create',
+  'implementation issues; source operations belong to the parent. Assess only the selected stage’s',
+  'responsibilities.',
   'Evaluate applicability first. Propose a skip only when the stage is irrelevant or existing',
   'inputs suffice, with concrete references. If inputs prevent a feasible clean result, identify',
   'the problematic input, correction and owning earlier stage. Ask the user only for a material',
@@ -46,7 +52,9 @@ export const preparationSharedInstructions = [
   'an upstream product requirement. Authors preserve scope and respond to all supplied findings',
   'through revision, answer or reasoned rebuttal. Evaluators inspect the exact current revision,',
   'resolve prior findings and seek useful improvements as well as omissions, separating necessary',
-  'changes from optional suggestions and accepting adequate work.',
+  'changes from optional suggestions and accepting adequate work. Shared-memory search/save is',
+  'explicit when the invocation carries the memory tools; no preparation role schedules automatic',
+  'memory consumption.',
 ].join('\n');
 
 /** The stage's own area root inside the shared issue workspace. */
@@ -77,65 +85,44 @@ async function projectGuidanceText(worktree: string): Promise<string | null> {
   ].join('\n');
 }
 
-/** The refinement area under the issue workspace root (Workspace design). */
-const refinementArea = 'refinement';
-
 /** One earlier stage's retained result and author references that a later stage may read. */
 export async function upstreamReferences(
   issueRoot: string,
   stage: PreparationStage,
 ): Promise<{ readonly stage: string; readonly lines: string[] }[]> {
   const references: { readonly stage: string; readonly lines: string[] }[] = [];
-  // An approved idea's refinement handoff is an upstream producer-owned reference too: it names
-  // the approved revision and the retained artifacts a preparation stage builds on.
-  const ideaHandoff = path.join(issueRoot, refinementArea, ideaHandoffFile);
-  const approvedIdea = await readRecord(ideaHandoff, {
-    file: ideaHandoffFile,
-    schema: handoffSchema,
-  });
-  if (approvedIdea !== null) {
-    references.push({
-      stage: 'idea',
-      lines: [`idea refinement approved handoff: ${ideaHandoff}`],
-    });
-  }
-  for (const earlier of preparationStages) {
-    if (earlier === stage) {
-      break;
-    }
-    const root = stageRoot(issueRoot, earlier);
-    const plan = await readStagePlan(root);
-    if (plan === null) {
+  for (const reference of await upstreamResultReferences(issueRoot, stage)) {
+    if (reference.stage === 'idea') {
+      // An approved idea's refinement handoff is an upstream producer-owned reference too: it names
+      // the approved revision and the retained artifacts a preparation stage builds on.
+      references.push({
+        stage: 'idea',
+        lines: [`idea refinement approved handoff: ${reference.resultFile}`],
+      });
       continue;
     }
+    const earlier = reference.stage as PreparationStage;
+    const root = stageRoot(issueRoot, earlier);
+    const plan = await readStagePlan(root);
     const lines: string[] = [];
-    // Read each retained result through its producer declaration: its outcome says whether the
-    // stage accepted, skipped, returned or exhausted the work, so a consumer is never directed to
-    // a result presented as accepted when it was not.
-    const result = await readStageArtifact(root, plan.round, stageResultArtifact);
-    if (result !== null) {
-      lines.push(
-        `${earlier} stage result (${result.outcome}): ` +
-          roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
-      );
-    }
-    const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
-    if (author !== null) {
-      lines.push(
-        `${earlier} retained authored revision ${String(author.revision)}: ` +
-          roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
-      );
+    if (plan !== null) {
+      const result = await readStageArtifact(root, plan.round, stageResultArtifact);
+      if (result !== null) {
+        lines.push(`${earlier} stage result (${result.outcome}): ${reference.resultFile}`);
+      }
+      const author = await readStageArtifact(root, plan.round, stageAuthorArtifact);
+      if (author !== null) {
+        lines.push(
+          `${earlier} retained authored revision ${String(author.revision)}: ` +
+            roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+        );
+      }
     }
     if (lines.length > 0) {
       references.push({ stage: earlier, lines });
     }
   }
   return references;
-}
-
-/** One stage round artifact's filepath. */
-function roundArtifactFile(root: string, round: number, relative: string): string {
-  return path.join(root, 'artifacts', String(round), relative);
 }
 
 /** What one stage role invocation needs to assemble its context. */
@@ -146,6 +133,8 @@ export type StageContextSettings = {
   readonly worktree: string;
   readonly author: StageAuthorOutput | null;
   readonly evaluation: StageEvaluationOutput | null;
+  /** The stage's retained terminal result when an upstream correction requires reassessment. */
+  readonly retained: { readonly outcome: string; readonly reason: string | null } | null;
 };
 
 /** Assemble the preparation role's context for the current round. */
@@ -196,6 +185,21 @@ export async function stageContextText(settings: StageContextSettings): Promise<
           `The current authored revision is ${String(settings.author.revision)}:`,
           JSON.stringify(settings.author, null, 2),
         ];
+  const reassessment =
+    settings.plan.route !== 'reassess'
+      ? []
+      : [
+          [
+            'This stage’s earlier decision is pending reassessment: an upstream input changed.',
+            settings.retained === null
+              ? 'No retained terminal result is readable; obtain a current decision for this stage.'
+              : `Retained earlier ${settings.retained.outcome} result: ` +
+                `${settings.retained.reason ?? 'no reason retained'}.`,
+            'Reuse the retained accepted work only where its content and relied-on inputs still',
+            'match, and confirm that reuse through this round’s current evaluation; changed content',
+            'must be repaired. An earlier acceptance cannot authorize changed content.',
+          ].join('\n'),
+        ];
   return [
     preparationSharedInstructions,
     `Preparation stage: ${settings.plan.stage}, round ${String(settings.plan.round)}.`,
@@ -218,6 +222,7 @@ export async function stageContextText(settings: StageContextSettings): Promise<
         ].join('\n'),
     ...previousAuthor,
     ...previousEvaluation,
+    ...reassessment,
     'Stage area: each round keeps author.json and evaluation.json under artifacts/<round>/; result.json records the terminal result.',
   ].join('\n\n');
 }
