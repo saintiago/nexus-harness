@@ -62,13 +62,12 @@ async function inspectRepository(git: GitAdapter, worktree: string): Promise<Rep
 /** Create Verify over the workspace, configured checks and command capability. */
 export function createVerify(settings: VerifySettings): BoundAction {
   const root = settings.workspace.root;
-  const worktree = path.join(root, 'worktree');
-
   /**
    * Run one configured check in the worktree, preserve its output under the round's
    * checks/<index>/ directory and return its result.
    */
   async function runCheck(
+    worktree: string,
     round: number,
     index: number,
     check: VerifySettings['checks'][number],
@@ -111,6 +110,12 @@ export function createVerify(settings: VerifySettings): BoundAction {
       preparedWorkspaceDeclaration,
       'Prepared workspace',
     );
+    // Checks run in the recorded repository workspace: the first implementation verifies the
+    // preparation checkout it continues, while command logs stay under this issue's round.
+    const worktree = path.join(
+      (prepared.repositoryWorkspace ?? settings.workspace).root,
+      'worktree',
+    );
     if (prepared.taskKey !== development.taskKey) {
       throw new Error(
         `The development result is for task "${development.taskKey}", not the prepared ` +
@@ -140,7 +145,7 @@ export function createVerify(settings: VerifySettings): BoundAction {
 
     const checks: CheckResult[] = [];
     for (const [index, check] of settings.checks.entries()) {
-      checks.push(await runCheck(round.number, index, check));
+      checks.push(await runCheck(worktree, round.number, index, check));
     }
 
     // A check that changed the revision invalidates its results: the captured logs remain, but no

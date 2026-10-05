@@ -1,11 +1,13 @@
-import { assign, createMachine } from 'xstate';
+import { createMachine } from 'xstate';
 
 /**
  * The evaluated preparation stage machine, invoked once per stage with the stage supplied as the
  * child's input. It prepares the stage worktree, opens a bounded round, has the author propose
  * work or a skip, has the evaluator assess that exact revision, routes the author's response to
  * the findings into the next round and returns the terminal result: accepted, skipped, an
- * upstream return, a retained question or exhaustion. Bind Nexus operations as promise actors with
+ * upstream return, a retained question or exhaustion. Architecture's accepted or skipped result
+ * returns directly to the parent handoff; there is no combined documentation assembly or
+ * preparation-only publication. Bind Nexus operations as promise actors with
  * machine.provide({ actors }) before execution.
  */
 
@@ -16,10 +18,9 @@ export const preparation = createMachine(
       readonly input: { readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture' };
       readonly context: {
         readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture';
-        readonly acceptedOutcome: 'accepted' | 'skipped' | null;
       };
     },
-    context: ({ input }) => ({ stage: input.stage, acceptedOutcome: null }),
+    context: ({ input }) => ({ stage: input.stage }),
     initial: 'prepare',
     output: ({ event }) => event.output,
     states: {
@@ -125,12 +126,6 @@ export const preparation = createMachine(
           src: 'StageResult',
           input: ({ context }) => ({ stage: context.stage, outcome: 'accepted' }),
           onDone: [
-            {
-              guard: ({ context, event }) =>
-                event.output === 'saved' && context.stage === 'architecture',
-              target: 'reviewPublication',
-              actions: assign({ acceptedOutcome: 'accepted' }),
-            },
             { guard: ({ event }) => event.output === 'saved', target: 'accepted' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -141,12 +136,6 @@ export const preparation = createMachine(
           src: 'StageResult',
           input: ({ context }) => ({ stage: context.stage, outcome: 'skipped' }),
           onDone: [
-            {
-              guard: ({ context, event }) =>
-                event.output === 'saved' && context.stage === 'architecture',
-              target: 'reviewPublication',
-              actions: assign({ acceptedOutcome: 'skipped' }),
-            },
             { guard: ({ event }) => event.output === 'saved', target: 'skipped' },
             { actions: 'unexpectedOutcome' },
           ],
@@ -181,25 +170,6 @@ export const preparation = createMachine(
             { actions: 'unexpectedOutcome' },
           ],
         },
-      },
-      reviewPublication: {
-        invoke: {
-          src: 'ReviewPreparationPublication',
-          onDone: [
-            {
-              guard: ({ event }) => event.output === 'approved' || event.output === 'unchanged',
-              target: 'publicationReviewed',
-            },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      publicationReviewed: {
-        always: [
-          { guard: ({ context }) => context.acceptedOutcome === 'skipped', target: 'skipped' },
-          { target: 'accepted' },
-        ],
       },
       accepted: { type: 'final', output: 'accepted' },
       skipped: { type: 'final', output: 'skipped' },

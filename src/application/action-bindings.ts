@@ -39,7 +39,6 @@ import {
 import { createRecordStageReturn } from '../task-engine/actions/preparation/record-stage-return/index.js';
 import { createStageAuthor } from '../task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../task-engine/actions/preparation/stage-evaluator/index.js';
-import { createReviewPreparationPublication } from '../task-engine/actions/preparation/review-publication/index.js';
 import { createStageResult } from '../task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../task-engine/actions/preparation/start-stage-round/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
@@ -360,11 +359,8 @@ export function createActionBinding(
       return createImplementationHandoff({
         selectionFile,
         project: taskSource.project,
-        repository: project.delivery.repository,
-        baseBranch: project.delivery.baseBranch,
-        reviewCheck: project.delivery.reviewCheck,
-        nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
-        postMergeChecks: project.delivery.postMergeChecks,
+        workspaceRoot: workspaceRoot(nexus),
+        workspacePointerField: taskSource.fields.workspacePointer,
         architectureStatus: taskSource.preparation?.statuses.architecture ?? null,
         implementation: {
           issueType: implementation.issueType,
@@ -373,12 +369,9 @@ export function createActionBinding(
           linkType: implementation.linkType,
         },
         doneStatus: taskSource.statuses.done,
-        completion: project.delivery.completion,
         git: settings.git,
-        github: settings.github,
         jira: settings.jira,
         publish,
-        wait: settings.wait,
       })();
     };
 
@@ -518,14 +511,6 @@ export function createActionBinding(
       StageAuthor: forStage(stageAuthorActions),
       StageEvaluator: forStage(stageEvaluatorActions),
       RecordStageReturn: forStage(stageReturnActions),
-      ReviewPreparationPublication: createReviewPreparationPublication({
-        selectionFile,
-        baseBranch: project.delivery.baseBranch,
-        reviewerProfile: nexus.executionPolicy.reviewerProfile,
-        reviewer: reviewerRunner,
-        git: settings.git,
-        publish,
-      }),
       StageResult: forStage(stageResultActions),
       // ---- finite delivery child ----
       RouteDeliveryEntry: createRouteDeliveryEntry({ selectionFile }),

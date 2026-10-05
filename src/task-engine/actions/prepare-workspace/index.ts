@@ -13,6 +13,15 @@ import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../..
 import { readRecord, readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import { retainTerminalReason } from '../terminal-reason.js';
+import { roundArtifactPath } from '../artifacts.js';
+import { completionArtifact, type CompletionOutput } from '../complete-task/artifacts.js';
+import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
+import {
+  implementationInputDeclaration,
+  type ImplementationInput,
+  type ImplementationPrerequisite,
+} from '../project/implementation-handoff/artifacts.js';
+import { handoffInputDisposition } from '../project/state.js';
 import {
   attemptDeclaration,
   attemptFile,
@@ -27,7 +36,11 @@ import {
  * implementation. New work obtains the repository, fast-forwards the configured main branch and
  * starts the task's development branch from that updated main under an unused name. Retained work
  * keeps its recorded repository, branch and comparison base, preserving local commits and
- * uncommitted changes for implementation to inspect.
+ * uncommitted changes for implementation to inspect. The first implementation of an Architecture
+ * handoff adopts the preparation issue's recorded checkout, branch and comparison base instead of
+ * cloning, and its own issue keeps the attempt, rounds and command logs. Later implementation
+ * tickets start from the updated configured base and require every prerequisite's confirmed merge
+ * revision to be contained in it.
  *
  * Repository conditions and completed preparation commands produce the failed outcome with a
  * preserved reason; filesystem, process launch and record failures are execution errors.
@@ -70,10 +83,27 @@ async function isDirectory(target: string): Promise<boolean> {
   }
 }
 
+/** The labels of a captured source task, when its shape carries them. */
+function capturedLabels(task: unknown): unknown {
+  if (typeof task !== 'object' || task === null) {
+    return null;
+  }
+  const fields = (task as { readonly fields?: unknown }).fields;
+  if (typeof fields !== 'object' || fields === null) {
+    return null;
+  }
+  return (fields as { readonly labels?: unknown }).labels ?? null;
+}
+
 /** Create PrepareWorkspace over the configured repository, preparation commands and capabilities. */
 export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): BoundAction {
   const { git, publish } = settings;
   const { source, mainBranch } = settings.repository;
+
+  /** The worktree path one repository workspace reference resolves to. */
+  function worktreeOf(root: string): string {
+    return path.join(root, 'worktree');
+  }
 
   /** Report a repository condition or completed command that prevents readiness. */
   async function fail(root: string, reason: string): Promise<'failed'> {
@@ -150,6 +180,7 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
       return ok({
         taskKey: selection.taskKey,
         repository: source,
+        repositoryWorkspace: { root: selection.workspace.root },
         branch: branch.value,
         baseRevision: identity.headRevision,
       });
@@ -193,8 +224,99 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     return ok({
       taskKey: selection.taskKey,
       repository: source,
+      repositoryWorkspace: { root: selection.workspace.root },
       branch: branch.value,
       baseRevision,
+    });
+  }
+
+  /**
+   * Whether the frozen preparation revision is still in the retained branch's history. A rewritten
+   * or missing preparation revision cannot be continued; later implementation commits on top of it
+   * keep the frozen revision an ancestor.
+   */
+  async function continuationProblem(
+    worktree: string,
+    frozenRevision: string,
+    headRevision: string,
+  ): Promise<string | null> {
+    if (frozenRevision === headRevision) {
+      return null;
+    }
+    const ancestor = await git.readMergeBase(worktree, frozenRevision, headRevision);
+    if (!ancestor.ok) {
+      return ancestor.fault.message;
+    }
+    if (ancestor.value !== frozenRevision) {
+      return (
+        `The frozen preparation revision ${frozenRevision} is no longer in the retained branch ` +
+        `history (head ${headRevision}); a rewritten preparation history cannot be continued.`
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Adopt the recorded preparation repository for the first implementation ticket: inspect the
+   * actual checkout, confirm its repository and branch identity and validate that the frozen
+   * committed preparation revision remains in its history. The checkout is never cloned, renamed,
+   * pulled or reset, and the implementation issue keeps its own attempt and artifacts.
+   */
+  async function continuePreparation(
+    selection: Selection,
+    continuation: NonNullable<ImplementationInput['continuation']>,
+  ): Promise<Result<PreparedWorkspace>> {
+    const workspace = continuation.workspace;
+    const worktree = worktreeOf(workspace.repositoryWorkspace.root);
+    if (!(await isDirectory(worktree))) {
+      return fault(
+        `The retained preparation checkout at "${worktree}" is missing; the first implementation ` +
+          'cannot continue it and never clones a replacement.',
+      );
+    }
+    if (workspace.repository !== source) {
+      // The project configuration now selects another repository than the retained preparation
+      // record; the donor checkout is never adopted as the configured source.
+      return fault(
+        `The preparation workspace retains repository "${workspace.repository}", not the ` +
+          `configured "${source}"; reconciliation is required before the first implementation ` +
+          'continues it.',
+      );
+    }
+    const inspection = await git.inspectRepository(worktree);
+    if (!inspection.ok) {
+      return fault(inspection.fault.message);
+    }
+    if (inspection.value.remoteUrl !== workspace.repository) {
+      return fault(
+        `The preparation checkout at "${worktree}" belongs to ` +
+          `"${inspection.value.remoteUrl ?? 'no remote'}", not to the retained ` +
+          `"${workspace.repository}"; reconcile it instead of replacing it.`,
+      );
+    }
+    if (inspection.value.branch !== workspace.branch) {
+      return fault(
+        `The preparation checkout is on branch "${inspection.value.branch ?? 'no branch'}", not ` +
+          `the retained "${workspace.branch}"; reconcile it instead of selecting another branch.`,
+      );
+    }
+    if (inspection.value.headRevision === null) {
+      return fault(`The retained preparation branch "${workspace.branch}" has no revision.`);
+    }
+    const problem = await continuationProblem(
+      worktree,
+      continuation.headRevision,
+      inspection.value.headRevision,
+    );
+    if (problem !== null) {
+      return fault(problem);
+    }
+    return ok({
+      taskKey: selection.taskKey,
+      repository: workspace.repository,
+      repositoryWorkspace: workspace.repositoryWorkspace,
+      branch: workspace.branch,
+      baseRevision: workspace.baseRevision,
     });
   }
 
@@ -202,8 +324,10 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
   async function reuseAttempt(
     selection: Selection,
     saved: PreparedWorkspace,
-    worktree: string,
+    input: ImplementationInput | null,
   ): Promise<Result<PreparedWorkspace>> {
+    const repositoryRoot = saved.repositoryWorkspace?.root ?? selection.workspace.root;
+    const worktree = worktreeOf(repositoryRoot);
     if (saved.taskKey !== selection.taskKey) {
       return fault(`The workspace retains task "${saved.taskKey}", not "${selection.taskKey}".`);
     }
@@ -233,7 +357,37 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
           `retained "${saved.branch}".`,
       );
     }
-    return ok(saved);
+    if (input?.continuation != null) {
+      // A retained continuation keeps the donor checkout the implementation input recorded; a
+      // different repository, branch or workspace reference is reconciled, never adopted.
+      if (
+        repositoryRoot !== input.continuation.workspace.repositoryWorkspace.root ||
+        saved.repository !== input.continuation.workspace.repository ||
+        saved.branch !== input.continuation.workspace.branch
+      ) {
+        return fault(
+          'The retained prepared workspace no longer matches the ticket\u2019s recorded ' +
+            'preparation continuation; reconcile it instead of adopting another checkout.',
+        );
+      }
+      if (inspection.value.headRevision === null) {
+        return fault(`The retained preparation branch "${saved.branch}" has no revision.`);
+      }
+      const problem = await continuationProblem(
+        worktree,
+        input.continuation.headRevision,
+        inspection.value.headRevision,
+      );
+      if (problem !== null) {
+        return fault(problem);
+      }
+    } else if (repositoryRoot !== selection.workspace.root) {
+      return fault(
+        `The prepared workspace records repository workspace "${repositoryRoot}" while the ` +
+          `selected issue owns "${selection.workspace.root}"; reconcile the retained record.`,
+      );
+    }
+    return ok({ ...saved, repositoryWorkspace: { root: repositoryRoot } });
   }
 
   /** Run the configured preparation commands in order, preserving their output. */
@@ -269,6 +423,65 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     return null;
   }
 
+  /**
+   * One prerequisite's confirmed completion evidence, read from the workspace reference the
+   * handoff recorded for that ticket, or null when it is not retained.
+   */
+  async function prerequisiteCompletion(
+    prerequisite: ImplementationPrerequisite,
+  ): Promise<CompletionOutput | null> {
+    const workspace = prerequisite.workspace.root;
+    const round = await readRecord(path.join(workspace, currentRoundFile), currentRoundDeclaration);
+    if (round === null) {
+      return null;
+    }
+    const completion = await readRecord(
+      roundArtifactPath(workspace, round.number, completionArtifact.pathFromArtifactsRoot),
+      { file: completionArtifact.pathFromArtifactsRoot, schema: completionArtifact.schema },
+    );
+    return completion !== null && completion.taskKey === prerequisite.key ? completion : null;
+  }
+
+  /**
+   * The reason the updated base cannot start one later implementation ticket, or null when every
+   * prerequisite's confirmed merge revision is contained in the comparison base. A prerequisite
+   * without retained completion evidence under its recorded workspace, or a base that does not
+   * include its merge revision, prevents readiness; inclusion is never manufactured through
+   * cherry-picks.
+   */
+  async function mergedBaseProblem(
+    worktree: string,
+    prepared: PreparedWorkspace,
+    prerequisites: readonly ImplementationPrerequisite[],
+  ): Promise<string | null> {
+    for (const prerequisite of prerequisites) {
+      const completion = await prerequisiteCompletion(prerequisite);
+      if (completion === null) {
+        return (
+          `Prerequisite ${prerequisite.key} retains no confirmed merge/check completion evidence ` +
+          `under its recorded workspace "${prerequisite.workspace.root}"; the later ticket cannot ` +
+          'start from an unverified base.'
+        );
+      }
+      const ancestor = await git.readMergeBase(
+        worktree,
+        completion.mergeRevision,
+        prepared.baseRevision,
+      );
+      if (!ancestor.ok) {
+        return ancestor.fault.message;
+      }
+      if (ancestor.value !== completion.mergeRevision) {
+        return (
+          `The updated base ${prepared.baseRevision} does not contain prerequisite ` +
+          `${prerequisite.key}'s merged revision ${completion.mergeRevision}; start from a base ` +
+          'with the delivered prerequisite work.'
+        );
+      }
+    }
+    return null;
+  }
+
   return async () => {
     const selection = await readRequiredRecord(
       settings.selectionFile,
@@ -276,22 +489,75 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
       'Selection',
     );
     const root = selection.workspace.root;
-    const worktree = path.join(root, 'worktree');
+    const worktree = worktreeOf(root);
     await mkdir(path.join(root, 'artifacts'), { recursive: true });
     await mkdir(path.join(root, 'state', 'preparation'), { recursive: true });
     await retainAttempt(root);
+
+    // The implementation input, when this ticket was handed off from preparation, names its
+    // prerequisites and (for the first planned task) the retained preparation repository to
+    // continue. A malformed record is a retained-work condition, not a fresh task.
+    const inputFile = path.join(root, implementationInputDeclaration.file);
+    let input: ImplementationInput | null;
+    try {
+      input = await readRecord(inputFile, implementationInputDeclaration);
+    } catch (error) {
+      return await fail(
+        root,
+        `The implementation input at "${inputFile}" is unusable: ${messageOf(error)}.`,
+      );
+    }
+    if (input === null) {
+      // A ticket created by the Architecture handoff is never prepared as fresh ordinary work: the
+      // handoff must retain its input first, so its continuation and prerequisites are known. An
+      // earlier-contract record without a frozen basis and with finished link/admission effects
+      // never carried an input and keeps the ordinary path.
+      const disposition = await handoffInputDisposition({
+        sourceWorkspace: selection.handoffSourceWorkspace,
+        labels: capturedLabels(selection.task),
+        ticketKey: selection.taskKey,
+      });
+      if (disposition.kind === 'incomplete' || disposition.kind === 'unattributed') {
+        return await fail(
+          root,
+          disposition.kind === 'incomplete'
+            ? `The selected issue ${selection.taskKey} carries the implementation handoff's ` +
+                'source identity but the handoff has not retained its implementation input yet; the ' +
+                'handoff must retain it before preparation starts a checkout.'
+            : `The selected issue ${selection.taskKey} carries the implementation handoff's ` +
+                `source identity but retains no implementation input, and ${disposition.reason}; ` +
+                'reconcile the retained handoff before preparation starts a checkout.',
+        );
+      }
+    }
 
     const recordFile = path.join(root, preparedWorkspaceFile);
     const saved = await readRecord(recordFile, preparedWorkspaceDeclaration);
     const established =
       saved === null
-        ? await startAttempt(selection, worktree)
-        : await reuseAttempt(selection, saved, worktree);
+        ? input?.continuation != null
+          ? await continuePreparation(selection, input.continuation)
+          : await startAttempt(selection, worktree)
+        : await reuseAttempt(selection, saved, input);
     if (!established.ok) {
       return await fail(root, established.fault.message);
     }
 
-    const problem = await runPreparation(root, worktree);
+    if (saved === null && input !== null && input.continuation === null) {
+      const problem = await mergedBaseProblem(
+        worktreeOf(established.value.repositoryWorkspace?.root ?? root),
+        established.value,
+        input.prerequisites,
+      );
+      if (problem !== null) {
+        return await fail(root, problem);
+      }
+    }
+
+    const problem = await runPreparation(
+      root,
+      worktreeOf(established.value.repositoryWorkspace?.root ?? root),
+    );
     if (problem !== null) {
       return await fail(root, problem);
     }

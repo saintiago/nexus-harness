@@ -242,8 +242,8 @@ export const preparationResultSchema = z.object({
   authoredRevision: z.number().int().positive(),
   /**
    * The accepted changed documents, including explicitly reused assets on a skip, with the revision that
-   * produced them when one was observed. The parent's documentation handoff publishes exactly this
-   * set; the broader output references below stay available to consumers that need every artifact.
+   * produced them when one was observed. The parent's implementation handoff references exactly
+   * this set; the broader outputs below stay available to consumers that need every artifact.
    */
   documents: z.array(
     z.object({
@@ -269,7 +269,7 @@ export const preparationResultSchema = z.object({
   /**
    * The retained prototype the Storybook Refinement stage built, when it produced one: the
    * worktree branch and revision implementation tickets reference for reuse. Prototype code is not
-   * an authoritative document and never enters the documentation publication.
+   * an authoritative document and never enters ticket admission as one.
    */
   prototype: z
     .object({ branch: z.string().min(1), revision: z.string().min(1) })

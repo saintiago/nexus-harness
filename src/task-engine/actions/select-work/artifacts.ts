@@ -22,8 +22,9 @@ export const parentPublicationSchema = z.object({
 
 /**
  * One created implementation ticket and the effects the parent already finished for it: the link
- * to the original and the rank relative to its prerequisite. An effect recorded as not yet
- * finished is completed on the next handoff invocation before the ticket counts as handed off.
+ * to the original, the rank relative to its prerequisite and the recorded admission. An effect
+ * recorded as not yet finished is completed on the next handoff invocation before the ticket
+ * counts as handed off.
  */
 export const handoffTicketSchema = z.object({
   key: z.string().min(1),
@@ -32,10 +33,25 @@ export const handoffTicketSchema = z.object({
   summary: z.string().min(1),
   linked: z.boolean().optional(),
   ranked: z.boolean().optional(),
+  /** The initial status observed at creation and whether the configured admission was applied. */
   admission: z.object({ initialStatus: z.string().min(1), completed: z.boolean() }).optional(),
 });
 
 export type HandoffTicket = z.infer<typeof handoffTicketSchema>;
+
+/**
+ * The immutable basis one handoff froze before its first source effect: the identity of the
+ * evaluated plan it maps, the planned task count and the committed preparation revision the
+ * first implementation continues. A changed plan or preparation history requests reconciliation
+ * instead of applying changed positions to retained ticket identities.
+ */
+export const handoffBasisSchema = z.object({
+  planIdentity: z.string().min(1),
+  taskCount: z.number().int().positive(),
+  continuationHead: z.string().min(1),
+});
+
+export type HandoffBasis = z.infer<typeof handoffBasisSchema>;
 
 /**
  * One upstream return the parent published: the stage that returned the work, the earlier stage
@@ -80,7 +96,9 @@ export const parentHandoffSchema = z.object({
   awaitingStages: z.array(z.enum(['requirements', 'ux', 'prototype', 'architecture'])).default([]),
   /** Implementation tickets the Architecture handoff created for this issue. */
   tickets: z.array(handoffTicketSchema),
-  /** Publication identities the parent observed, such as a comment or documentation pull request. */
+  /** The frozen plan/repository basis; null until the handoff's first source effect. */
+  basis: handoffBasisSchema.nullable().default(null),
+  /** Publication identities the parent observed, such as the preparation-handoff comment. */
   publications: z.array(parentPublicationSchema),
 });
 
@@ -101,6 +119,7 @@ export function initialHandoff(stage: ParentHandoff['stage']): ParentHandoff {
     return: null,
     awaitingStages: [],
     tickets: [],
+    basis: null,
     publications: [],
   };
 }

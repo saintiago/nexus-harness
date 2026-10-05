@@ -190,7 +190,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       'Selection',
     );
     const root = selection.workspace.root;
-    const worktree = path.join(root, 'worktree');
     const helpers = createArtifactHelpers({ root });
 
     const preparedFile = path.join(root, preparedWorkspaceFile);
@@ -199,6 +198,11 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       preparedWorkspaceDeclaration,
       'Prepared workspace',
     );
+    // Repository operations and the agent working directory resolve the recorded repository
+    // workspace once; the first implementation continues the preparation checkout while its own
+    // issue keeps the rounds and artifacts.
+    const repositoryWorkspace = prepared.repositoryWorkspace ?? selection.workspace;
+    const worktree = path.join(repositoryWorkspace.root, 'worktree');
 
     const histories: RoundHistories = {
       development: await helpers.readArtifactHistory(devArtifact),
@@ -265,7 +269,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     const result: AgentResult = await settings.runner.run({
       operation: 'Develop',
       profile,
-      workspace: { root },
+      workspace: repositoryWorkspace,
       context,
       outputSchema: z.toJSONSchema(developmentResponseSchema),
       task: selection.taskKey,

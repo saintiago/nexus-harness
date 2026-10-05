@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { messageOf } from '../../../result.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../records.js';
 import {
   parentAreaDirectory,
@@ -8,6 +9,7 @@ import {
   type StageReturn,
   type ParentHandoff,
 } from '../select-work/artifacts.js';
+import { plannedTaskIdentityLabelPrefix } from './implementation-handoff/artifacts.js';
 import {
   selectionDeclaration,
   type Selection,
@@ -42,6 +44,86 @@ export async function readHandoff(issueWorkspaceRoot: string): Promise<ParentHan
   return readRecord(handoffPath(issueWorkspaceRoot), parentHandoffDeclaration);
 }
 
+/**
+ * The source issue key one handoff identity label names, or null for any other label. The handoff
+ * labels an implementation ticket `nexus-source-<source key>-<planned task>`; the source key may
+ * itself contain dashes, so the planned-task number is read from the end.
+ */
+export function handoffSourceKey(labels: unknown): string | null {
+  if (!Array.isArray(labels)) {
+    return null;
+  }
+  for (const label of labels) {
+    if (typeof label !== 'string' || !label.startsWith(plannedTaskIdentityLabelPrefix)) {
+      continue;
+    }
+    const remainder = label.slice(plannedTaskIdentityLabelPrefix.length);
+    const separator = remainder.lastIndexOf('-');
+    if (separator > 0 && /^\d+$/.test(remainder.slice(separator + 1))) {
+      return remainder.slice(0, separator);
+    }
+  }
+  return null;
+}
+
+/**
+ * The disposition of one implementation ticket that carries the handoff's source identity but
+ * retains no implementation input, classified through the source handoff at its recorded workspace.
+ * Only a record without the current contract's frozen basis and with finished link/admission
+ * effects establishes an earlier-contract ticket. Missing current-contract input must reconcile.
+ */
+export type HandoffInputDisposition =
+  | { readonly kind: 'ordinary' }
+  | { readonly kind: 'legacy' }
+  | { readonly kind: 'incomplete' }
+  | { readonly kind: 'unattributed'; readonly reason: string };
+
+/** Classify one input-less ticket through the source handoff record its identity label names. */
+export async function handoffInputDisposition(settings: {
+  readonly sourceWorkspace?: { readonly root: string } | undefined;
+  readonly labels: unknown;
+  readonly ticketKey: string;
+}): Promise<HandoffInputDisposition> {
+  const sourceKey = handoffSourceKey(settings.labels);
+  if (sourceKey === null) {
+    return { kind: 'ordinary' };
+  }
+  if (settings.sourceWorkspace === undefined) {
+    return {
+      kind: 'unattributed',
+      reason: `the source workspace for ${sourceKey} was not retained by selection`,
+    };
+  }
+  const file = handoffPath(settings.sourceWorkspace.root);
+  let source: ParentHandoff | null;
+  try {
+    source = await readRecord(file, parentHandoffDeclaration);
+  } catch (error) {
+    return {
+      kind: 'unattributed',
+      reason: `the source handoff record at "${file}" is unreadable: ${messageOf(error)}`,
+    };
+  }
+  const ticket = source?.tickets.find((entry) => entry.key === settings.ticketKey);
+  if (ticket === undefined) {
+    return {
+      kind: 'unattributed',
+      reason:
+        `the source handoff record at "${file}" does not name issue ${settings.ticketKey} as a ` +
+        'created ticket',
+    };
+  }
+  if (ticket.linked !== true || ticket.admission?.completed !== true) {
+    return { kind: 'incomplete' };
+  }
+  return source?.basis === null
+    ? { kind: 'legacy' }
+    : {
+        kind: 'unattributed',
+        reason: `the current-contract handoff at "${file}" requires its missing implementation input`,
+      };
+}
+
 /** Save the parent handoff record, creating its parent area. */
 export async function writeHandoff(
   issueWorkspaceRoot: string,
@@ -72,6 +154,7 @@ export async function advanceStage(
     return: returnFinding,
     awaitingStages: handoff?.awaitingStages ?? [],
     tickets: handoff?.tickets ?? [],
+    basis: handoff?.basis ?? null,
     publications: handoff?.publications ?? [],
   });
   return updated;

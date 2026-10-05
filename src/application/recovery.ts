@@ -10,6 +10,7 @@ import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
 import { completionArtifact } from '../task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../task-engine/actions/develop/artifacts.js';
+import { implementationInputDeclaration } from '../task-engine/actions/project/implementation-handoff/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
@@ -272,6 +273,11 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
       schema: preparedWorkspaceDeclaration.schema,
     },
     {
+      title: 'Implementation input (HandoffImplementation)',
+      path: implementationInputDeclaration.file,
+      schema: implementationInputDeclaration.schema,
+    },
+    {
       title: 'Finite-delivery current round record (StartRound)',
       path: currentRoundDeclaration.file,
       schema: currentRoundDeclaration.schema,
@@ -342,8 +348,12 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       'Paths are relative to the shared issue workspace root unless absolute. Finite delivery ' +
         'uses the root worktree/, artifacts/<roundNumber>/ and state/. Idea refinement uses the ' +
         'refinement/ area with artifacts/submissions/<submission>/cycles/<cycle>/. The evaluated ' +
-        'preparation stages use requirements/, ux/, prototype/ and architecture/, each with ' +
-        'worktree/, state/ and artifacts/<roundNumber>/. The parent/ area keeps the handoff record.',
+        'preparation stages share the root worktree/ and each keeps its own state/ and ' +
+        'artifacts/<roundNumber>/ under requirements/, ux/, prototype/ and architecture/. The ' +
+        'parent/ area keeps the handoff record and, under an implementation issue, its ' +
+        'implementation input. A prepared workspace record whose repositoryWorkspace names ' +
+        'another issue root borrows that issue\u2019s checkout; it is not owned by the selected ' +
+        'issue.',
       ...recoveryDeclarations(settings).map(declarationText),
     ].join('\n\n'),
     [
@@ -354,9 +364,11 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
           `${selection.workspace.root}.`,
       `Issue workspaces live under ${taskWorkspaceRoot}/<issue>/ with the fixed layout of the ` +
         'current workflow areas: root worktree/, artifacts/<roundNumber>/ and state/ for finite ' +
-        'delivery, refinement/ for idea refinement, the four preparation areas, and parent/ for ' +
-        'the source handoff. Confirm that a target you delete belongs to the interrupted issue ' +
-        'under this root.',
+        'delivery, refinement/ for idea refinement, one shared root worktree/ with the four ' +
+        'preparation areas, and parent/ for the source handoff and implementation input. A first ' +
+        'implementation can use another issue\u2019s preparation repository; preserve that donor ' +
+        'checkout and its accepted history, and confirm that a target you delete belongs to the ' +
+        'interrupted issue under this root.',
     ].join('\n'),
     [
       'Selected workflow',

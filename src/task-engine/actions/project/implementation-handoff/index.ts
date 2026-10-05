@@ -1,13 +1,8 @@
+import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
-import {
-  reviewEncoding,
-  type GitHubAdapter,
-  type CheckObservation,
-  type PullRequestConversation,
-  type PullRequest,
-} from '../../../../adapters/github.js';
-import type { JiraAdapter } from '../../../../adapters/jira.js';
+import type { JiraAdapter, JiraIssue } from '../../../../adapters/jira.js';
+import { messageOf } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
@@ -15,12 +10,20 @@ import {
   stageResultArtifact,
   type PlannedTask,
   type PreparationResult,
+  type PreparationWorkspace,
 } from '../../preparation/artifacts.js';
+import {
+  readAcceptedDocuments,
+  type AcceptedDocument,
+} from '../../preparation/accepted-content.js';
+import { recordIdentity } from '../../preparation/evaluation-content.js';
 import {
   preparationWorktree,
   readCurrentDecision,
+  readPreparationWorkspace,
   readStageArtifact,
   readStagePlan,
+  roundArtifactFile,
   stageRoot,
 } from '../../preparation/storage.js';
 import {
@@ -30,35 +33,32 @@ import {
   readIssue,
   statusNameOf,
   transitionInto,
+  updateIssueFields,
 } from '../../source.js';
-import type { HandoffTicket, ParentHandoff } from '../../select-work/artifacts.js';
+import type { HandoffBasis, HandoffTicket, ParentHandoff } from '../../select-work/artifacts.js';
 import { readRecord, writeRecord } from '../../records.js';
 import { retainTerminalReason } from '../../terminal-reason.js';
 import {
   implementationHandoffFailureDeclaration,
   implementationHandoffResultDeclaration,
+  implementationInputDeclaration,
+  legacyDocumentationReviewsDirectory,
+  plannedTaskIdentityLabelPrefix,
+  type ImplementationInput,
 } from './artifacts.js';
-import {
-  documentationReviewDeclaration,
-  documentationReviewsDirectory,
-} from '../../preparation/review-publication/artifacts.js';
-import {
-  prepareDocumentationPublication,
-  readAcceptedDocuments,
-  type AcceptedDocument,
-} from '../../preparation/publication.js';
 import { readHandoff, readSelection, writeHandoff } from '../state.js';
 
 /**
- * HandoffImplementation is the parent-owned Architecture handoff: it assembles the accepted changed
- * authoritative documents of every preparation stage, publishes exactly that document set in a
- * documentation-only pull request, drives the repository's review/check gates and native
- * auto-merge, confirms the merged revision and its configured checks, then creates the linked
- * implementation tickets, ranks prerequisites before their dependents, retains every created
- * identity and closes the original issue with the links. A skip without changed documents creates
- * no empty pull request. An uncertain creation is reconciled against its source-side identity
- * before anything is retried, and a retained ticket finishes each missing effect before the
- * handoff treats it as handed off.
+ * HandoffImplementation is the parent-owned Architecture handoff. After an evaluated Architecture
+ * result and its implementation plan, it freezes the accepted plan identity and the retained
+ * preparation revision, creates one linked implementation ticket per planned task in stable
+ * topological order, writes each ticket's implementation input, ranks prerequisites before their
+ * dependents and admits the tickets to the configured ready status, then closes the original with
+ * a preparation-handoff comment. Every creation, link, input, rank and admission acknowledgement
+ * is retained so an interrupted or uncertain effect is reconciled without duplicates, and
+ * unexpected human status changes are preserved. There is no documentation assembly,
+ * documentation-only pull request or preparation publication gate; a retained preparation-only
+ * publication from the removed workflow requests explicit reconciliation before any ticket effect.
  */
 
 export type ImplementationHandoffSettings = {
@@ -66,22 +66,17 @@ export type ImplementationHandoffSettings = {
   readonly selectionFile: string;
   /** The Jira project the implementation tickets belong to; reconciliation is project-scoped. */
   readonly project: string;
-  /** The delivery repository identity and base branch the documents merge into. */
-  readonly repository: string;
-  readonly baseBranch: string;
-  /** The configured review check the repository requires for the published revision. */
-  readonly reviewCheck: string;
-  /** The Nexus Lens App identity that authors the review and owns the review check. */
-  readonly nexusLens: { readonly appId: number; readonly login: string };
-  /** The configured post-merge checks and the workflows that produce them. */
-  readonly postMergeChecks: readonly { readonly name: string; readonly workflow: string }[];
+  /** The stable workspace root the implementation issues' own workspaces live under. */
+  readonly workspaceRoot: string;
+  /** The configured Jira field that retains an issue's workspace root. */
+  readonly workspacePointerField: string;
   /**
-   * The configured status the Architecture selection left the original in. A publication may only
+   * The configured status the Architecture selection left the original in. The handoff may only
    * close that retained status (or repeat an already-applied Done); any other state is an
    * unexpected human change the handoff preserves.
    */
   readonly architectureStatus: string | null;
-  /** The configured implementation-ticket creation and linking settings. */
+  /** The configured implementation-ticket creation, linking and admission settings. */
   readonly implementation: {
     readonly issueType: string;
     readonly labels: readonly string[];
@@ -90,32 +85,19 @@ export type ImplementationHandoffSettings = {
   };
   /** The configured completed status the original issue reaches after the handoff. */
   readonly doneStatus: string;
-  /** The configured merge/check wait bounds. */
-  readonly completion: {
-    readonly pollIntervalSeconds: number;
-    readonly waitLimitSeconds: number;
-  };
   readonly git: GitAdapter;
-  readonly github: GitHubAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
-  readonly wait: (milliseconds: number) => Promise<void>;
 };
 
-/** One accepted authoritative document, relative to its repository and the stage that authored it. */
-
-/** The references every implementation ticket carries so a new workspace can find its inputs. */
+/** The reusable accepted references every implementation ticket carries in its description. */
 type TicketReferences = {
   readonly sourceKey: string;
   readonly plannedTask: string;
   readonly documents: readonly AcceptedDocument[];
-  readonly mergeRevision: string | null;
   readonly existing: readonly string[];
   readonly prototype: PreparationResult['prototype'];
 };
-
-/** The conclusions of a completed required check that satisfy a repository merge rule. */
-const satisfiedConclusions: ReadonlySet<string> = new Set(['success', 'skipped', 'neutral']);
 
 /** One Jira JQL string literal. */
 function jqlString(value: string): string {
@@ -139,7 +121,7 @@ function documentOf(text: string): Readonly<Record<string, unknown>> {
 
 /** The source-side identity label one planned task's created ticket carries for reconciliation. */
 function plannedTaskLabel(taskKey: string, index: number): string {
-  return `nexus-source-${taskKey}-${String(index + 1)}`;
+  return `${plannedTaskIdentityLabelPrefix}${taskKey}-${String(index + 1)}`;
 }
 
 /** The implementation ticket description one planned task produces, with its reusable references. */
@@ -165,9 +147,6 @@ function ticketDescription(
       (document) =>
         `- ${document.path} (${document.stage} revision ` + `${document.revision ?? 'unrecorded'})`,
     ),
-    ...(references.mergeRevision === null
-      ? []
-      : [`- Documentation merge revision: ${references.mergeRevision}`]),
     ...(references.prototype === null
       ? []
       : [
@@ -177,22 +156,16 @@ function ticketDescription(
   ].join('\n');
 }
 
-/** One observation of the documentation pull request's merge state. */
-type MergeObservation =
-  | {
-      readonly kind: 'merged';
-      readonly mergeRevision: string;
-      readonly pullRequest: PullRequest;
-    }
-  | { readonly kind: 'pending' }
-  | { readonly kind: 'failed'; readonly reason: string };
+/** True when two implementation inputs describe the same ticket. */
+function sameInput(left: ImplementationInput, right: ImplementationInput): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 /** Create the parent-owned Architecture handoff. */
 export function createImplementationHandoff(settings: ImplementationHandoffSettings): BoundAction {
   return async () => {
     const selection = await readSelection(settings.selectionFile);
     const root = selection.workspace.root;
-    const worktree = preparationWorktree(root);
     const architectureRoot = stageRoot(root, 'architecture');
     const plan = await readStagePlan(architectureRoot);
     if (plan === null) {
@@ -212,6 +185,11 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     if (tasks.length === 0) {
       throw new Error('The architecture result carries no implementation plan to hand off.');
     }
+    const resultFile = roundArtifactFile(
+      architectureRoot,
+      plan.round,
+      stageResultArtifact.pathFromArtifactsRoot,
+    );
     const retained = await readHandoff(root);
     const handoff: ParentHandoff = retained ?? {
       stage: 'architecture',
@@ -220,6 +198,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       return: null,
       awaitingStages: [],
       tickets: [],
+      basis: null,
       publications: [],
     };
 
@@ -233,7 +212,29 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       return 'failed';
     }
 
-    /** Check the source before each publication boundary and preserve human pauses on replay. */
+    // The removed preparation-only publication may already have started under this workspace. Its
+    // pull request, review and check evidence is retained and must be reconciled explicitly; it is
+    // never treated as a new handoff that creates implementation tickets over it.
+    const retainedPublication = handoff.publications.find(
+      (publication) => publication.kind === 'documentation-pr',
+    );
+    if (retainedPublication !== undefined) {
+      return failed(
+        `The retained handoff still holds the preparation-only documentation publication ` +
+          `"${retainedPublication.id}" from the removed publication workflow; reconcile its pull ` +
+          'request, review and check state before creating implementation tickets.',
+      );
+    }
+    const retainedReview = await retainedDocumentationReview(root);
+    if (retainedReview !== null) {
+      return failed(
+        `The source workspace retains the documentation review "${retainedReview}" from the ` +
+          'removed preparation-only publication; reconcile its pull request, review and check ' +
+          'state before creating implementation tickets.',
+      );
+    }
+
+    /** Check the source before each effect and preserve human pauses on replay. */
     async function sourceProblem(): Promise<string | null> {
       const source = await readIssue(settings.jira, selection.source.issueId);
       const status = statusNameOf(source);
@@ -241,7 +242,9 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       if (
         status === settings.doneStatus &&
         handoff.tickets.length === tasks.length &&
-        handoff.tickets.every((ticket) => ticket.linked === true)
+        handoff.tickets.every(
+          (ticket) => ticket.linked === true && ticket.admission?.completed === true,
+        )
       )
         return null;
       return `Issue ${selection.taskKey} is in status "${status ?? 'unknown'}"; implementation handoff requires "${settings.architectureStatus}" and preserves unexpected human changes.`;
@@ -259,8 +262,8 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       );
     }
     for (const stage of preparationStages) {
-      const plan = await readStagePlan(stageRoot(root, stage));
-      if (plan === null) continue;
+      const stagePlan = await readStagePlan(stageRoot(root, stage));
+      if (stagePlan === null) continue;
       const decision = await readCurrentDecision({
         issueRoot: root,
         stage,
@@ -299,32 +302,74 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       remaining.delete(next);
     }
 
-    /** The retained prototype reference the Storybook Refinement result recorded, when one exists. */
-    async function retainedPrototype(): Promise<PreparationResult['prototype']> {
-      const areaRoot = stageRoot(root, 'prototype');
-      const stagePlan = await readStagePlan(areaRoot);
-      if (stagePlan === null) {
-        return null;
+    // Recheck the retained preparation repository's continuity before freezing the basis: the
+    // first implementation continues exactly this checkout, branch and committed revision.
+    const preparation = await readPreparationWorkspace(root);
+    if (preparation === null) {
+      return failed(
+        'No retained preparation repository exists under the source workspace; the handoff has ' +
+          'no checkout to continue.',
+      );
+    }
+    const preparedHead = await preparedRevision(preparation);
+    if (typeof preparedHead !== 'string') return failed(preparedHead.reason);
+
+    const planIdentity = recordIdentity({ result: resultFile, plan: tasks });
+    if (handoff.basis === null) {
+      // A retained ticket mapping without a frozen basis is only adopted while every retained
+      // ticket still matches the evaluated plan at its original index.
+      for (const ticket of handoff.tickets) {
+        const index = ticket.plannedTask;
+        if (
+          index === undefined ||
+          index >= tasks.length ||
+          tasks[index]?.summary !== ticket.summary
+        ) {
+          return failed(
+            `The retained implementation ticket ${ticket.key} does not match planned task ` +
+              `${String((index ?? 0) + 1)} of the evaluated plan; the handoff cannot reconcile ` +
+              'them.',
+          );
+        }
       }
-      const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
-      return stageResult?.outcome === 'accepted' || stageResult?.outcome === 'skipped'
-        ? stageResult.prototype
-        : null;
+    } else {
+      if (handoff.basis.planIdentity !== planIdentity) {
+        return failed(
+          'The evaluated implementation plan changed after the handoff froze its basis; ' +
+            'reconcile the retained tickets instead of applying changed plan positions.',
+        );
+      }
+      if (handoff.basis.continuationHead !== preparedHead) {
+        const ancestor = await settings.git.readMergeBase(
+          preparationWorktree(preparation.repositoryWorkspace.root),
+          handoff.basis.continuationHead,
+          preparedHead,
+        );
+        if (!ancestor.ok) return failed(ancestor.fault.message);
+        if (ancestor.value !== handoff.basis.continuationHead) {
+          return failed(
+            `The frozen preparation revision ${handoff.basis.continuationHead} is no longer in ` +
+              `the retained branch history; the rewritten preparation history cannot be handed ` +
+              'off.',
+          );
+        }
+      }
+    }
+    const basis: HandoffBasis = handoff.basis ?? {
+      planIdentity,
+      taskCount: tasks.length,
+      continuationHead: preparedHead,
+    };
+    if (handoff.basis === null) {
+      handoff.basis = basis;
+      await writeHandoff(root, handoff);
     }
 
+    // The accepted references every ticket names: the changed authoritative documents of the
+    // shared preparation branch and the evaluated skips' existing inputs.
     const accepted = await readAcceptedDocuments(root);
     if (accepted.kind === 'invalid') {
       return failed(accepted.reason);
-    }
-    // Publish the changed authoritative documents as a documentation-only pull request. A stage
-    // that concluded existing documents suffice names no changed document and creates no empty PR.
-    let mergeRevision: string | null = null;
-    if (accepted.documents.length > 0) {
-      const publication = await publishDocuments(accepted.documents);
-      if (publication.kind === 'failed') {
-        return failed(publication.reason);
-      }
-      mergeRevision = publication.kind === 'unchanged' ? null : publication.mergeRevision;
     }
     const prototype = await retainedPrototype();
     const existingReferences: string[] = [];
@@ -335,10 +380,14 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       const stageResult = await readStageArtifact(area, stagePlan.round, stageResultArtifact);
       if (stageResult?.outcome !== 'skipped') continue;
       existingReferences.push(
-        `- ${stage} evaluated skip: ${path.join(area, 'artifacts', String(stagePlan.round), stageResultArtifact.pathFromArtifactsRoot)}; evaluation: ${stageResult.evaluation.path}`,
+        `- ${stage} evaluated skip: ${roundArtifactFile(
+          area,
+          stagePlan.round,
+          stageResultArtifact.pathFromArtifactsRoot,
+        )}; evaluation: ${stageResult.evaluation.path}`,
       );
       for (const document of stageResult.existingDocuments) {
-        const relative = path.relative(worktree, document.path);
+        const relative = path.relative(preparationWorktree(root), document.path);
         existingReferences.push(
           `- ${relative.startsWith('..') ? document.path : relative} (${stage} existing document ` +
             `revision ${document.revision})`,
@@ -358,6 +407,14 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       [...ticketsByTask.entries()]
         .sort(([left], [right]) => left - right)
         .map(([, ticket]) => ticket);
+    /** Keep the retained record's ticket mapping in step with every finished effect. */
+    async function saveHandoff(): Promise<void> {
+      handoff.tickets = retainedTickets();
+      await writeHandoff(root, handoff);
+    }
+    const firstIndex = taskOrder[0] as number;
+    /** Each processed ticket's resolved workspace root, so its dependents record the same one. */
+    const resolvedWorkspaces = new Map<number, string>();
     for (const index of taskOrder) {
       const task = tasks[index] as PlannedTask;
       const paused = await sourceProblem();
@@ -371,7 +428,6 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         );
       }
       let ticket = retainedTicket;
-      let newlyCreated = false;
       if (ticket === undefined) {
         // An interrupted create may have succeeded without its response reaching Nexus. Its
         // source-side identity is searched before another create request is sent.
@@ -383,30 +439,37 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           ticket = reconciled.ticket;
           ticketsByTask.set(index, ticket);
           // Retain the reconciled identity before any dependent operation.
-          await writeHandoff(root, {
-            ...handoff,
-            tickets: retainedTickets(),
-            publications: handoff.publications,
-          });
+          await saveHandoff();
         }
       }
-      const prerequisites = task.prerequisites.map((prerequisite) => {
+      // Every later ticket waits for the first ticket's completion as well as its declared
+      // prerequisites, because only the first branch carries the preparation commits. Both the
+      // documented prerequisite keys and the workspace references the handoff resolved for them
+      // are retained, so preparation reads the same tickets' completion evidence selection did.
+      const prerequisiteIndices = [
+        ...new Set([...task.prerequisites, ...(index === firstIndex ? [] : [firstIndex])]),
+      ];
+      const prerequisites = prerequisiteIndices.map((prerequisite) => {
         const prerequisiteTicket = ticketsByTask.get(prerequisite);
-        if (prerequisiteTicket === undefined)
-          throw new Error('A validated prerequisite has no retained ticket identity.');
-        return prerequisiteTicket.key;
+        const workspace = resolvedWorkspaces.get(prerequisite);
+        if (prerequisiteTicket === undefined || workspace === undefined) {
+          throw new Error(
+            'A validated prerequisite has no retained ticket identity and workspace.',
+          );
+        }
+        return { key: prerequisiteTicket.key, workspace: { root: workspace } };
       });
+      const prerequisiteKeys = prerequisites.map((prerequisite) => prerequisite.key);
       if (ticket === undefined) {
         const created = await settings.jira.createIssue({
           issuetype: { name: settings.implementation.issueType },
           summary: task.summary,
           description: documentOf(
-            ticketDescription(task, prerequisites, {
+            ticketDescription(task, prerequisiteKeys, {
               sourceKey: selection.taskKey,
               plannedTask: `${String(index + 1)} of ${String(tasks.length)}`,
               documents: accepted.documents,
               existing: existingReferences,
-              mergeRevision,
               prototype,
             }),
           ),
@@ -415,7 +478,6 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         if (!created.ok) {
           return failed(created.fault.message);
         }
-        newlyCreated = true;
         ticket = {
           key: created.value.key,
           issueId: created.value.id,
@@ -426,24 +488,47 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         };
         // Retain the identity before any dependent operation, so an interruption reuses it.
         ticketsByTask.set(index, ticket);
-        await writeHandoff(root, {
-          ...handoff,
-          tickets: retainedTickets(),
-          publications: handoff.publications,
-        });
-      }
-
-      if (retainedTicket === undefined && ticket.admission === undefined && newlyCreated) {
-        const initial = statusNameOf(await readIssue(settings.jira, ticket.issueId));
-        if (initial === null)
+        await saveHandoff();
+        // Record the creation's own initial status immediately, before admission moves it.
+        const createdIssue = await readIssue(settings.jira, ticket.issueId);
+        const createdStatus = statusNameOf(createdIssue);
+        if (createdStatus === null) {
           return failed(`Implementation ticket ${ticket.key} has no observable initial status.`);
-        ticket = { ...ticket, admission: { initialStatus: initial, completed: false } };
+        }
+        ticket = { ...ticket, admission: { initialStatus: createdStatus, completed: false } };
         ticketsByTask.set(index, ticket);
-        await writeHandoff(root, {
-          ...handoff,
-          tickets: retainedTickets(),
-          publications: handoff.publications,
-        });
+        await saveHandoff();
+      }
+      // The ticket's own workspace and its immutable implementation input. The input is retained
+      // immediately after the identity, before the link and rank effects, so a ticket that creation
+      // already put into the configured ready status is never selectable without its input. An
+      // existing different record requests reconciliation instead of being overwritten.
+      const issue = await readIssue(settings.jira, ticket.issueId);
+      const ticketWorkspace = await workspaceFor(issue);
+      resolvedWorkspaces.set(index, ticketWorkspace);
+      const input: ImplementationInput = {
+        sourceKey: selection.taskKey,
+        sourceWorkspace: { root },
+        architectureResult: { path: resultFile },
+        planIdentity: basis.planIdentity,
+        plannedTask: index,
+        prerequisites,
+        continuation:
+          index === firstIndex
+            ? { workspace: preparation, headRevision: basis.continuationHead }
+            : null,
+      };
+      const inputFile = path.join(ticketWorkspace, implementationInputDeclaration.file);
+      const existingInput = await readRecord(inputFile, implementationInputDeclaration);
+      if (existingInput !== null && !sameInput(existingInput, input)) {
+        return failed(
+          `Implementation ticket ${ticket.key} retains a different implementation input than the ` +
+            'frozen handoff describes; the retained record is reconciled instead of overwritten.',
+        );
+      }
+      if (existingInput === null) {
+        await mkdir(path.dirname(inputFile), { recursive: true });
+        await writeRecord(inputFile, input);
       }
       if (ticket.linked !== true) {
         const linked = await settings.jira.linkIssues(
@@ -456,23 +541,19 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
         ticket = { ...ticket, linked: true };
         ticketsByTask.set(index, ticket);
-        await writeHandoff(root, {
-          ...handoff,
-          tickets: retainedTickets(),
-          publications: handoff.publications,
-        });
+        await saveHandoff();
       }
-      if (prerequisites.length > 0) {
+      if (prerequisiteKeys.length > 0) {
         const ordered = await settings.jira.searchIssues({
           query: `project = ${jqlString(settings.project)}`,
           orderBy: 'Rank ASC',
         });
         if (!ordered.ok) return failed(ordered.fault.message);
         const keys = ordered.value.map((issue) => issue.key);
-        if (!keys.includes(ticket.key) || prerequisites.some((key) => !keys.includes(key))) {
+        if (!keys.includes(ticket.key) || prerequisiteKeys.some((key) => !keys.includes(key))) {
           return failed('The source rank order omits an implementation ticket or prerequisite.');
         }
-        const last = prerequisites.reduce((left, right) =>
+        const last = prerequisiteKeys.reduce((left, right) =>
           keys.indexOf(left) > keys.indexOf(right) ? left : right,
         );
         if (keys.indexOf(ticket.key) < keys.indexOf(last)) {
@@ -482,32 +563,39 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
         ticket = { ...ticket, ranked: true };
         ticketsByTask.set(index, ticket);
-        await writeHandoff(root, {
-          ...handoff,
-          tickets: retainedTickets(),
-          publications: handoff.publications,
-        });
+        await saveHandoff();
       }
       // Admission is distinct from later human status changes. Replays finish only the recorded
       // initial-to-ready transition or recognize its already-applied target.
-      const issue = await readIssue(settings.jira, ticket.issueId);
-      const status = statusNameOf(issue);
+      // The issue is re-read so the transition never acts on a status observed before the
+      // intervening source effects.
+      const admittedIssue = await readIssue(settings.jira, ticket.issueId);
+      const status = statusNameOf(admittedIssue);
       if (status !== settings.implementation.status) {
-        if (
-          ticket.admission === undefined ||
-          ticket.admission.completed ||
-          status !== ticket.admission.initialStatus
-        )
+        if (ticket.admission === undefined || ticket.admission.completed) {
           return failed(
-            `Implementation ticket ${ticket.key} is in unexpected status "${status ?? 'unknown'}"; its human status is preserved and admission needs attention.`,
+            ticket.admission === undefined
+              ? `Implementation ticket ${ticket.key} is in status "${status ?? 'unknown'}" ` +
+                  'without a recorded initial admission status; an unknown initial state cannot ' +
+                  'authorize a transition.'
+              : `Implementation ticket ${ticket.key} is in status "${status ?? 'unknown'}" after ` +
+                  'its admission completed; the human status is preserved.',
           );
+        }
+        if (status !== ticket.admission.initialStatus) {
+          return failed(
+            `Implementation ticket ${ticket.key} is in status "${status ?? 'unknown'}" while ` +
+              `admission recorded the initial "${ticket.admission.initialStatus}"; the human ` +
+              'status is preserved.',
+          );
+        }
         const transition = await transitionInto(
           settings.jira,
-          issue,
+          admittedIssue,
           settings.implementation.status,
         );
         if (transition.kind === 'blocked') return failed(transition.reason);
-        await applyTransition(settings.jira, issue.id, transition.transition);
+        await applyTransition(settings.jira, admittedIssue.id, transition.transition);
       }
       ticket = {
         ...ticket,
@@ -517,11 +605,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         },
       };
       ticketsByTask.set(index, ticket);
-      await writeHandoff(root, {
-        ...handoff,
-        tickets: retainedTickets(),
-        publications: handoff.publications,
-      });
+      await saveHandoff();
     }
 
     const tickets = retainedTickets();
@@ -545,26 +629,21 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           'preserved instead of closed.',
       );
     }
-    const linkList = tickets.map((ticket) => `${ticket.key}: ${ticket.summary}`).join('\n');
     const comment = [
       'Preparation complete. Implementation tickets:',
       ...tickets.map((ticket) => `- ${ticket.key}: ${ticket.summary}`),
-      ...(handoff.publications.some((publication) => publication.kind === 'documentation-pr')
-        ? [
-            '',
-            `Documentation PR: ${
-              handoff.publications.find((publication) => publication.kind === 'documentation-pr')
-                ?.id ?? ''
-            }`,
-          ]
-        : []),
     ].join('\n');
-    await publishDocument(
+    const published = await publishDocument(
       settings.jira,
       selection.source.issueId,
       await readComments(settings.jira, selection.source.issueId),
       documentOf(comment),
     );
+    handoff.publications = [
+      ...handoff.publications.filter((entry) => entry.kind !== 'handoff-comment'),
+      { kind: 'handoff-comment', id: published.id },
+    ];
+    await saveHandoff();
     if (sourceStatus !== settings.doneStatus) {
       const transition = await transitionInto(settings.jira, source, settings.doneStatus);
       if (transition.kind === 'blocked') {
@@ -572,15 +651,10 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       }
       await applyTransition(settings.jira, source.id, transition.transition);
     }
-    await writeHandoff(root, {
-      ...handoff,
-      tickets: retainedTickets(),
-      publications: handoff.publications,
-    });
+    await saveHandoff();
     await writeRecord(path.join(root, implementationHandoffResultDeclaration.file), {
       outcome: 'handed-off',
       tickets: tickets.map((ticket) => ticket.key),
-      mergeRevision,
     });
     settings.publish({
       source: 'implementation-handoff',
@@ -588,10 +662,84 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       data: {
         task: selection.taskKey,
         tickets: tickets.map((ticket) => ticket.key),
-        links: linkList,
       },
     });
     return 'handed-off';
+
+    /** The retained prototype reference the Storybook Refinement result recorded, when one exists. */
+    async function retainedPrototype(): Promise<PreparationResult['prototype']> {
+      const areaRoot = stageRoot(root, 'prototype');
+      const stagePlan = await readStagePlan(areaRoot);
+      if (stagePlan === null) {
+        return null;
+      }
+      const stageResult = await readStageArtifact(areaRoot, stagePlan.round, stageResultArtifact);
+      return stageResult?.outcome === 'accepted' || stageResult?.outcome === 'skipped'
+        ? stageResult.prototype
+        : null;
+    }
+
+    /** The removed preparation-only publication's retained review file, or null when none remains. */
+    async function retainedDocumentationReview(issueRoot: string): Promise<string | null> {
+      const directory = path.join(issueRoot, legacyDocumentationReviewsDirectory);
+      let entries: readonly string[];
+      try {
+        entries = await readdir(directory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return null;
+        }
+        throw new Error(
+          `The retained documentation review area "${directory}" could not be read: ` +
+            `${messageOf(error)}`,
+          { cause: error },
+        );
+      }
+      const retained = [...entries].filter((entry) => entry.endsWith('.json')).sort()[0];
+      return retained === undefined ? null : path.join(directory, retained);
+    }
+
+    /** The retained preparation branch's committed head, or the reason it cannot be continued. */
+    async function preparedRevision(
+      workspace: PreparationWorkspace,
+    ): Promise<string | { readonly reason: string }> {
+      const worktree = preparationWorktree(workspace.repositoryWorkspace.root);
+      const inspection = await settings.git.inspectRepository(worktree);
+      if (!inspection.ok) {
+        return { reason: inspection.fault.message };
+      }
+      if (inspection.value.remoteUrl !== workspace.repository) {
+        return {
+          reason:
+            `The preparation checkout at "${worktree}" belongs to ` +
+            `"${inspection.value.remoteUrl ?? 'no remote'}", not to the retained ` +
+            `"${workspace.repository}"; reconcile it instead of replacing it.`,
+        };
+      }
+      if (inspection.value.branch !== workspace.branch) {
+        return {
+          reason:
+            `The preparation checkout is on branch ` +
+            `"${inspection.value.branch ?? 'no branch'}", not the retained ` +
+            `"${workspace.branch}"; reconcile it instead of selecting another branch.`,
+        };
+      }
+      if (inspection.value.headRevision === null) {
+        return { reason: `The retained preparation branch "${workspace.branch}" has no revision.` };
+      }
+      return inspection.value.headRevision;
+    }
+
+    /** The implementation issue's own workspace root, recorded or stable. */
+    async function workspaceFor(issue: JiraIssue): Promise<string> {
+      const recorded = issue.fields[settings.workspacePointerField];
+      const stable = path.join(settings.workspaceRoot, settings.project, issue.key);
+      if (typeof recorded !== 'string' || recorded.trim() === '' || !path.isAbsolute(recorded)) {
+        await updateIssueFields(settings.jira, issue.id, { workspacePointer: stable });
+        return stable;
+      }
+      return recorded;
+    }
 
     /** One uncertain creation's reconciliation against the planned task's source-side identity. */
     async function reconcilePlannedTask(
@@ -624,6 +772,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       const candidate = await readIssue(settings.jira, identity.id);
       const labels = candidate.fields.labels;
       if (
+        candidate.key !== identity.key ||
         candidate.fields.summary !== task.summary ||
         !Array.isArray(labels) ||
         !labels.includes(plannedTaskLabel(selection.taskKey, index)) ||
@@ -647,452 +796,6 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
           ranked: false,
         },
       };
-    }
-
-    /**
-     * Publish the accepted documents: assemble them into the architecture worktree, commit exactly
-     * the named paths, push the area branch, reuse or open the documentation-only pull request and
-     * confirm its merge with the configured checks.
-     */
-    async function publishDocuments(
-      documents: readonly AcceptedDocument[],
-    ): Promise<
-      | { readonly kind: 'merged'; readonly mergeRevision: string }
-      | { readonly kind: 'unchanged' }
-      | { readonly kind: 'failed'; readonly reason: string }
-    > {
-      const prepared = await prepareDocumentationPublication({
-        root,
-        taskKey: selection.taskKey,
-        baseBranch: settings.baseBranch,
-        git: settings.git,
-      });
-      if (prepared.kind === 'failed') return prepared;
-      if (prepared.kind === 'unchanged') {
-        // A merge can make the diff empty before its checks finish. Discover an existing exact-head
-        // publication and finish its gates; an empty diff never authorizes bypassing those checks.
-        if (prepared.head === undefined || prepared.branch === undefined) return prepared;
-        const found = await settings.github.findPullRequests(settings.repository, {
-          branch: prepared.branch,
-          baseBranch: settings.baseBranch,
-        });
-        if (!found.ok) return { kind: 'failed', reason: found.fault.message };
-        for (const identity of found.value) {
-          const observed = await settings.github.readPullRequest(
-            settings.repository,
-            identity.number,
-          );
-          if (!observed.ok) return { kind: 'failed', reason: observed.fault.message };
-          if (observed.value.headRevision !== prepared.head) continue;
-          if (observed.value.state === 'closed' && !observed.value.merged)
-            return {
-              kind: 'failed',
-              reason:
-                'The documentation pull request was closed without merging; the retained human decision is preserved.',
-            };
-          const publication = await drivePublication(identity.number, prepared.head);
-          if (publication.kind === 'failed') return publication;
-          handoff.publications = [
-            ...handoff.publications.filter((entry) => entry.kind !== 'documentation-pr'),
-            { kind: 'documentation-pr', id: publication.pullRequest.url },
-          ];
-          await writeHandoff(root, handoff);
-          return { kind: 'merged', mergeRevision: publication.mergeRevision };
-        }
-        return prepared;
-      }
-      const { branch, head } = prepared;
-      const paused = await sourceProblem();
-      if (paused !== null) return { kind: 'failed', reason: paused };
-      const pushed = await settings.git.pushBranch(worktree, branch, head);
-      if (!pushed.ok) {
-        return { kind: 'failed', reason: pushed.fault.message };
-      }
-      const pullRequest = await ensurePullRequest(documents, branch, head);
-      if (pullRequest.kind === 'failed') {
-        return pullRequest;
-      }
-      handoff.publications = [
-        ...handoff.publications.filter((publication) => publication.kind !== 'documentation-pr'),
-        { kind: 'documentation-pr', id: pullRequest.url },
-      ];
-      await writeHandoff(root, handoff);
-      return { kind: 'merged', mergeRevision: pullRequest.mergeRevision };
-    }
-
-    /**
-     * Reuse or open the documentation pull request for the pushed revision, assess the assembled
-     * content and publish its actual review/check verdict for that exact revision, request
-     * native auto-merge for it and confirm its merge and configured checks.
-     */
-    async function ensurePullRequest(
-      documents: readonly AcceptedDocument[],
-      branch: string,
-      head: string,
-    ): Promise<
-      | { readonly kind: 'merged'; readonly url: string; readonly mergeRevision: string }
-      | { readonly kind: 'failed'; readonly reason: string }
-    > {
-      const found = await settings.github.findPullRequests(settings.repository, {
-        branch,
-        baseBranch: settings.baseBranch,
-      });
-      if (!found.ok) {
-        return { kind: 'failed', reason: found.fault.message };
-      }
-      let pullRequestNumber = found.value[0]?.number ?? null;
-      if (pullRequestNumber !== null) {
-        const observed = await settings.github.readPullRequest(
-          settings.repository,
-          pullRequestNumber,
-        );
-        if (!observed.ok) {
-          return { kind: 'failed', reason: observed.fault.message };
-        }
-        if (observed.value.state === 'closed' && !observed.value.merged) {
-          return {
-            kind: 'failed',
-            reason:
-              `The documentation pull request #${String(pullRequestNumber)} was closed without ` +
-              'merging; the retained human decision is preserved.',
-          };
-        }
-        if (observed.value.merged && observed.value.headRevision !== head) {
-          // The branch carries accepted work the merged publication did not contain; a new
-          // documentation pull request is the next publication of that work.
-          pullRequestNumber = null;
-        }
-      }
-      if (pullRequestNumber === null) {
-        const created = await settings.github.createPullRequest(settings.repository, {
-          baseBranch: settings.baseBranch,
-          headBranch: branch,
-          title: `${selection.taskKey}: preparation documents`,
-          body: [
-            `Accepted authoritative documents for ${selection.taskKey}.`,
-            '',
-            ...documents.map((document) => `- ${document.path} (${document.stage})`),
-          ].join('\n'),
-        });
-        if (!created.ok) {
-          return { kind: 'failed', reason: created.fault.message };
-        }
-        pullRequestNumber = created.value.number;
-      }
-      const prepared = await drivePublication(pullRequestNumber, head);
-      if (prepared.kind === 'failed') {
-        return prepared;
-      }
-      return {
-        kind: 'merged',
-        url: prepared.pullRequest.url,
-        mergeRevision: prepared.mergeRevision,
-      };
-    }
-
-    /**
-     * Drive one documentation pull request to merge for the published revision: preserve negative
-     * evidence, publish the reviewer's retained assessment, request native auto-merge on approval,
-     * then wait for the merge and its required pre-merge and post-merge checks.
-     */
-    async function drivePublication(
-      pullRequestNumber: number,
-      head: string,
-    ): Promise<
-      | {
-          readonly kind: 'merged';
-          readonly pullRequest: PullRequest;
-          readonly mergeRevision: string;
-        }
-      | { readonly kind: 'failed'; readonly reason: string }
-    > {
-      let conversation = await settings.github.readConversation(
-        settings.repository,
-        pullRequestNumber,
-      );
-      if (!conversation.ok) return { kind: 'failed', reason: conversation.fault.message };
-      let checks = await settings.github.readChecks(settings.repository, head);
-      if (!checks.ok) return { kind: 'failed', reason: checks.fault.message };
-      function hasNegativeEvidence(
-        conversation: PullRequestConversation,
-        checks: readonly CheckObservation[],
-      ): boolean {
-        return (
-          conversation.reviews.some(
-            (review) => review.commit_id === head && review.state === 'CHANGES_REQUESTED',
-          ) ||
-          checks.some(
-            (check) =>
-              check.revision === head &&
-              check.name === settings.reviewCheck &&
-              check.producer?.id === settings.nexusLens.appId &&
-              check.status === 'completed' &&
-              check.conclusion !== 'success',
-          )
-        );
-      }
-      if (hasNegativeEvidence(conversation.value, checks.value)) {
-        return {
-          kind: 'failed',
-          reason: `Documentation revision ${head} has negative review evidence; repair the rejected publication before retrying.`,
-        };
-      }
-      const reportFile = path.join(root, documentationReviewsDirectory, `${head}.json`);
-      const report = await readRecord(reportFile, documentationReviewDeclaration);
-      if (report !== null && report.headRevision !== head)
-        throw new Error('The documentation review names another revision.');
-      if (report === null)
-        return {
-          kind: 'failed',
-          reason: `Documentation revision ${head} has no retained Architecture-child review; obtain its revision-specific assessment before publication.`,
-        };
-      const observed = await settings.git.inspectRepository(worktree);
-      if (!observed.ok) return { kind: 'failed', reason: observed.fault.message };
-      if (observed.value.headRevision !== head)
-        return {
-          kind: 'failed',
-          reason:
-            'The publication head changed during review; obtain evaluation of the new revision.',
-        };
-      const paused = await sourceProblem();
-      if (paused !== null) return { kind: 'failed', reason: paused };
-      conversation = await settings.github.readConversation(settings.repository, pullRequestNumber);
-      checks = await settings.github.readChecks(settings.repository, head);
-      if (!conversation.ok) return { kind: 'failed', reason: conversation.fault.message };
-      if (!checks.ok) return { kind: 'failed', reason: checks.fault.message };
-      if (hasNegativeEvidence(conversation.value, checks.value)) {
-        return {
-          kind: 'failed',
-          reason: `Documentation revision ${head} received negative review evidence during assessment; it is preserved for repair.`,
-        };
-      }
-      const reviewPublished = conversation.value.reviews.some(
-        (review) =>
-          review.author === settings.nexusLens.login &&
-          review.commit_id === head &&
-          review.state === reviewEncoding[report.verdict].state &&
-          review.body === report.summary,
-      );
-      if (!reviewPublished) {
-        const published = await settings.github.publishReview(settings.repository, {
-          pullRequestNumber,
-          revision: head,
-          verdict: report.verdict,
-          body: report.summary,
-        });
-        if (!published.ok) return { kind: 'failed', reason: published.fault.message };
-      }
-      const conclusion = report.verdict === 'approved' ? 'success' : 'failure';
-      const checkPublished = checks.value.some(
-        (check) =>
-          check.revision === head &&
-          check.name === settings.reviewCheck &&
-          check.producer?.id === settings.nexusLens.appId &&
-          check.status === 'completed' &&
-          check.conclusion === conclusion,
-      );
-      if (!checkPublished) {
-        const published = await settings.github.publishReviewCheck(settings.repository, {
-          revision: head,
-          name: settings.reviewCheck,
-          result: conclusion,
-        });
-        if (!published.ok) return { kind: 'failed', reason: published.fault.message };
-      }
-      if (report.verdict !== 'approved')
-        return {
-          kind: 'failed',
-          reason: `Documentation review ${report.verdict}: ${report.summary}; findings: ${reportFile}. Repair before retrying.`,
-        };
-      const deadline = Date.now() + settings.completion.waitLimitSeconds * 1000;
-      const initial = await settings.github.readPullRequest(settings.repository, pullRequestNumber);
-      if (!initial.ok) {
-        return { kind: 'failed', reason: initial.fault.message };
-      }
-      if (!initial.value.merged && !initial.value.autoMergeEnabled) {
-        const requested = await settings.github.requestAutoMerge(
-          settings.repository,
-          pullRequestNumber,
-          head,
-        );
-        if (!requested.ok) {
-          return { kind: 'failed', reason: requested.fault.message };
-        }
-      }
-      for (;;) {
-        const observed = await observeMerged(pullRequestNumber, head);
-        if (observed.kind === 'failed') {
-          return observed;
-        }
-        if (observed.kind === 'merged') {
-          const postMerge = await waitForPostMergeChecks(observed.mergeRevision, deadline);
-          if (postMerge.kind === 'failed') {
-            return postMerge;
-          }
-          return {
-            kind: 'merged',
-            pullRequest: observed.pullRequest,
-            mergeRevision: observed.mergeRevision,
-          };
-        }
-        if (Date.now() >= deadline) {
-          return {
-            kind: 'failed',
-            reason:
-              `The documentation pull request #${String(pullRequestNumber)} did not merge with ` +
-              `passing checks within ${String(settings.completion.waitLimitSeconds)} seconds.`,
-          };
-        }
-        await settings.wait(Math.max(1, settings.completion.pollIntervalSeconds) * 1000);
-      }
-    }
-
-    /**
-     * Observe the published revision's merge. The provider must report the exact published head and
-     * its required pre-merge checks at that revision; a merged pull request whose evidence belongs
-     * to another revision cannot confirm the publication.
-     */
-    async function observeMerged(
-      pullRequestNumber: number,
-      head: string,
-    ): Promise<MergeObservation> {
-      const observed = await settings.github.readPullRequest(
-        settings.repository,
-        pullRequestNumber,
-      );
-      if (!observed.ok) {
-        return { kind: 'failed', reason: observed.fault.message };
-      }
-      if (observed.value.state === 'closed' && !observed.value.merged) {
-        return {
-          kind: 'failed',
-          reason: `The documentation pull request #${String(pullRequestNumber)} closed without merging.`,
-        };
-      }
-      if (!observed.value.merged) {
-        return { kind: 'pending' };
-      }
-      if (observed.value.headRevision !== head) {
-        return {
-          kind: 'failed',
-          reason:
-            `The documentation pull request #${String(pullRequestNumber)} merged revision ` +
-            `${observed.value.headRevision} instead of the published ${head}; the merge evidence ` +
-            'belongs to another publication.',
-        };
-      }
-      const required = await settings.github.readRequiredChecks(
-        settings.repository,
-        pullRequestNumber,
-      );
-      if (!required.ok) {
-        return { kind: 'failed', reason: required.fault.message };
-      }
-      if (required.value.revision !== head) {
-        return {
-          kind: 'failed',
-          reason:
-            `The required checks were observed for revision ${required.value.revision} instead of ` +
-            `the published ${head}; the merge evidence belongs to another publication.`,
-        };
-      }
-      const failures: string[] = [];
-      let pending = 0;
-      for (const check of required.value.checks) {
-        if (check.status !== 'completed' || check.conclusion === null) {
-          pending += 1;
-          continue;
-        }
-        if (!satisfiedConclusions.has(check.conclusion)) {
-          failures.push(
-            `required check "${check.name}" concluded "${check.conclusion}"` +
-              (check.evidenceUrl === null ? '' : ` (evidence: ${check.evidenceUrl})`),
-          );
-        }
-      }
-      if (failures.length > 0) {
-        return {
-          kind: 'failed',
-          reason:
-            `The documentation pull request #${String(pullRequestNumber)} merged with failed ` +
-            `required checks for revision ${head}: ${failures.join('; ')}.`,
-        };
-      }
-      if (observed.value.mergeRevision === null) {
-        return {
-          kind: 'failed',
-          reason: `The documentation pull request #${String(pullRequestNumber)} reports no merge revision.`,
-        };
-      }
-      if (pending > 0) {
-        // Required checks that have not reported yet keep the configured wait; the merge is not
-        // confirmed until they pass for the published revision.
-        return { kind: 'pending' };
-      }
-      return {
-        kind: 'merged',
-        mergeRevision: observed.value.mergeRevision,
-        pullRequest: observed.value,
-      };
-    }
-
-    /** Observe every configured post-merge check for the merge revision within one deadline. */
-    async function waitForPostMergeChecks(
-      mergeRevision: string,
-      deadline: number,
-    ): Promise<{ readonly kind: 'passed' } | { readonly kind: 'failed'; readonly reason: string }> {
-      for (;;) {
-        const runs = await settings.github.readWorkflowRuns(
-          settings.repository,
-          mergeRevision,
-          settings.postMergeChecks.map((check) => check.workflow),
-        );
-        if (!runs.ok) {
-          return { kind: 'failed', reason: runs.fault.message };
-        }
-        const problems: string[] = [];
-        const pending: string[] = [];
-        for (const check of settings.postMergeChecks) {
-          const matching = runs.value.filter(
-            (run) =>
-              run.revision === mergeRevision &&
-              (run.name === check.workflow || run.path === check.workflow),
-          );
-          if (matching.length === 0) {
-            pending.push(`"${check.name}" has no run for revision ${mergeRevision}`);
-            continue;
-          }
-          const incomplete = matching.find(
-            (run) => run.status !== 'completed' || run.conclusion === null,
-          );
-          if (incomplete !== undefined) {
-            pending.push(`"${check.name}" is "${incomplete.status ?? 'pending'}"`);
-            continue;
-          }
-          const unsuccessful = matching.find((run) => run.conclusion !== 'success');
-          if (unsuccessful !== undefined) {
-            problems.push(
-              `post-merge check "${check.name}" concluded "${unsuccessful.conclusion}" for ` +
-                `revision ${mergeRevision}`,
-            );
-          }
-        }
-        if (problems.length > 0) {
-          return { kind: 'failed', reason: `${problems.join('; ')}.` };
-        }
-        if (pending.length === 0) {
-          return { kind: 'passed' };
-        }
-        if (Date.now() >= deadline) {
-          return {
-            kind: 'failed',
-            reason:
-              `${pending.join('; ')} past the configured completion wait of ` +
-              `${String(settings.completion.waitLimitSeconds)} seconds.`,
-          };
-        }
-        await settings.wait(Math.max(1, settings.completion.pollIntervalSeconds) * 1000);
-      }
     }
   };
 }

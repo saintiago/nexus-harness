@@ -99,10 +99,18 @@ root, project source, another issue's workspace or your operational workspace.
 If the change has already merged, do not treat it as an unmerged attempt; investigate the resulting
 project state.
 
+Before cleanup, inspect the producer-owned prepared-workspace and implementation input. A first
+implementation can use another issue's preparation repository. Preserve that donor checkout,
+branch, accepted history and parent handoff; its issue root is not a deletion target. Reconcile its
+unmerged delivery PR and reset only delivery-owned state/artifacts. Continue on the recorded donor
+branch rather than creating a replacement repository. If the branch or history cannot safely
+continue, return needs-attention. Never discard preparation rounds or reset their consumed allowances.
+
 Clear active queue selection and reset the workflow to initial task selection. The blocker runs
 first; the interrupted ticket then starts from updated main in a fresh finite delivery attempt
-within the same issue workspace and on a new development branch.
-Do not reuse its discarded branch or PR.
+within the same issue workspace and on a new development branch for an ordinary task. A retained
+preparation continuation follows the exception above and PrepareWorkspace's identity checks.
+Do not reuse a discarded ordinary branch or a closed PR.
 
 If no blocker is needed, preserve useful work unless a fresh task restart is needed to recover.
 For a fresh restart without a blocker, apply the same cleanup and return the ticket to To Do.

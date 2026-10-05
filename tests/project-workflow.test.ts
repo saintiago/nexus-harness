@@ -10,8 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMachine } from 'xstate';
-import { createJiraAdapter, type JiraComment, type JiraTransition } from '../src/adapters/jira.js';
-import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
+import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import type { CodingRuntime, CodingRuntimeRequest } from '../src/adapters/coding-runtime.js';
 import { ok } from '../src/result.js';
 import {
@@ -21,10 +20,9 @@ import {
 import { parseNexusConfiguration, parseProjectConfiguration } from '../src/configuration/index.js';
 import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
-import { createReviewPreparationPublication } from '../src/task-engine/actions/preparation/review-publication/index.js';
-import { documentationReviewsDirectory } from '../src/task-engine/actions/preparation/review-publication/artifacts.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
+import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
@@ -39,7 +37,6 @@ import {
 import { project } from '../workflows/project.js';
 import { preparation } from '../workflows/preparation.js';
 import { repositoryState, scriptedGit } from './support/git.js';
-import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
@@ -322,7 +319,6 @@ async function runPreparation(
     StageEvaluator: 'accepted',
     RecordStageReturn: 'return',
     StageResult: 'saved',
-    ReviewPreparationPublication: 'approved',
   };
   const actions: Record<string, ActionStub> = {};
   for (const [name, outcome] of Object.entries(outcomes)) {
@@ -363,15 +359,21 @@ describe('evaluated preparation child', () => {
     }
   });
 
-  it('assesses the assembled documentation inside Architecture before returning its handoff', async () => {
+  it('returns an Architecture acceptance directly to the handoff without a publication step', async () => {
     const result = await runPreparation({}, 'architecture');
     expect(result.result).toEqual({ ok: true, value: 'accepted' });
-    expect(result.calls.slice(-2)).toEqual(['StageResult', 'ReviewPreparationPublication']);
-    const blocked = await runPreparation(
-      { ReviewPreparationPublication: async () => 'failed' },
+    expect(result.calls.at(-1)).toBe('StageResult');
+    expect(result.calls).not.toContain('ReviewPreparationPublication');
+
+    const skipped = await runPreparation(
+      {
+        StageAuthor: async () => 'skip-proposed',
+        StageEvaluator: async () => 'accepted-skip',
+      },
       'architecture',
     );
-    expect(blocked.result).toEqual({ ok: true, value: 'blocked' });
+    expect(skipped.result).toEqual({ ok: true, value: 'skipped' });
+    expect(skipped.calls.at(-1)).toBe('StageResult');
   });
 
   it('returns upstream within the configured allowance', async () => {
@@ -500,8 +502,6 @@ describe('preparation binding dispatch', () => {
     const selectionFile = path.join(directory, 'selection.json');
     const worktree = preparationWorktree(root);
     const contentRevision = 'a'.repeat(40);
-    const publicationHead = 'b'.repeat(40);
-    const baseRevision = 'c'.repeat(40);
     const selection = {
       taskKey: 'NEX-1',
       source: { kind: 'jira', issueId: '1' },
@@ -514,7 +514,6 @@ describe('preparation binding dispatch', () => {
     // The ux stage has an open round the author proposes into, over the shared checkout.
     await mkdir(path.join(worktree, 'docs'), { recursive: true });
     await writeFile(path.join(worktree, 'docs', 'ux.md'), '# UX\n');
-    await writeFile(path.join(worktree, 'docs', 'architecture.md'), '# Architecture\n');
     await mkdir(path.join(root, 'ux', 'state'), { recursive: true });
     await writeFile(
       path.join(root, 'ux', 'state', 'current-round.json'),
@@ -526,70 +525,6 @@ describe('preparation binding dispatch', () => {
       }),
     );
     await mkdir(path.join(root, 'ux', 'artifacts', '1'), { recursive: true });
-    // Architecture retains an accepted document with its basis, so publication reviews it.
-    await mkdir(path.join(root, 'architecture', 'state'), { recursive: true });
-    await writeFile(
-      path.join(root, 'architecture', 'state', 'current-round.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        round: 1,
-        route: 'new',
-        profiles: { author: 'nexus-astra', evaluator: 'nexus-review' },
-      }),
-    );
-    await mkdir(path.join(root, 'architecture', 'artifacts', '1'), { recursive: true });
-    const architectureAuthor = {
-      stage: 'architecture',
-      revision: 1,
-      outcome: 'authored',
-      summary: 'The architecture revision.',
-      documents: [{ path: 'docs/architecture.md', description: 'the architecture' }],
-      sourcePaths: [],
-      plan: [],
-      skip: null,
-      question: null,
-      upstream: null,
-      findingResponses: [],
-    };
-    const architectureAuthorFile = path.join(root, 'architecture', 'artifacts', '1', 'author.json');
-    await writeFile(architectureAuthorFile, JSON.stringify(architectureAuthor));
-    await writeFile(
-      path.join(root, 'architecture', 'artifacts', '1', 'evaluation.json'),
-      JSON.stringify({
-        basis: {
-          author: { path: architectureAuthorFile },
-          authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(architectureAuthor)),
-          sourceIdentity: sourceInputIdentity(selection as never),
-          upstream: [],
-          content: [{ path: 'docs/architecture.md', revision: contentRevision, exists: true }],
-        },
-        assessedRevision: 1,
-        verdict: 'accepted',
-        reason: 'Accepted.',
-        findings: [],
-        priorFindings: [],
-        upstream: null,
-      }),
-    );
-    await writeFile(
-      path.join(root, 'architecture', 'artifacts', '1', 'result.json'),
-      JSON.stringify({
-        stage: 'architecture',
-        outcome: 'accepted',
-        authoredRevision: 1,
-        // StageResult retains each accepted document by its absolute checkout path.
-        documents: [
-          { path: path.join(worktree, 'docs', 'architecture.md'), revision: contentRevision },
-        ],
-        sourcePaths: [],
-        outputs: [],
-        evaluation: { path: path.join(root, 'architecture', 'artifacts', '1', 'evaluation.json') },
-        reason: 'Accepted.',
-        returnStage: null,
-        returnFinding: null,
-        prototype: null,
-      }),
-    );
     const outputs: unknown[] = [
       {
         outcome: 'authored',
@@ -610,12 +545,6 @@ describe('preparation binding dispatch', () => {
         priorFindings: [],
         upstream: null,
       },
-      {
-        verdict: 'approved',
-        summary: 'Assessed the exact assembled documentation revision.',
-        findings: [],
-        priorFindings: [],
-      },
     ];
     const requests: CodingRuntimeRequest[] = [];
     const codingRuntime: CodingRuntime = {
@@ -633,17 +562,13 @@ describe('preparation binding dispatch', () => {
         repositoryState({
           remoteUrl: path.resolve(directory, 'repository.git'),
           branch: 'task/NEX-1',
-          headRevision: publicationHead,
+          headRevision: contentRevision,
         }),
       ],
       {
         commitPaths: () => ok({ branch: 'task/NEX-1', headRevision: contentRevision }),
         readFileAtRevision: async (repository, _revision, file) =>
           ok(await readFile(path.join(repository, file), 'utf8')),
-        fetchRevision: () => ok(baseRevision),
-        readMergeBase: () => ok(baseRevision),
-        readChangedPaths: () => ok(['docs/architecture.md']),
-        readDiff: () => ok('diff --git a/docs/architecture.md b/docs/architecture.md'),
       },
     );
     const settings: ActionBindingSettings = {
@@ -672,11 +597,10 @@ describe('preparation binding dispatch', () => {
       'authored',
     );
     await expect(actions['StageEvaluator']?.({ stage: 'ux' })).resolves.toBe('accepted');
-    await expect(actions['ReviewPreparationPublication']?.()).resolves.toBe('approved');
 
     // The real AgentRuntime appends worktree/ to the supplied area root: every provider runs in
     // the one shared preparation checkout, never in a second worktree/ level under it.
-    expect(requests.map((request) => request.directory)).toEqual([worktree, worktree, worktree]);
+    expect(requests.map((request) => request.directory)).toEqual([worktree, worktree]);
     await expect(stat(path.join(root, 'ux', 'worktree'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
@@ -1063,60 +987,73 @@ describe('parent preparation publication', () => {
   });
 });
 
-/** The Architecture handoff over a controlled repository and source. */
+/**
+ * The Architecture handoff over a controlled preparation checkout and source. The handoff has no
+ * GitHub capability: its effects are the created tickets, their links, ranks, implementation
+ * inputs and admission, and the original's preparation-handoff comment and completion.
+ */
 async function handoff(options: {
-  readonly documents: boolean;
+  readonly documents?: boolean;
   readonly prototype?: { readonly branch: string; readonly revision: string } | null;
-  readonly failLinkOnce?: boolean;
-  readonly loseCreateResponse?: boolean;
-  readonly baseBranch?: boolean;
-  readonly mergedAtAnotherRevision?: boolean;
-  readonly retry?: boolean;
-  readonly sourceStatus?: string;
-  readonly negativeReview?: boolean;
-  readonly negativeCheck?: boolean;
-  readonly reviewerVerdict?: 'approved' | 'changesRequested';
-  readonly retainedRemovedVerdict?: boolean;
-  readonly extraPublishedPath?: string;
+  readonly skipped?: boolean;
   readonly tasks?: readonly {
     summary: string;
     scope: string;
     completionCriteria: string[];
     prerequisites: number[];
   }[];
-  readonly initialRankOrder?: readonly string[];
-  readonly skipped?: boolean;
-  readonly omitAssessment?: boolean;
-  readonly emptyPublication?: boolean;
-  readonly emptyAfterMerge?: boolean;
-  readonly failPostMergeOnce?: boolean;
+  readonly failLinkOnce?: boolean;
+  readonly loseCreateResponse?: boolean;
+  readonly failCreateOnce?: boolean;
+  readonly retry?: boolean;
+  readonly sourceStatus?: string;
   readonly implementationStatus?: string;
+  readonly initialTicketStatus?: string;
   readonly ticketStatusAfterFirst?: string;
+  readonly initialRankOrder?: readonly string[];
+  readonly missingPreparation?: boolean;
+  readonly preparationBranch?: string;
+  /** The branch the retained checkout actually sits on, when it differs from the record. */
+  readonly checkoutBranch?: string;
+  /** The retained checkout's head after the first invocation, for rewritten-history replay. */
+  readonly headAfterFirst?: string;
+  readonly rewrittenPreparation?: boolean;
+  readonly changePlanOnRetry?: boolean;
+  /** A preparation-only publication the removed handoff workflow retained before this change. */
+  readonly legacyPublication?: { readonly kind: string; readonly id: string };
+  /** A retained documentation review record of the removed preparation-only publication. */
+  readonly legacyReview?: boolean;
+  /** A workspace pointer the first created ticket already records, as a human-set root. */
+  readonly firstTicketWorkspace?: string;
 }): Promise<{
   readonly outcome: string;
   readonly firstOutcome: string;
-  readonly ticketStatus: () => string | undefined;
-  readonly tickets: readonly { readonly key: string; readonly summary: string }[];
+  readonly workspaceRoot: string;
+  readonly ticketStatus: (index?: number) => string | undefined;
+  readonly tickets: readonly {
+    readonly key: string;
+    readonly summary: string;
+    readonly admission?: { readonly initialStatus: string; readonly completed: boolean };
+  }[];
   readonly status: () => string;
   readonly links: readonly string[];
   readonly ranked: readonly string[];
   readonly rankOrder: readonly string[];
   readonly comments: readonly JiraComment[];
-  readonly committedPaths: readonly string[];
   readonly createdFields: readonly Readonly<Record<string, unknown>>[];
   readonly failures: readonly string[];
   readonly jiraCalls: readonly string[];
-  readonly published: {
-    readonly reviews: number;
-    readonly checks: number;
-    readonly autoMerge: boolean;
-    readonly pullRequests: number;
-  };
+  readonly inputs: readonly unknown[];
+  readonly workspacePointers: readonly string[];
+  readonly files: readonly string[];
 }> {
   const directory = await temporaryDirectory();
-  const root = path.join(directory, 'NEX-1');
+  const workspaceRoot = path.join(directory, 'workspaces');
+  const root = path.join(workspaceRoot, 'NEX', 'NEX-1');
   const stage = stageRoot(root, 'architecture');
   const worktree = path.join(root, 'worktree');
+  const implementationStatus = options.implementationStatus ?? 'To Do';
+  const initialTicketStatus = options.initialTicketStatus ?? implementationStatus;
   await mkdir(path.join(worktree, 'docs'), { recursive: true });
   /** The captured input the fixture's stage decisions are bound to. */
   const fixtureSelection = {
@@ -1135,9 +1072,6 @@ async function handoff(options: {
     readonly stage: 'requirements' | 'ux' | 'prototype' | 'architecture';
     readonly outcome: 'accepted' | 'skipped';
     readonly documents: readonly { readonly path: string; readonly revision: string | null }[];
-    readonly sourcePaths?: readonly string[];
-    readonly existing?: readonly { readonly path: string; readonly revision: string }[];
-    readonly skipReferences?: readonly string[];
     readonly prototype?: { readonly branch: string; readonly revision: string } | null;
   }): Promise<void> {
     const area = stageRoot(root, settings.stage);
@@ -1162,14 +1096,11 @@ async function handoff(options: {
         path: document.path,
         description: 'the changed document',
       })),
-      sourcePaths: [...(settings.sourcePaths ?? [])],
+      sourcePaths: [],
       plan: [],
       skip:
         settings.outcome === 'skipped'
-          ? {
-              reason: 'Existing input suffices.',
-              references: [...(settings.skipReferences ?? [])],
-            }
+          ? { reason: 'Existing input suffices.', references: ['docs/existing.md'] }
           : null,
       question: null,
       upstream: null,
@@ -1177,20 +1108,6 @@ async function handoff(options: {
     };
     const authorFile = path.join(artifacts, 'author.json');
     await writeFile(authorFile, JSON.stringify(author));
-    const content = [
-      ...settings.documents
-        .filter((document) => document.revision !== null)
-        .map((document) => ({
-          path: document.path,
-          revision: document.revision as string,
-          exists: true,
-        })),
-      ...(settings.existing ?? []).map((document) => ({
-        path: document.path,
-        revision: document.revision,
-        exists: true,
-      })),
-    ];
     await writeFile(
       path.join(artifacts, 'evaluation.json'),
       JSON.stringify({
@@ -1199,7 +1116,18 @@ async function handoff(options: {
           authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
           sourceIdentity: sourceInputIdentity(fixtureSelection as never),
           upstream: [...upstream],
-          content,
+          content: [
+            ...settings.documents
+              .filter((document) => document.revision !== null)
+              .map((document) => ({
+                path: document.path,
+                revision: document.revision as string,
+                exists: true,
+              })),
+            ...(settings.outcome === 'skipped'
+              ? [{ path: 'docs/existing.md', revision: 'f'.repeat(40), exists: true }]
+              : []),
+          ],
         },
         assessedRevision: 1,
         verdict: settings.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
@@ -1217,12 +1145,12 @@ async function handoff(options: {
         path: path.join(worktree, document.path),
         revision: document.revision,
       })),
-      existingDocuments: (settings.existing ?? []).map((document) => ({
-        path: path.join(worktree, document.path),
-        revision: document.revision,
-      })),
-      sourcePaths: [...(settings.sourcePaths ?? [])],
-      skipReferences: [...(settings.skipReferences ?? [])],
+      existingDocuments:
+        settings.outcome === 'skipped'
+          ? [{ path: path.join(worktree, 'docs/existing.md'), revision: 'f'.repeat(40) }]
+          : [],
+      sourcePaths: [],
+      skipReferences: settings.outcome === 'skipped' ? ['docs/existing.md'] : [],
       outputs: [],
       evaluation: { path: path.join(artifacts, 'evaluation.json') },
       reason: 'The design and plan cover the accepted outcome.',
@@ -1237,8 +1165,8 @@ async function handoff(options: {
     });
   }
 
-  if (options.documents) {
-    // An accepted earlier stage's changed document lives in the same shared publication.
+  if (options.documents === true) {
+    // An accepted earlier stage's changed document lives in the same shared checkout.
     await writeStageDecision({
       stage: 'requirements',
       outcome: 'accepted',
@@ -1246,8 +1174,7 @@ async function handoff(options: {
     });
     await writeFile(path.join(worktree, 'docs/requirements.md'), '# Requirements\n');
   }
-  if (options.prototype !== undefined && options.prototype !== null) {
-    // The Storybook Refinement stage retained a prototype revision implementation tickets reuse.
+  if (options.prototype != null) {
     await writeStageDecision({
       stage: 'prototype',
       outcome: 'accepted',
@@ -1257,72 +1184,116 @@ async function handoff(options: {
   }
   await writeStageDecision({
     stage: 'architecture',
-    outcome: options.skipped ? 'skipped' : 'accepted',
+    outcome: options.skipped === true ? 'skipped' : 'accepted',
     documents:
-      options.documents && !options.skipped
+      options.documents === true && options.skipped !== true
         ? [{ path: 'docs/architecture.md', revision: 'b'.repeat(40) }]
         : [],
-    existing: options.skipped ? [{ path: 'docs/existing.md', revision: 'f'.repeat(40) }] : [],
-    skipReferences: options.skipped ? ['docs/existing.md'] : [],
   });
-  if (options.documents && !options.skipped) {
+  if (options.documents === true && options.skipped !== true) {
     await writeFile(path.join(worktree, 'docs/architecture.md'), '# Architecture\n');
   }
-  if (options.skipped) {
+  if (options.skipped === true) {
     await writeFile(path.join(worktree, 'docs/existing.md'), '# Existing design\n');
   }
-  await writeFile(
-    path.join(stage, 'artifacts/1/plan.json'),
-    JSON.stringify(
-      options.tasks ?? [
-        {
-          summary: 'Add the lint gate',
-          scope: 'Configure the lint gate and its check.',
-          completionCriteria: ['The check runs in CI.'],
-          prerequisites: [],
-        },
-        {
-          summary: 'Document the gate',
-          scope: 'Extend the contribution guide.',
-          completionCriteria: ['The guide names the gate.'],
-          prerequisites: [0],
-        },
-      ],
-    ),
-  );
+  const tasks = options.tasks ?? [
+    {
+      summary: 'Add the lint gate',
+      scope: 'Configure the lint gate and its check.',
+      completionCriteria: ['The check runs in CI.'],
+      prerequisites: [],
+    },
+    {
+      summary: 'Document the gate',
+      scope: 'Extend the contribution guide.',
+      completionCriteria: ['The guide names the gate.'],
+      prerequisites: [0],
+    },
+  ];
+  await writeFile(path.join(stage, 'artifacts/1/plan.json'), JSON.stringify(tasks));
+
+  // The retained preparation checkout the first implementation continues.
+  const preparationHead = '1'.repeat(40);
+  const preparationBranch = options.preparationBranch ?? 'task/NEX-1';
+  if (options.missingPreparation !== true) {
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/prepared-repository.json'),
+      JSON.stringify({
+        repository: '/origin/repository.git',
+        repositoryWorkspace: { root },
+        branch: preparationBranch,
+        baseRevision: '0'.repeat(40),
+      }),
+    );
+  }
+  if (options.legacyPublication !== undefined || options.legacyReview === true) {
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/handoff.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [],
+        basis: null,
+        publications: options.legacyPublication === undefined ? [] : [options.legacyPublication],
+      }),
+    );
+  }
+  if (options.legacyReview === true) {
+    const reviews = path.join(root, 'parent/documentation-reviews');
+    await mkdir(reviews, { recursive: true });
+    await writeFile(path.join(reviews, `${'a'.repeat(40)}.json`), JSON.stringify({}));
+  }
   const selectionFile = path.join(directory, 'selection.json');
   await writeFile(selectionFile, JSON.stringify(fixtureSelection));
 
   let status = options.sourceStatus ?? 'Architecture';
   const transitions: JiraTransition[] = [
     { id: '41', name: 'Finish', to: { id: '5', name: 'Done' } },
-    { id: '42', name: 'Admit', to: { id: '6', name: options.implementationStatus ?? 'To Do' } },
+    { id: '42', name: 'Admit', to: { id: '6', name: implementationStatus } },
   ];
+  /** The created tickets in creation order: their identity and retained fields. */
+  const createdTickets: { id: string; key: string; fields: Record<string, unknown> }[] = [];
   const ticketStatuses = new Map<string, string>();
   const comments: JiraComment[] = [];
   const links: string[] = [];
   const ranked: string[] = [];
   const createdFields: Record<string, unknown>[] = [];
+  const workspacePointers: string[] = [];
   let linkAttempts = 0;
-  let created = 0;
+  let createAttempts = 0;
   let rankOrder = [...(options.initialRankOrder ?? [])];
   const { jira, calls: jiraCalls } = scriptedJira({
     readIssue: (issueId) => {
-      const index = Number(issueId.slice(2)) - 1;
+      if (issueId === '1') {
+        return ok({
+          id: issueId,
+          key: 'NEX-1',
+          fields: {
+            summary: 'Add a lint gate',
+            description: { type: 'doc', content: [] },
+            status: { id: '4', name: status },
+          },
+        });
+      }
+      const ticket = createdTickets.find((candidate) => candidate.id === issueId);
+      if (ticket === undefined) {
+        return { ok: false, fault: { message: `Unknown issue "${issueId}".` } };
+      }
       return ok({
         id: issueId,
-        key: issueId === '1' ? 'NEX-1' : `NEX-${String(index + 2)}`,
-        fields:
-          issueId === '1'
-            ? {
-                summary: 'Add a lint gate',
-                description: { type: 'doc', content: [] },
-                status: { id: '4', name: status },
-              }
-            : {
-                ...createdFields[index],
-                status: { id: '2', name: ticketStatuses.get(issueId) ?? 'To Do' },
-              },
+        key: ticket.key,
+        fields: {
+          ...ticket.fields,
+          status: {
+            id: '2',
+            name: ticketStatuses.get(issueId) ?? initialTicketStatus,
+          },
+        },
       });
     },
     readComments: () => ok([...comments]),
@@ -1332,49 +1303,52 @@ async function handoff(options: {
       comments.push(comment);
       return ok(comment);
     },
-    updateFields: () => ok(undefined),
+    updateFields: (issueId, updates) => {
+      if (updates.workspacePointer !== undefined && updates.workspacePointer !== null) {
+        workspacePointers.push(`${issueId}:${updates.workspacePointer}`);
+        const ticket = createdTickets.find((candidate) => candidate.id === issueId);
+        if (ticket !== undefined) ticket.fields['workspace'] = updates.workspacePointer;
+      }
+      return ok(undefined);
+    },
     transitionIssue: (issueId, transitionId) => {
       if (transitionId === '41') {
         status = 'Done';
       } else if (transitionId === '42') {
-        ticketStatuses.set(issueId, options.implementationStatus ?? 'To Do');
+        ticketStatuses.set(issueId, implementationStatus);
       }
       return ok(undefined);
     },
     createIssue: (fields) => {
+      createAttempts += 1;
+      if (options.failCreateOnce === true && createAttempts === 1) {
+        return { ok: false, fault: { message: 'the create request was rejected' } };
+      }
+      const number = createdTickets.length + 1;
+      const identity = { id: `10${String(number)}`, key: `NEX-${String(number + 1)}` };
       createdFields.push(fields);
-      const newKey = `NEX-${String(created + 2)}`;
-      if (!rankOrder.includes(newKey)) rankOrder.push(newKey);
-      if (options.loseCreateResponse && created === 0) {
+      createdTickets.push({
+        ...identity,
+        fields: {
+          summary: fields['summary'],
+          description: fields['description'],
+          labels: fields['labels'],
+          ...(number === 1 && options.firstTicketWorkspace !== undefined
+            ? { workspace: options.firstTicketWorkspace }
+            : {}),
+        },
+      });
+      ticketStatuses.set(identity.id, initialTicketStatus);
+      if (!rankOrder.includes(identity.key)) rankOrder.push(identity.key);
+      if (options.loseCreateResponse === true && createAttempts === 1) {
         // The provider accepted the creation but its response never reached Nexus.
-        created += 1;
         return { ok: false, fault: { message: 'the response was lost' } };
       }
-      created += 1;
-      return ok({ id: `10${String(created)}`, key: `NEX-${String(created + 1)}` });
-    },
-    searchIssues: (query) => {
-      if (!query.query.includes('labels =')) {
-        return ok(
-          rankOrder
-            .filter((key) => key.startsWith('OTHER-') || Number(key.split('-')[1]) <= created + 1)
-            .map((key) => ({ key, id: `10${String(Number(key.split('-')[1]) - 1)}` })),
-        );
-      }
-      if (query.query.includes('summary ='))
-        throw new Error('Summary equality is not supported by JQL');
-      // Only the planned task whose source-side identity the query names is reconciled.
-      const label = /labels = "([^"]+)"$/.exec(query.query)?.[1];
-      const matches = createdFields.flatMap((fields, index) =>
-        Array.isArray(fields.labels) && fields.labels.includes(label)
-          ? [{ id: `10${String(index + 1)}`, key: `NEX-${String(index + 2)}` }]
-          : [],
-      );
-      return ok(matches);
+      return ok(identity);
     },
     linkIssues: (fromIssueId, toIssueId, linkType) => {
       linkAttempts += 1;
-      if (options.failLinkOnce && linkAttempts === 1) {
+      if (options.failLinkOnce === true && linkAttempts === 1) {
         return { ok: false, fault: { message: 'the link could not be written' } };
       }
       links.push(`${fromIssueId}->${toIssueId} (${linkType})`);
@@ -1382,268 +1356,102 @@ async function handoff(options: {
     },
     rankIssue: (issueId, target) => {
       ranked.push(`${issueId} after ${'after' in target ? target.after : target.before}`);
-      const key = `NEX-${String(Number(issueId.slice(2)) + 1)}`;
-      rankOrder = rankOrder.filter((candidate) => candidate !== key);
-      if ('after' in target) rankOrder.splice(rankOrder.indexOf(target.after) + 1, 0, key);
+      const ticket = createdTickets.find((candidate) => candidate.id === issueId);
+      if (ticket === undefined) {
+        return { ok: false, fault: { message: `Unknown issue "${issueId}".` } };
+      }
+      rankOrder = rankOrder.filter((candidate) => candidate !== ticket.key);
+      if ('after' in target) rankOrder.splice(rankOrder.indexOf(target.after) + 1, 0, ticket.key);
       return ok(undefined);
     },
+    searchIssues: (query) => {
+      if (query.query.includes('labels = ')) {
+        const label = /labels = "([^"]+)"$/.exec(query.query)?.[1];
+        return ok(
+          createdTickets
+            .filter(
+              (ticket) =>
+                Array.isArray(ticket.fields['labels']) &&
+                (ticket.fields['labels'] as readonly string[]).includes(label ?? ''),
+            )
+            .map((ticket) => ({ id: ticket.id, key: ticket.key })),
+        );
+      }
+      if (query.query.includes('key in (')) {
+        const keys = [...query.query.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+        return ok(
+          createdTickets
+            .filter((ticket) => keys.includes(ticket.key))
+            .map((ticket) => ({ id: ticket.id, key: ticket.key })),
+        );
+      }
+      return ok(
+        rankOrder.map((key) => ({
+          key,
+          id: createdTickets.find((ticket) => ticket.key === key)?.id ?? `9${key}`,
+        })),
+      );
+    },
   });
-  const committedPaths: string[] = [];
   const failures: string[] = [];
-  const head = '2'.repeat(40);
-  const mergeRevision = '3'.repeat(40);
+  const checkoutState = (head: string) =>
+    repositoryState({
+      remoteUrl: '/origin/repository.git',
+      branch: options.checkoutBranch ?? preparationBranch,
+      headRevision: head,
+    });
   const { git } = scriptedGit(
-    [
-      repositoryState({
-        branch: options.baseBranch ? 'main' : 'task/NEX-1-architecture',
-        headRevision: head,
-        trackedChanges: true,
-      }),
-    ],
+    [checkoutState(preparationHead), checkoutState(options.headAfterFirst ?? preparationHead)],
     {
-      readFileAtRevision: async (_repository, _revision, file) =>
-        ok(await readFile(path.join(worktree, file), 'utf8')),
-      fetchRevision: () => ok('1'.repeat(40)),
-      readMergeBase: () => ok('1'.repeat(40)),
-      readChangedPaths: () =>
-        options.emptyPublication || (options.emptyAfterMerge && merged)
-          ? ok([])
-          : ok([
-              'docs/architecture.md',
-              'docs/requirements.md',
-              ...(options.extraPublishedPath ? [options.extraPublishedPath] : []),
-            ]),
-      readDiff: () =>
-        ok('diff --git a/docs/architecture.md b/docs/architecture.md\n+Accepted architecture'),
-      commitPaths: (_repository, paths) => {
-        committedPaths.push(...paths);
-        return ok({ branch: 'task/NEX-1-architecture', headRevision: head });
+      readFileAtRevision: async (_repository, _revision, file) => {
+        const content = await readFile(path.join(worktree, file), 'utf8');
+        return ok(content);
       },
-      pushBranch: () => ok({ branch: 'task/NEX-1-architecture', headRevision: head }),
-    },
-  );
-  let merged = false;
-  let autoMerge = false;
-  let pullRequests = 0;
-  const reviews: GitHubReview[] = options.negativeReview
-    ? [
-        {
-          id: 1,
-          author: 'nexus-lens',
-          commit_id: head,
-          state: 'CHANGES_REQUESTED',
-          body: 'Repair inconsistent requirements.',
-        },
-      ]
-    : [];
-  const checks: CheckObservation[] = options.negativeCheck
-    ? [
-        {
-          id: 1,
-          revision: head,
-          name: 'Nexus Lens review',
-          producer: { id: 777, slug: null, name: 'Nexus Lens' },
-          status: 'completed',
-          conclusion: 'failure',
-        },
-      ]
-    : [];
-  const pullRequestUrl = 'https://github.com/owner/repository/pull/9';
-  const pullRequestState = () => ({
-    number: 9,
-    url: pullRequestUrl,
-    state: merged ? ('closed' as const) : ('open' as const),
-    merged,
-    headBranch: 'task/NEX-1-architecture',
-    baseBranch: 'main',
-    headRevision: options.mergedAtAnotherRevision ? 'e'.repeat(40) : head,
-    mergeRevision: merged ? mergeRevision : null,
-    autoMergeEnabled: autoMerge,
-  });
-  let postMergeObservations = 0;
-  const { github } = scriptedGitHub({
-    findPullRequests: () => ok(pullRequests > 0 ? [{ number: 9, url: pullRequestUrl }] : []),
-    createPullRequest: () => {
-      pullRequests += 1;
-      return ok({ number: 9, url: pullRequestUrl, headRevision: head });
-    },
-    readPullRequest: () => ok(pullRequestState()),
-    readConversation: () => ok({ comments: [], reviews: [...reviews], reviewComments: [] }),
-    publishReview: (_repository, review) => {
-      reviews.push({
-        id: reviews.length + 1,
-        state: 'APPROVED',
-        body: review.body,
-        commit_id: review.revision,
-        author: 'nexus-lens',
-      });
-      return ok({ id: reviews.length, url: `${pullRequestUrl}#review` });
-    },
-    readChecks: () => ok([...checks]),
-    publishReviewCheck: (_repository, publication) => {
-      checks.push({
-        id: checks.length + 1,
-        revision: publication.revision,
-        name: publication.name,
-        producer: { id: 777, slug: null, name: 'Nexus Lens' },
-        status: 'completed',
-        conclusion: publication.result,
-      });
-      return ok({ id: checks.length });
-    },
-    requestAutoMerge: () => {
-      autoMerge = true;
-      merged = true;
-      return ok(undefined);
-    },
-    readRequiredChecks: () =>
-      ok({
-        revision: head,
-        checks: [
-          {
-            name: 'Nexus Lens review',
-            status: 'completed',
-            conclusion: 'success',
-            evidenceUrl: `${pullRequestUrl}#checks`,
-          },
-        ],
-      }),
-    readWorkflowRuns: (_repository, revision) => {
-      postMergeObservations += 1;
-      return ok([
-        {
-          id: 5,
-          name: 'validate.yml',
-          path: 'validate.yml',
-          revision,
-          status: 'completed',
-          conclusion:
-            options.failPostMergeOnce && postMergeObservations === 1 ? 'failure' : 'success',
-          jobs: [],
-        },
-      ]);
-    },
-  });
-  // Reconciliation and rank searches pass through the actual adapter request. The controlled
-  // transport enforces Jira's supported Summary operators rather than accepting summary equality.
-  const protocolJira = createJiraAdapter(
-    {
-      connection: { apiBase: 'https://jira.example.test', apiToken: 'test-token' },
-      project: 'NEX',
-      fields: { workspacePointer: 'workspace', pullRequest: 'pr' },
-    },
-    async (request) => {
-      const body = JSON.parse(request.body ?? '{}') as { jql: string };
-      expect(body.jql).not.toMatch(/summary\s*=/i);
-      expect(body.jql).toMatch(/ORDER BY Rank ASC$/i);
-      const found = await jira.searchIssues({
-        query: body.jql.replace(/ ORDER BY Rank ASC$/i, ''),
-        orderBy: 'Rank ASC',
-      });
-      return found.ok
-        ? { status: 200, body: JSON.stringify({ issues: found.value, isLast: true }) }
-        : { status: 400, body: JSON.stringify({ errorMessages: [found.fault.message] }) };
+      readMergeBase: (_repository, base) =>
+        ok(options.rewrittenPreparation === true ? '9'.repeat(40) : base),
     },
   );
   const handoffAction = createImplementationHandoff({
     selectionFile,
     project: 'NEX',
-    repository: 'owner/repository',
-    baseBranch: 'main',
-    reviewCheck: 'Nexus Lens review',
-    nexusLens: { appId: 777, login: 'nexus-lens' },
-    postMergeChecks: [{ name: 'validate', workflow: 'validate.yml' }],
+    workspaceRoot,
+    workspacePointerField: 'workspace',
     architectureStatus: 'Architecture',
     implementation: {
       issueType: 'Task',
       labels: ['implementation'],
-      status: options.implementationStatus ?? 'To Do',
+      status: implementationStatus,
       linkType: 'Relates',
     },
     doneStatus: 'Done',
-    completion: { pollIntervalSeconds: 1, waitLimitSeconds: 30 },
     git,
-    github,
-    jira: { ...jira, searchIssues: protocolJira.searchIssues },
+    jira,
     publish: (event) => {
       const data = event.data as { readonly reason?: unknown };
       if (event.type === 'failed' && typeof data.reason === 'string') {
         failures.push(data.reason);
       }
     },
-    wait: () => Promise.resolve(),
   });
-  if (
-    options.documents &&
-    (options.sourceStatus === undefined || options.sourceStatus === 'Architecture') &&
-    !options.baseBranch &&
-    !options.extraPublishedPath &&
-    !options.omitAssessment
-  ) {
-    if (options.retainedRemovedVerdict === true) {
-      // A retained assessment carrying the removed verdict is not an approval, a rejection or an
-      // absent report; its read fails validation instead of being translated.
-      const reportFile = path.join(root, documentationReviewsDirectory, `${head}.json`);
-      await mkdir(path.dirname(reportFile), { recursive: true });
-      await writeFile(
-        reportFile,
-        `${JSON.stringify(
-          {
-            profile: 'nexus-astra',
-            headRevision: head,
-            verdict: 'inconclusive',
-            summary: 'The available evidence could not settle the assessment.',
-            findings: [],
-            priorFindings: [],
-          },
-          null,
-          2,
-        )}\n`,
-        'utf8',
-      );
-    }
-    await createReviewPreparationPublication({
-      selectionFile,
-      baseBranch: 'main',
-      git,
-      reviewerProfile: 'nexus-astra',
-      reviewer: {
-        run: async () =>
-          ok({
-            output: JSON.stringify({
-              verdict: options.reviewerVerdict ?? 'approved',
-              summary: 'Assessed the exact assembled documentation revision.',
-              findings:
-                options.reviewerVerdict === 'changesRequested'
-                  ? [
-                      {
-                        id: 'NEX-1-doc-finding-1',
-                        title: 'The publication contradicts the accepted requirements',
-                        severity: 'blocking',
-                        basis: 'The publication must match the accepted requirements revision.',
-                        evidence: 'The Architecture document restates a rejected requirement.',
-                        impact: 'Implementation tickets would be created from a contradiction.',
-                        repairGuidance:
-                          'Align the Architecture document with the accepted requirement.',
-                        locations: [{ path: 'docs/architecture.md', line: 1 }],
-                      },
-                    ]
-                  : [],
-              priorFindings: [],
-            }),
-          }),
-      },
-      publish: () => undefined,
-    })();
-    committedPaths.length = 0; // Count the parent publication commit request separately.
-  }
   const firstOutcome = await handoffAction();
-  if (options.ticketStatusAfterFirst) ticketStatuses.set('101', options.ticketStatusAfterFirst);
+  if (options.ticketStatusAfterFirst !== undefined) {
+    ticketStatuses.set('101', options.ticketStatusAfterFirst);
+  }
+  if (options.changePlanOnRetry === true) {
+    await writeFile(
+      path.join(stage, 'artifacts/1/plan.json'),
+      JSON.stringify([{ ...(tasks[0] as object), summary: 'Changed first task' }, tasks[1]]),
+    );
+  }
   // A second invocation over the same retained state exercises repetition and reconciliation.
   const outcome = options.retry === true ? await handoffAction() : firstOutcome;
   // A handoff that failed before retaining identities wrote no record.
   let handoffRecord: {
-    readonly tickets?: readonly { readonly key: string; readonly summary: string }[];
+    readonly tickets?: readonly {
+      readonly key: string;
+      readonly summary: string;
+      readonly admission?: { readonly initialStatus: string; readonly completed: boolean };
+    }[];
   } = {};
   try {
     handoffRecord = JSON.parse(
@@ -1654,27 +1462,58 @@ async function handoff(options: {
       throw error;
     }
   }
+  /** Every retained implementation input, in the plan order the issues were handed off. */
+  const inputs: unknown[] = [];
+  for (const ticket of handoffRecord.tickets ?? []) {
+    try {
+      inputs.push(
+        JSON.parse(
+          await readFile(
+            path.join(workspaceRoot, 'NEX', ticket.key, implementationInputDeclaration.file),
+            'utf8',
+          ),
+        ),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+  const files: string[] = [];
+  for (const ticket of createdTickets) {
+    try {
+      await stat(path.join(workspaceRoot, 'NEX', ticket.key, implementationInputDeclaration.file));
+      files.push(ticket.key);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
   return {
     outcome,
     firstOutcome,
-    ticketStatus: () => ticketStatuses.get('101'),
+    workspaceRoot,
+    ticketStatus: (index = 0) => ticketStatuses.get(createdTickets[index]?.id ?? '101'),
     tickets: handoffRecord.tickets ?? [],
     status: () => status,
     links,
     ranked,
     rankOrder,
     comments,
-    committedPaths,
     createdFields,
     failures,
     jiraCalls,
-    published: { reviews: reviews.length, checks: checks.length, autoMerge, pullRequests },
+    inputs,
+    workspacePointers,
+    files,
   };
 }
 
 describe('architecture implementation handoff', () => {
-  it('creates the linked tickets, ranks the dependent and closes the original', async () => {
-    const handedOff = await handoff({ documents: false });
+  it('creates distinct linked tickets in dependency order and closes the original', async () => {
+    const handedOff = await handoff({});
 
     expect(handedOff.failures).toEqual([]);
     expect(handedOff.outcome).toBe('handed-off');
@@ -1685,143 +1524,126 @@ describe('architecture implementation handoff', () => {
     expect(handedOff.links).toEqual(['101->1 (Relates)', '102->1 (Relates)']);
     expect(handedOff.status()).toBe('Done');
     expect(handedOff.comments).toHaveLength(1);
-    // A skip whose only output is the implementation plan publishes no empty documentation PR.
-    expect(handedOff.committedPaths).toEqual([]);
-    expect(handedOff.published.reviews).toBe(0);
-    expect(handedOff.published.checks).toBe(0);
-    expect(handedOff.published.pullRequests).toBe(0);
+    expect(JSON.stringify(handedOff.comments[0]?.body)).toContain('Preparation complete');
+    expect(JSON.stringify(handedOff.comments[0]?.body)).not.toContain('Documentation PR');
+    // Every ticket was admitted to the configured ready status.
+    expect(handedOff.ticketStatus()).toBe('To Do');
+    expect(handedOff.ticketStatus(1)).toBe('To Do');
+    expect(handedOff.tickets[1]?.admission).toEqual({
+      initialStatus: 'To Do',
+      completed: true,
+    });
   });
 
-  it('publishes changed documents as a documentation-only pull request first', async () => {
-    const handedOff = await handoff({ documents: true });
+  it('writes each ticket an implementation input and continues preparation only in the first', async () => {
+    const handedOff = await handoff({});
 
-    expect(handedOff.failures).toEqual([]);
-    // The PR merged with its required checks before any ticket was created and linked.
+    expect(handedOff.files).toEqual(['NEX-2', 'NEX-3']);
+    expect(handedOff.workspacePointers).toEqual([
+      expect.stringContaining(path.join('NEX', 'NEX-2')),
+      expect.stringContaining(path.join('NEX', 'NEX-3')),
+    ]);
+    const [first, second] = handedOff.inputs as readonly {
+      readonly sourceKey: string;
+      readonly plannedTask: number;
+      readonly planIdentity: string;
+      readonly prerequisites: readonly {
+        readonly key: string;
+        readonly workspace: { readonly root: string };
+      }[];
+      readonly continuation: {
+        readonly workspace: { readonly branch: string };
+        readonly headRevision: string;
+      } | null;
+    }[];
+    expect(first).toMatchObject({
+      sourceKey: 'NEX-1',
+      plannedTask: 0,
+      prerequisites: [],
+    });
+    expect(first?.planIdentity).toBe(second?.planIdentity);
+    expect(first?.continuation).toMatchObject({
+      workspace: { branch: 'task/NEX-1' },
+      headRevision: '1'.repeat(40),
+    });
+    expect(second).toMatchObject({
+      plannedTask: 1,
+      prerequisites: [
+        {
+          key: 'NEX-2',
+          workspace: { root: path.join(handedOff.workspaceRoot, 'NEX', 'NEX-2') },
+        },
+      ],
+    });
+    expect(second?.continuation).toBeNull();
+  });
+
+  it('records each prerequisite ticket workspace reference in its dependents input', async () => {
+    // A ticket that already records its own workspace root keeps it; its dependents name that
+    // recorded reference so preparation reads the prerequisite's evidence from the same place.
+    const recorded = path.join(await temporaryDirectory(), 'recorded-first-ticket');
+    const handedOff = await handoff({ firstTicketWorkspace: recorded });
+
     expect(handedOff.outcome).toBe('handed-off');
-    expect(handedOff.tickets).toHaveLength(2);
-    expect(handedOff.status()).toBe('Done');
+    const second = JSON.parse(
+      await readFile(
+        path.join(handedOff.workspaceRoot, 'NEX', 'NEX-3', implementationInputDeclaration.file),
+        'utf8',
+      ),
+    ) as {
+      readonly prerequisites: readonly {
+        readonly key: string;
+        readonly workspace: { readonly root: string };
+      }[];
+    };
+    expect(second.prerequisites).toEqual([{ key: 'NEX-2', workspace: { root: recorded } }]);
+    expect(
+      JSON.parse(await readFile(path.join(recorded, implementationInputDeclaration.file), 'utf8')),
+    ).toMatchObject({ sourceKey: 'NEX-1', plannedTask: 0 });
   });
 
-  it('publishes the accepted document set of every stage from the shared branch', async () => {
-    const handedOff = await handoff({ documents: true });
-
-    // The requirements stage's changed document is published together with the architecture one,
-    // and the shared branch already carries exactly the accepted set: the publication commits no
-    // second copy and never absorbs the whole worktree.
-    expect(handedOff.committedPaths).toEqual([]);
-    expect(handedOff.failures).toEqual([]);
-    expect(handedOff.published.reviews).toBe(1);
-    expect(handedOff.published.checks).toBe(1);
-    expect(handedOff.published.autoMerge).toBe(true);
-  });
-
-  it('carries the merged revision and the retained prototype into every ticket', async () => {
+  it('carries the accepted document and prototype references into every ticket', async () => {
     const handedOff = await handoff({
       documents: true,
       prototype: { branch: 'task/NEX-1-prototype', revision: 'c'.repeat(40) },
     });
 
+    expect(handedOff.failures).toEqual([]);
     expect(handedOff.outcome).toBe('handed-off');
     expect(handedOff.comments).toHaveLength(1);
     const description = JSON.stringify(handedOff.createdFields[0]?.description);
-    const labels = handedOff.createdFields[0]?.labels as readonly string[];
+    const labels = handedOff.createdFields[0]?.['labels'] as readonly string[];
     expect(description).toContain('Source: NEX-1 (planned task 1 of 2)');
     expect(description).toContain('docs/requirements.md (requirements revision ' + 'a'.repeat(40));
     expect(description).toContain('docs/architecture.md (architecture revision ' + 'b'.repeat(40));
-    expect(description).toContain(`Documentation merge revision: ${'3'.repeat(40)}`);
     expect(description).toContain(
       `Retained prototype: branch task/NEX-1-prototype, revision ${'c'.repeat(40)}`,
     );
+    expect(description).not.toContain('Documentation merge revision');
     // The source-side identity label ties the created ticket to its planned task.
     expect(labels).toEqual(['implementation', 'nexus-source-NEX-1-1']);
     const dependentDescription = JSON.stringify(handedOff.createdFields[1]?.description);
     expect(dependentDescription).toContain('Prerequisites: NEX-2');
   });
 
-  it('refuses to publish from the configured base branch', async () => {
-    const handedOff = await handoff({ documents: true, baseBranch: true });
-
-    expect(handedOff.outcome).toBe('failed');
-    expect(handedOff.tickets).toHaveLength(0);
-    expect(handedOff.status()).toBe('Architecture');
-  });
-
-  it('does not transfer a merge observed at another revision', async () => {
-    const handedOff = await handoff({ documents: true, mergedAtAnotherRevision: true });
-
-    expect(handedOff.outcome).toBe('failed');
-    expect(handedOff.tickets).toHaveLength(0);
-    expect(handedOff.status()).toBe('Architecture');
-  });
-
-  it('requires a saved child assessment for the published revision instead of inventing approval', async () => {
-    const result = await handoff({ documents: true, omitAssessment: true });
-    expect(result.outcome).toBe('failed');
-    expect(result.published.reviews).toBe(0);
-    expect(result.published.checks).toBe(0);
-    expect(result.published.autoMerge).toBe(false);
-    expect(result.createdFields).toEqual([]);
-    expect(result.failures[0]).toContain('no retained Architecture-child review');
-  });
-
-  it.each(['negativeReview', 'negativeCheck'] as const)(
-    'preserves %s for the publication head instead of manufacturing approval',
-    async (negative) => {
-      const result = await handoff({ documents: true, [negative]: true });
-      expect(result.outcome).toBe('failed');
-      expect(result.createdFields).toEqual([]);
-      expect(result.published.autoMerge).toBe(false);
-      expect(result.published.reviews).toBe(negative === 'negativeReview' ? 1 : 0);
-      expect(result.published.checks).toBe(negative === 'negativeCheck' ? 1 : 0);
-      expect(result.failures[0]).toContain('negative review evidence');
-    },
-  );
-
-  it('preserves a changes-requested documentation assessment without authorizing merge or tickets', async () => {
-    const result = await handoff({ documents: true, reviewerVerdict: 'changesRequested' });
-    expect(result.outcome).toBe('failed');
-    expect(result.published.reviews).toBe(1);
-    expect(result.published.checks).toBe(1);
-    expect(result.published.autoMerge).toBe(false);
-    expect(result.createdFields).toEqual([]);
-    expect(result.failures[0]).toContain('Documentation review changesRequested');
-  });
-
-  it('fails a retained documentation review carrying the removed inconclusive verdict', async () => {
-    await expect(handoff({ documents: true, retainedRemovedVerdict: true })).rejects.toThrow(
-      /does not match its declared content type/,
-    );
-  });
-
-  it('checks the whole publication diff for previously committed unrelated paths', async () => {
-    const result = await handoff({ documents: true, extraPublishedPath: 'code.js' });
-    expect(result.outcome).toBe('failed');
-    expect(result.published.pullRequests).toBe(0);
-    expect(result.createdFields).toEqual([]);
-  });
-
-  it.each([false, true])(
-    'honors a human pause before documentation or ticket effects (documents=%s)',
-    async (documents) => {
-      const result = await handoff({ documents, sourceStatus: 'Waiting for Feedback' });
-      expect(result.outcome).toBe('failed');
-      expect(result.committedPaths).toEqual([]);
-      expect(result.createdFields).toEqual([]);
-      expect(result.published.pullRequests).toBe(0);
-      expect(result.status()).toBe('Waiting for Feedback');
-    },
-  );
-
   it('carries concrete accepted existing-document and skip references through a no-change handoff', async () => {
-    const result = await handoff({ documents: false, skipped: true });
+    const result = await handoff({ skipped: true });
+    expect(result.failures).toEqual([]);
     expect(result.outcome).toBe('handed-off');
-    const description = JSON.stringify(result.createdFields[0]?.description);
+    const description = JSON.stringify(result.createdFields[0]?.['description']);
     expect(description).toContain(
       `docs/existing.md (architecture existing document revision ${'f'.repeat(40)})`,
     );
     expect(description).toContain('architecture/artifacts/1/result.json');
     expect(description).toContain('architecture/artifacts/1/evaluation.json');
-    expect(result.published.pullRequests).toBe(0);
+  });
+
+  it('honors a human pause before any ticket effect', async () => {
+    const result = await handoff({ sourceStatus: 'Waiting for Feedback' });
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(result.status()).toBe('Waiting for Feedback');
   });
 
   it('ranks a branching dependent after every prerequisite in actual source order', async () => {
@@ -1832,15 +1654,14 @@ describe('architecture implementation handoff', () => {
       prerequisites,
     }));
     const result = await handoff({
-      documents: false,
       tasks,
       initialRankOrder: ['NEX-2', 'OTHER-9', 'NEX-4', 'NEX-5', 'NEX-3'],
     });
     expect(result.outcome).toBe('handed-off');
     expect(result.rankOrder).toEqual(['NEX-2', 'OTHER-9', 'NEX-4', 'NEX-3', 'NEX-5']);
     expect(result.ranked).toEqual(['104 after NEX-3']);
-    expect(JSON.stringify(result.createdFields[3]?.description)).toContain(
-      'Prerequisites: NEX-3, NEX-4',
+    expect(JSON.stringify(result.createdFields[3]?.['description'])).toContain(
+      'Prerequisites: NEX-3, NEX-4, NEX-2',
     );
   });
 
@@ -1851,65 +1672,49 @@ describe('architecture implementation handoff', () => {
       completionCriteria: ['complete'],
       prerequisites,
     }));
-    const result = await handoff({ documents: false, tasks, retry: true });
+    const result = await handoff({ tasks, retry: true });
     expect(result.outcome).toBe('handed-off');
-    expect(result.createdFields.map((fields) => fields.summary)).toEqual(['B', 'A']);
+    expect(result.createdFields.map((fields) => fields['summary'])).toEqual(['B', 'A']);
     expect(result.tickets.map((ticket) => ticket.summary)).toEqual(['A', 'B']);
-    expect(JSON.stringify(result.createdFields[1]?.description)).toContain('Prerequisites: NEX-2');
+    expect(JSON.stringify(result.createdFields[1]?.['description'])).toContain(
+      'Prerequisites: NEX-2',
+    );
+    const inputs = result.inputs as readonly {
+      readonly plannedTask: number;
+      readonly continuation: unknown;
+    }[];
+    // Task B stands first in stable topological order, so it carries the preparation continuation.
+    expect(inputs[1]).toMatchObject({ plannedTask: 1 });
+    expect(inputs[1]?.continuation).not.toBeNull();
+    expect(inputs[0]).toMatchObject({ plannedTask: 0, continuation: null });
   });
 
-  it('rejects a cyclic dependency graph before publication or ticket creation', async () => {
+  it('rejects a cyclic dependency graph before creating tickets', async () => {
     const tasks = [[1], [0]].map((prerequisites, index) => ({
       summary: String.fromCharCode(65 + index),
       scope: 'bounded',
       completionCriteria: ['complete'],
       prerequisites,
     }));
-    const result = await handoff({ documents: true, tasks });
+    const result = await handoff({ tasks });
     expect(result.outcome).toBe('failed');
-    expect(result.committedPaths).toEqual([]);
     expect(result.createdFields).toEqual([]);
   });
 
   it.each([[[1]], [[4]], [[0]], [[0, 0]]])(
-    'rejects invalid or unordered prerequisite identities %j before publication',
+    'rejects invalid or unordered prerequisite identities %j before ticket creation',
     async (prerequisites) => {
       const tasks = [
         { summary: 'A', scope: 'bounded', completionCriteria: ['complete'], prerequisites },
       ];
-      const result = await handoff({ documents: true, tasks });
+      const result = await handoff({ tasks });
       expect(result.outcome).toBe('failed');
-      expect(result.committedPaths).toEqual([]);
       expect(result.createdFields).toEqual([]);
     },
   );
 
-  it('hands off accepted references without publishing an empty documentation diff', async () => {
-    const result = await handoff({ documents: true, emptyPublication: true });
-    expect(result.outcome).toBe('handed-off');
-    expect(result.published).toEqual({ reviews: 0, checks: 0, autoMerge: false, pullRequests: 0 });
-    expect(JSON.stringify(result.createdFields)).toContain('docs/requirements.md');
-  });
-
-  it('finishes an existing publication’s checks when the merge has made the diff empty', async () => {
-    const result = await handoff({
-      documents: true,
-      emptyAfterMerge: true,
-      failPostMergeOnce: true,
-      retry: true,
-    });
-    expect(result.firstOutcome).toBe('failed');
-    expect(result.outcome).toBe('handed-off');
-    expect(result.published.pullRequests).toBe(1);
-    expect(JSON.stringify(result.createdFields)).toContain(
-      `Documentation merge revision: ${'3'.repeat(40)}`,
-    );
-    expect(result.failures).toEqual([expect.stringContaining('post-merge check')]);
-  });
-
   it('finishes interrupted initial ticket admission', async () => {
     const result = await handoff({
-      documents: false,
       implementationStatus: 'Implementation',
       failLinkOnce: true,
       retry: true,
@@ -1923,7 +1728,6 @@ describe('architecture implementation handoff', () => {
     'preserves retained ticket human status %s before admission replay',
     async (humanStatus) => {
       const result = await handoff({
-        documents: false,
         implementationStatus: 'Implementation',
         failLinkOnce: true,
         retry: true,
@@ -1938,7 +1742,6 @@ describe('architecture implementation handoff', () => {
 
   it('preserves a human change after ticket admission has already completed', async () => {
     const result = await handoff({
-      documents: false,
       implementationStatus: 'Implementation',
       retry: true,
       ticketStatusAfterFirst: 'Waiting for Feedback',
@@ -1949,7 +1752,7 @@ describe('architecture implementation handoff', () => {
   });
 
   it('finishes a missing link for a retained ticket before handing off', async () => {
-    const handedOff = await handoff({ documents: false, failLinkOnce: true, retry: true });
+    const handedOff = await handoff({ failLinkOnce: true, retry: true });
 
     expect(handedOff.firstOutcome).toBe('failed');
     // Only the first attempt failed; the retry finished the missing link without another failure.
@@ -1964,7 +1767,7 @@ describe('architecture implementation handoff', () => {
   });
 
   it('reconciles an uncertain creation instead of duplicating the ticket', async () => {
-    const handedOff = await handoff({ documents: false, loseCreateResponse: true, retry: true });
+    const handedOff = await handoff({ loseCreateResponse: true, retry: true });
 
     expect(handedOff.firstOutcome).toBe('failed');
     expect(handedOff.outcome).toBe('handed-off');
@@ -1972,9 +1775,74 @@ describe('architecture implementation handoff', () => {
     expect(handedOff.links).toEqual(['101->1 (Relates)', '102->1 (Relates)']);
     // The retry searched for the planned task's source-side identity instead of creating again.
     expect(
-      handedOff.jiraCalls.some(
-        (call) => call.includes('labels = "nexus-source-NEX-1-1"') && !call.includes('summary ='),
-      ),
+      handedOff.jiraCalls.some((call) => call.includes('labels = "nexus-source-NEX-1-1"')),
     ).toBe(true);
+  });
+
+  it('creates no duplicate when the first create request failed outright', async () => {
+    const handedOff = await handoff({ failCreateOnce: true, retry: true });
+
+    expect(handedOff.firstOutcome).toBe('failed');
+    expect(handedOff.outcome).toBe('handed-off');
+    expect(handedOff.tickets.map((ticket) => ticket.key)).toEqual(['NEX-2', 'NEX-3']);
+    expect(handedOff.links).toEqual(['101->1 (Relates)', '102->1 (Relates)']);
+  });
+
+  it('requests attention when the retained preparation checkout is missing', async () => {
+    const result = await handoff({ missingPreparation: true });
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.failures.at(-1)).toContain('No retained preparation repository');
+  });
+
+  it('requests attention when the preparation checkout moved to another branch', async () => {
+    const result = await handoff({ checkoutBranch: 'task/somewhere-else' });
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.failures.at(-1)).toContain('reconcile it instead of selecting another branch');
+  });
+
+  it('refuses a rewritten preparation history on replay', async () => {
+    const result = await handoff({
+      headAfterFirst: '8'.repeat(40),
+      rewrittenPreparation: true,
+      retry: true,
+    });
+    expect(result.firstOutcome).toBe('handed-off');
+    expect(result.outcome).toBe('failed');
+    expect(result.failures.at(-1)).toContain('no longer in the retained branch history');
+  });
+
+  it('refuses a changed plan after the handoff froze its basis', async () => {
+    const result = await handoff({ failLinkOnce: true, changePlanOnRetry: true, retry: true });
+    expect(result.firstOutcome).toBe('failed');
+    expect(result.outcome).toBe('failed');
+    expect(result.failures.at(-1)).toContain('changed after the handoff froze its basis');
+  });
+
+  it('requires reconciliation of a retained preparation publication before new tickets', async () => {
+    const result = await handoff({
+      legacyPublication: {
+        kind: 'documentation-pr',
+        id: 'https://github.com/owner/repository/pull/7',
+      },
+    });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(result.status()).toBe('Architecture');
+    expect(result.failures.at(-1)).toContain('preparation-only documentation publication');
+    expect(result.failures.at(-1)).toContain('https://github.com/owner/repository/pull/7');
+  });
+
+  it('requires reconciliation of a retained documentation review before new tickets', async () => {
+    const result = await handoff({ legacyReview: true });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(result.status()).toBe('Architecture');
+    expect(result.failures.at(-1)).toContain('documentation review');
   });
 });

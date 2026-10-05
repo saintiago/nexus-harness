@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { completionArtifact, type CompletionOutput } from '../complete-task/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
@@ -13,6 +14,12 @@ import { deliveryArtifact } from '../deliver/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { roundArtifactPath } from '../artifacts.js';
 import { readRecord, writeRecord } from '../records.js';
+import {
+  implementationInputDeclaration,
+  type ImplementationInput,
+  type ImplementationPrerequisite,
+} from '../project/implementation-handoff/artifacts.js';
+import { handoffInputDisposition, handoffSourceKey } from '../project/state.js';
 import {
   applyTransition,
   readComments,
@@ -92,6 +99,11 @@ export type SelectWorkSettings = {
 /** A nonempty text field, or null for any other value. */
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/** One Jira JQL string literal. */
+function jqlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** True when the issue carries a description in its native source format. */
@@ -309,10 +321,11 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
   }
 
   /**
-   * The workspace this selection retains: the recorded workspace while it still exists, otherwise
-   * the stable project/issue path. A pointer this action did not write is reported.
+   * The issue workspace: retain an existing pointer, or use the stable project/issue path.
+   * Source handoff lookup keeps even a missing recorded root so unavailable evidence cannot be
+   * replaced by a different handoff. Invalid pointers request reconciliation.
    */
-  async function workspaceFor(issue: JiraIssue): Promise<Result<string>> {
+  async function workspaceFor(issue: JiraIssue, retainMissing = false): Promise<Result<string>> {
     const recorded = issue.fields[settings.workspacePointerField];
     if (recorded === undefined || recorded === null || recorded === '') {
       return ok(stableWorkspace(issue.key));
@@ -323,13 +336,230 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
           `"${settings.workspacePointerField}"; selection does not overwrite it.`,
       );
     }
-    return ok((await isDirectory(recorded)) ? recorded : stableWorkspace(issue.key));
+    return ok(
+      retainMissing || (await isDirectory(recorded)) ? recorded : stableWorkspace(issue.key),
+    );
+  }
+
+  /** A cleared pointer does not discard retained evidence; divergent pointers require reconciliation. */
+  function workspacePointerProblem(issue: JiraIssue, root: string): string | null {
+    const pointer = issue.fields[settings.workspacePointerField];
+    if (pointer === undefined || pointer === null || pointer === '') {
+      return null;
+    }
+    return typeof pointer !== 'string' ||
+      !path.isAbsolute(pointer) ||
+      path.resolve(pointer) !== path.resolve(root)
+      ? `Issue ${issue.key} records a workspace pointer conflicting with its retained workspace "${root}"; reconcile the references before admission.`
+      : null;
   }
 
   /** The parent handoff record for one issue workspace, created when it does not exist yet. */
   async function readHandoff(root: string): Promise<ParentHandoff | null> {
     const file = path.join(root, parentAreaDirectory, handoffFile);
     return readRecord(file, parentHandoffDeclaration);
+  }
+
+  /** One prerequisite's retained completion evidence, or null when it is absent or mismatched. */
+  async function prerequisiteCompletion(
+    prerequisite: ImplementationPrerequisite,
+  ): Promise<CompletionOutput | null> {
+    const root = prerequisite.workspace.root;
+    const round = await readRecord(path.join(root, currentRoundFile), currentRoundDeclaration);
+    if (round === null) {
+      return null;
+    }
+    const completion = await readRecord(
+      roundArtifactPath(root, round.number, completionArtifact.pathFromArtifactsRoot),
+      { file: completionArtifact.pathFromArtifactsRoot, schema: completionArtifact.schema },
+    );
+    return completion !== null && completion.taskKey === prerequisite.key ? completion : null;
+  }
+
+  /**
+   * Why one handoff ticket's parent-side effects are not durable yet, or null when they are
+   * finished or the record cannot attribute them. The source handoff owns the ticket's link, rank
+   * and admission acknowledgements; an interrupted handoff reconciles them before implementation
+   * starts. A record that does not name the ticket (legacy or externally created) leaves the
+   * retained input authoritative.
+   */
+  async function handoffAdmissionProblem(
+    input: ImplementationInput,
+    key: string,
+  ): Promise<{ readonly kind: 'defer' | 'attention'; readonly reason: string } | null> {
+    const file = path.join(input.sourceWorkspace.root, parentAreaDirectory, handoffFile);
+    let source: ParentHandoff | null;
+    try {
+      source = await readRecord(file, parentHandoffDeclaration);
+    } catch (error) {
+      return {
+        kind: 'attention',
+        reason:
+          `Issue ${key} traces its handoff to an unreadable source handoff record at "${file}": ` +
+          `${messageOf(error)}.`,
+      };
+    }
+    const ticket = source?.tickets.find((entry) => entry.key === key);
+    if (ticket === undefined) {
+      return null;
+    }
+    if (
+      ticket.linked !== true ||
+      ticket.admission?.completed !== true ||
+      (input.prerequisites.length > 0 && ticket.ranked !== true)
+    ) {
+      return {
+        kind: 'defer',
+        reason:
+          `Issue ${key} retains its implementation input while its recorded handoff effects are ` +
+          'not finished; the handoff reconciles its link, rank and admission before implementation ' +
+          'is admitted.',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Admit one implementation issue or explain why it cannot be claimed yet. A linked implementation
+   * issue waits for every prerequisite's source completion and retained merge/check evidence;
+   * source Done alone is insufficient. A dependent with unfinished prerequisite work is deferred
+   * while a malformed input or an unknown prerequisite identity requests attention. A ticket
+   * carrying the handoff's source identity without its retained input is deferred until the handoff
+   * retains it, and one whose recorded handoff effects are unfinished is deferred as well; neither
+   * is ever treated as an ordinary task.
+   */
+  async function implementationAdmission(
+    issue: JiraIssue,
+    root: string,
+    retainedSourceWorkspace?: Selection['handoffSourceWorkspace'],
+  ): Promise<
+    | { readonly kind: 'admitted'; readonly handoffSourceWorkspace?: { readonly root: string } }
+    | { readonly kind: 'defer' | 'attention'; readonly reason: string }
+  > {
+    const inputFile = path.join(root, implementationInputDeclaration.file);
+    let input: ImplementationInput | null;
+    try {
+      input = await readRecord(inputFile, implementationInputDeclaration);
+    } catch (error) {
+      return {
+        kind: 'attention',
+        reason:
+          `Issue ${issue.key} retains an unreadable implementation input at "${inputFile}": ` +
+          `${messageOf(error)}.`,
+      };
+    }
+    if (input === null) {
+      // A ticket created by the Architecture handoff is known by its source-side identity label
+      // and the source handoff record that owns its effects. Until the handoff retains its input
+      // it is not ordinary delivery work: claiming it would lose the preparation continuation or
+      // bypass prerequisite admission. Only a record without the current contract's frozen basis
+      // and with finished link/admission effects establishes an earlier-contract exception.
+      const sourceKey = handoffSourceKey(issue.fields.labels);
+      if (sourceKey === null) {
+        return { kind: 'admitted' };
+      }
+      const found = await jira.searchIssues({
+        query: `key in (${jqlString(sourceKey)})`,
+        orderBy: 'Rank ASC',
+      });
+      if (!found.ok) {
+        throw new Error(found.fault.message);
+      }
+      const identity = found.value.find((entry) => entry.key === sourceKey);
+      if (identity === undefined) {
+        return {
+          kind: 'attention',
+          reason: `The handoff source ${sourceKey} of issue ${issue.key} was not found; reconcile its retained workspace.`,
+        };
+      }
+      const source = await readIssue(jira, identity.id);
+      const sourceWorkspace =
+        retainedSourceWorkspace === undefined
+          ? await workspaceFor(source, true)
+          : ok(retainedSourceWorkspace.root);
+      if (retainedSourceWorkspace !== undefined) {
+        const conflict = workspacePointerProblem(source, retainedSourceWorkspace.root);
+        if (conflict !== null) {
+          return { kind: 'attention', reason: conflict };
+        }
+      }
+      if (!sourceWorkspace.ok) {
+        return { kind: 'attention', reason: sourceWorkspace.fault.message };
+      }
+      const disposition = await handoffInputDisposition({
+        sourceWorkspace: { root: sourceWorkspace.value },
+        labels: issue.fields.labels,
+        ticketKey: issue.key,
+      });
+      if (disposition.kind === 'ordinary' || disposition.kind === 'legacy') {
+        return { kind: 'admitted', handoffSourceWorkspace: { root: sourceWorkspace.value } };
+      }
+      return disposition.kind === 'incomplete'
+        ? {
+            kind: 'defer',
+            reason:
+              `Issue ${issue.key} carries the implementation handoff's source identity but the ` +
+              'handoff has not retained its implementation input yet; the handoff completes its ' +
+              'effects before implementation is admitted.',
+          }
+        : {
+            kind: 'attention',
+            reason:
+              `Issue ${issue.key} carries the implementation handoff's source identity but ` +
+              `retains no implementation input, and ${disposition.reason}; reconcile the retained ` +
+              'handoff before selection.',
+          };
+    }
+    const handoff = await handoffAdmissionProblem(input, issue.key);
+    if (handoff !== null) {
+      return handoff;
+    }
+    const prerequisiteKeys = input.prerequisites.map((prerequisite) => prerequisite.key);
+    if (prerequisiteKeys.length === 0) {
+      return { kind: 'admitted' };
+    }
+    const found = await jira.searchIssues({
+      query: `key in (${prerequisiteKeys.map((key) => jqlString(key)).join(', ')})`,
+      orderBy: 'Rank ASC',
+    });
+    if (!found.ok) {
+      throw new Error(found.fault.message);
+    }
+    const identities = new Map(found.value.map((identity) => [identity.key, identity]));
+    for (const recorded of input.prerequisites) {
+      const key = recorded.key;
+      const identity = identities.get(key);
+      if (identity === undefined) {
+        return {
+          kind: 'attention',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} was not found in the project; the ` +
+            'retained implementation input cannot be satisfied.',
+        };
+      }
+      const prerequisite = await readIssue(jira, identity.id);
+      const conflict = workspacePointerProblem(prerequisite, recorded.workspace.root);
+      if (conflict !== null) {
+        return { kind: 'attention', reason: conflict };
+      }
+      if (statusNameOf(prerequisite) !== settings.statuses.done) {
+        return {
+          kind: 'defer',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} is not Done; implementation is deferred ` +
+            'until the prerequisite completes with its merge/check evidence.',
+        };
+      }
+      if ((await prerequisiteCompletion(recorded)) === null) {
+        return {
+          kind: 'defer',
+          reason:
+            `Prerequisite ${key} of issue ${issue.key} retains no confirmed merge/check ` +
+            'completion evidence; implementation is deferred.',
+        };
+      }
+    }
+    return { kind: 'admitted' };
   }
 
   /** Retain the parent handoff record for a fresh selection; a retained one is kept. */
@@ -405,6 +635,20 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     if (!workspace.ok) {
       return fail(workspace.fault.message, issue, saved);
     }
+    let handoffSourceWorkspace: Selection['handoffSourceWorkspace'];
+    if (saved.stage === 'delivery') {
+      // Retained implementation work keeps waiting for its recorded prerequisites; a fresh claim
+      // never starts a dependent whose prerequisite has not completed.
+      const prerequisite = await implementationAdmission(
+        issue,
+        workspace.value,
+        saved.handoffSourceWorkspace,
+      );
+      if (prerequisite.kind !== 'admitted') {
+        return fail(prerequisite.reason, issue, saved);
+      }
+      handoffSourceWorkspace = prerequisite.handoffSourceWorkspace;
+    }
     // Re-capture the issue and its complete attributed conversation, so human clarifications
     // added while the item waited for feedback govern the resumed work.
     const conversation = await readComments(jira, issue.id);
@@ -414,6 +658,7 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
     );
     await saveSelection({
       ...saved,
+      handoffSourceWorkspace,
       initialClaim:
         saved.stage === 'delivery' &&
         prepared === null &&
@@ -492,8 +737,22 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       if (!workspace.ok) {
         return fail(workspace.fault.message, current);
       }
+      let handoffSourceWorkspace: Selection['handoffSourceWorkspace'];
+      if (currentStage.value === 'delivery') {
+        const prerequisite = await implementationAdmission(current, workspace.value);
+        if (prerequisite.kind !== 'admitted') {
+          if (prerequisite.kind === 'defer' && statusNameOf(current) === settings.statuses.ready) {
+            // A dependent whose prerequisite has not completed is deferred; the ranked queue
+            // keeps inspecting eligible work and the prerequisite itself is selected first.
+            continue;
+          }
+          return fail(prerequisite.reason, current);
+        }
+        handoffSourceWorkspace = prerequisite.handoffSourceWorkspace;
+      }
       const nextSelection: Selection = {
         taskKey: current.key,
+        handoffSourceWorkspace,
         source: { kind: 'jira', issueId: current.id },
         task: current,
         conversation,

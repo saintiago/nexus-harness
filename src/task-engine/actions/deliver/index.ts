@@ -98,12 +98,17 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       'Selection',
     );
     const root = selection.workspace.root;
-    const worktree = path.join(root, 'worktree');
     const preparedFile = path.join(root, preparedWorkspaceFile);
     const prepared = await readRequiredRecord(
       preparedFile,
       preparedWorkspaceDeclaration,
       'Prepared workspace',
+    );
+    // The recorded repository workspace owns the branch being published; later implementation
+    // tickets use their own checkout, the first continues the preparation one.
+    const worktree = path.join(
+      (prepared.repositoryWorkspace ?? selection.workspace).root,
+      'worktree',
     );
     const taskBranch = prepared.branch;
     const repository = prepared.repository;

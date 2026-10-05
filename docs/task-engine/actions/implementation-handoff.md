@@ -18,13 +18,18 @@ creation/link/ranking/admission acknowledgement under the source issue's parent 
 record under each implementation issue's `parent/implementation-input.json` before admitting it:
 
 ```ts
+type ImplementationPrerequisite = {
+  key: string;
+  workspace: WorkspaceRef;
+};
+
 type ImplementationInput = {
   sourceKey: string;
   sourceWorkspace: WorkspaceRef;
   architectureResult: ArtifactRef;
   planIdentity: string;
   plannedTask: number;
-  prerequisites: string[];
+  prerequisites: ImplementationPrerequisite[];
   continuation: { workspace: PreparationWorkspace; headRevision: string } | null;
 };
 ```
@@ -33,7 +38,9 @@ PreparationWorkspace is imported from its producer, rather than independently de
 Accepted stage/document/prototype references are reached through the source workspace and current
 Architecture handoff. Ticket descriptions link the source, planned task, criteria and accepted
 references; machine admission uses the record, never parsed description prose. Each issue's source
-workspace pointer names its own root.
+workspace pointer names its own root. Each prerequisite names its ticket key and the workspace
+reference the handoff resolved for that ticket, so selection and preparation read that ticket's
+completion evidence from the recorded reference instead of reconstructing a path.
 
 The first task in stable topological plan order receives continuation. Every later task requires
 that first ticket's merge/check completion as well as its declared prerequisites, since its merged
@@ -59,6 +66,16 @@ identity before retrying. Multiple matches request attention. Complete missing l
 rank changes and configured ready-status admission on replay. Preserve recorded initial admission
 status, already-applied ready status and unexpected human changes. Source failures cannot authorize
 advancement or original completion.
+
+Retain each created ticket's input immediately after its identity, before its link and rank effects:
+creation can land a ticket directly in the configured ready status, so a ticket that carries the
+handoff's source identity is never selectable without its input. Selection and PrepareWorkspace
+classify such a ticket through this record: while it still owes the ticket its input, link, rank or
+admission the ticket is ineligible, and a ticket the record does not name requests attention with its
+identity. The earlier-contract exception requires a source record without the current contract's
+frozen basis and with the ticket's link and admission finished; that ticket keeps the ordinary delivery
+path. Finished effects with a current-contract basis and missing input require reconciliation, since
+that input owns preparation continuation and prerequisites.
 
 Rank prerequisites before dependents using actual source rank, preserving unrelated higher-ranked
 work. After all tickets have input records and completed admission/link/rank effects, publish their
@@ -96,3 +113,7 @@ per-stage layouts and already-started publication separately before new routing;
 PR/review/check evidence and uncertain source effects. Incompatible legacy state requests attention
 with its identity, rather than being reset or treated as a new successful handoff. This is checkout
 reconciliation, without a parallel legacy publication workflow.
+
+A retained preparation-only documentation publication, recorded by identity or by its retained
+documentation review, requests attention with that identity before any new ticket effect. Its pull
+request, review and check state is never treated as a completed handoff and is never reset.
