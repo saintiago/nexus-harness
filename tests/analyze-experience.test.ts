@@ -1367,4 +1367,160 @@ describe('experience analysis', () => {
     ).resolves.toEqual([]);
     await expect(analysisOf(first)).resolves.toMatchObject({ workId, project, attemptId });
   });
+
+  it.each(['restored bound report', 'repaired legacy record'] as const)(
+    'keeps a rejection a %s cannot retire actionable by the next attempt',
+    async (variant) => {
+      const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
+      await expect(retained.process()).resolves.toEqual([]);
+      const saved = await analysisOf(retained);
+      const report = saved.report;
+      const markdown = await readFile(report.path, 'utf8');
+
+      // The bound Markdown disappears: the saved analysis is unusable, and its rejection is
+      // retained without an invocation in the same pass.
+      await rm(report.path);
+      expect((await retained.process()).join('\n')).toContain('does not exist');
+
+      if (variant === 'restored bound report') {
+        // The exact bytes return: the analysis is usable again, but its invocation was never
+        // supplied this rejection, so mere reuse must not present it as settled.
+        await writeFile(report.path, markdown, 'utf8');
+      } else {
+        // A readable former handoff-shaped record replaces the damaged one: it stays submittable,
+        // but carries no invocation identity a correction could be attributed to.
+        await writeFile(
+          experienceAnalysisFile(retained.directory, retained.identity),
+          `${JSON.stringify(
+            {
+              workId: saved.workId,
+              project: saved.project,
+              workflow: saved.workflow,
+              attemptId: saved.attemptId,
+              terminalId: saved.terminalId,
+              profile: saved.profile,
+              analyzedAt: saved.analyzedAt,
+              observations: saved.observations,
+            },
+            null,
+            2,
+          )}\n`,
+          'utf8',
+        );
+      }
+
+      // The next permitted attempt receives the rejection and records its correction.
+      const invocations = retained.requests.length;
+      await expect(
+        retained.process({ analyze: () => ok(JSON.stringify({ observations: [] })) }),
+      ).resolves.toEqual([]);
+      expect(retained.requests).toHaveLength(invocations + 1);
+      const context = retained.contexts.at(-1) ?? '';
+      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain('does not exist');
+      await expect(
+        outstandingReportFeedback({
+          areaRoot: evidenceRootOf(retained),
+          scope: {
+            project,
+            workId,
+            area: evidenceRootOf(retained),
+            role: 'experience-analyst',
+            reportKind: 'experience-analysis',
+          },
+        }),
+      ).resolves.toEqual([]);
+    },
+  );
+
+  it.each(['experience', 'legacy'] as const)(
+    'preserves pending %s evidence when an unusable saved analysis stays outstanding',
+    async (format) => {
+      const root = await temporaryDirectory();
+      const directory = path.join(root, 'memory');
+      const workspace = path.join(root, 'workspaces', project, workId);
+      const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+      await mkdir(path.dirname(evidence), { recursive: true });
+      await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
+      const handoff: ExperienceHandoff = {
+        workId,
+        workflow: 'project',
+        attemptId,
+        terminalId: 'complete-completed',
+        outcome: 'completed',
+        reason: null,
+        workspaceRoot: workspace,
+        artifacts: [{ path: evidence }],
+      };
+      const identity =
+        format === 'experience' ? experienceIdentity(handoff) : 'NEX-7-0123456789abcdef';
+      // The earlier store recorded the request before requests retained a copy of their evidence.
+      await mkdir(path.join(directory, 'requests'), { recursive: true });
+      await writeFile(
+        path.join(directory, 'requests', `${identity}.json`),
+        `${JSON.stringify(
+          format === 'experience'
+            ? {
+                identity,
+                project,
+                handoff,
+                migrated: null,
+                requestedAt: '2026-09-29T10:00:00.000Z',
+              }
+            : {
+                taskKey: workId,
+                project,
+                completionRevision: mergeRevision,
+                workspaceRoot: workspace,
+                requestedAt: '2026-09-29T10:00:00.000Z',
+              },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      const savedAnalysis = experienceAnalysisFile(directory, identity);
+      await mkdir(path.dirname(savedAnalysis), { recursive: true });
+      await writeFile(savedAnalysis, '{"observations":[', 'utf8');
+      const service = await controlledService();
+      const unavailable = createAnalyzeExperience({
+        directory,
+        project,
+        profile,
+        memory: { url: service.url },
+        analyze: () => Promise.reject(new Error('The unusable analysis must not be invoked.')),
+      });
+
+      // The unusable record is retained as rejection feedback without an invocation, and the
+      // still pending request must preserve its available evidence before its attempt is lost.
+      const problems = await unavailable.processPending();
+      expect(problems.join('\n')).toContain('is not valid JSON');
+      await rm(workspace, { recursive: true, force: true });
+      await rm(savedAnalysis);
+
+      // Only the retained copy can settle the retry: its citation of the original location
+      // resolves through the retained evidence mapping.
+      const owner = createAnalyzeExperience({
+        directory,
+        project,
+        profile,
+        memory: { url: service.url },
+        analyze: async (request) => {
+          const copy = path.join(request.workspace.root, 'artifacts', '1', 'completion.json');
+          expect(await readFile(copy, 'utf8')).toContain(mergeRevision);
+          await writeFile(request.reportPath, 'The retained evidence supports a lesson.', 'utf8');
+          return ok({ output: observationAt(evidence) });
+        },
+      });
+
+      const retried = await owner.processPending();
+
+      expect(retried.join('\n')).not.toContain('incomplete');
+      expect(retried.join('\n')).toContain('observation 1 of NEX-7 is outstanding');
+      expect(service.observations.size).toBe(1);
+      expect(
+        JSON.parse(await readFile(experienceRequestFile(directory, identity), 'utf8')),
+      ).toMatchObject({ identity, evidenceRoot: expect.any(String) });
+    },
+  );
 });

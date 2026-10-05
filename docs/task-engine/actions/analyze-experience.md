@@ -146,9 +146,11 @@ submission.
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) within the
 durable request area to retain rejected analyst output and the validation reason. The next existing
 analysis attempt receives that request's outstanding feedback. A saved usable analysis, including
-its report binding, resolves report feedback before submissions; receipt retries reuse that analysis
-rather than invoking again. Evidence or invocation failures remain outstanding analysis and never
-alter the original handoff.
+its report binding, resolves report feedback before submissions: an attributable replay correction
+finishes without another invocation, while feedback its invocation was never supplied — or that a
+former record carries no invocation identity for — leaves the next permitted invocation due. Receipt
+retries reuse a settled analysis rather than invoking again. Evidence or invocation failures remain
+outstanding analysis and never alter the original handoff.
 
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
 payloads, provenance, timestamps and keys after interruption or configuration changes. Durable
