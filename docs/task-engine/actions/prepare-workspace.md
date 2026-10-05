@@ -63,13 +63,19 @@ branch from that updated main. Record the branch and base revision for later act
 After recovery discarded an attempt, use a new branch name rather than adopting its old remote branch.
 
 For the first implementation's continuation, adopt the recorded preparation repository, branch and
-comparison base after checking their actual identities and the frozen preparation revision's ancestry.
-Do not clone, rename the branch or pull/reset the checkout. Retain preparation commits together with
-any local implementation work. The implementation issue owns its own attempt, rounds and command
-logs. Repeat admission using its saved record; never infer a donor checkout from description text.
+comparison base after checking their actual identities against the configured repository source and
+the retained preparation record, and the frozen preparation revision's ancestry. Do not clone, rename
+the branch or pull/reset the checkout. Retain preparation commits together with any local
+implementation work. The implementation issue owns its own attempt, rounds and command logs. Repeat
+admission using its saved record; never infer a donor checkout from description text. A selected
+ticket that carries the handoff's source identity but retains no implementation input requests
+attention instead of preparing a fresh ordinary checkout, unless its source handoff record already
+finished the ticket's link and admission under the earlier contract, which created tickets without
+inputs.
 For later implementation tickets, use an updated configured base containing every prerequisite's
-confirmed merge revision. A base that lacks it cannot produce prepared; do not manufacture inclusion
-through cherry-picks or silently start without it.
+confirmed merge revision, read from the workspace reference the handoff recorded for that prerequisite.
+A base that lacks it cannot produce prepared; do not manufacture inclusion through cherry-picks or
+silently start without it.
 
 For retained work, inspect the repository and saved identity. Reuse the matching worktree, preserving
 local commits and uncommitted changes for implementation to inspect. Do not reset, clean or silently

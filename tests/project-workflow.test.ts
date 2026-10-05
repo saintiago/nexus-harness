@@ -1019,9 +1019,16 @@ async function handoff(options: {
   readonly headAfterFirst?: string;
   readonly rewrittenPreparation?: boolean;
   readonly changePlanOnRetry?: boolean;
+  /** A preparation-only publication the removed handoff workflow retained before this change. */
+  readonly legacyPublication?: { readonly kind: string; readonly id: string };
+  /** A retained documentation review record of the removed preparation-only publication. */
+  readonly legacyReview?: boolean;
+  /** A workspace pointer the first created ticket already records, as a human-set root. */
+  readonly firstTicketWorkspace?: string;
 }): Promise<{
   readonly outcome: string;
   readonly firstOutcome: string;
+  readonly workspaceRoot: string;
   readonly ticketStatus: (index?: number) => string | undefined;
   readonly tickets: readonly {
     readonly key: string;
@@ -1220,6 +1227,27 @@ async function handoff(options: {
       }),
     );
   }
+  if (options.legacyPublication !== undefined || options.legacyReview === true) {
+    await mkdir(path.join(root, 'parent'), { recursive: true });
+    await writeFile(
+      path.join(root, 'parent/handoff.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [],
+        basis: null,
+        publications: options.legacyPublication === undefined ? [] : [options.legacyPublication],
+      }),
+    );
+  }
+  if (options.legacyReview === true) {
+    const reviews = path.join(root, 'parent/documentation-reviews');
+    await mkdir(reviews, { recursive: true });
+    await writeFile(path.join(reviews, `${'a'.repeat(40)}.json`), JSON.stringify({}));
+  }
   const selectionFile = path.join(directory, 'selection.json');
   await writeFile(selectionFile, JSON.stringify(fixtureSelection));
 
@@ -1305,6 +1333,9 @@ async function handoff(options: {
           summary: fields['summary'],
           description: fields['description'],
           labels: fields['labels'],
+          ...(number === 1 && options.firstTicketWorkspace !== undefined
+            ? { workspace: options.firstTicketWorkspace }
+            : {}),
         },
       });
       ticketStatuses.set(identity.id, initialTicketStatus);
@@ -1463,6 +1494,7 @@ async function handoff(options: {
   return {
     outcome,
     firstOutcome,
+    workspaceRoot,
     ticketStatus: (index = 0) => ticketStatuses.get(createdTickets[index]?.id ?? '101'),
     tickets: handoffRecord.tickets ?? [],
     status: () => status,
@@ -1515,7 +1547,10 @@ describe('architecture implementation handoff', () => {
       readonly sourceKey: string;
       readonly plannedTask: number;
       readonly planIdentity: string;
-      readonly prerequisites: readonly string[];
+      readonly prerequisites: readonly {
+        readonly key: string;
+        readonly workspace: { readonly root: string };
+      }[];
       readonly continuation: {
         readonly workspace: { readonly branch: string };
         readonly headRevision: string;
@@ -1531,8 +1566,40 @@ describe('architecture implementation handoff', () => {
       workspace: { branch: 'task/NEX-1' },
       headRevision: '1'.repeat(40),
     });
-    expect(second).toMatchObject({ plannedTask: 1, prerequisites: ['NEX-2'] });
+    expect(second).toMatchObject({
+      plannedTask: 1,
+      prerequisites: [
+        {
+          key: 'NEX-2',
+          workspace: { root: path.join(handedOff.workspaceRoot, 'NEX', 'NEX-2') },
+        },
+      ],
+    });
     expect(second?.continuation).toBeNull();
+  });
+
+  it('records each prerequisite ticket workspace reference in its dependents input', async () => {
+    // A ticket that already records its own workspace root keeps it; its dependents name that
+    // recorded reference so preparation reads the prerequisite's evidence from the same place.
+    const recorded = path.join(await temporaryDirectory(), 'recorded-first-ticket');
+    const handedOff = await handoff({ firstTicketWorkspace: recorded });
+
+    expect(handedOff.outcome).toBe('handed-off');
+    const second = JSON.parse(
+      await readFile(
+        path.join(handedOff.workspaceRoot, 'NEX', 'NEX-3', implementationInputDeclaration.file),
+        'utf8',
+      ),
+    ) as {
+      readonly prerequisites: readonly {
+        readonly key: string;
+        readonly workspace: { readonly root: string };
+      }[];
+    };
+    expect(second.prerequisites).toEqual([{ key: 'NEX-2', workspace: { root: recorded } }]);
+    expect(
+      JSON.parse(await readFile(path.join(recorded, implementationInputDeclaration.file), 'utf8')),
+    ).toMatchObject({ sourceKey: 'NEX-1', plannedTask: 0 });
   });
 
   it('carries the accepted document and prototype references into every ticket', async () => {
@@ -1751,5 +1818,31 @@ describe('architecture implementation handoff', () => {
     expect(result.firstOutcome).toBe('failed');
     expect(result.outcome).toBe('failed');
     expect(result.failures.at(-1)).toContain('changed after the handoff froze its basis');
+  });
+
+  it('requires reconciliation of a retained preparation publication before new tickets', async () => {
+    const result = await handoff({
+      legacyPublication: {
+        kind: 'documentation-pr',
+        id: 'https://github.com/owner/repository/pull/7',
+      },
+    });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(result.status()).toBe('Architecture');
+    expect(result.failures.at(-1)).toContain('preparation-only documentation publication');
+    expect(result.failures.at(-1)).toContain('https://github.com/owner/repository/pull/7');
+  });
+
+  it('requires reconciliation of a retained documentation review before new tickets', async () => {
+    const result = await handoff({ legacyReview: true });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.createdFields).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(result.status()).toBe('Architecture');
+    expect(result.failures.at(-1)).toContain('documentation review');
   });
 });

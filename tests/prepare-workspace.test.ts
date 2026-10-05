@@ -115,7 +115,11 @@ async function publish(
 }
 
 /** Write the selection SelectWork normally saves for one task. */
-async function writeSelection(taskKey: string, workspaceRoot: string): Promise<string> {
+async function writeSelection(
+  taskKey: string,
+  workspaceRoot: string,
+  fields: Readonly<Record<string, unknown>> = {},
+): Promise<string> {
   const file = path.join(root, 'executions', 'selection.json');
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(
@@ -124,7 +128,7 @@ async function writeSelection(taskKey: string, workspaceRoot: string): Promise<s
       {
         taskKey,
         source: { kind: 'jira', issueId: taskKey },
-        task: { id: taskKey, key: taskKey, fields: {} },
+        task: { id: taskKey, key: taskKey, fields },
         conversation: [],
         workspace: { root: workspaceRoot },
         stage: 'delivery',
@@ -142,16 +146,14 @@ function prepareOver(options: {
   readonly selectionFile: string;
   readonly source: string;
   readonly preparation?: readonly Command[];
-  readonly project?: string;
-  readonly workspaceRoot?: string;
 }) {
   const settings: PrepareWorkspaceSettings = {
     selectionFile: options.selectionFile,
     repository: { source: options.source, mainBranch: 'main' },
     preparation: options.preparation ?? [],
     environment,
-    project: options.project ?? 'NEX',
-    workspaceRoot: options.workspaceRoot ?? path.join(root, 'workspaces'),
+    project: 'NEX',
+    workspaceRoot: path.join(root, 'workspaces'),
     git,
     runCommand: run,
     publish: (event) => events.push(event),
@@ -647,7 +649,10 @@ describe('PrepareWorkspace', () => {
   async function writeImplementationInput(settings: {
     readonly ticketRoot: string;
     readonly sourceRoot: string;
-    readonly prerequisites: readonly string[];
+    readonly prerequisites: readonly {
+      readonly key: string;
+      readonly workspace: { readonly root: string };
+    }[];
     readonly continuation: {
       readonly workspace: {
         readonly repository: string;
@@ -667,19 +672,18 @@ describe('PrepareWorkspace', () => {
         architectureResult: { path: 'architecture/artifacts/1/result.json' },
         planIdentity: 'plan-identity',
         plannedTask: 1,
-        prerequisites: [...settings.prerequisites],
+        prerequisites: settings.prerequisites,
         continuation: settings.continuation,
       }),
     );
   }
 
-  /** Retain one prerequisite ticket's confirmed completion evidence in its own workspace. */
+  /** Retain one prerequisite ticket's confirmed completion evidence in its workspace root. */
   async function writeCompletion(
-    workspaces: string,
+    workspace: string,
     ticketKey: string,
     mergeRevision: string,
   ): Promise<void> {
-    const workspace = path.join(workspaces, 'NEX', ticketKey);
     await mkdir(path.join(workspace, 'state'), { recursive: true });
     await mkdir(path.join(workspace, 'artifacts', '1'), { recursive: true });
     await writeFile(
@@ -732,8 +736,6 @@ describe('PrepareWorkspace', () => {
     const prepare = prepareOver({
       selectionFile,
       source: origin,
-      project: 'NEX',
-      workspaceRoot: workspaces,
       preparation: [{ executable: 'bash', args: ['-c', 'pwd > preparation-cwd.txt'] }],
     });
 
@@ -799,9 +801,7 @@ describe('PrepareWorkspace', () => {
     });
     const selectionFile = await writeSelection('NEX-2', ticketRoot);
 
-    await expect(
-      prepareOver({ selectionFile, source: origin, project: 'NEX', workspaceRoot: workspaces })(),
-    ).resolves.toBe('failed');
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('failed');
 
     expect(events.at(-1)).toMatchObject({
       source: 'prepare-workspace',
@@ -823,15 +823,13 @@ describe('PrepareWorkspace', () => {
     await writeImplementationInput({
       ticketRoot: firstTicketRoot,
       sourceRoot: path.join(workspaces, 'NEX', 'NEX-1'),
-      prerequisites: ['NEX-2'],
+      prerequisites: [{ key: 'NEX-2', workspace: { root: path.join(workspaces, 'NEX', 'NEX-2') } }],
       continuation: null,
     });
-    await writeCompletion(workspaces, 'NEX-2', merged);
+    await writeCompletion(path.join(workspaces, 'NEX', 'NEX-2'), 'NEX-2', merged);
     const selectionFile = await writeSelection('NEX-3', firstTicketRoot);
 
-    await expect(
-      prepareOver({ selectionFile, source: origin, project: 'NEX', workspaceRoot: workspaces })(),
-    ).resolves.toBe('prepared');
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('prepared');
 
     expect(await readPrepared(firstTicketRoot)).toEqual({
       taskKey: 'NEX-3',
@@ -855,18 +853,16 @@ describe('PrepareWorkspace', () => {
     await writeImplementationInput({
       ticketRoot: secondTicketRoot,
       sourceRoot: path.join(workspaces, 'NEX', 'NEX-1'),
-      prerequisites: ['NEX-8'],
+      prerequisites: [{ key: 'NEX-8', workspace: { root: path.join(workspaces, 'NEX', 'NEX-8') } }],
       continuation: null,
     });
-    await writeCompletion(workspaces, 'NEX-8', unmerged);
+    await writeCompletion(path.join(workspaces, 'NEX', 'NEX-8'), 'NEX-8', unmerged);
     const blockedSelection = await writeSelection('NEX-4', secondTicketRoot);
 
     await expect(
       prepareOver({
         selectionFile: blockedSelection,
         source: origin,
-        project: 'NEX',
-        workspaceRoot: workspaces,
       })(),
     ).resolves.toBe('failed');
     expect(events.at(-1)).toMatchObject({
@@ -877,5 +873,184 @@ describe('PrepareWorkspace', () => {
     await expect(
       readFile(path.join(secondTicketRoot, 'state/prepared-workspace.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('resolves a prerequisite completion from its recorded workspace reference', async () => {
+    const { origin, source } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const merged = await publish(source, 'feature.txt', 'feature\n', 'the prerequisite merge');
+    // The prerequisite's completion evidence lives under its recorded pointer, not under the
+    // stable project/ticket path preparation could reconstruct.
+    const recorded = path.join(root, 'recorded-prerequisite');
+    await writeCompletion(recorded, 'NEX-2', merged);
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-3');
+    await writeImplementationInput({
+      ticketRoot,
+      sourceRoot: path.join(workspaces, 'NEX', 'NEX-1'),
+      prerequisites: [{ key: 'NEX-2', workspace: { root: recorded } }],
+      continuation: null,
+    });
+    const selectionFile = await writeSelection('NEX-3', ticketRoot);
+
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('prepared');
+
+    expect(await readPrepared(ticketRoot)).toEqual({
+      taskKey: 'NEX-3',
+      repository: origin,
+      repositoryWorkspace: { root: ticketRoot },
+      branch: 'task/NEX-3',
+      baseRevision: merged,
+    });
+  });
+
+  it('refuses a preparation continuation that belongs to another configured repository', async () => {
+    const { origin: configured } = await repositoryWithOrigin();
+    const { origin: donor, revision: donorRevision } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const preparationRoot = path.join(workspaces, 'NEX', 'NEX-1');
+    const preparationWorktree = worktreeOf(preparationRoot);
+    await mkdir(preparationRoot, { recursive: true });
+    expect(await git.cloneRepository(donor, preparationWorktree)).toMatchObject({ ok: true });
+    expect(await git.createBranch(preparationWorktree, 'task/NEX-1', donorRevision)).toMatchObject({
+      ok: true,
+    });
+    const preparedRevision = await headOf(preparationWorktree);
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    await writeImplementationInput({
+      ticketRoot,
+      sourceRoot: preparationRoot,
+      prerequisites: [],
+      continuation: {
+        workspace: {
+          repository: donor,
+          repositoryWorkspace: { root: preparationRoot },
+          branch: 'task/NEX-1',
+          baseRevision: donorRevision,
+        },
+        headRevision: preparedRevision,
+      },
+    });
+    const selectionFile = await writeSelection('NEX-2', ticketRoot);
+
+    await expect(prepareOver({ selectionFile, source: configured })()).resolves.toBe('failed');
+
+    expect(events.at(-1)).toMatchObject({
+      source: 'prepare-workspace',
+      type: 'failed',
+      data: { reason: expect.stringContaining('not the configured') },
+    });
+    // The donor checkout is preserved and the ticket keeps no prepared record.
+    expect(await headOf(preparationWorktree)).toBe(preparedRevision);
+    await expect(
+      readFile(path.join(ticketRoot, 'state/prepared-workspace.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses to prepare a handoff ticket that retains no implementation input', async () => {
+    const { origin } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    const selectionFile = await writeSelection('NEX-2', ticketRoot, {
+      labels: ['implementation', 'nexus-source-NEX-1-1'],
+    });
+
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('failed');
+
+    expect(events.at(-1)).toMatchObject({
+      source: 'prepare-workspace',
+      type: 'failed',
+      data: { reason: expect.stringContaining('retains no implementation input') },
+    });
+    // The incomplete handoff is not prepared as a fresh ordinary checkout.
+    await expect(stat(worktreeOf(ticketRoot))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses to prepare a ticket whose source handoff has not finished its effects', async () => {
+    const { origin } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    const sourceParent = path.join(workspaces, 'NEX', 'NEX-1', 'parent');
+    await mkdir(sourceParent, { recursive: true });
+    await writeFile(
+      path.join(sourceParent, 'handoff.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [
+          {
+            key: 'NEX-2',
+            issueId: '2',
+            plannedTask: 1,
+            summary: 'Work for NEX-2',
+            linked: false,
+            ranked: false,
+            admission: { initialStatus: 'To Do', completed: false },
+          },
+        ],
+        basis: null,
+        publications: [],
+      }),
+    );
+    const selectionFile = await writeSelection('NEX-2', ticketRoot, {
+      labels: ['implementation', 'nexus-source-NEX-1-1'],
+    });
+
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('failed');
+
+    expect(events.at(-1)).toMatchObject({
+      source: 'prepare-workspace',
+      type: 'failed',
+      data: {
+        reason: expect.stringContaining('has not retained its implementation input yet'),
+      },
+    });
+    await expect(stat(worktreeOf(ticketRoot))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('prepares an earlier-contract handoff ticket that never carried an input', async () => {
+    const { origin } = await repositoryWithOrigin();
+    const workspaces = path.join(root, 'workspaces');
+    const ticketRoot = path.join(workspaces, 'NEX', 'NEX-2');
+    // The earlier handoff contract recorded the ticket's finished link and admission without an
+    // implementation input; the ticket keeps the ordinary fresh-checkout behavior.
+    const sourceParent = path.join(workspaces, 'NEX', 'NEX-1', 'parent');
+    await mkdir(sourceParent, { recursive: true });
+    await writeFile(
+      path.join(sourceParent, 'handoff.json'),
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [
+          {
+            key: 'NEX-2',
+            issueId: '2',
+            plannedTask: 1,
+            summary: 'Work for NEX-2',
+            linked: true,
+            ranked: true,
+            admission: { initialStatus: 'To Do', completed: true },
+          },
+        ],
+        basis: null,
+        publications: [],
+      }),
+    );
+    const selectionFile = await writeSelection('NEX-2', ticketRoot, {
+      labels: ['implementation', 'nexus-source-NEX-1-1'],
+    });
+
+    await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('prepared');
+
+    expect(await readPrepared(ticketRoot)).toMatchObject({
+      taskKey: 'NEX-2',
+      repository: origin,
+      branch: 'task/NEX-2',
+    });
   });
 });

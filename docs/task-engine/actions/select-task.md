@@ -91,5 +91,10 @@ Children receive captured inputs without importing the Jira adapter.
 For a linked implementation, validate its retained input and prerequisite delivery completion before
 claiming it. Defer a dependent whose prerequisite lacks confirmed merge/check and source completion;
 continue inspecting eligible work in source rank order. Source Done alone is insufficient. Malformed
-input and provider faults are not an empty queue or a completed prerequisite. Keep the implementation
-issue's own workspace pointer even when its repository will be borrowed from preparation.
+input and provider faults are not an empty queue or a completed prerequisite. A ticket that carries
+the handoff's source identity but retains no input yet is deferred until the handoff retains it, and
+so is a ticket whose source handoff record has not recorded its link, rank and admission effects yet;
+neither is treated as an ordinary task. A ticket no source handoff record accounts for requests
+attention with its identity, while an earlier-contract record that already finished the ticket's link
+and admission keeps the ordinary delivery path. Keep the implementation issue's own workspace pointer
+even when its repository will be borrowed from preparation.

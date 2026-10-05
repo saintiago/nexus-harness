@@ -512,7 +512,9 @@ describe('SelectWork admission and routing', () => {
         architectureResult: { path: 'architecture/artifacts/1/result.json' },
         planIdentity: 'plan-identity',
         plannedTask: 1,
-        prerequisites: [prerequisite],
+        prerequisites: [
+          { key: prerequisite, workspace: { root: path.join(workspaces, 'NEX', prerequisite) } },
+        ],
         continuation: null,
       }),
     );
@@ -599,5 +601,176 @@ describe('SelectWork admission and routing', () => {
 
     expect(selected.result).toBe('failed');
     expect(selected.failures.at(-1)).toContain('unreadable implementation input');
+  });
+
+  /** Write one source handoff record's retained implementation ticket. */
+  async function writeSourceHandoff(
+    workspaces: string,
+    sourceKey: string,
+    ticket: Record<string, unknown>,
+  ): Promise<string> {
+    const parent = path.join(workspaces, 'NEX', sourceKey, 'parent');
+    await mkdir(parent, { recursive: true });
+    const file = path.join(parent, 'handoff.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        stage: 'architecture',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [ticket],
+        basis: null,
+        publications: [],
+      }),
+    );
+    return file;
+  }
+
+  it('defers a handoff ticket whose source handoff has not retained its input yet', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-partial-handoff-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    // The ticket was created straight into the ready status, but the handoff has not yet written
+    // its input or recorded its link. It never competes as ordinary delivery work.
+    await writeSourceHandoff(workspaces, 'NEX-1', {
+      key: 'NEX-2',
+      issueId: '2',
+      plannedTask: 1,
+      summary: 'Work for NEX-2',
+      linked: false,
+      ranked: false,
+      admission: { initialStatus: 'To Do', completed: false },
+    });
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', {
+          labels: ['implementation', 'nexus-source-NEX-1-1'],
+        }),
+        issue('3', 'NEX-3', 'To Do'),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-3' });
+    expect(selected.transitions).toEqual(['11']);
+    expect(selected.calls.filter((call) => call.startsWith('transition:2:'))).toEqual([]);
+  });
+
+  it('requests attention when no source handoff record names the labelled ticket', async () => {
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', {
+          labels: ['implementation', 'nexus-source-NEX-1-1'],
+        }),
+      ],
+    });
+
+    expect(selected.result).toBe('failed');
+    expect(selected.failures.at(-1)).toContain("implementation handoff's source identity");
+    expect(selected.failures.at(-1)).toContain('does not name issue NEX-2');
+  });
+
+  it('selects an earlier-contract handoff ticket that never carried an input', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-legacy-handoff-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    // The earlier handoff contract created tickets without implementation inputs; a source record
+    // that already finished the ticket's link and admission keeps its ordinary delivery path.
+    await writeSourceHandoff(workspaces, 'NEX-1', {
+      key: 'NEX-2',
+      issueId: '2',
+      plannedTask: 1,
+      summary: 'Work for NEX-2',
+      linked: true,
+      ranked: true,
+      admission: { initialStatus: 'To Do', completed: true },
+    });
+    const selected = await select({
+      issues: [
+        issue('2', 'NEX-2', 'To Do', {
+          labels: ['implementation', 'nexus-source-NEX-1-1'],
+        }),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-2', stage: 'delivery' });
+    expect(selected.transitions).toEqual(['11']);
+  });
+
+  it('defers a handoff ticket whose recorded handoff effects are unfinished', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-partial-handoff-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1');
+    await retainCompletion(workspaces, 'NEX-1', 'f'.repeat(40));
+    const sourceRoot = path.join(workspaces, 'NEX', 'NEX-1');
+    const handoffFile = path.join(sourceRoot, 'parent', 'handoff.json');
+    const sourceHandoff = {
+      stage: 'architecture',
+      upstreamReturns: 0,
+      feedback: null,
+      return: null,
+      awaitingStages: [],
+      tickets: [
+        {
+          key: 'NEX-2',
+          issueId: '2',
+          plannedTask: 1,
+          summary: 'Work for NEX-2',
+          linked: false,
+          ranked: false,
+        },
+      ],
+      basis: null,
+      publications: [],
+    };
+    await mkdir(path.dirname(handoffFile), { recursive: true });
+    await writeFile(handoffFile, JSON.stringify(sourceHandoff));
+    const candidates = [
+      issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+      issue('1', 'NEX-1', 'Done'),
+      issue('3', 'NEX-3', 'To Do'),
+    ];
+
+    // The retained input exists, but the handoff has not recorded this ticket's link yet: the
+    // ticket stays ineligible and the queue continues with other eligible work.
+    const deferred = await select({
+      issues: candidates,
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+    expect(deferred.result).toBe('selected');
+    expect(deferred.selection).toMatchObject({ taskKey: 'NEX-3' });
+    expect(deferred.calls.filter((call) => call.startsWith('transition:2:'))).toEqual([]);
+
+    // Once the handoff records the finished admission, the ticket is admitted normally.
+    await writeFile(
+      handoffFile,
+      JSON.stringify({
+        ...sourceHandoff,
+        tickets: [
+          {
+            ...sourceHandoff.tickets[0],
+            linked: true,
+            ranked: true,
+            admission: { initialStatus: 'To Do', completed: true },
+          },
+        ],
+      }),
+    );
+    const admitted = await select({
+      issues: candidates,
+      selectionFile: path.join(directory, 'selection-later.json'),
+      workspaceRoot: workspaces,
+    });
+    expect(admitted.result).toBe('selected');
+    expect(admitted.selection).toMatchObject({ taskKey: 'NEX-2' });
   });
 });

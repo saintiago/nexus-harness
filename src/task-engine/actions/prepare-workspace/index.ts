@@ -19,7 +19,9 @@ import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifa
 import {
   implementationInputDeclaration,
   type ImplementationInput,
+  type ImplementationPrerequisite,
 } from '../project/implementation-handoff/artifacts.js';
+import { handoffInputDisposition } from '../project/state.js';
 import {
   attemptDeclaration,
   attemptFile,
@@ -62,9 +64,12 @@ export type PrepareWorkspaceSettings = {
   readonly preparation: readonly Command[];
   /** The environment preparation commands run with. */
   readonly environment: Readonly<Record<string, string>>;
-  /** The configured project identity the stable implementation workspaces live under. */
+  /** The configured project identity the stable issue workspaces live under. */
   readonly project: string;
-  /** The stable workspace root under which issue workspaces, and prerequisite evidence, live. */
+  /**
+   * The stable workspace root. It locates the source handoff record when a selected ticket carries
+   * the handoff's identity but retains no implementation input.
+   */
   readonly workspaceRoot: string;
   readonly git: GitAdapter;
   readonly runCommand: CommandExecution;
@@ -83,6 +88,18 @@ async function isDirectory(target: string): Promise<boolean> {
       cause: error,
     });
   }
+}
+
+/** The labels of a captured source task, when its shape carries them. */
+function capturedLabels(task: unknown): unknown {
+  if (typeof task !== 'object' || task === null) {
+    return null;
+  }
+  const fields = (task as { readonly fields?: unknown }).fields;
+  if (typeof fields !== 'object' || fields === null) {
+    return null;
+  }
+  return (fields as { readonly labels?: unknown }).labels ?? null;
 }
 
 /** Create PrepareWorkspace over the configured repository, preparation commands and capabilities. */
@@ -264,6 +281,15 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
           'cannot continue it and never clones a replacement.',
       );
     }
+    if (workspace.repository !== source) {
+      // The project configuration now selects another repository than the retained preparation
+      // record; the donor checkout is never adopted as the configured source.
+      return fault(
+        `The preparation workspace retains repository "${workspace.repository}", not the ` +
+          `configured "${source}"; reconciliation is required before the first implementation ` +
+          'continues it.',
+      );
+    }
     const inspection = await git.inspectRepository(worktree);
     if (!inspection.ok) {
       return fault(inspection.fault.message);
@@ -404,9 +430,14 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     return null;
   }
 
-  /** One prerequisite's confirmed completion evidence, or null when it is not retained. */
-  async function prerequisiteCompletion(key: string): Promise<CompletionOutput | null> {
-    const workspace = path.join(settings.workspaceRoot, settings.project, key);
+  /**
+   * One prerequisite's confirmed completion evidence, read from the workspace reference the
+   * handoff recorded for that ticket, or null when it is not retained.
+   */
+  async function prerequisiteCompletion(
+    prerequisite: ImplementationPrerequisite,
+  ): Promise<CompletionOutput | null> {
+    const workspace = prerequisite.workspace.root;
     const round = await readRecord(path.join(workspace, currentRoundFile), currentRoundDeclaration);
     if (round === null) {
       return null;
@@ -415,26 +446,28 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
       roundArtifactPath(workspace, round.number, completionArtifact.pathFromArtifactsRoot),
       { file: completionArtifact.pathFromArtifactsRoot, schema: completionArtifact.schema },
     );
-    return completion !== null && completion.taskKey === key ? completion : null;
+    return completion !== null && completion.taskKey === prerequisite.key ? completion : null;
   }
 
   /**
    * The reason the updated base cannot start one later implementation ticket, or null when every
    * prerequisite's confirmed merge revision is contained in the comparison base. A prerequisite
-   * without retained completion evidence, or a base that does not include its merge revision,
-   * prevents readiness; inclusion is never manufactured through cherry-picks.
+   * without retained completion evidence under its recorded workspace, or a base that does not
+   * include its merge revision, prevents readiness; inclusion is never manufactured through
+   * cherry-picks.
    */
   async function mergedBaseProblem(
     worktree: string,
     prepared: PreparedWorkspace,
-    prerequisites: readonly string[],
+    prerequisites: readonly ImplementationPrerequisite[],
   ): Promise<string | null> {
-    for (const key of prerequisites) {
-      const completion = await prerequisiteCompletion(key);
+    for (const prerequisite of prerequisites) {
+      const completion = await prerequisiteCompletion(prerequisite);
       if (completion === null) {
         return (
-          `Prerequisite ${key} retains no confirmed merge/check completion evidence; the later ` +
-          'ticket cannot start from an unverified base.'
+          `Prerequisite ${prerequisite.key} retains no confirmed merge/check completion evidence ` +
+          `under its recorded workspace "${prerequisite.workspace.root}"; the later ticket cannot ` +
+          'start from an unverified base.'
         );
       }
       const ancestor = await git.readMergeBase(
@@ -447,9 +480,9 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
       }
       if (ancestor.value !== completion.mergeRevision) {
         return (
-          `The updated base ${prepared.baseRevision} does not contain prerequisite ${key}'s ` +
-          `merged revision ${completion.mergeRevision}; start from a base with the delivered ` +
-          'prerequisite work.'
+          `The updated base ${prepared.baseRevision} does not contain prerequisite ` +
+          `${prerequisite.key}'s merged revision ${completion.mergeRevision}; start from a base ` +
+          'with the delivered prerequisite work.'
         );
       }
     }
@@ -480,6 +513,30 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
         root,
         `The implementation input at "${inputFile}" is unusable: ${messageOf(error)}.`,
       );
+    }
+    if (input === null) {
+      // A ticket created by the Architecture handoff is never prepared as fresh ordinary work: the
+      // handoff must retain its input first, so its continuation and prerequisites are known. An
+      // earlier-contract record that already finished its link and admission never carried an
+      // input and keeps the ordinary path.
+      const disposition = await handoffInputDisposition({
+        workspaceRoot: settings.workspaceRoot,
+        project: settings.project,
+        labels: capturedLabels(selection.task),
+        ticketKey: selection.taskKey,
+      });
+      if (disposition.kind === 'incomplete' || disposition.kind === 'unattributed') {
+        return await fail(
+          root,
+          disposition.kind === 'incomplete'
+            ? `The selected issue ${selection.taskKey} carries the implementation handoff's ` +
+                'source identity but the handoff has not retained its implementation input yet; the ' +
+                'handoff must retain it before preparation starts a checkout.'
+            : `The selected issue ${selection.taskKey} carries the implementation handoff's ` +
+                `source identity but retains no implementation input, and ${disposition.reason}; ` +
+                'reconcile the retained handoff before preparation starts a checkout.',
+        );
+      }
     }
 
     const recordFile = path.join(root, preparedWorkspaceFile);

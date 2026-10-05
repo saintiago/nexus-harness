@@ -18,6 +18,7 @@ import {
   implementationInputDeclaration,
   type ImplementationInput,
 } from '../project/implementation-handoff/artifacts.js';
+import { handoffInputDisposition } from '../project/state.js';
 import {
   applyTransition,
   readComments,
@@ -366,10 +367,56 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
   }
 
   /**
+   * Why one handoff ticket's parent-side effects are not durable yet, or null when they are
+   * finished or the record cannot attribute them. The source handoff owns the ticket's link, rank
+   * and admission acknowledgements; an interrupted handoff reconciles them before implementation
+   * starts. A record that does not name the ticket (legacy or externally created) leaves the
+   * retained input authoritative.
+   */
+  async function handoffAdmissionProblem(
+    input: ImplementationInput,
+    key: string,
+  ): Promise<{ readonly kind: 'defer' | 'attention'; readonly reason: string } | null> {
+    const file = path.join(input.sourceWorkspace.root, parentAreaDirectory, handoffFile);
+    let source: ParentHandoff | null;
+    try {
+      source = await readRecord(file, parentHandoffDeclaration);
+    } catch (error) {
+      return {
+        kind: 'attention',
+        reason:
+          `Issue ${key} traces its handoff to an unreadable source handoff record at "${file}": ` +
+          `${messageOf(error)}.`,
+      };
+    }
+    const ticket = source?.tickets.find((entry) => entry.key === key);
+    if (ticket === undefined) {
+      return null;
+    }
+    if (
+      ticket.linked !== true ||
+      ticket.admission?.completed !== true ||
+      (input.prerequisites.length > 0 && ticket.ranked !== true)
+    ) {
+      return {
+        kind: 'defer',
+        reason:
+          `Issue ${key} retains its implementation input while its recorded handoff effects are ` +
+          'not finished; the handoff reconciles its link, rank and admission before implementation ' +
+          'is admitted.',
+      };
+    }
+    return null;
+  }
+
+  /**
    * Why one retained implementation issue cannot be claimed yet, or null. A linked implementation
    * issue waits for every prerequisite's source completion and retained merge/check evidence;
    * source Done alone is insufficient. A dependent with unfinished prerequisite work is deferred
-   * while a malformed input or an unknown prerequisite identity requests attention.
+   * while a malformed input or an unknown prerequisite identity requests attention. A ticket
+   * carrying the handoff's source identity without its retained input is deferred until the handoff
+   * retains it, and one whose recorded handoff effects are unfinished is deferred as well; neither
+   * is ever treated as an ordinary task.
    */
   async function prerequisiteProblem(
     issue: JiraIssue,
@@ -387,18 +434,54 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
           `${messageOf(error)}.`,
       };
     }
-    if (input === null || input.prerequisites.length === 0) {
+    if (input === null) {
+      // A ticket created by the Architecture handoff is known by its source-side identity label
+      // and the source handoff record that owns its effects. Until the handoff retains its input
+      // it is not ordinary delivery work: claiming it would lose the preparation continuation or
+      // bypass the recorded prerequisite admission. An earlier-contract record that already
+      // finished its link and admission never carried an input and keeps the ordinary path.
+      const disposition = await handoffInputDisposition({
+        workspaceRoot: settings.workspaceRoot,
+        project: settings.project,
+        labels: issue.fields.labels,
+        ticketKey: issue.key,
+      });
+      if (disposition.kind === 'ordinary' || disposition.kind === 'legacy') {
+        return null;
+      }
+      return disposition.kind === 'incomplete'
+        ? {
+            kind: 'defer',
+            reason:
+              `Issue ${issue.key} carries the implementation handoff's source identity but the ` +
+              'handoff has not retained its implementation input yet; the handoff completes its ' +
+              'effects before implementation is admitted.',
+          }
+        : {
+            kind: 'attention',
+            reason:
+              `Issue ${issue.key} carries the implementation handoff's source identity but ` +
+              `retains no implementation input, and ${disposition.reason}; reconcile the retained ` +
+              'handoff before selection.',
+          };
+    }
+    const handoff = await handoffAdmissionProblem(input, issue.key);
+    if (handoff !== null) {
+      return handoff;
+    }
+    const prerequisiteKeys = input.prerequisites.map((prerequisite) => prerequisite.key);
+    if (prerequisiteKeys.length === 0) {
       return null;
     }
     const found = await jira.searchIssues({
-      query: `key in (${input.prerequisites.map((key) => jqlString(key)).join(', ')})`,
+      query: `key in (${prerequisiteKeys.map((key) => jqlString(key)).join(', ')})`,
       orderBy: 'Rank ASC',
     });
     if (!found.ok) {
       throw new Error(found.fault.message);
     }
     const identities = new Map(found.value.map((identity) => [identity.key, identity]));
-    for (const key of input.prerequisites) {
+    for (const key of prerequisiteKeys) {
       const identity = identities.get(key);
       if (identity === undefined) {
         return {

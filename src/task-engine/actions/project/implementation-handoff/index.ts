@@ -1,7 +1,8 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import type { JiraAdapter, JiraIssue } from '../../../../adapters/jira.js';
+import { messageOf } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
@@ -41,6 +42,8 @@ import {
   implementationHandoffFailureDeclaration,
   implementationHandoffResultDeclaration,
   implementationInputDeclaration,
+  legacyDocumentationReviewsDirectory,
+  plannedTaskIdentityLabelPrefix,
   type ImplementationInput,
 } from './artifacts.js';
 import { readHandoff, readSelection, writeHandoff } from '../state.js';
@@ -54,7 +57,8 @@ import { readHandoff, readSelection, writeHandoff } from '../state.js';
  * a preparation-handoff comment. Every creation, link, input, rank and admission acknowledgement
  * is retained so an interrupted or uncertain effect is reconciled without duplicates, and
  * unexpected human status changes are preserved. There is no documentation assembly,
- * documentation-only pull request or preparation publication gate.
+ * documentation-only pull request or preparation publication gate; a retained preparation-only
+ * publication from the removed workflow requests explicit reconciliation before any ticket effect.
  */
 
 export type ImplementationHandoffSettings = {
@@ -117,7 +121,7 @@ function documentOf(text: string): Readonly<Record<string, unknown>> {
 
 /** The source-side identity label one planned task's created ticket carries for reconciliation. */
 function plannedTaskLabel(taskKey: string, index: number): string {
-  return `nexus-source-${taskKey}-${String(index + 1)}`;
+  return `${plannedTaskIdentityLabelPrefix}${taskKey}-${String(index + 1)}`;
 }
 
 /** The implementation ticket description one planned task produces, with its reusable references. */
@@ -206,6 +210,28 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       );
       settings.publish({ source: 'implementation-handoff', type: 'failed', data: { reason } });
       return 'failed';
+    }
+
+    // The removed preparation-only publication may already have started under this workspace. Its
+    // pull request, review and check evidence is retained and must be reconciled explicitly; it is
+    // never treated as a new handoff that creates implementation tickets over it.
+    const retainedPublication = handoff.publications.find(
+      (publication) => publication.kind === 'documentation-pr',
+    );
+    if (retainedPublication !== undefined) {
+      return failed(
+        `The retained handoff still holds the preparation-only documentation publication ` +
+          `"${retainedPublication.id}" from the removed publication workflow; reconcile its pull ` +
+          'request, review and check state before creating implementation tickets.',
+      );
+    }
+    const retainedReview = await retainedDocumentationReview(root);
+    if (retainedReview !== null) {
+      return failed(
+        `The source workspace retains the documentation review "${retainedReview}" from the ` +
+          'removed preparation-only publication; reconcile its pull request, review and check ' +
+          'state before creating implementation tickets.',
+      );
     }
 
     /** Check the source before each effect and preserve human pauses on replay. */
@@ -387,6 +413,8 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       await writeHandoff(root, handoff);
     }
     const firstIndex = taskOrder[0] as number;
+    /** Each processed ticket's resolved workspace root, so its dependents record the same one. */
+    const resolvedWorkspaces = new Map<number, string>();
     for (const index of taskOrder) {
       const task = tasks[index] as PlannedTask;
       const paused = await sourceProblem();
@@ -415,16 +443,23 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
       }
       // Every later ticket waits for the first ticket's completion as well as its declared
-      // prerequisites, because only the first branch carries the preparation commits.
-      const declaredPrerequisites = task.prerequisites.map((prerequisite) => {
+      // prerequisites, because only the first branch carries the preparation commits. Both the
+      // documented prerequisite keys and the workspace references the handoff resolved for them
+      // are retained, so preparation reads the same tickets' completion evidence selection did.
+      const prerequisiteIndices = [
+        ...new Set([...task.prerequisites, ...(index === firstIndex ? [] : [firstIndex])]),
+      ];
+      const prerequisites = prerequisiteIndices.map((prerequisite) => {
         const prerequisiteTicket = ticketsByTask.get(prerequisite);
-        if (prerequisiteTicket === undefined)
-          throw new Error('A validated prerequisite has no retained ticket identity.');
-        return prerequisiteTicket.key;
+        const workspace = resolvedWorkspaces.get(prerequisite);
+        if (prerequisiteTicket === undefined || workspace === undefined) {
+          throw new Error(
+            'A validated prerequisite has no retained ticket identity and workspace.',
+          );
+        }
+        return { key: prerequisiteTicket.key, workspace: { root: workspace } };
       });
-      const firstTicket = ticketsByTask.get(firstIndex) as HandoffTicket;
-      const prerequisiteKeys =
-        index === firstIndex ? [] : [...new Set([...declaredPrerequisites, firstTicket.key])];
+      const prerequisiteKeys = prerequisites.map((prerequisite) => prerequisite.key);
       if (ticket === undefined) {
         const created = await settings.jira.createIssue({
           issuetype: { name: settings.implementation.issueType },
@@ -464,6 +499,37 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         ticketsByTask.set(index, ticket);
         await saveHandoff();
       }
+      // The ticket's own workspace and its immutable implementation input. The input is retained
+      // immediately after the identity, before the link and rank effects, so a ticket that creation
+      // already put into the configured ready status is never selectable without its input. An
+      // existing different record requests reconciliation instead of being overwritten.
+      const issue = await readIssue(settings.jira, ticket.issueId);
+      const ticketWorkspace = await workspaceFor(issue);
+      resolvedWorkspaces.set(index, ticketWorkspace);
+      const input: ImplementationInput = {
+        sourceKey: selection.taskKey,
+        sourceWorkspace: { root },
+        architectureResult: { path: resultFile },
+        planIdentity: basis.planIdentity,
+        plannedTask: index,
+        prerequisites,
+        continuation:
+          index === firstIndex
+            ? { workspace: preparation, headRevision: basis.continuationHead }
+            : null,
+      };
+      const inputFile = path.join(ticketWorkspace, implementationInputDeclaration.file);
+      const existingInput = await readRecord(inputFile, implementationInputDeclaration);
+      if (existingInput !== null && !sameInput(existingInput, input)) {
+        return failed(
+          `Implementation ticket ${ticket.key} retains a different implementation input than the ` +
+            'frozen handoff describes; the retained record is reconciled instead of overwritten.',
+        );
+      }
+      if (existingInput === null) {
+        await mkdir(path.dirname(inputFile), { recursive: true });
+        await writeRecord(inputFile, input);
+      }
       if (ticket.linked !== true) {
         const linked = await settings.jira.linkIssues(
           ticket.issueId,
@@ -499,38 +565,12 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         ticketsByTask.set(index, ticket);
         await saveHandoff();
       }
-      // The ticket's own workspace and immutable implementation input. The input is written
-      // before admission, and an existing different record requests reconciliation instead of
-      // being overwritten.
-      const issue = await readIssue(settings.jira, ticket.issueId);
-      const ticketWorkspace = await workspaceFor(issue);
-      const input: ImplementationInput = {
-        sourceKey: selection.taskKey,
-        sourceWorkspace: { root },
-        architectureResult: { path: resultFile },
-        planIdentity: basis.planIdentity,
-        plannedTask: index,
-        prerequisites: prerequisiteKeys,
-        continuation:
-          index === firstIndex
-            ? { workspace: preparation, headRevision: basis.continuationHead }
-            : null,
-      };
-      const inputFile = path.join(ticketWorkspace, implementationInputDeclaration.file);
-      const existingInput = await readRecord(inputFile, implementationInputDeclaration);
-      if (existingInput !== null && !sameInput(existingInput, input)) {
-        return failed(
-          `Implementation ticket ${ticket.key} retains a different implementation input than the ` +
-            'frozen handoff describes; the retained record is reconciled instead of overwritten.',
-        );
-      }
-      if (existingInput === null) {
-        await mkdir(path.dirname(inputFile), { recursive: true });
-        await writeRecord(inputFile, input);
-      }
       // Admission is distinct from later human status changes. Replays finish only the recorded
       // initial-to-ready transition or recognize its already-applied target.
-      const status = statusNameOf(issue);
+      // The issue is re-read so the transition never acts on a status observed before the
+      // intervening source effects.
+      const admittedIssue = await readIssue(settings.jira, ticket.issueId);
+      const status = statusNameOf(admittedIssue);
       if (status !== settings.implementation.status) {
         if (ticket.admission === undefined || ticket.admission.completed) {
           return failed(
@@ -551,11 +591,11 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         }
         const transition = await transitionInto(
           settings.jira,
-          issue,
+          admittedIssue,
           settings.implementation.status,
         );
         if (transition.kind === 'blocked') return failed(transition.reason);
-        await applyTransition(settings.jira, issue.id, transition.transition);
+        await applyTransition(settings.jira, admittedIssue.id, transition.transition);
       }
       ticket = {
         ...ticket,
@@ -637,6 +677,26 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
       return stageResult?.outcome === 'accepted' || stageResult?.outcome === 'skipped'
         ? stageResult.prototype
         : null;
+    }
+
+    /** The removed preparation-only publication's retained review file, or null when none remains. */
+    async function retainedDocumentationReview(issueRoot: string): Promise<string | null> {
+      const directory = path.join(issueRoot, legacyDocumentationReviewsDirectory);
+      let entries: readonly string[];
+      try {
+        entries = await readdir(directory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return null;
+        }
+        throw new Error(
+          `The retained documentation review area "${directory}" could not be read: ` +
+            `${messageOf(error)}`,
+          { cause: error },
+        );
+      }
+      const retained = [...entries].filter((entry) => entry.endsWith('.json')).sort()[0];
+      return retained === undefined ? null : path.join(directory, retained);
     }
 
     /** The retained preparation branch's committed head, or the reason it cannot be continued. */
