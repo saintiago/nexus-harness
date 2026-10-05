@@ -2,12 +2,12 @@ import path from 'node:path';
 import type { IdeaRole } from '../../../agent-runtime/index.js';
 import { actionOutcomeEvent, type EventPublisher } from '../../index.js';
 import { challengerArtifact } from '../challenger/artifacts.js';
+import { ideaReportContracts, readRetainedIdeaReport } from '../idea-context.js';
 import {
   ensureIdeaCycle,
   ideaCycleDirectory,
   listIdeaSubmissions,
   openIdeaSubmission,
-  readCycleArtifact,
   submissionDecided,
   writeIdeaInput,
 } from '../idea-storage.js';
@@ -64,18 +64,29 @@ function routeOf(input: unknown): IdeaRoute {
   );
 }
 
-/** True when one cycle already carries the Challenger's result. */
-async function cycleChallenged(root: string, submission: number, cycle: number): Promise<boolean> {
-  const cycleRoot = ideaCycleDirectory(root, submission, cycle);
-  return (await readCycleArtifact(cycleRoot, challengerArtifact)) !== null;
-}
-
 /** Create StartIdeaRound over the refinement area it plans. */
 export function createStartIdeaRound(
   settings: StartIdeaRoundSettings,
 ): (input?: unknown) => Promise<string> {
   const root = settings.workspace.root;
   const planFile = path.join(root, ideaRoundPlanFile);
+
+  /** True when one cycle already carries a usable Challenger result. */
+  async function cycleChallenged(plan: IdeaRoundPlan): Promise<boolean> {
+    return (
+      (await readRetainedIdeaReport({
+        root,
+        workId: settings.input.taskKey,
+        plan,
+        cycleRoot: ideaCycleDirectory(root, plan.submission, plan.cycle),
+        declaration: challengerArtifact,
+        contract: ideaReportContracts.challenge,
+        context:
+          `StartIdeaRound checking the Challenger result of submission ` +
+          `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${settings.input.taskKey}.`,
+      })) !== null
+    );
+  }
 
   /** Publish the opened cycle and its saved plan. */
   function opened(plan: IdeaRoundPlan): 'opened' {
@@ -172,10 +183,7 @@ export function createStartIdeaRound(
         `No idea round plan exists at "${planFile}"; the next route needs an opened submission.`,
       );
     }
-    if (
-      current.route === route &&
-      !(await cycleChallenged(root, current.submission, current.cycle))
-    ) {
+    if (current.route === route && !(await cycleChallenged(current))) {
       // The route that opened this cycle is repeated before its Challenger reported; reuse it.
       return opened(current);
     }

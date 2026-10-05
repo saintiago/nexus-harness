@@ -3,6 +3,7 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorHelpArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
+  finishRetainedIdeaCorrection,
   ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
@@ -28,7 +29,8 @@ import {
  * ProjectGuide runs the project guidance role. The cycle's initial contribution discovers the
  * project's purpose documents in the prepared worktree and infers direction from code and commits
  * when they are absent, explaining how the idea could fit and which real constraints matter; a
- * focused follow-up answers the specific question the editor asked.
+ * focused follow-up answers the specific question the editor asked. The complete assessment lives
+ * in the invocation's Markdown report; the machine outcome is the completion the join consumes.
  */
 
 export type ProjectGuideSettings = {
@@ -59,19 +61,14 @@ function phaseOf(input: unknown): GuidancePhase {
 /** Create ProjectGuide over the refinement area it contributes to. */
 export function createProjectGuide(settings: ProjectGuideSettings): BoundAction {
   /** Publish a saved contribution and return its workflow outcome. */
-  function contributed(
-    taskKey: string,
-    cycle: number,
-    provisional: boolean,
-    artifact: string,
-  ): 'contributed' {
+  function contributed(taskKey: string, cycle: number, artifact: string): 'contributed' {
     publishIdeaOutcome({
       publish: settings.publish,
       source: 'project-guide',
       taskKey,
       cycle,
       outcome: 'contributed',
-      detail: provisional ? 'provisional project direction' : null,
+      detail: null,
       artifact,
     });
     return 'contributed';
@@ -83,6 +80,7 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const artifact = phase === 'initial' ? projectGuideArtifact : projectGuideFollowUpArtifact;
+    const reportName = phase === 'initial' ? 'project-guide' : 'project-guide-follow-up';
     const inputRecord = await readIdeaInput(root, plan.submission);
     const file = path.join(cycleRoot, artifact.pathFromArtifactsRoot);
 
@@ -99,13 +97,13 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
           `ProjectGuide reading the editor help request of submission ` +
           `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${inputRecord.taskKey}.`,
       });
-      if (help === null || help.disposition !== 'help-requested') {
+      if (help === null || help.value.disposition !== 'help-requested') {
         throw new Error(
           `A focused project guidance contribution answers an editor help request; submission ` +
             `${String(plan.submission)} cycle ${String(plan.cycle)} has none.`,
         );
       }
-      question = help.help?.projectGuide ?? null;
+      question = help.value.help?.projectGuide ?? null;
       if (question === null) {
         // The editor asked the Researcher only; this role contributes nothing.
         return 'not-requested';
@@ -125,7 +123,15 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
         `for idea ${inputRecord.taskKey}.`,
     });
     if (existing !== null) {
-      return contributed(inputRecord.taskKey, plan.cycle, existing.provisional, file);
+      // The saved contribution already answers for the rejections its invocation was supplied;
+      // an interrupted correction write finishes here without another invocation.
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: inputRecord.taskKey,
+        contract: ideaReportContracts.projectGuidance,
+        read: existing,
+      });
+      return contributed(inputRecord.taskKey, plan.cycle, file);
     }
 
     const guidance = await projectGuidanceText(root);
@@ -135,6 +141,11 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
           'long-term direction, and give the editor a short contribution.'
         : `Answer this focused question from the editor, without repeating the investigation:\n` +
           question,
+      'Write the complete guidance in this invocation\u2019s assigned Markdown report: the short',
+      'contribution the editor reads, how the idea could fit, the smallest steering that would',
+      'improve that fit, the real constraints, the documents, files and commits each material',
+      'claim rests on, whether the direction is inferred provisionally, and any uncertainty. The',
+      'editor reads that report directly.',
       await capturedIdeaText(root, plan, inputRecord),
       // The Researcher contributes concurrently; its pending contribution is not this role's.
       await retainedHistoryText(root, plan, {
@@ -158,19 +169,23 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       role: 'project-guide',
       operation: 'ProjectGuide',
       reportKind: 'project-guidance',
+      reportName,
       input: inputRecord,
       context,
       schema: projectGuideResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
     const stored: ProjectGuideContribution = {
-      ...outcome.report,
+      taskKey: inputRecord.taskKey,
       role: 'project-guide',
+      profile: outcome.profile,
       question,
+      report: outcome.assignedReport,
+      reportIdentity: outcome.reportFile.identity,
+      invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    await outcome.resolveFeedback({ path: file }, stored);
-    return contributed(inputRecord.taskKey, plan.cycle, stored.provisional, file);
+    await outcome.finishFeedback({ path: file }, stored);
+    return contributed(inputRecord.taskKey, plan.cycle, file);
   };
 }

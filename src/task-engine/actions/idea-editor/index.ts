@@ -3,7 +3,9 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
+  finishRetainedIdeaCorrection,
   ideaReportContracts,
+  ideaReportReference,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
@@ -13,6 +15,7 @@ import {
   responseFormatText,
   retainedHistoryText,
   type IdeaInvocationOutcome,
+  type RetainedIdeaReport,
 } from '../idea-context.js';
 import {
   ideaCycleDirectory,
@@ -20,7 +23,7 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
-import { challengerArtifact, type ChallengerReport } from '../challenger/artifacts.js';
+import { challengerArtifact } from '../challenger/artifacts.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
 import type { IdeaRoundPlan } from '../start-idea-round/artifacts.js';
@@ -32,19 +35,22 @@ import {
   framingResponseSchema,
   refinedIdeaArtifact,
   type EditorDisposition,
-  type EditorTurn,
+  type EditorTurnRecord,
   type EditorTurnResponse,
+  type FramingRecord,
   type RefinedIdeaRead,
 } from './artifacts.js';
 
 /**
  * IdeaEditor runs the editor role. In cycle 1 it first frames the author's proposal and the few
- * questions that could develop it, then writes the refined idea from the researcher's and Project
- * guide's contributions. After a Challenger discussion it responds with a revision, an answer, a
- * rebuttal, a focused help request or a return to the author. Every written revision is a new
- * immutable artifact of its cycle; a repeated invocation reuses a completed turn, and completes one
- * an interruption left half-saved by requesting a response specifically for the retained revision.
- * A retry that changes that revision fails before saving its response.
+ * questions that could develop it, then writes the refined idea from the Researcher's and Project
+ * guide's Markdown contributions. After a Challenger discussion it responds with a revision, an
+ * answer, a rebuttal, a focused help request or a return to the author; the response prose lives
+ * in its assigned Markdown report, while the saved turn keeps only the routing decision and the
+ * functional data the workflow consumes. Every written revision is a new immutable artifact of its
+ * cycle; a repeated invocation reuses a completed turn, and completes one an interruption left
+ * half-saved by requesting a response specifically for the retained revision. A retry that changes
+ * that revision fails before saving its response.
  */
 
 export type IdeaEditorSettings = {
@@ -237,9 +243,10 @@ async function recoveryText(root: string, plan: IdeaRoundPlan, workId: string): 
     'Interrupted editor turn recovery: the revision below was saved, but its response was not. ' +
       'Complete that turn instead of drafting another revision. Return disposition "revised" ' +
       'and repeat its content exactly in refinedIdea (omit revision, submission and cycle). ' +
-      'Write a response describing this retained revision accurately, including any concern it ' +
-      'leaves unresolved. Do not claim a correction absent from this revision, change its content, ' +
-      'request help or choose another disposition. Further changes require a later cycle.\n' +
+      'Write your Markdown report describing this retained revision accurately, including any ' +
+      'concern it leaves unresolved. Do not claim a correction absent from this revision, change ' +
+      'its content, request help or choose another disposition. Further changes require a later ' +
+      'cycle.\n' +
       `${retained.path}\n${JSON.stringify(retained.value, null, 2)}`,
   ];
 }
@@ -278,8 +285,8 @@ async function contributionsText(
       );
     }
     contributions.push(
-      `${label} contribution: ${path.join(cycleRoot, artifact.pathFromArtifactsRoot)}\n` +
-        JSON.stringify(contribution, null, 2),
+      `${label} contribution (${ideaReportReference(contribution, contract, artifact)}):\n` +
+        contribution.narrative,
     );
   }
   return contributions;
@@ -306,9 +313,8 @@ async function focusedText(root: string, plan: IdeaRoundPlan, workId: string): P
     });
     if (contribution !== null) {
       focused.push(
-        `Focused ${contribution.role} contribution: ` +
-          `${path.join(cycleRoot, artifact.pathFromArtifactsRoot)}\n` +
-          JSON.stringify(contribution, null, 2),
+        `Focused contribution (${ideaReportReference(contribution, contract, artifact)}):\n` +
+          contribution.narrative,
       );
     }
   }
@@ -324,7 +330,7 @@ async function latestChallengerBefore(
   root: string,
   plan: IdeaRoundPlan,
   workId: string,
-): Promise<{ readonly path: string; readonly report: ChallengerReport } | null> {
+): Promise<RetainedIdeaReport<typeof challengerArtifact> | null> {
   for (let number = plan.cycle - 1; number >= 1; number -= 1) {
     const cycleRoot = ideaCycleDirectory(root, plan.submission, number);
     const report = await readRetainedIdeaReport({
@@ -339,7 +345,7 @@ async function latestChallengerBefore(
         `cycle ${String(number)} for idea ${workId}.`,
     });
     if (report !== null) {
-      return { path: path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot), report };
+      return report;
     }
   }
   return null;
@@ -384,11 +390,19 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: taskKey,
+        contract: ideaReportContracts.framing,
+        read: existing,
+      });
       return reported(
         taskKey,
         cycle,
-        existing.authorDecision === null ? 'framed' : 'author-decision-needed',
-        existing.authorDecision === null ? `${String(existing.questions.length)} questions` : null,
+        existing.value.authorDecision === null ? 'framed' : 'author-decision-needed',
+        existing.value.authorDecision === null
+          ? `${String(existing.value.questions.length)} questions`
+          : null,
         file,
       );
     }
@@ -400,6 +414,9 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'it for this refinement conversation. Preserve their intent; keep your interpretation open',
       'to correction. Ask an essential author decision only when one is already missing: an',
       'element the author can still supply through refinement is not one.',
+      'Write the framing explanation and the questions\u2019 background in this invocation\u2019s',
+      'assigned Markdown report; the functional framing, questions and essential author decision',
+      'below are what the workflow and publication consume.',
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       ...(guidance === null ? [] : [guidance]),
@@ -412,17 +429,28 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       role: 'idea-editor',
       operation: 'FrameIdea',
       reportKind: 'idea-framing',
+      reportName: 'idea-editor-framing',
       input,
       context,
       schema: framingResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
-    const framing = outcome.report;
-    await writeCycleArtifact(cycleRoot, framingArtifact, framing);
-    await outcome.resolveFeedback({ path: file }, framing);
+    const framing = outcome.response;
+    const stored: FramingRecord = {
+      taskKey: input.taskKey,
+      role: 'idea-editor',
+      profile: outcome.profile,
+      framing: framing.framing,
+      questions: framing.questions,
+      authorDecision: framing.authorDecision,
+      report: outcome.assignedReport,
+      reportIdentity: outcome.reportFile.identity,
+      invocationId: outcome.invocationId,
+    };
+    await writeCycleArtifact(cycleRoot, framingArtifact, stored);
+    await outcome.finishFeedback({ path: file }, stored);
     return reported(
-      taskKey,
+      input.taskKey,
       cycle,
       framing.authorDecision === null ? 'framed' : 'author-decision-needed',
       framing.authorDecision === null ? `${String(framing.questions.length)} questions` : null,
@@ -447,7 +475,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
-      const outcome = editOutcome(existing.disposition);
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: taskKey,
+        contract: ideaReportContracts.editorTurn,
+        read: existing,
+      });
+      const outcome = editOutcome(existing.value.disposition);
       return reported(
         taskKey,
         cycle,
@@ -464,7 +498,11 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'principle behind it; `projectFit` states why it belongs in this project; `feasibility`',
       'states a plausible way forward given the known constraints and evidence; `openQuestions`',
       'lists only the material questions the next workflow must answer and reports null when the',
-      'revision states none.',
+      'revision states none. The contributions are the Markdown reports their producers wrote,',
+      'with the functional data they retained.',
+      'Write your turn in this invocation\u2019s assigned Markdown report: what you changed and',
+      'why, and how the contributions were integrated. The narrative response belongs there,',
+      'never in the response object.',
       'Preserve the author\u2019s intent and do not turn the idea into requirements, design',
       'decisions or an implementation plan. If pursuing the idea does not look sensible, return',
       'it as unsuitable with the author-facing reason; ask an essential author decision plainly',
@@ -487,13 +525,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       role: 'idea-editor',
       operation: 'EditIdea',
       reportKind: 'idea-editor-turn',
+      reportName: 'idea-editor-synthesis',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
-    const problem = turnProblem('edit', outcome.report);
+    const problem = turnProblem('edit', outcome.response);
     if (problem !== null) {
       await outcome.reject(problem);
     }
@@ -522,12 +560,18 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: taskKey,
+        contract: ideaReportContracts.editorTurn,
+        read: existing,
+      });
       return reported(
         taskKey,
         cycle,
-        responseOutcome(existing.disposition),
+        responseOutcome(existing.value.disposition),
         null,
-        existing.disposition === 'revised'
+        existing.value.disposition === 'revised'
           ? revisionFile(root, plan.submission, plan.cycle)
           : turnFile,
       );
@@ -545,6 +589,12 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     });
     if (task === 'respond' && help !== null) {
       // The response asked for help before the invocation was interrupted; route it again.
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: taskKey,
+        contract: ideaReportContracts.editorTurn,
+        read: help,
+      });
       return reported(
         taskKey,
         cycle,
@@ -600,13 +650,19 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
               'or author-decision-needed return carries the author-facing reason and no ' +
               'refinedIdea; answered, rebutted and help-requested turns report no refinedIdea.',
           ]),
+      'Write your turn in this invocation\u2019s assigned Markdown report: the answer, rebuttal,',
+      'reasoning and revision summary belong there, never in the response object. The focused',
+      'questions a help-requested turn names are functional response data it must still return.',
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
       `The refined idea revision currently in force: ${revision.path}`,
-      `The refined idea revision the Challenger assessed: ${discussion.report.refinedIdea}`,
-      `The Challenger result to answer: ` +
-        `${discussion.path}\n${JSON.stringify(discussion.report, null, 2)}`,
+      `The refined idea revision the Challenger assessed: ${discussion.value.refinedIdea}`,
+      `The Challenger result to answer (${ideaReportReference(
+        discussion,
+        ideaReportContracts.challenge,
+        challengerArtifact,
+      )}):\n${discussion.narrative}`,
       ...focused,
       ...(guidance === null ? [] : [guidance]),
       ...(await recoveryText(root, plan, taskKey)),
@@ -619,13 +675,13 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       role: 'idea-editor',
       operation: 'EditorResponse',
       reportKind: 'idea-editor-turn',
+      reportName: task === 'respond' ? 'idea-editor-response' : 'idea-editor-post-help',
       input,
       context,
       schema: editorTurnResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
-    const problem = turnProblem(task, outcome.report);
+    const problem = turnProblem(task, outcome.response);
     if (problem !== null) {
       await outcome.reject(problem);
     }
@@ -633,10 +689,10 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
   }
 
   /**
-   * Save one editor turn: its short response always, its focused help request when it asks for
-   * one, and the refined idea revision it wrote when it revised the idea. A revision gets its own
-   * immutable artifact, so every earlier Challenger approval stays bound to the revision it
-   * reviewed.
+   * Save one editor turn: its routing decision and functional data always, its focused help
+   * request when it asks for one, and the refined idea revision it wrote when it revised the idea.
+   * A revision gets its own immutable artifact, so every earlier Challenger approval stays bound
+   * to the revision it reviewed; the turn's response prose lives in its bound Markdown report.
    */
   async function persist(
     root: string,
@@ -646,7 +702,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     outcome: IdeaInvocationOutcome<typeof editorTurnResponseSchema>,
   ): Promise<string> {
     const { submission, cycle } = plan;
-    const turn = outcome.report;
+    const turn = outcome.response;
     const cycleRoot = ideaCycleDirectory(root, submission, cycle);
     const existing = await cycleRevision(root, plan, workId);
     if (
@@ -670,18 +726,21 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     }
     const returns =
       turn.disposition === 'unsuitable' || turn.disposition === 'author-decision-needed';
-    const stored: EditorTurn = {
+    const stored: EditorTurnRecord = {
+      taskKey: workId,
+      role: 'idea-editor',
+      profile: outcome.profile,
       disposition: turn.disposition,
-      response: turn.response,
       reason: returns ? turn.reason : null,
       help: turn.disposition === 'help-requested' ? turn.help : null,
+      report: outcome.assignedReport,
+      reportIdentity: outcome.reportFile.identity,
+      invocationId: outcome.invocationId,
     };
-    const inputRecord = await readIdeaInput(root, submission);
-    const taskKey = inputRecord.taskKey;
     if (turn.disposition === 'help-requested') {
       const file = await writeCycleArtifact(cycleRoot, editorHelpArtifact, stored);
-      await outcome.resolveFeedback({ path: file }, stored);
-      return reported(taskKey, cycle, 'help-requested', null, file);
+      await outcome.finishFeedback({ path: file }, stored);
+      return reported(workId, cycle, 'help-requested', null, file);
     }
 
     let revision: number | null = null;
@@ -704,11 +763,11 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       }
     }
     const file = await writeCycleArtifact(cycleRoot, editorResponseArtifact, stored);
-    await outcome.resolveFeedback({ path: file }, stored);
+    await outcome.finishFeedback({ path: file }, stored);
     const workflowOutcome =
       task === 'edit' ? editOutcome(turn.disposition) : responseOutcome(turn.disposition);
     return reported(
-      taskKey,
+      workId,
       cycle,
       workflowOutcome,
       revision === null ? null : `revision ${String(revision)}`,

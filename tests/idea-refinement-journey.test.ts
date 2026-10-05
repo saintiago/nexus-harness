@@ -68,6 +68,7 @@ import {
   type IdeaHandoff,
 } from '../src/task-engine/actions/publish-decision/artifacts.js';
 import type { IdeaRoundPlan } from '../src/task-engine/actions/start-idea-round/artifacts.js';
+import { writeAssignedReport } from './support/agent-runner.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedJira } from './support/jira.js';
 import { strictSchemaProblems } from './support/provider-schema.js';
@@ -213,12 +214,18 @@ type IdeaJourneySetup = {
   readonly retained?: (refinement: string) => Readonly<Record<string, unknown>>;
   /** Whether the configured memory integration is enabled for the journey. */
   readonly memory?: boolean;
+  /**
+   * The Markdown narrative one controlled role writes to its assigned report, overriding the
+   * standard report the journey writes for that role.
+   */
+  readonly reports?: Partial<Record<IdeaRole, string>>;
 };
 
 /** Assemble one journey: a local remote, temporary configuration and a controlled Jira source. */
 async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-journey-'));
   temporaryDirectories.push(root);
+  const reports = options.reports ?? {};
 
   const origin = path.join(root, 'origin.git');
   const seed = path.join(root, 'seed');
@@ -479,7 +486,14 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
           expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
           const turn = (turns.get(role) ?? 0) + 1;
           turns.set(role, turn);
-          return ok({ output: JSON.stringify(respond(turn, request)) });
+          const answer = respond(turn, request);
+          // The role writes its narrative to the assigned Markdown report before returning; only
+          // the machine outcome crosses the provider boundary.
+          await writeAssignedReport(
+            request.prompt,
+            reports[role] ?? reportFor(role, request, answer),
+          );
+          return ok({ output: JSON.stringify(answer) });
         },
       };
       return runOperatorCommand({
@@ -509,24 +523,41 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
   };
 }
 
-/** The project guidance contribution every journey's Project guide returns. */
-const guidanceAnswer = {
-  contribution: 'The idea serves the project purpose of serving operators.',
-  fit: 'The project already enforces checks in CI.',
-  steering: [],
-  constraints: [],
-  evidence: ['docs/purpose.md'],
-  provisional: false,
-  uncertainty: [],
-};
+/** The Project guide provider response: completion alone; its narrative is the Markdown report. */
+const guidanceResponse = {};
 
-/** The research contribution every journey's Researcher returns. */
-const researchAnswer = {
-  contribution: 'Linters are widely used to keep reviews focused.',
-  findings: ['Teams use linters to catch style defects early.'],
-  options: ['Adopt the smallest lint configuration that covers the current repository.'],
-  sources: [{ title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' }],
-};
+/** The guidance Markdown every journey's controlled Project guide writes to its assigned report. */
+const guidanceReport = [
+  'Contribution: The idea serves the project purpose of serving operators.',
+  '',
+  'Project fit: The project already enforces checks in CI.',
+  '',
+  'Evidence:',
+  '- docs/purpose.md',
+].join('\n');
+
+/** The Researcher provider response: completion alone; its narrative is the Markdown report. */
+const researchResponse = {};
+
+/** The research Markdown every journey's controlled Researcher writes to its assigned report. */
+const researchReport = [
+  'Contribution: Linters are widely used to keep reviews focused.',
+  '',
+  'Findings:',
+  '- Teams use linters to catch style defects early.',
+  '',
+  'Options:',
+  '- Adopt the smallest lint configuration that covers the current repository.',
+  '',
+  'Sources:',
+  '- Lint overview: https://example.com/lint (accessed 2026-09-24)',
+].join('\n');
+
+/** The framing Markdown every journey's controlled editor writes to its assigned report. */
+const framingReport = [
+  'The author proposes a lint gate so reviews can stay on behaviour, and asks whether generated',
+  'code is in scope.',
+].join('\n');
 
 /** The framing every journey's editor writes before the contributions. */
 const framingAnswer = {
@@ -550,7 +581,6 @@ function refinedIdeaParts(revision: number): RefinedIdeaContent {
 function editorRevision(revision: number): unknown {
   return {
     disposition: 'revised',
-    response: `I wrote revision ${String(revision)}.`,
     reason: null,
     help: null,
     refinedIdea: refinedIdeaParts(revision),
@@ -561,26 +591,61 @@ function editorRevision(revision: number): unknown {
 function challengerAnswer(verdict: 'approve' | 'discuss'): unknown {
   return {
     verdict,
-    assessment:
-      verdict === 'approve'
-        ? 'There is a plausible way forward.'
-        : 'The value claim still lacks evidence.',
     obstacle:
       verdict === 'approve'
         ? null
         : 'Nothing yet shows a lint gate is worth the change to the project.',
-    concerns:
-      verdict === 'approve'
-        ? []
-        : [
-            {
-              concern: 'No evidence links lint gates to shorter reviews.',
-              consequence: 'The value claim is unsubstantiated.',
-              resolution: 'Cite a comparable project or study.',
-            },
-          ],
-    suggestions: [],
   };
+}
+
+/** The Challenger's Markdown report for the verdict it returns. */
+function challengerReport(answer: unknown): string {
+  const verdict = (answer as { readonly verdict?: unknown }).verdict;
+  return verdict === 'approve'
+    ? ['Assessment: There is a plausible way forward, so the change stays worth refining.'].join(
+        '\n',
+      )
+    : [
+        'Assessment: The value claim still lacks evidence.',
+        '',
+        'Concerns:',
+        '- No evidence links lint gates to shorter reviews.',
+        '  Consequence: The value claim is unsubstantiated.',
+        '  Resolution: Cite a comparable project or study.',
+      ].join('\n');
+}
+
+/** The editor turn's Markdown report for the disposition it returns. */
+function editorTurnReport(answer: unknown): string {
+  const disposition = (answer as { readonly disposition?: unknown }).disposition;
+  switch (disposition) {
+    case 'unsuitable':
+      return 'This does not look worth pursuing.';
+    case 'answered':
+      return 'The answer resolves the concern.';
+    case 'rebutted':
+      return 'The objection misreads the idea, so the revision stands.';
+    case 'help-requested':
+      return 'I need the focused help named in the turn before I can continue.';
+    case 'author-decision-needed':
+      return 'The author must supply the essential decision before refinement continues.';
+    default:
+      return 'I wrote the refinement revision the turn records and explained what changed.';
+  }
+}
+
+/** The Markdown narrative one controlled role writes to its assigned report. */
+function reportFor(role: IdeaRole, request: CodingRuntimeRequest, answer: unknown): string {
+  switch (role) {
+    case 'researcher':
+      return researchReport;
+    case 'project-guide':
+      return guidanceReport;
+    case 'challenger':
+      return challengerReport(answer);
+    case 'idea-editor':
+      return editorTaskOf(request.prompt) === 'frame' ? framingReport : editorTurnReport(answer);
+  }
 }
 
 /** A scripted answer set: the four roles approve unless a journey overrides one. */
@@ -596,9 +661,9 @@ function approvingAnswers(overrides: Partial<Record<IdeaRole, RoleAnswer>> = {})
     }
     switch (role) {
       case 'researcher':
-        return researchAnswer;
+        return researchResponse;
       case 'project-guide':
-        return guidanceAnswer;
+        return guidanceResponse;
       case 'challenger':
         return challengerAnswer('approve');
       case 'idea-editor': {
@@ -612,7 +677,6 @@ function approvingAnswers(overrides: Partial<Record<IdeaRole, RoleAnswer>> = {})
         // An answer that keeps the current revision resolves a concern without rewriting it.
         return {
           disposition: 'answered',
-          response: 'The answer resolves the concern.',
           reason: null,
           help: null,
           refinedIdea: null,
@@ -859,7 +923,6 @@ describe('idea refinement journeys', () => {
           }
           return {
             disposition: 'unsuitable',
-            response: 'This does not look worth pursuing.',
             reason: 'The project already checks style in its editor, so the gate adds little.',
             help: null,
             refinedIdea: null,
@@ -1020,6 +1083,43 @@ describe('idea refinement journeys', () => {
       description:
         'An operator should be able to change which model each agent profile runs without editing Nexus code.',
       conversation: [clarification],
+      reports: {
+        researcher: [
+          'Contribution: Other harnesses keep deployment details as data, so changing a model',
+          'needs no code change.',
+          '',
+          'Findings:',
+          '- LiteLLM routes many providers from configuration.',
+          '',
+          'Options:',
+          '- Read the model from the profile configuration, as LiteLLM reads its routing table.',
+          '',
+          'Sources:',
+          '- LiteLLM routing: https://example.com/litellm (accessed 2026-09-27)',
+        ].join('\n'),
+        'project-guide': [
+          'Contribution: Profiles currently name the model; that is a current choice, not the',
+          'project purpose, and the shared vocabulary already treats a profile as configuration.',
+          '',
+          'Project fit: The configuration design already owns profile settings.',
+          '',
+          'Steering:',
+          '- Keep the profile identity stable while its model changes.',
+          '',
+          'Constraints:',
+          '- A changed model must not silently change an execution in flight.',
+          '',
+          'Evidence:',
+          '- docs/configuration.md',
+        ].join('\n'),
+        challenger: [
+          'Assessment: Changing a fixed choice is plausible here and the configuration boundary',
+          'already exists.',
+          '',
+          'Suggestions:',
+          '- Name the configuration key in Requirements and Design.',
+        ].join('\n'),
+      },
       // The completed submission the six-role implementation refined before this one.
       retained: (refinement) => ({
         'state/current-round.json': {
@@ -1063,39 +1163,6 @@ describe('idea refinement journeys', () => {
 
     const exitCode = await journey.run(
       approvingAnswers({
-        researcher: () => ({
-          contribution:
-            'Other harnesses keep deployment details as data, so changing a model needs no code change.',
-          findings: ['LiteLLM routes many providers from configuration.'],
-          options: [
-            'Read the model from the profile configuration, as LiteLLM reads its routing table.',
-          ],
-          sources: [
-            {
-              title: 'LiteLLM routing',
-              link: 'https://example.com/litellm',
-              accessed: '2026-09-27',
-            },
-          ],
-        }),
-        'project-guide': () => ({
-          contribution:
-            'Profiles currently name the model; that is a current choice, not the project purpose, and the shared vocabulary already treats a profile as configuration.',
-          fit: 'The configuration design already owns profile settings.',
-          steering: ['Keep the profile identity stable while its model changes.'],
-          constraints: ['A changed model must not silently change an execution in flight.'],
-          evidence: ['docs/configuration.md'],
-          provisional: false,
-          uncertainty: [],
-        }),
-        challenger: () => ({
-          verdict: 'approve',
-          assessment:
-            'Changing a fixed choice is plausible here and the configuration boundary already exists.',
-          obstacle: null,
-          concerns: [],
-          suggestions: ['Name the configuration key in Requirements and Design.'],
-        }),
         'idea-editor': (_turn, request) => {
           if (editorTaskOf(request.prompt) === 'frame') {
             return {
@@ -1107,8 +1174,6 @@ describe('idea refinement journeys', () => {
           }
           return {
             disposition: 'revised',
-            response:
-              'I kept the proposal as the author clarified it and used the contributions for fit.',
             reason: null,
             help: null,
             refinedIdea: {
@@ -1205,7 +1270,6 @@ describe('idea refinement journeys', () => {
           }
           return {
             disposition: 'revised',
-            response: 'I kept the exploration open and recorded the uncertainty.',
             reason: null,
             help: null,
             refinedIdea: {
@@ -1218,14 +1282,6 @@ describe('idea refinement journeys', () => {
             },
           };
         },
-        challenger: () => ({
-          verdict: 'approve',
-          assessment:
-            'The trial is cheap and plausible, and the uncertainty is acknowledged rather than hidden.',
-          obstacle: null,
-          concerns: [],
-          suggestions: ['Count the reads during the trial.'],
-        }),
       }),
     );
 

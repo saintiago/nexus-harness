@@ -1,9 +1,13 @@
+import { constants } from 'node:fs';
+import { copyFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
+  finishRetainedIdeaCorrection,
   ideaReportContracts,
+  ideaReportReference,
   invokeIdeaRole,
   projectGuidanceText,
   publishIdeaOutcome,
@@ -18,20 +22,25 @@ import {
   readIdeaPlan,
   writeCycleArtifact,
 } from '../idea-storage.js';
+import { recordIdentity } from '../report-feedback.js';
 import {
   challengerArtifact,
   challengerResponseSchema,
+  isBoundChallengerReport,
+  legacyChallengerArtifact,
   type ChallengerReport,
   type ChallengerResponse,
 } from './artifacts.js';
 
 /**
  * Challenger decides whether pursuing the current refined idea makes sense for this project. It
- * reviews the exact revised revision and the editor's response to its previous concern, and saves
- * one result bound to both: approve when there is a plausible way forward, or discuss with only
- * the few concerns that change that decision and a plain statement of the remaining obstacle for
- * the idea's author. Suggestions can accompany either result. A repeated invocation for the same
- * revision and response reuses the result it saved.
+ * reviews the exact revised revision and the editor's outcome for it, and saves one result bound
+ * to both: approve when there is a plausible way forward, or discuss with the few concerns that
+ * change that decision and a plain statement of the remaining obstacle for the idea's author. The
+ * explanations, concerns and suggestions live in its assigned Markdown report. A repeated
+ * invocation for the same revision and editor outcome reuses the result it saved; a legacy
+ * result without recorded identities is reassessed, because it cannot bind the content it
+ * assessed. Its original bytes remain available as a separate history artifact.
  */
 
 export type ChallengerSettings = {
@@ -43,26 +52,15 @@ export type ChallengerSettings = {
 };
 
 /**
- * Why one Challenger response does not support the verdict it reports, or null. A verdict must
- * carry exactly the parts the challenge contract requires; the saved report is never normalized.
+ * Why one Challenger response does not support the verdict it reports, or null. A discuss verdict
+ * needs the plain author-facing obstacle, and an approval reports none; the saved report is never
+ * normalized.
  */
 function challengerProblem(response: ChallengerResponse, assessedRevision: number): string | null {
-  if (response.verdict === 'approve' && response.concerns.length > 0) {
-    return (
-      `The Challenger approved refined idea revision ${String(assessedRevision)} while naming ` +
-      'unresolved concerns.'
-    );
-  }
   if (response.verdict === 'approve' && response.obstacle !== null) {
     return (
       `The Challenger approved refined idea revision ${String(assessedRevision)} while stating ` +
       'a remaining obstacle; approval reports the obstacle as null.'
-    );
-  }
-  if (response.verdict === 'discuss' && response.concerns.length === 0) {
-    return (
-      'The Challenger chose "discuss" without naming a concern, its consequence and what would ' +
-      'resolve it.'
     );
   }
   if (response.verdict === 'discuss' && response.obstacle === null) {
@@ -97,6 +95,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
           `${String(plan.cycle)}; the Challenger reviews a written revision.`,
       );
     }
+    const refinedIdeaIdentity = recordIdentity(revision.value);
     const turn = await readRetainedIdeaReport({
       root,
       workId: input.taskKey,
@@ -105,11 +104,11 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       declaration: editorResponseArtifact,
       contract: ideaReportContracts.editorTurn,
       context:
-        `Challenger reading the editor response of submission ${String(plan.submission)} ` +
+        `Challenger reading the editor outcome of submission ${String(plan.submission)} ` +
         `cycle ${String(plan.cycle)} for idea ${input.taskKey}.`,
     });
-    const turnFile =
-      turn === null ? null : path.join(cycleRoot, editorResponseArtifact.pathFromArtifactsRoot);
+    const turnFile = turn === null ? null : turn.file;
+    const editorIdentity = turn === null ? null : recordIdentity(turn.value);
     const file = path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot);
 
     /** Publish the saved or reused result. */
@@ -139,12 +138,22 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
     });
     if (
       existing !== null &&
-      existing.refinedIdea === revision.path &&
-      existing.editorResponse === turnFile &&
-      existing.revision === revision.value.revision
+      isBoundChallengerReport(existing.value) &&
+      existing.value.refinedIdea === revision.path &&
+      existing.value.refinedIdeaIdentity === refinedIdeaIdentity &&
+      existing.value.editorResponse === turnFile &&
+      existing.value.editorIdentity === editorIdentity &&
+      existing.value.revision === revision.value.revision
     ) {
-      // This result already answers for this exact revision and response; reuse it.
-      return reported(existing.verdict);
+      // This result already answers for this exact revision and editor outcome; reuse it and
+      // finish any correction write its invocation still owes.
+      await finishRetainedIdeaCorrection({
+        root,
+        workId: input.taskKey,
+        contract: ideaReportContracts.challenge,
+        read: existing,
+      });
+      return reported(existing.value.verdict);
     }
 
     const guidance = await projectGuidanceText(root);
@@ -154,18 +163,27 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       'forward, even with acknowledged uncertainty. Otherwise raise only the few concerns that',
       'change that decision, explaining the consequence and what would resolve each concern;',
       'keep optional suggestions separate from concerns, since they do not block approval.',
-      'Also state the remaining obstacle plainly for the idea\u2019s author: what stopped approval',
-      'and why it matters, readable without your concerns and free of internal paths, code',
-      'references and instructions meant for the editor. Report null when nothing remains.',
+      'Write the assessment, the concerns with their consequences and resolutions and any',
+      'optional suggestions in this invocation\u2019s assigned Markdown report; the response',
+      'object carries only the verdict and the applicable publication obstacle.',
+      'For "discuss", state the remaining obstacle plainly for the idea\u2019s author: what',
+      'stopped approval and why it matters, readable without your report and free of internal',
+      'paths, code references and instructions meant for the editor. For "approve", report the',
+      'obstacle as null.',
       'Consider the editor\u2019s answers and rebuttals and explicitly withdraw concerns they',
       'resolve. The current architecture is not immutable, and a preferable alternative alone is',
       'not a veto. Do not demand detailed design or substitute a different idea.',
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { workId: input.taskKey, omitCurrentCycleOf: null }),
-      `The exact refined idea revision you review is the revision in force above: ${revision.path}`,
+      `The exact refined idea revision you review (revision ${String(revision.value.revision)}): ` +
+        `${revision.path}\n${JSON.stringify(revision.value, null, 2)}`,
       turn === null || turnFile === null
         ? 'The revision stands alone: the editor has not responded to a previous concern.'
-        : `The editor\u2019s response you review: ${turnFile}\n${JSON.stringify(turn, null, 2)}`,
+        : `The editor outcome you review (${ideaReportReference(
+            turn,
+            ideaReportContracts.editorTurn,
+            editorResponseArtifact,
+          )}):\n${turn.narrative}`,
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(challengerResponseSchema),
     ].join('\n\n');
@@ -176,26 +194,52 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       role: 'challenger',
       operation: 'Challenger',
       reportKind: 'challenge',
+      reportName: 'challenger',
       input,
       context,
       schema: challengerResponseSchema,
       runner: settings.runner,
-      publish: settings.publish,
     });
-    const response = outcome.report;
+    const response = outcome.response;
     const problem = challengerProblem(response, revision.value.revision);
     if (problem !== null) {
       await outcome.reject(problem);
     }
 
     const report: ChallengerReport = {
-      ...response,
+      taskKey: input.taskKey,
+      role: 'challenger',
+      profile: outcome.profile,
+      verdict: response.verdict,
+      obstacle: response.obstacle,
       refinedIdea: revision.path,
+      refinedIdeaIdentity,
       editorResponse: turnFile,
+      editorIdentity,
       revision: revision.value.revision,
+      report: outcome.assignedReport,
+      reportIdentity: outcome.reportFile.identity,
+      invocationId: outcome.invocationId,
     };
+    if (existing !== null && !isBoundChallengerReport(existing.value)) {
+      const historyFile = path.join(cycleRoot, legacyChallengerArtifact.pathFromArtifactsRoot);
+      try {
+        await copyFile(existing.file, historyFile, constants.COPYFILE_EXCL);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+        // Resume a save interrupted after the copy, without rewriting the historical bytes.
+        if (!(await readFile(historyFile)).equals(await readFile(existing.file))) {
+          throw new Error(
+            `The retained legacy Challenger result at "${historyFile}" differs from "${existing.file}"; preserve both before reassessment.`,
+            { cause: error },
+          );
+        }
+      }
+    }
     await writeCycleArtifact(cycleRoot, challengerArtifact, report);
-    await outcome.resolveFeedback({ path: file }, report);
+    await outcome.finishFeedback({ path: file }, report);
     return reported(response.verdict);
   };
 }

@@ -9,6 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
+import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import { challengerArtifact } from '../src/task-engine/actions/challenger/artifacts.js';
 import {
   ideaCycleDirectory,
@@ -72,8 +74,10 @@ async function area(options: {
   readonly challengedCycle?: number;
   readonly maxCycles?: number;
 }) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-round-'));
-  temporaryDirectories.push(root);
+  const issueRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-idea-round-'));
+  temporaryDirectories.push(issueRoot);
+  const root = path.join(issueRoot, 'refinement');
+  await mkdir(root);
   const events: EngineEvent[] = [];
   if (options.plan !== undefined) {
     await mkdir(path.join(root, 'state'), { recursive: true });
@@ -299,6 +303,66 @@ describe('StartIdeaRound', () => {
       reason: (started.events.at(-1)!.data as { readonly reason: string }).reason,
     });
   });
+
+  it.each(['malformed', 'missing-markdown'] as const)(
+    'retains %s Challenger evidence before continuing a repeated next route',
+    async (damage) => {
+      const plan: IdeaRoundPlan = { submission: 1, cycle: 2, route: 'next', profiles };
+      const started = await area({ plan });
+      const cycleRoot = ideaCycleDirectory(started.root, 1, 2);
+      await mkdir(cycleRoot, { recursive: true });
+      const report = path.join(cycleRoot, 'challenger.md');
+      const markdown = '# A concern remains\n';
+      await writeFile(report, markdown);
+      const file = path.join(cycleRoot, challengerArtifact.pathFromArtifactsRoot);
+      const result = {
+        taskKey: 'NEX-1',
+        role: 'challenger',
+        profile: 'historical-challenger',
+        invocationId: 'historical-challenge',
+        report: { path: report },
+        reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+        verdict: 'discuss',
+        obstacle: 'A remaining concern',
+        revision: 1,
+        refinedIdea: path.join(cycleRoot, 'refined-idea.json'),
+        refinedIdeaIdentity: 'idea-identity',
+        editorResponse: null,
+        editorIdentity: null,
+      };
+      const damaged: Record<string, unknown> = { ...result };
+      if (damage === 'malformed') {
+        delete damaged.reportIdentity;
+      } else {
+        await rm(report);
+      }
+      const rejected = JSON.stringify(damaged);
+      await writeFile(file, rejected);
+
+      await expect(started.action({ route: 'next' })).rejects.toThrow();
+      expect(await started.plan()).toEqual(plan);
+      expect(await listIdeaCycles(started.root, 1)).toEqual([2]);
+      expect(started.events).toEqual([]);
+      const feedback = await readReportFeedback(started.root);
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0]?.record).toMatchObject({
+        scope: { role: 'challenger', reportKind: 'challenge' },
+        invocationId: 'historical-challenge',
+        profile: 'historical-challenger',
+        operation: 'Challenger',
+        source: { path: file },
+        output: rejected,
+        assignedReport: { path: report },
+      });
+      // Restoring the saved result follows the same next-cycle route and leaves rejection
+      // evidence outstanding for the next responsible Challenger invocation.
+      await writeFile(file, JSON.stringify(result));
+      await writeFile(report, markdown);
+      await expect(started.action({ route: 'next' })).resolves.toBe('opened');
+      expect(await started.plan()).toMatchObject({ cycle: 3, route: 'next' });
+      await expect(readReportFeedback(started.root)).resolves.toHaveLength(1);
+    },
+  );
 
   it('rejects a next route without an opened submission and an unknown route', async () => {
     const started = await area({});

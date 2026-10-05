@@ -1,18 +1,22 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { messageOf } from '../../../result.js';
+import { reportBindingFields } from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
+import type { IdeaReportDeclaration } from '../idea-context.js';
+import { recordIdentity } from '../report-feedback.js';
 
 /**
- * IdeaEditor's artifact contract: the editor's framing, the refined idea revisions and the
- * editor's response to the Challenger. The refined idea states, in clear parts, the idea itself,
- * why it belongs in this project, a plausible way forward given the known constraints and
- * evidence, and the material questions the next workflow must answer. Each written revision is an
- * immutable artifact of its cycle, so a later revision at its own path invalidates every earlier
- * Challenger approval. The framing states the author's proposal and the few questions that could
- * develop it; the response answers one Challenger concern with a revision, an answer, a rebuttal,
- * a focused help request or a return to the author.
+ * IdeaEditor's artifact contract: the editor's framing, the refined idea revisions, and the
+ * editor's turns answering the Challenger, each with its saved Markdown report. The refined idea
+ * states, in clear parts, the idea itself, why it belongs in this project, a plausible way
+ * forward given the known constraints and evidence, and the material questions the next workflow
+ * must answer. Each written revision is an immutable artifact of its cycle, so a later revision at
+ * its own path invalidates every earlier Challenger approval. The framing states the author's
+ * proposal and the few questions that could develop it; a turn carries the routing decision, the
+ * imperative functional data the workflow consumes and the focused help or author-facing reason
+ * it needs; the turn's response to the next role belongs in its Markdown report.
  */
 
 /** Only material questions for the next workflow; a refined idea may state none. */
@@ -115,10 +119,63 @@ export const framingResponseSchema = z.strictObject({
 
 export type FramingResponse = z.infer<typeof framingResponseSchema>;
 
+/** The saved framing outcome: the response bound to the editor's observed attribution and report. */
+export const framingRecordSchema = z.strictObject({
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
+  role: z.literal('idea-editor'),
+  profile: z.string().trim().min(1).describe('The editor profile that produced this framing.'),
+  framing: framingResponseSchema.shape.framing,
+  questions: framingResponseSchema.shape.questions,
+  authorDecision: framingResponseSchema.shape.authorDecision,
+  ...reportBindingFields,
+});
+
+export type FramingRecord = z.infer<typeof framingRecordSchema>;
+
+/** A retained combined framing from before the narrative/outcome separation. */
+export const legacyFramingRecordSchema = z.strictObject({
+  framing: framingResponseSchema.shape.framing,
+  questions: framingResponseSchema.shape.questions,
+  authorDecision: framingResponseSchema.shape.authorDecision,
+});
+
+export type LegacyFramingRecord = z.infer<typeof legacyFramingRecordSchema>;
+
+/** The producer-owned reader: a bound framing, or a retained combined framing. */
+export const retainedFramingSchema = z.union([framingRecordSchema, legacyFramingRecordSchema]);
+
+export type RetainedFraming = z.infer<typeof retainedFramingSchema>;
+
+/** True when one retained framing carries the current report binding. */
+export function isBoundFraming(record: RetainedFraming): record is FramingRecord {
+  return 'report' in record;
+}
+
+/** A former combined framing's fields as the readable history its consumer opens. */
+function legacyFramingNarrative(record: LegacyFramingRecord): string {
+  return [
+    record.framing,
+    ...(record.questions.length === 0
+      ? []
+      : ['Questions:', ...record.questions.map((question) => `- ${question}`)]),
+    ...(record.authorDecision === null
+      ? []
+      : [`Essential author decision: ${record.authorDecision.question}`]),
+  ].join('\n');
+}
+
 export const framingArtifact = {
   pathFromArtifactsRoot: 'editor-framing.json',
-  schema: framingResponseSchema,
-} satisfies ArtifactDeclaration<typeof framingResponseSchema>;
+  schema: retainedFramingSchema,
+  legacyNarrative: legacyFramingNarrative,
+  functionalData(record) {
+    return {
+      framing: record.framing,
+      questions: record.questions,
+      authorDecision: record.authorDecision,
+    };
+  },
+} satisfies IdeaReportDeclaration<typeof retainedFramingSchema, LegacyFramingRecord>;
 
 /** What the editor did with the Challenger's concern. */
 export const editorDispositions = [
@@ -151,19 +208,14 @@ export const editorHelpSchema = z.strictObject({
 export type EditorHelp = z.infer<typeof editorHelpSchema>;
 
 /**
- * The editor's turn as it is stored: its disposition, the short plain turn for the next role, the
- * author-facing reason a return needs and the focused help it requests. A revised refined idea is
- * written to its own immutable revision artifact, never duplicated here.
+ * The editor's turn response: its disposition, the refined idea it revises, the author-facing
+ * reason a return needs and the focused help it requests. The response to the next role is
+ * written in the assigned Markdown report, never returned here.
  */
-export const editorTurnSchema = z.strictObject({
+export const editorTurnResponseSchema = z.strictObject({
   disposition: z
     .enum(editorDispositions)
     .describe('What the editor did with the Challenger\u2019s concern or this edit task.'),
-  response: z
-    .string()
-    .trim()
-    .min(1)
-    .describe('The short plain response addressed to the next role.'),
   reason: z
     .string()
     .trim()
@@ -177,27 +229,6 @@ export const editorTurnSchema = z.strictObject({
     .describe(
       'The named focused questions for the contributors, or null unless the disposition is help-requested.',
     ),
-});
-
-export type EditorTurn = z.infer<typeof editorTurnSchema>;
-
-/** The editor's response for the cycle: a revision, an answer, a rebuttal or a return. */
-export const editorResponseArtifact = {
-  pathFromArtifactsRoot: 'editor-response.json',
-  schema: editorTurnSchema,
-} satisfies ArtifactDeclaration<typeof editorTurnSchema>;
-
-/** The editor's focused help request for the cycle, answered by the named contributors. */
-export const editorHelpArtifact = {
-  pathFromArtifactsRoot: 'editor-help-request.json',
-  schema: editorTurnSchema,
-} satisfies ArtifactDeclaration<typeof editorTurnSchema>;
-
-/**
- * The editor's response to the Challenger's current concern as the provider returns it: the stored
- * turn plus the refined idea it revises, when it revises one.
- */
-export const editorTurnResponseSchema = editorTurnSchema.extend({
   refinedIdea: refinedIdeaResponseSchema
     .nullable()
     .describe(
@@ -206,6 +237,84 @@ export const editorTurnResponseSchema = editorTurnSchema.extend({
 });
 
 export type EditorTurnResponse = z.infer<typeof editorTurnResponseSchema>;
+
+/**
+ * The saved turn: its disposition, author-facing reason and focused help, bound to the editor's
+ * observed attribution and report. A revised refined idea is written to its own immutable revision
+ * artifact, never duplicated here; the turn's response prose lives in the bound Markdown report.
+ */
+export const editorTurnRecordSchema = z.strictObject({
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
+  role: z.literal('idea-editor'),
+  profile: z.string().trim().min(1).describe('The editor profile that produced this turn.'),
+  disposition: z
+    .enum(editorDispositions)
+    .describe('What the editor did with the Challenger\u2019s concern or this edit task.'),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .nullable()
+    .describe(
+      'The author-facing reason an unsuitable or author-decision-needed return needs, or null for every other disposition.',
+    ),
+  help: editorHelpSchema
+    .nullable()
+    .describe(
+      'The named focused questions for the contributors, or null unless the disposition is help-requested.',
+    ),
+  ...reportBindingFields,
+});
+
+export type EditorTurnRecord = z.infer<typeof editorTurnRecordSchema>;
+
+/** A retained combined editor turn from before the narrative/outcome separation. */
+export const legacyEditorTurnRecordSchema = z.strictObject({
+  disposition: z.enum(editorDispositions),
+  response: z.string().trim().min(1).describe('The former response prose this turn returned.'),
+  reason: z.string().trim().min(1).nullable(),
+  help: editorHelpSchema.nullable(),
+});
+
+export type LegacyEditorTurnRecord = z.infer<typeof legacyEditorTurnRecordSchema>;
+
+/** The producer-owned reader: a bound turn, or a retained combined turn. */
+export const retainedEditorTurnSchema = z.union([
+  editorTurnRecordSchema,
+  legacyEditorTurnRecordSchema,
+]);
+
+export type RetainedEditorTurn = z.infer<typeof retainedEditorTurnSchema>;
+
+/** True when one retained turn carries the current report binding. */
+export function isBoundEditorTurn(record: RetainedEditorTurn): record is EditorTurnRecord {
+  return 'report' in record;
+}
+
+/** A former combined turn's response prose as the readable history its consumer opens. */
+function legacyEditorTurnNarrative(record: LegacyEditorTurnRecord): string {
+  return record.response;
+}
+
+/** The editor's response for the cycle: a revision, an answer, a rebuttal or a return. */
+export const editorResponseArtifact = {
+  pathFromArtifactsRoot: 'editor-response.json',
+  schema: retainedEditorTurnSchema,
+  legacyNarrative: legacyEditorTurnNarrative,
+  functionalData(record) {
+    return { disposition: record.disposition, reason: record.reason, help: record.help };
+  },
+} satisfies IdeaReportDeclaration<typeof retainedEditorTurnSchema, LegacyEditorTurnRecord>;
+
+/** The editor's focused help request for the cycle, answered by the named contributors. */
+export const editorHelpArtifact = {
+  pathFromArtifactsRoot: 'editor-help-request.json',
+  schema: retainedEditorTurnSchema,
+  legacyNarrative: legacyEditorTurnNarrative,
+  functionalData(record) {
+    return { disposition: record.disposition, reason: record.reason, help: record.help };
+  },
+} satisfies IdeaReportDeclaration<typeof retainedEditorTurnSchema, LegacyEditorTurnRecord>;
 
 /**
  * One refined idea revision as consumers read it: the parts it states and the reporting metadata.
@@ -228,6 +337,14 @@ export type RefinedIdeaRead = {
   readonly path: string;
   readonly value: RefinedIdea;
 };
+
+/**
+ * The identity of one read revision's complete content: what a Challenger result and the terminal
+ * decision bind to, so a changed revision requires a fresh assessment.
+ */
+export function refinedIdeaIdentity(idea: RefinedIdeaRead): string {
+  return recordIdentity(idea.value);
+}
 
 /**
  * The artifact path earlier implementations wrote the refined idea to before it replaced their

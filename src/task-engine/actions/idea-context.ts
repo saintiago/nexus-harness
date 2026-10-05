@@ -5,8 +5,19 @@ import type { IdeaRole } from '../../agent-runtime/index.js';
 import type { ArtifactRef } from '../../result.js';
 import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
-import type { ArtifactContent, ArtifactDeclaration } from './artifacts.js';
-import { challengerArtifact } from './challenger/artifacts.js';
+import {
+  actionOwnedRecordsText,
+  assignReportPath,
+  parseAgentReport,
+  readAssignedReport,
+  readBoundReport,
+  reportBindingSchema,
+  responseFormatText,
+  type ReportBinding,
+  type ReportFile,
+} from './agent-reports.js';
+import type { ArtifactContent } from './artifacts.js';
+import { challengerArtifact, legacyChallengerArtifact } from './challenger/artifacts.js';
 import { readDocumentText } from './documents.js';
 import {
   framingArtifact,
@@ -18,22 +29,24 @@ import {
   type RefinedIdeaRead,
 } from './idea-editor/artifacts.js';
 import {
+  readArtifactFile,
   ideaCycleDirectory,
   ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
   listIdeaCycles,
   listIdeaSubmissions,
-  readCycleArtifact,
 } from './idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-guide/artifacts.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
+import { readRecord } from './records.js';
 import {
+  finishSuppliedCorrection,
   outstandingReportFeedback,
   projectOfWorkspace,
-  recordReportCorrection,
   rejectReport,
   rejectUnusableRecord,
   reportFeedbackContextText,
+  retainSuppliedFeedback,
   type ReportRejection,
   type ReportScope,
   type RetainedReportFeedback,
@@ -44,12 +57,16 @@ import type { IdeaInput } from './select-idea/artifacts.js';
 import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
 import { requireReturnReport } from './preparation/storage.js';
 
+/** The response-format instruction every idea role's invocation carries for its declared schema. */
+export { responseFormatText };
+
 /**
  * The context every idea refinement role receives: the current captured author input as the
  * authoritative proposal, the prepared project worktree, the retained workspace history as
  * readable references and the connected project's root AGENTS.md when present. The shared texts
  * below have this one runtime home; every invocation carries each of them once, ahead of its
- * role-specific context.
+ * role-specific context. Each invocation also receives its own assigned Markdown report path;
+ * the role writes its narrative there and returns only the machine outcome its workflow consumes.
  */
 
 /**
@@ -151,7 +168,7 @@ export const ideaReportContracts = {
   editorTurn: {
     role: 'idea-editor',
     reportKind: 'idea-editor-turn',
-    operation: 'idea-editor-turn',
+    operation: 'EditorTurn',
   },
   research: { role: 'researcher', reportKind: 'research', operation: 'Researcher' },
   projectGuidance: {
@@ -163,75 +180,132 @@ export const ideaReportContracts = {
 } as const satisfies Record<string, IdeaReportContract>;
 
 /**
+ * One idea role's report declaration: the retained schema of its saved outcomes and the readable
+ * history of a record written before the narrative/outcome separation, which carries no report
+ * binding. The legacy renderer is called only for such a record.
+ */
+export type IdeaReportDeclaration<Schema extends z.ZodType = z.ZodType, Legacy = never> = {
+  readonly pathFromArtifactsRoot: string;
+  readonly schema: Schema;
+  readonly legacyNarrative: (record: Legacy) => string;
+  /**
+   * The machine outcome fields a consumer needs beside the Markdown narrative, or null when the
+   * record shape states none. The producer owns this selection, so no narrative field reaches a
+   * consumer as machine data.
+   */
+  functionalData?(record: z.output<Schema>): Record<string, unknown> | null;
+};
+
+/** A report declaration the shared reader accepts, with the record types erased. */
+export type AnyIdeaReportDeclaration = IdeaReportDeclaration<z.ZodType, never>;
+
+/** One retained idea report read through its producer declaration. */
+export type RetainedIdeaReport<Declaration extends AnyIdeaReportDeclaration> = {
+  /** The saved outcome or retained combined record this report was read from. */
+  readonly file: string;
+  readonly value: ArtifactContent<Declaration>;
+  /** The bound Markdown text, or a retained combined record rendered as readable history. */
+  readonly narrative: string;
+  /** The report binding of a current saved outcome; null for a retained combined record. */
+  readonly binding: ReportBinding | null;
+};
+
+/**
+ * One cycle-history entry: the artifact the history lists for a cycle, the report responsibility
+ * that owns it and, for the current layout, the producer declaration its saved record is read
+ * through. Earlier implementations' paths keep their readable bytes and are listed by reference.
+ */
+type CycleHistoryEntry = {
+  readonly relative: string;
+  readonly label: string;
+  readonly contract: IdeaReportContract;
+  readonly declaration: AnyIdeaReportDeclaration | null;
+};
+
+/**
  * The retained cycle artifacts the history lists, with the label each history line carries and the
  * report responsibility that owns it. Earlier implementations' paths remain readable history;
  * incompatible old contracts retain separate feedback instead of reaching current invocations.
  */
-const cycleHistory: readonly {
-  readonly relative: string;
-  readonly label: string;
-  readonly contract: IdeaReportContract;
-}[] = [
+const cycleHistory: readonly CycleHistoryEntry[] = [
   {
     relative: framingArtifact.pathFromArtifactsRoot,
     label: 'framing',
     contract: ideaReportContracts.framing,
+    declaration: framingArtifact,
   },
   {
     relative: refinedIdeaArtifact.pathFromArtifactsRoot,
     label: 'refined idea revision',
     contract: ideaReportContracts.editorTurn,
+    declaration: null,
   },
   {
     relative: editorResponseArtifact.pathFromArtifactsRoot,
     label: 'editor response',
     contract: ideaReportContracts.editorTurn,
+    declaration: editorResponseArtifact,
   },
   {
     relative: editorHelpArtifact.pathFromArtifactsRoot,
     label: 'focused help request',
     contract: ideaReportContracts.editorTurn,
+    declaration: editorHelpArtifact,
   },
   {
     relative: researchArtifact.pathFromArtifactsRoot,
     label: 'research',
     contract: ideaReportContracts.research,
+    declaration: researchArtifact,
   },
   {
     relative: researchFollowUpArtifact.pathFromArtifactsRoot,
     label: 'focused research',
     contract: ideaReportContracts.research,
+    declaration: researchFollowUpArtifact,
   },
   {
     relative: projectGuideArtifact.pathFromArtifactsRoot,
     label: 'project guidance',
     contract: ideaReportContracts.projectGuidance,
+    declaration: projectGuideArtifact,
   },
   {
     relative: projectGuideFollowUpArtifact.pathFromArtifactsRoot,
     label: 'focused project guidance',
     contract: ideaReportContracts.projectGuidance,
+    declaration: projectGuideFollowUpArtifact,
+  },
+  {
+    relative: legacyChallengerArtifact.pathFromArtifactsRoot,
+    label: 'legacy challenger result',
+    contract: ideaReportContracts.challenge,
+    declaration: legacyChallengerArtifact,
   },
   {
     relative: challengerArtifact.pathFromArtifactsRoot,
     label: 'challenger result',
     contract: ideaReportContracts.challenge,
+    declaration: challengerArtifact,
   },
   // Artifacts retained from earlier implementations remain readable history.
   {
     relative: retainedBriefArtifactPath,
     label: 'refined idea revision',
     contract: ideaReportContracts.editorTurn,
+    declaration: null,
   },
   {
     relative: 'purpose.json',
     label: 'purpose assessment',
     contract: { role: 'project-guide', reportKind: 'legacy-purpose', operation: 'legacy-purpose' },
+    declaration: null,
   },
   {
     relative: 'research.json',
     label: 'research report',
     contract: { role: 'researcher', reportKind: 'legacy-research', operation: 'legacy-research' },
+    declaration: null,
   },
   {
     relative: 'council/purpose.json',
@@ -241,6 +315,7 @@ const cycleHistory: readonly {
       reportKind: 'legacy-council-purpose',
       operation: 'legacy-council-purpose',
     },
+    declaration: null,
   },
   {
     relative: 'council/evidence.json',
@@ -250,6 +325,7 @@ const cycleHistory: readonly {
       reportKind: 'legacy-council-evidence',
       operation: 'legacy-council-evidence',
     },
+    declaration: null,
   },
   {
     relative: 'council/simplicity.json',
@@ -259,13 +335,83 @@ const cycleHistory: readonly {
       reportKind: 'legacy-council-simplicity',
       operation: 'legacy-council-simplicity',
     },
+    declaration: null,
   },
 ];
+
+/** The observed profile one retained idea record names, or null for a former combined record. */
+function observedProfileOf(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const profile = (value as { readonly profile?: unknown }).profile;
+  return typeof profile === 'string' && profile.trim() !== '' ? profile : null;
+}
+
+/** The observed task key one retained idea record names, or null for a former combined record. */
+function observedTaskKeyOf(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const taskKey = (value as { readonly taskKey?: unknown }).taskKey;
+  return typeof taskKey === 'string' && taskKey.trim() !== '' ? taskKey : null;
+}
+
+/** The report binding one saved outcome carries, or null for a retained combined record. */
+function reportBindingIn(value: unknown): ReportBinding | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const record = value as { readonly report?: unknown };
+  const parsed = reportBindingSchema.safeParse({
+    report: record.report,
+    reportIdentity: (value as { readonly reportIdentity?: unknown }).reportIdentity,
+    invocationId: (value as { readonly invocationId?: unknown }).invocationId,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The functional machine-outcome data one retained report carries beside its Markdown, rendered
+ * as compact JSON, or null when the producer declares none. The producer's declaration owns the
+ * selection, so history and direct context expose the same fields.
+ */
+function functionalDataText(
+  read: RetainedIdeaReport<AnyIdeaReportDeclaration>,
+  declaration: AnyIdeaReportDeclaration,
+): string | null {
+  const data = declaration.functionalData?.(read.value) ?? null;
+  return data === null || Object.keys(data).length === 0 ? null : JSON.stringify(data);
+}
+
+/**
+ * The readable attribution of one retained idea report: its producer, profile, invocation and
+ * Markdown reference when bound, together with the functional outcome data the producer declares.
+ * A current saved outcome is reachable through its Markdown; a former combined record stays at its
+ * own path.
+ */
+export function ideaReportReference(
+  read: RetainedIdeaReport<AnyIdeaReportDeclaration>,
+  contract: IdeaReportContract,
+  declaration: AnyIdeaReportDeclaration,
+): string {
+  const profile = observedProfileOf(read.value);
+  const fields = [contract.role, ...(profile === null ? [] : [`profile ${profile}`])];
+  const reference =
+    read.binding === null
+      ? `${fields.join(', ')}, retained combined record: ${read.file}`
+      : `${fields.join(', ')}, invocation ${read.binding.invocationId}, ` +
+        `Markdown report: ${read.binding.report.path}`;
+  const functional = functionalDataText(read, declaration);
+  return functional === null ? reference : `${reference}; functional data: ${functional}`;
+}
 
 /**
  * The retained workspace history as readable references: every submission's captured author input
  * and every cycle's artifacts, in history order. References are for selective reading; roles never
- * rewrite them and open only the artifacts that bear on their current decision.
+ * rewrite them and open only the artifacts that bear on their current decision. A current saved
+ * outcome is referenced through its Markdown report, while an earlier implementation's record
+ * stays readable at its own path.
  */
 export async function retainedHistoryText(
   root: string,
@@ -296,20 +442,41 @@ export async function retainedHistoryText(
           continue;
         }
         const file = path.join(cycleRoot, entry.relative);
-        const text = await readRetainedIdeaText({
+        if (entry.declaration === null) {
+          const text = await readRetainedIdeaText({
+            root,
+            workId: options.workId,
+            plan,
+            file,
+            contract: entry.contract,
+            context:
+              `Reading retained ${entry.label} from submission ${String(submission)} ` +
+              `cycle ${String(cycle)} for the history of idea ${options.workId}.`,
+          });
+          if (text === null) {
+            continue;
+          }
+          lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${file}`);
+          continue;
+        }
+        const read = await readRetainedIdeaReport({
           root,
           workId: options.workId,
           plan,
-          file,
+          cycleRoot,
+          declaration: entry.declaration,
           contract: entry.contract,
           context:
             `Reading retained ${entry.label} from submission ${String(submission)} ` +
             `cycle ${String(cycle)} for the history of idea ${options.workId}.`,
         });
-        if (text === null) {
+        if (read === null) {
           continue;
         }
-        lines.push(`  - cycle ${String(cycle)} ${entry.label}: ${file}`);
+        lines.push(
+          `  - cycle ${String(cycle)} ${entry.label}: ` +
+            ideaReportReference(read, entry.contract, entry.declaration),
+        );
       }
     }
     // The decision is a submission-level artifact, not a cycle-level one.
@@ -339,11 +506,12 @@ export async function capturedIdeaText(
   input: IdeaInput,
 ): Promise<string> {
   const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-  const framing = await readRetainedIdeaText({
+  const framing = await readRetainedIdeaReport({
     root,
     workId: input.taskKey,
     plan,
-    file: path.join(cycleRoot, framingArtifact.pathFromArtifactsRoot),
+    cycleRoot,
+    declaration: framingArtifact,
     contract: ideaReportContracts.framing,
     context:
       `Reading the framing of submission ${String(plan.submission)} ` +
@@ -411,7 +579,15 @@ export async function capturedIdeaText(
     'The captured input below is authoritative for what the author now proposes; earlier',
     'submissions, refined ideas and contributions are history, not the current proposal.',
     JSON.stringify({ issue: input.issue, conversation: input.conversation }, null, 2),
-    ...(framing === null ? [] : [`The editor\u2019s framing of this submission:\n${framing}`]),
+    ...(framing === null
+      ? []
+      : [
+          `The editor\u2019s framing of this submission (${ideaReportReference(
+            framing,
+            ideaReportContracts.framing,
+            framingArtifact,
+          )}):\n${framing.narrative}`,
+        ]),
     ...(revision === null
       ? []
       : [
@@ -500,11 +676,122 @@ async function readRetainedIdeaText(settings: {
 }
 
 /**
- * Read one cycle's retained idea report. An unusable record is preserved as rejection evidence
- * under its producer's report responsibility, and the read fails on that explicit evidence
- * instead of silently letting a later repair drop the correction obligation.
+ * The producer invocation and profile one unusable retained outcome still names, recovered
+ * independently of full schema validity so retained rejection evidence keeps its original
+ * attribution instead of inheriting the reading action's profile. Metadata the damaged record
+ * cannot state stays explicitly unknown.
  */
-export async function readRetainedIdeaReport<Declaration extends ArtifactDeclaration>(settings: {
+async function observedAttributionOf(file: string): Promise<{
+  readonly invocationId: string | null;
+  readonly profile: string | null;
+}> {
+  const producer = await readRecord(file, {
+    file,
+    schema: z.object({
+      invocationId: z.string().trim().min(1).nullable().catch(null),
+      profile: z.string().trim().min(1).nullable().catch(null),
+    }),
+  }).catch(() => null);
+  return { invocationId: producer?.invocationId ?? null, profile: producer?.profile ?? null };
+}
+
+/**
+ * Read one retained idea report through its producer declaration at an explicit path. A current
+ * saved outcome requires its bound Markdown to be readable with the recorded identity and to
+ * answer this work item; a retained combined record stays readable history under its producer's
+ * own renderer. An unusable record is preserved as rejection evidence under its producer's report
+ * responsibility before the read fails, instead of silently letting a later repair drop the
+ * correction obligation.
+ */
+export async function readRetainedIdeaReportAtFile<
+  Declaration extends AnyIdeaReportDeclaration,
+>(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly file: string;
+  readonly declaration: Declaration;
+  readonly contract: IdeaReportContract;
+  readonly context: string;
+}): Promise<RetainedIdeaReport<Declaration> | null> {
+  const { file } = settings;
+  const scope = ideaReportScope({
+    root: settings.root,
+    workId: settings.workId,
+    role: settings.contract.role,
+    reportKind: settings.contract.reportKind,
+  });
+  let value: ArtifactContent<Declaration> | null;
+  try {
+    value = await readArtifactFile(file, settings.declaration);
+  } catch (error) {
+    const producer = await observedAttributionOf(file);
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope,
+      invocationId: producer.invocationId,
+      operation: settings.contract.operation,
+      profile: producer.profile ?? settings.plan.profiles[settings.contract.role] ?? null,
+      context: settings.context,
+      file,
+      error,
+    });
+  }
+  if (value === null) {
+    return null;
+  }
+  const binding = reportBindingIn(value);
+  if (binding === null) {
+    return {
+      file,
+      value,
+      narrative: settings.declaration.legacyNarrative(value as never),
+      binding: null,
+    };
+  }
+  const taskKey = observedTaskKeyOf(value);
+  if (taskKey !== null && taskKey !== settings.workId) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope,
+      invocationId: binding.invocationId,
+      operation: settings.contract.operation,
+      profile: observedProfileOf(value),
+      context: settings.context,
+      file,
+      assignedReport: binding.report,
+      error: new Error(
+        `The ${settings.contract.operation} report at "${file}" answers task ` +
+          `"${taskKey}", not "${settings.workId}".`,
+      ),
+    });
+  }
+  let report: ReportFile;
+  try {
+    report = await readBoundReport(binding, `${settings.contract.operation} report`);
+  } catch (error) {
+    return await rejectUnusableRecord({
+      areaRoot: settings.root,
+      scope,
+      invocationId: binding.invocationId,
+      operation: settings.contract.operation,
+      profile: observedProfileOf(value),
+      context: settings.context,
+      file,
+      assignedReport: binding.report,
+      error,
+    });
+  }
+  return { file, value, narrative: report.text, binding };
+}
+
+/**
+ * Read one cycle's retained idea report through its producer declaration at the declaration's
+ * path within the cycle.
+ */
+export async function readRetainedIdeaReport<
+  Declaration extends AnyIdeaReportDeclaration,
+>(settings: {
   readonly root: string;
   readonly workId: string;
   readonly plan: IdeaRoundPlan;
@@ -512,27 +799,41 @@ export async function readRetainedIdeaReport<Declaration extends ArtifactDeclara
   readonly declaration: Declaration;
   readonly contract: IdeaReportContract;
   readonly context: string;
-}): Promise<ArtifactContent<Declaration> | null> {
-  const file = path.join(settings.cycleRoot, settings.declaration.pathFromArtifactsRoot);
-  try {
-    return await readCycleArtifact(settings.cycleRoot, settings.declaration);
-  } catch (error) {
-    return await rejectUnusableRecord({
-      areaRoot: settings.root,
-      scope: ideaReportScope({
-        root: settings.root,
-        workId: settings.workId,
-        role: settings.contract.role,
-        reportKind: settings.contract.reportKind,
-      }),
-      invocationId: null,
-      operation: settings.contract.operation,
-      profile: settings.plan.profiles[settings.contract.role] ?? null,
-      context: settings.context,
-      file,
-      error,
-    });
+}): Promise<RetainedIdeaReport<Declaration> | null> {
+  return readRetainedIdeaReportAtFile({
+    ...settings,
+    file: path.join(settings.cycleRoot, settings.declaration.pathFromArtifactsRoot),
+  });
+}
+
+/**
+ * Finish the correction a reused bound outcome's own invocation still owes: the rejections that
+ * invocation was supplied and that no correction has resolved yet. Reading a saved outcome back is
+ * the replay path, so an interrupted correction write completes without another invocation.
+ */
+export async function finishRetainedIdeaCorrection<
+  Declaration extends AnyIdeaReportDeclaration,
+>(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly contract: IdeaReportContract;
+  readonly read: RetainedIdeaReport<Declaration>;
+}): Promise<void> {
+  if (settings.read.binding === null) {
+    return;
   }
+  await finishSuppliedCorrection({
+    areaRoot: settings.root,
+    scope: ideaReportScope({
+      root: settings.root,
+      workId: settings.workId,
+      role: settings.contract.role,
+      reportKind: settings.contract.reportKind,
+    }),
+    invocationId: settings.read.binding.invocationId,
+    artifact: { path: settings.read.file },
+    content: settings.read.value,
+  });
 }
 
 /** The file one cycle's refined idea revision is stored at, whichever retained shape holds it. */
@@ -608,10 +909,6 @@ export async function readRetainedRefinedIdea(settings: {
   return null;
 }
 
-import { actionOwnedRecordsText, parseAgentReport } from './agent-reports.js';
-
-export { parseAgentReport, responseFormatText } from './agent-reports.js';
-
 /** What one idea role invocation needs: its plan, context and declared response schema. */
 export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   /** The refinement area the invocation's context refers to. */
@@ -627,6 +924,8 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
    * contracts one role invokes, such as the editor's framing and turn reports.
    */
   readonly reportKind: string;
+  /** The role or variant name of the assigned Markdown report within this invocation's directory. */
+  readonly reportName: string;
   /** The captured idea input the invocation works on; its issue carries the boundary's Summary. */
   readonly input: IdeaInput;
   /** The caller-prepared context: role instructions, captured idea, history and sources. */
@@ -634,30 +933,47 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   readonly schema: Schema;
   /** The role's agent runner: it assigns the invocation's identity and transports its activity. */
   readonly runner: AgentRoleRunner;
-  readonly publish: EventPublisher;
 };
 
-/** One idea role invocation's returned report and its outstanding-rejection obligations. */
+/** One idea role invocation's returned outcome and its report/rejection obligations. */
 export type IdeaInvocationOutcome<Schema extends z.ZodType> = {
-  readonly report: z.output<Schema>;
+  /** The validated machine outcome the workflow consumes. */
+  readonly response: z.output<Schema>;
+  /** The Markdown report path this invocation was assigned. */
+  readonly assignedReport: ArtifactRef;
+  /** The assigned report's readable bytes and identity. */
+  readonly reportFile: ReportFile;
+  readonly invocationId: string;
+  readonly profile: string;
   /**
-   * Retain a post-parse semantic violation of this invocation's report as rejection evidence and
+   * Retain a post-parse semantic violation of this invocation's outcome as rejection evidence and
    * fail with its reason.
    */
   reject(reason: string, cause?: unknown): Promise<never>;
   /**
-   * Record the correction that retires exactly the rejections this invocation was supplied, once
-   * the caller validated and saved the usable replacement report.
+   * Record the correction this invocation owes once the caller validated and saved the usable
+   * replacement outcome.
    */
-  resolveFeedback(artifact: ArtifactRef, content: unknown): Promise<void>;
+  finishFeedback(artifact: ArtifactRef, content: unknown): Promise<void>;
 };
 
+/** The instruction every idea role invocation carries for its assigned Markdown report. */
+const ideaReportInstruction = [
+  'Write your complete narrative to the assigned Markdown report before returning. Your',
+  'contribution, findings, sources, guidance, concerns, responses, explanations, qualifications',
+  'and uncertainty belong there, never in the response object. Do not write or overwrite',
+  'action-owned records or choose another destination.',
+  'Return only the JSON object the response format declares, with no narrative text and no',
+  'observed identity, cycle or revision metadata.',
+].join('\n');
+
 /**
- * Run one idea role through AgentRuntime with the profile the round plan selected, then parse its
- * declared report. The invocation is supplied the outstanding rejections of its own report
- * responsibility, and a malformed response is retained as rejection evidence before the invocation
- * fails. The runner carries the invocation's preassigned identity and announces its boundaries, so
- * concurrent roles stay independently attributable; a provider failure is an execution error.
+ * Run one idea role through AgentRuntime with the profile the round plan selected, assign its
+ * Markdown report path, then parse its declared response and require that report. The invocation
+ * is supplied the outstanding rejections of its own report responsibility, and a malformed
+ * response or missing report is retained as rejection evidence before the invocation fails. The
+ * runner carries the invocation's preassigned identity and announces its boundaries, so concurrent
+ * roles stay independently attributable; a provider failure is an execution error.
  */
 export async function invokeIdeaRole<Schema extends z.ZodType>(
   settings: IdeaInvocationSettings<Schema>,
@@ -669,6 +985,11 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         `${String(settings.plan.cycle)}) selects no "${settings.role}" profile.`,
     );
   }
+  const cycleRoot = ideaCycleDirectory(
+    settings.root,
+    settings.plan.submission,
+    settings.plan.cycle,
+  );
   const scope: ReportScope = ideaReportScope({
     root: settings.root,
     workId: settings.input.taskKey,
@@ -682,6 +1003,16 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     `idea ${settings.input.taskKey}.`;
   const feedback: readonly RetainedReportFeedback<ReportRejection>[] =
     await outstandingReportFeedback({ areaRoot: settings.root, scope });
+  const assignedReport = await assignReportPath(cycleRoot, invocationId, settings.reportName);
+  if (feedback.length > 0) {
+    // Retain which rejections this invocation answers before it runs, so an interrupted
+    // correction write can finish on replay without retiring a rejection created later.
+    await retainSuppliedFeedback({
+      areaRoot: settings.root,
+      invocationId,
+      rejections: feedback.map((entry) => ({ path: entry.path })),
+    });
+  }
   const result = await settings.runner.run({
     operation: settings.operation,
     invocationId,
@@ -699,6 +1030,8 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         path.join(settings.root, 'state') + ' (the refinement state records)',
       ]),
       settings.context,
+      `Assigned Markdown report: ${assignedReport.path}`,
+      ideaReportInstruction,
       ...reportFeedbackContextText(feedback),
     ].join('\n\n'),
     outputSchema: z.toJSONSchema(settings.schema),
@@ -708,7 +1041,7 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
   if (!result.ok) {
     throw new Error(result.fault.message);
   }
-  const report = await (async (): Promise<z.output<Schema>> => {
+  const response = await (async (): Promise<z.output<Schema>> => {
     try {
       return parseAgentReport(result.value.output, settings.schema, `"${settings.role}" agent`);
     } catch (error) {
@@ -721,13 +1054,37 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         context: attribution,
         source: null,
         output: result.value.output,
+        assignedReport,
+        reason: messageOf(error),
+        cause: error,
+      });
+    }
+  })();
+  const reportFile = await (async (): Promise<ReportFile> => {
+    try {
+      return await readAssignedReport(assignedReport.path, `Assigned ${settings.role} report`);
+    } catch (error) {
+      return await rejectReport({
+        areaRoot: settings.root,
+        scope,
+        invocationId,
+        operation: settings.operation,
+        profile,
+        context: attribution,
+        source: null,
+        output: result.value.output,
+        assignedReport,
         reason: messageOf(error),
         cause: error,
       });
     }
   })();
   return {
-    report,
+    response,
+    assignedReport,
+    reportFile,
+    invocationId,
+    profile,
     async reject(reason, cause): Promise<never> {
       return rejectReport({
         areaRoot: settings.root,
@@ -738,23 +1095,20 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         context: attribution,
         source: null,
         output: result.value.output,
+        assignedReport,
         reason,
         cause,
       });
     },
-    async resolveFeedback(artifact, content): Promise<void> {
-      if (feedback.length === 0) {
-        return;
-      }
+    async finishFeedback(artifact, content): Promise<void> {
       // The action validated and saved the usable replacement; recording its complete identity
       // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
+      await finishSuppliedCorrection({
         areaRoot: settings.root,
         scope,
-        rejections: feedback.map((entry) => ({ path: entry.path })),
+        invocationId,
         artifact,
         content,
-        invocationId,
       });
     },
   };
