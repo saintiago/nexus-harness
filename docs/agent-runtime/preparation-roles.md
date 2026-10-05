@@ -9,13 +9,14 @@ history. Keep source attribution and material uncertainty. Do not retrieve Jira,
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
 
-Return the response object; do not write or overwrite action-owned `author.json`, `evaluation.json`,
-`result.json`, `plan.json` or state records. The action adds saved-record metadata. Authors declare
-changed authoritative documents in `documents`; `sourcePaths` declares additional stage-owned
-authored files, never files merely read. Every non-authored outcome has empty `sourcePaths`.
-Existing documents receive evaluation in the current worktree without mandatory citations or a
-special existing-document skip. Only Architecture supplies an implementation plan. Observation
-requirements and allowed outcomes follow the supplied stage response rules.
+Write the narrative at the supplied Markdown report path. Return only the minimal response object;
+do not write or overwrite action-owned `author.json`, `evaluation.json`, `result.json`, `plan.json`
+or state records. The action adds observed identity, revision and report-binding metadata. Authors
+declare changed authoritative documents in `documents`; `sourcePaths` declares additional
+stage-owned authored files, never files merely read. Every non-authored outcome has empty
+`sourcePaths`. Existing documents receive evaluation in the current worktree without mandatory
+citations or a special existing-document skip. Only Architecture supplies an implementation plan.
+Observation requirements and allowed outcomes follow the supplied stage response rules.
 
 Use the supplied shared repository for edits and inspection; each stage retains its own artifact
 area. Assess only the selected stage's responsibilities. Shared-memory guidance and explicit
@@ -23,22 +24,24 @@ search/save access follow [Memory integration](../memory/integration.md#agent-us
 and evaluator when enabled; no preparation role schedules automatic memory consumption.
 
 Evaluate applicability first. Propose an applicability skip when the stage is irrelevant, with
-reasons; document citations are not mandatory. Preserve and directly evaluate adequate existing
-documents. If inputs prevent a feasible clean result, identify the problematic input, correction and
-owning earlier stage. Ask the user only for a material decision that available
-context cannot resolve. Do not turn a provider/tool failure into an upstream product requirement.
+reasons in Markdown and optional functional evidence references; document citations are not
+mandatory. Preserve and directly evaluate adequate existing documents. If inputs prevent a feasible
+clean result, identify the problematic input, correction and owning earlier stage. Ask the user only
+for a material decision that available context cannot resolve. Do not turn a provider/tool failure
+into an upstream product requirement.
 
 Authors preserve scope and explain corrections, answers, disagreements and remaining problems in
-their report narrative, using previous reports as context without per-finding response/status records.
-Document evaluators assess the ticket's requested changes against the current shared
-worktree documents, regardless of authorship or commit history. They do not require document edits,
-citations or historical approval reuse to accept adequate content. Compatible later-stage edits to
-shared documents do not force an upstream return; a concrete input defect uses normal findings.
-Evaluators inspect current content, judge whether earlier concerns remain and seek useful
-improvements as well as omissions. Return actionable current findings without stable IDs or
-disposition records. Explain benefits and evidence, separate necessary changes from
-optional suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer
-clicks must preserve clarity, accessibility and error prevention.
+their assigned Markdown report, using previous reports as context without per-finding
+response/status records. Document evaluators assess the ticket's requested changes against the
+current shared worktree documents, regardless of authorship or commit history. They do not require
+document edits, citations or historical approval reuse to accept adequate content. Compatible
+later-stage edits to shared documents do not force an upstream return; a concrete input defect uses
+normal findings. Evaluators inspect current content, judge whether earlier concerns remain and seek
+useful improvements as well as omissions. Write actionable current findings in Markdown without
+stable IDs or disposition records; return only the functional verdict/routing and applicable
+observation fields. Explain benefits and evidence, separate necessary changes from optional
+suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer clicks must
+preserve clarity, accessibility and error prevention.
 
 Apply the connected project's existing design and ownership principles to keep cumulative changes
 coherent within scope. Before evaluation, authors reconcile affected existing intent with the

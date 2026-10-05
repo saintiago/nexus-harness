@@ -45,7 +45,7 @@ type PreparationResult = {
   authoredRevision: number;
   outputs: ArtifactRef[];
   evaluation: ArtifactRef;
-  reason: string | null;
+  reason: string | null; // action-observed failure/exhaustion only; assessment is in Markdown
   returnStage: 'idea' | 'requirements' | 'ux' | 'prototype' | null;
 };
 ```
@@ -93,44 +93,41 @@ not a search through old acceptances, determines whether the stage can advance.
 
 ### Role response contracts
 
-Author and evaluator responses omit action-added metadata. StageAuthor adds stage and authored
-revision; StageEvaluator adds its observed acceptance basis. Result/plan persistence stays with the
-stage operations. Invocation context explicitly reserves their report and state paths.
+Author and evaluator responses omit action-added metadata and narrative. StageAuthor adds stage,
+authored revision, observed task identity, role/profile and ReportBinding; StageEvaluator adds those
+identities, the assessed author revision, ReportBinding and its observed acceptance basis. Use the
+[action report contract](architecture.md#markdown-reports-and-machine-outcomes). Result/plan
+persistence stays with stage operations. Context assigns separate author/evaluator Markdown paths
+and reserves `author.json`, `evaluation.json`, `result.json`, `plan.json` and state records.
 
 ```ts
 type StageAuthorResponse = {
   outcome: 'authored' | 'skip-proposed' | 'needs-input' | 'return-upstream';
-  summary: string;
-  documents: { path: string; description: string }[];
+  documents: { path: string }[];
   sourcePaths: string[];
   observation: ArtifactRef | null;
   plan: PlannedTask[];
-  skip: { reason: string; references: string[] } | null;
+  skip: { references: string[] } | null;
   question: string | null;
   upstream: UpstreamRequest | null;
 };
 
 type StageEvaluationResponse = {
-  assessedRevision: number;
   verdict: 'accepted' | 'accepted-skip' | 'changes-requested' | 'return-upstream';
-  reason: string;
   observation: ArtifactRef | null;
-  findings: Finding[];
   upstream: UpstreamRequest | null;
 };
 
 type UpstreamRequest = {
   stage: 'idea' | 'requirements' | 'ux' | 'prototype';
-  problem: string;
-  consequence: string;
-  correction: string;
+  correction: string; // concrete input correction handed to the earlier stage
 };
 ```
 
-Finding is imported from the [findings contract](findings.md); strict response locations use its
-explicit-null line convention. PlannedTask has the summary, scope, completion criteria and
-prerequisite indices defined under Implementation plan below. Define each response and saved record
-once in its preparation-owned schema and derive its TypeScript type and provider response format.
+Assessment narrative follows the [findings guidance](findings.md); no Finding schema is imported.
+PlannedTask has the summary, scope, completion criteria and prerequisite indices defined under
+Implementation plan below. Define each response and saved record once in its preparation-owned
+schema and derive its TypeScript type and provider response format.
 
 `authored` submits work for direct evaluation; it does not require this invocation to change a file.
 For unchanged adequate documents, `documents` and `sourcePaths` may both be empty. They declare
@@ -138,22 +135,27 @@ changed authoritative documents and stage-owned sources, never reading citations
 outcomes carry empty arrays. Only Architecture supplies a nonempty plan for authored work or a
 proposed applicability skip; other stages and outcomes carry an empty plan. Only Prototype declares
 an observation, under the rules below. A question or upstream request accompanies only its matching
-outcome. Narrative summary explains changes, answers to earlier assessments, disagreements and
-remaining problems, as applicable; no finding-response array is returned.
+outcome. The assigned Markdown explains changes and declaration reasons, answers to earlier
+assessments, disagreements and remaining problems. The outcome contains no summary or
+finding-response array.
 
 A skip proposes stage inapplicability, not existing-document adequacy or historical approval reuse.
-It requires a reason; references are optional evidence and may be empty. Only a skip proposal carries
+Its Markdown must explain inapplicability; optional references remain functional evidence and may be
+empty. The action validates the references, not the prose explanation. Only a skip proposal carries
 `skip`, and only a normally evaluated skip receives `accepted-skip`. An authored submission receives
-`accepted`, even with no changed documents. Incompatible outcome/verdict pairs remain invalid.
-An applicable prototype uses current work and observation, not a reuse skip. A repair round may
-propose an applicability skip when corrected scope makes the stage irrelevant; evaluation decides
-that applicability. Existing authored cleanup and applicability reassessment preserve obsolete-work
+`accepted`, even with no changed documents. Incompatible outcome/verdict pairs remain invalid. An
+applicable prototype uses current work and observation, not a reuse skip. A repair round may propose
+an applicability skip when corrected scope makes the stage irrelevant; evaluation decides that
+applicability. Existing authored cleanup and applicability reassessment preserve obsolete-work
 reconciliation; a skip cannot commit or silently discard stage-owned work.
 
-Accepted and accepted-skip require no current blocking findings; changes-requested requires at least
-one. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Findings
-explain current problems with evidence, impact and repair guidance. There are no finding IDs,
-response/status records, dispositions or matching checks across rounds.
+Accepted and accepted-skip require no current blocking problem; changes-requested requires at least
+one, explained in Markdown. These are evaluator judgment obligations, not machine finding-count
+checks. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Validate
+outcome/verdict pairing, destination, correction, role-specific fields, plan and applicable
+evidence; do not parse narrative to verify the verdict. There are no finding IDs, response/status
+records, dispositions or matching checks across rounds. `assessedRevision` is action-observed saved
+metadata, not a claim returned by the evaluator.
 
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) in each
 stage area. The responsible role receives outstanding feedback after recovery or reselection.
@@ -162,24 +164,25 @@ correction. Rejection and correction grant no acceptance or extra allowance.
 
 ### Current-worktree evaluation
 
-The [project workflow requirements](../../project-workflow.md#current-worktree-evaluation-requirements)
-own document-stage acceptance, compatible shared-document edits, retained continuation and examples.
-Requirements, UX/UI and Architecture assess the ticket against current authoritative documents in
-the shared worktree, regardless of authorship or commit history. Context supplies the ticket,
-attributed conversation, upstream reports, current author report, repository instructions and
-readable previous author/evaluation reports. The evaluator inspects relevant existing documents
-itself; an empty changed-document list does not restrict its scope or prevent invocation.
-Architecture also evaluates the current implementation plan.
+The [project workflow
+requirements](../../project-workflow.md#current-worktree-evaluation-requirements) own document-stage
+acceptance, compatible shared-document edits, retained continuation and examples. Requirements,
+UX/UI and Architecture assess the ticket against current authoritative documents in the shared
+worktree, regardless of authorship or commit history. Context supplies the ticket, attributed
+conversation, upstream reports, current author Markdown and functional outcome/plan, repository
+instructions and readable previous author/evaluation reports. The evaluator inspects relevant
+existing documents itself; an empty changed-document list does not restrict its scope or prevent
+invocation. Architecture also evaluates the current implementation plan.
 
-Before evaluation, commit declared documents and applicable prototype sources in the shared checkout.
-Named commits exclude unrelated staged work. The evaluator does not edit tracked work. Capture the
-current author identity, source identity, upstream result identities and repository revision before
-invocation. For a fresh decision and interrupted finalization, require those inputs and the
-repository revision to remain unchanged through result persistence, with declared stage work still
-committed and applicable prototype bindings valid. Preserve unrelated retained work; do not turn
-this into a worktree-wide readiness rule. Build caches and untracked diagnostic output do not
-constitute changed assessed work. A changed assessment basis requires normal reevaluation rather
-than binding an old report to current bytes.
+Before evaluation, commit declared documents and applicable prototype sources in the shared
+checkout. Named commits exclude unrelated staged work. The evaluator does not edit tracked work.
+Capture the current author identity, source identity, upstream result identities and repository
+revision before invocation. For a fresh decision and interrupted finalization, require those inputs,
+their associated report bytes and the repository revision to remain unchanged through result
+persistence, with declared stage work still committed and applicable prototype bindings valid.
+Preserve unrelated retained work; do not turn this into a worktree-wide readiness rule. Build caches
+and untracked diagnostic output do not constitute changed assessed work. A changed assessment basis
+requires normal reevaluation rather than binding an old report to current bytes.
 
 This repository observation is a short-lived finalization check, not a document-citation or dependency
 engine. Document stages write no per-document acceptance bindings in `basis.content`; that field
@@ -216,10 +219,11 @@ alter inspected prototype content.
 
 ## Correction and continuation
 
-An upstream return retains its problem, consequence, correction and owning earlier stage. The parent
-records the destination and downstream stages awaiting reassessment before advancing source state;
-this pending route survives restart. The destination corrects its work in the shared checkout. Idea
-correction changes its input artifacts without replacing that checkout.
+An upstream return retains its correction and owning earlier stage in the functional outcome, and
+its problem and consequence in the associated Markdown. The return record references both. The
+parent records the destination and downstream stages awaiting reassessment before advancing source
+state; this pending route survives restart. The destination corrects its work in the shared
+checkout. Idea correction changes its input artifacts without replacing that checkout.
 
 Proceed through pending stages in order. Each uses current input and work and obtains a current
 assessment, preserving adequate content and repairing affected content. Do not manufacture edits,
@@ -241,12 +245,14 @@ for an older approval. Preserve cumulative round and return allowances.
 ### Retained-record compatibility
 
 New responses are strict and omit removed lifecycle fields. Producer-owned saved-record readers
-accept former IDs, response/disposition arrays, `existingDocuments` and prior acceptance-basis fields
-as retained data without enforcing removed matching or citation-reuse rules. Preserve original
-reports byte-for-byte and supply readable references so their full evidence remains available.
-Reading a simplified typed view must not change the complete recorded identity used to associate
-an author with its evaluation or retire rejection feedback. Required report fields, verdict
-consistency, source association and applicable observation validity still receive validation.
+accept former IDs, response/disposition arrays, `existingDocuments` and prior acceptance-basis
+fields as retained data without enforcing removed matching or citation-reuse rules. Preserve
+original reports byte-for-byte and supply readable references so their full evidence remains
+available. Reading a simplified typed view must not change the complete recorded identity used to
+associate an author with its evaluation or retire rejection feedback. Required control/functional
+fields, outcome/verdict pairing, source association and applicable observation validity still
+receive validation. New outcomes require their Markdown binding; legacy combined records stay
+readable without a retroactive Markdown requirement or finding-list checks.
 
 Completed document-stage decisions can continue under these association and routing checks, without
 retroactive citation bindings or new report fields. An unfinished legacy document evaluation that

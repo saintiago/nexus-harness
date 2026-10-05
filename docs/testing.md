@@ -18,7 +18,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 | SelectWork | Source ordering, eligibility, stage mapping and continuation decisions | Issue data and retained selection |
 | StartDevRound | Initial profile, repair triggers, executed-turn counting, changes-requested promotion, no downgrade, planned-round reuse and exhaustion | Round history, developer ladder and current-round record |
 | Shared round storage | Current-plan validation, numbered history, directory creation and plan persistence without role or route decisions | Finite and idea plan fixtures in temporary workspaces |
-| Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
+| Review | Verdict validation, readable report association and revision-bound publication | Agent outcome, Markdown and repository observations |
 | CompleteTask | Completion only after merge with no failed required pre-merge check and successful configured checks for that merge | GitHub observations and source updates |
 | AgentRuntime | Profile resolution, complete context assembly and per-invocation inactivity observation | Coding-provider response and controlled time |
 | OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
@@ -76,24 +76,50 @@ Do not replace both sides with independently handcrafted fixtures. Test malforme
 required fields at the artifact-reading boundary without repeating that matrix for every consumer.
 Vitest runs these tests; Zod supplies runtime shape validation.
 
-For repair handoffs, carry actual review/evaluation reports into the next author/developer context,
-then the narrative response and current work into the evaluator/reviewer context. Verify that earlier
-concerns remain readable and a current defect requests repair while a corrected defect permits
-acceptance, without response arrays, dispositions or ID matching. Cover malformed required fields
-and verdicts inconsistent with current blocking findings at their owning action boundary. Verify
-retained former reports stay byte-for-byte unchanged and readable, continuation preserves allowances,
-and old approval cannot authorize a changed implementation head. Verify that each invocation includes
-its selected role's complete constant prompt once alongside the supplied context; test prompt assembly,
-not the wording of documentation.
+For repair handoffs, carry actual Markdown review/evaluation reports into the next author/developer
+context, then the narrative response and current work into the evaluator/reviewer context. Verify
+that earlier concerns remain readable and a current defect requests repair while a corrected defect
+permits acceptance, without response arrays, dispositions or ID matching. Cover malformed required
+fields and unknown control values at their owning action boundary. Assessment quality and
+consistency with narrative evidence require inspection of actual agent reports, not deterministic
+finding counts. Verify retained former reports stay byte-for-byte unchanged and readable,
+continuation preserves allowances, and old approval cannot authorize a changed implementation head.
+Verify that each invocation includes its selected role's complete constant prompt once alongside the
+supplied context; test prompt assembly, not the wording of documentation.
 
 For document-stage evaluation, exercise unchanged adequate documents with empty changed-document
-lists, concrete defects, reason-only applicability skips and compatible later-stage edits. Verify
-fresh finalization and interrupted replay against the observed current assessment, without
-document-citation or historical approval-reuse requirements after the stage advances. Retain
-prototype preview/observation and upstream-correction coverage. Exercise task-relevant pre-existing
-code outside the comparison diff in review context and preserve exact-head publication and merge/check
-gate coverage. Remove tests whose sole purpose is enforcing the deleted finding lifecycle or
-document-reuse mechanism; retain resolver regressions where optional references still use it.
+lists, concrete defects, applicability skips with Markdown explanations and optional references and
+compatible later-stage edits. Verify fresh finalization and interrupted replay against the observed
+current assessment, without document-citation or historical approval-reuse requirements after the
+stage advances. Retain prototype preview/observation and upstream-correction coverage. Exercise
+task-relevant pre-existing code outside the comparison diff in review context and preserve
+exact-head publication and merge/check gate coverage. Remove tests whose sole purpose is enforcing
+the deleted finding lifecycle or document-reuse mechanism; retain resolver regressions where
+optional references still use it.
+
+Verify report separation through actual producer/consumer storage handling for every role category:
+developer/reviewer, all eight preparation roles, the four idea roles, Recovery and analysis.
+Recording providers write the assigned Markdown and return only their minimal outcomes. Cover
+developer repair and profile variants, concurrent contributor paths, focused/post-help turns and
+retained-revision completion. Assert outcome schema delivery, observed metadata, report
+references/identity and full necessary Markdown context. Code fences and JSON examples in reports
+remain text, never decisions.
+
+At the shared report boundary test malformed/extra outcome fields, missing/unreadable assigned
+reports, changed associated bytes, and partial outcome persistence. At the owning boundaries retain
+functional-plan/routing/memory validation and applicable input/revision checks. Remove
+narrative-field, structured-finding and prose/verdict-consistency validators and tests together.
+Preserve readable legacy bytes and complete recorded identities, while damaged new bindings cannot
+fall back to legacy. Verify report-backed PR/review/ticket/notification publication and retained
+publication bodies on replay.
+
+Carry a rejected outcome and available Markdown through recovery, selection reset and worker restart
+into the next responsible invocation. Check attribution, exact rejection reason, matching correction
+retirement and isolation from other roles/items. Keep historical evidence after correction and
+retain allowances and merge/check gates. Memory capture must preserve associated reports
+independently of attempt disposal; zero lessons still writes Markdown, and accepted legacy
+analyses/submission retries reuse their immutable payloads. Controlled agents prove handling, not
+report substance.
 
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's

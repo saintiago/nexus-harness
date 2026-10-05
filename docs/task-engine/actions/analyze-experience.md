@@ -108,24 +108,47 @@ attempt never prepared a repository still has a valid invocation location. The a
 initializes its separate worktree as a Git repository before invoking the coding provider, just as
 recovery does; it never initializes or changes the original attempt's workspace.
 
-The configured analyst reads the supplied artifacts and relevant history, searches existing memory
-for related lessons, and returns zero or more substantive observations with applicability,
-uncertainty and evidence. For success it can extract supported outcomes and mechanisms; for failure
-it must distinguish demonstrated causes from hypotheses. Idea analysis preserves author intent,
-provisional decisions and unanswered questions. Do not save routine status reports or entire handoffs.
+Assign each analyst invocation its own Markdown path in the durable request area under the [shared
+report contract](architecture.md#markdown-reports-and-machine-outcomes). The configured analyst
+reads the supplied artifacts and relevant history, searches existing memory for related lessons, and
+returns zero or more substantive observations with applicability, uncertainty and evidence. For
+success it can extract supported outcomes and mechanisms; for failure it must distinguish
+demonstrated causes from hypotheses. Idea analysis preserves author intent, provisional decisions
+and unanswered questions. Do not save routine status reports or entire handoffs.
 
-This action's analyst receives AMEM MCP restricted to search. The action validates the
-response and readable evidence files within the request's canonical evidence scope — the retained
-copy's file, or a cited original location whose retained copy exists — persists accepted observations
-once, and submits them itself. Preserve original artifacts. Other agents retain explicit AMEM search/save tools under the
-[agent-use contract](../../memory/integration.md#agent-use); these are deliberate agent calls, not
-automatic workflow hooks. No other Nexus operation adds automatic memory context.
+This action's analyst receives AMEM MCP restricted to search. The action validates the minimal
+observation response, assigned readable Markdown and readable evidence files within the request's
+canonical evidence scope — the retained copy's file, or a cited original location whose retained
+copy exists — persists accepted observations once, and submits them itself. Preserve original
+artifacts. Other agents retain explicit AMEM search/save tools under the [agent-use
+contract](../../memory/integration.md#agent-use); these are deliberate agent calls, not automatic
+workflow hooks. No other Nexus operation adds automatic memory context.
+
+The complete analyst response remains `{ observations }`: each candidate has content, evidence
+(path, revision, detail) and relatedMemories (noteId, correction/extension relationship,
+explanation). These are functional memory payloads and provenance, validated by the action and
+passed to Memory; they are not general report fields. An empty observation list is valid.
+Interpretation, investigation and why lessons were or were not selected belong in Markdown, never in
+an added summary field. The saved analysis adds observed work/workflow/attempt/terminal,
+role/profile, observation identities and ReportBinding. Report text is not submitted as a memory
+observation.
+
+Capture retains the selected producer outcomes and their associated Markdown via their exported
+report declarations, alongside existing evidence. Copy bytes before recording the immutable request;
+resolve original report paths through the retained evidence mapping when the analyst reads them. Do
+not rewrite outcomes to point at copies or lose their original identities. A selected missing or
+unreadable associated report yields unavailable capture, rather than silently dropping narrative.
+Legacy combined evidence remains readable at its original retained shape. Analysis readers preserve
+already accepted legacy outputs and exact submission payloads without requiring new Markdown or
+reinvoking the analyst; an unfinished new analysis must satisfy its report binding before
+submission.
 
 Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) within the
 durable request area to retain rejected analyst output and the validation reason. The next existing
-analysis attempt receives that request's outstanding feedback. A saved usable analysis resolves
-report feedback before submissions; receipt retries reuse that analysis rather than invoking again.
-Evidence or invocation failures remain outstanding analysis and never alter the original handoff.
+analysis attempt receives that request's outstanding feedback. A saved usable analysis, including
+its report binding, resolves report feedback before submissions; receipt retries reuse that analysis
+rather than invoking again. Evidence or invocation failures remain outstanding analysis and never
+alter the original handoff.
 
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
 payloads, provenance, timestamps and keys after interruption or configuration changes. Durable

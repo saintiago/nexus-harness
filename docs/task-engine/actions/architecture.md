@@ -27,6 +27,62 @@ output schema derived from their owned response schema through that interface, a
 response instructions in context. They still validate the returned content and business rules before
 persisting an artifact; structured output does not establish correctness or approval.
 
+### Markdown reports and machine outcomes
+
+The [report requirements](../../agent-runtime/report-requirements.md) govern all roles, including
+Recovery and experience analysis. Each caller assigns one Markdown path before invocation and
+supplies it with the outcome schema and reserved record paths. The agent writes that report and
+returns only the outcome. AgentRuntime transports this context and schema; it neither reads the
+report nor owns storage, validation or routing.
+
+The shared report helpers own this association declaration and byte-level operations:
+
+```ts
+type ReportBinding = {
+  report: ArtifactRef;
+  reportIdentity: string; // SHA-256 of the report's exact UTF-8 bytes
+  invocationId: string;
+};
+```
+
+A new saved outcome includes ReportBinding and its owner's observed work identity, role, selected
+profile and applicable input/revision metadata. Existing owner-specific identity names can remain;
+Recovery records null work identity when no item was selected. None of this metadata is agent
+output. Owners export response and saved-outcome schemas separately; no universal business envelope
+or workflow coordinator is required.
+
+Assign `reports/<invocationId>/<role-or-variant>.md` within the owner's current round/cycle artifact
+area. Recovery uses its stable recovery area; analysis uses its durable request area. Initial,
+focused, post-help and retained-revision turns have separate paths, as do concurrent roles. Create
+the parent directory before invocation. Agents may write the assigned Markdown but not outcome/state
+records. Reports stay outside the product checkout and path-scoped commits.
+
+After the invocation, validate the strict response and functional data, read the assigned report as
+UTF-8 text, and require a readable regular file at that path. Do not impose headings, length,
+nonempty-prose or JSON rules. Compute its identity and check the owner's existing input/revision
+rules before saving the outcome. A saved new outcome is usable only with its associated readable
+report and matching identity. Do not infer status, verdict, findings or routing from report prose.
+The hash associates bytes; it proves neither their claims nor assessment quality.
+
+Persist the outcome only after these checks. Retained invocation context records the assigned path,
+identity and current inputs with existing invocation evidence. An interrupted save can finish only
+from that invocation's usable output/report and still-valid owner basis; otherwise normal recovery
+or reassessment applies. Never attach a previous invocation's report to a new outcome. Do not
+reinvoke merely to reconstruct an already saved usable result.
+
+Context readers import producer declarations, pass functional inputs as data, and supply relevant
+Markdown contents or readable paths with work/role/profile/invocation/revision attribution. Include
+complete necessary evidence; published comments are not repair context. Report-binding validation
+and text loading are shared plumbing; owners select relevant history and apply continuation rules.
+Human publication uses a validated saved report as text, alongside functional publication fields. PR
+and implementation review bodies use the saved Markdown text. Concise ticket feedback uses the
+opening narrative paragraph, prefixed with the observed profile and outcome; role instructions ask
+for a brief opening account without enforcing a heading or prose schema. If no opening prose is
+available, use the known outcome and report reference, never invent findings. No decision or finding
+is extracted from that paragraph. The publication owner retains the exact body it sends and reuses
+it on repetition, so reconciliation never requires regenerating prose or comparing a different
+rendering.
+
 ### Agent response contracts
 
 Each report owner defines its response schema separately from its saved artifact schema. Derive
@@ -37,19 +93,30 @@ previous reports as context and the assessed revision when relevant. Keep semant
 owner of the rule. Shared report helpers format, parse and retain evidence; they do not choose a
 verdict, infer artifact ownership or supply a second workflow policy.
 
-The agent returns response fields and creates only explicitly assigned documents or evidence.
-The caller supplies observed identity/revision metadata and writes its declared artifacts. Identify
-the action-owned paths in invocation context and explicitly forbid the agent from writing them.
-Response nullability conversions are declared mappings, not repairs of malformed output. Reject
-unknown response fields rather than silently stripping claims outside the response contract.
+The agent returns only outcome fields and writes its assigned Markdown and explicitly assigned
+documents or evidence. The caller supplies observed identity/revision metadata and writes its
+declared artifacts. Identify the action-owned paths in invocation context and explicitly forbid the
+agent from writing them. Response nullability conversions are declared mappings, not repairs of
+malformed output. Reject unknown response fields rather than silently stripping claims outside the
+response contract.
 
 When a contract removes fields, its producer-owned saved-record reader can permit those former
-fields in retained artifacts without retaining their obsolete validation or adding them to the current
-response schema. Keep required current data and verdict/revision rules validated. Provide the
-original report as readable historical context; do not rewrite it or synthesize missing current data.
-Complete recorded identities retain historical fields where existing associations depend on them;
-a simplified typed view is not a new identity. This compatibility belongs to the report producer,
-not to a generic history reader, AgentRuntime or a parallel workflow.
+fields in retained artifacts without retaining their obsolete validation or adding them to the
+current response schema. Keep required control/functional data, report associations and applicable
+input/revision rules validated. Provide the original report as readable historical context; do not
+rewrite it or synthesize missing current data. Complete recorded identities retain historical fields
+where existing associations depend on them; a simplified typed view is not a new identity. This
+compatibility belongs to the report producer, not to a generic history reader, AgentRuntime or a
+parallel workflow.
+
+New saved-outcome readers require ReportBinding. Producer-owned compatibility readers separately
+accept former combined artifacts with their former required narrative and identity fields. A record
+with any new binding field must satisfy the new schema; a damaged new record cannot fall back to
+legacy parsing. Retain legacy bytes without adding report paths or rewriting them into Markdown.
+Provide the original combined artifact as readable historical context. Existing usable completed
+legacy outcomes can continue only under their original input/revision/evidence protections; no new
+Markdown requirement is imposed retroactively. Legacy findings may remain readable fields but no
+longer require machine consistency or lifecycle validation.
 
 ### Rejection evidence and continuation
 
@@ -81,16 +148,23 @@ type ReportRejection = {
   source: ArtifactRef | null; // malformed saved record, when applicable
   output: string | null;
   reason: string;
+  report: ArtifactRef | null; // immutable copy of available rejected Markdown
+  assignedReport: ArtifactRef | null; // attempted path, even when unreadable/missing
 };
 type ReportCorrection = {
   kind: 'correction';
   scope: ReportScope;
   rejections: ArtifactRef[];
   artifact: ArtifactRef; // usable replacement report, not approval of its claims
-  artifactIdentity: string; // identity of the complete saved replacement
+  artifactIdentity: string; // complete saved outcome, including its report binding
   invocationId: string | null;
 };
 ```
+
+Copy available rejected Markdown byte-for-byte into the feedback area before raising the error,
+alongside exact returned outcome bytes and the original violated rule. Missing/unreadable Markdown
+remains explicitly unavailable, with its attempted path retained; do not synthesize it from
+activity. Former feedback records lacking Markdown references remain readable as retained evidence.
 
 Store immutable rejection and correction records under the owning area's
 `report-feedback/<record-id>.json`, using unique record IDs. Derive outstanding feedback from
@@ -108,13 +182,13 @@ durable request area and recovery its stable project recovery area, retaining th
 policies. Parallel roles have independent invocation identities and evidence writes.
 
 Before the next responsible invocation, load outstanding feedback matching project, work, owning
-area, role and report kind. Include the rejection reason, original invocation/context attribution and
-readable rejected output reference in context, labelled as rejected historical evidence. Current
-input, current response rules and finding obligations remain authoritative. Match the logical report
-responsibility across round advancement, profile changes, worker exit and reselection; do not require
-the old round, branch or profile to equal the new one. Incompatible variants and other roles/items
-do not inherit it. A correction retires the records it addresses, preserving their history; a later
-rejection remains outstanding independently.
+area, role and report kind. Include the rejection reason, original invocation/context attribution
+and readable rejected outcome and Markdown references in context, labelled as rejected historical
+evidence. Current input, current response rules and finding obligations remain authoritative. Match
+the logical report responsibility across round advancement, profile changes, worker exit and
+reselection; do not require the old round, branch or profile to equal the new one. Incompatible
+variants and other roles/items do not inherit it. A correction retires the records it addresses,
+preserving their history; a later rejection remains outstanding independently.
 
 Resolve feedback only after the owner validates and saves the usable replacement. Replay can finish
 recording a correction without another invocation only when retained evidence attributes the
@@ -158,9 +232,11 @@ The producing action's design defines its fields and their meaning.
 
 ### Reading and writing
 
-Artifact helpers are bound to the current workspace. readInputArtifacts accepts imported declarations
-and returns their typed contents in argument order. writeOutputArtifact accepts an owned declaration
-and content of its declared type. Structured contents are stored as JSON.
+Artifact helpers are bound to the current workspace. readInputArtifacts accepts imported
+declarations and returns their typed contents in argument order. writeOutputArtifact accepts an
+owned declaration and content of its declared type. Structured outcomes are stored as JSON;
+associated Markdown is loaded as text through report references, never through a JSON artifact
+parser.
 
 For finite delivery, read state/current-round.json from the selected workspace on each call and
 resolve the artifact as artifacts/<number>/<pathFromArtifactsRoot>. Idea refinement uses its own

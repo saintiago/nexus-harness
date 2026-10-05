@@ -87,7 +87,7 @@ Apply these to component responsibilities and public contracts as well as code.
 - [DevelopmentRole design](docs/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
 - [ReviewerRole design](docs/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
 - [RecoveryRole design](docs/agent-runtime/recovery-role.md): current-project diagnosis, queue reconciliation and fresh task restart.
-- [Findings contract](docs/task-engine/actions/findings.md): finding, response and disposition shapes shared across rounds.
+- [Findings contract](docs/task-engine/actions/findings.md): narrative assessment, current findings and verdict guidance.
 - [Adapters design](docs/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
 - [Jira adapter](docs/adapters/jira.md): issue data, comments, changes and ranking.
 - [GitHub adapter](docs/adapters/github.md): pull requests, reviews, checks and workflow observations.
