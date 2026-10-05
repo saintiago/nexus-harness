@@ -309,6 +309,8 @@ function experienceContextText(request: ExperienceRequest, scope: EvidenceScope)
         'accepted when its retained copy exists) and whose revision names the revision it ' +
         'establishes. Record compared notes under relatedMemories. An empty observations array is ' +
         'a valid answer.',
+      'Return the response object only; do not write or overwrite the request’s analysis, attempt ' +
+        'or submission records. AnalyzeExperience validates and persists your observations.',
     ].join('\n'),
   ].join('\n\n');
 }

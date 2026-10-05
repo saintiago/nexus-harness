@@ -10,19 +10,32 @@ import type { ArtifactDeclaration } from '../artifacts.js';
 
 /** One cited source: its title, link and, for external sources, the date it was accessed. */
 export const researchSourceSchema = z.object({
-  title: z.string().trim().min(1),
-  link: z.string().trim().min(1),
-  accessed: z.string().trim().min(1).nullable(),
+  title: z.string().trim().min(1).describe('The source\u2019s title.'),
+  link: z.string().trim().min(1).describe('The source\u2019s link or document location.'),
+  accessed: z
+    .string()
+    .trim()
+    .min(1)
+    .nullable()
+    .describe('The date an external source was accessed, or null for a project source.'),
 });
 
 /** The provider response: the short contribution with the knowledge and options behind it. */
 export const researchResponseSchema = z.object({
-  contribution: z.string().trim().min(1),
+  contribution: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The short contribution the editor reads, with the most useful discoveries.'),
   /** Source facts that enrich the idea, each naming the source it came from. */
-  findings: z.array(z.string().trim().min(1)),
+  findings: z
+    .array(z.string().trim().min(1))
+    .describe('Source facts that enrich the idea, each naming the source it came from.'),
   /** Idea-level possibilities and how each could strengthen the submitted idea. */
-  options: z.array(z.string().trim().min(1)),
-  sources: z.array(researchSourceSchema),
+  options: z
+    .array(z.string().trim().min(1))
+    .describe('Idea-level possibilities and how each could strengthen the submitted idea.'),
+  sources: z.array(researchSourceSchema).describe('Every source the findings rely on.'),
 });
 
 export type ResearchResponse = z.infer<typeof researchResponseSchema>;

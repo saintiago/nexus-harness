@@ -24,20 +24,36 @@ export const refinedIdeaContentSchema = z.object({
    * The author's idea as a concise statement of the proposed change, why it matters and the
    * principle behind it, without committing to implementation.
    */
-  idea: z.string().trim().min(1),
+  idea: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The proposed change, why it matters and the principle behind it.'),
   /** Why the idea belongs in this project. */
-  projectFit: z.string().trim().min(1),
+  projectFit: z.string().trim().min(1).describe('Why the idea belongs in this project.'),
   /**
    * A plausible way forward given the known constraints and evidence, not a design or
    * implementation plan.
    */
-  feasibility: z.string().trim().min(1),
-  openQuestions: openQuestionsSchema.optional(),
+  feasibility: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('A plausible way forward given the known constraints and evidence.'),
+  openQuestions: openQuestionsSchema
+    .describe('Only the material questions the next workflow must answer.')
+    .optional(),
   /**
    * The cumulative account of what refinement changed across the submission's cycles, or the
    * initial summary for the first revision. Reporting metadata, not one of the idea's parts.
    */
-  changeSummary: z.string().trim().min(1),
+  changeSummary: z
+    .string()
+    .trim()
+    .min(1)
+    .describe(
+      'The cumulative account of what refinement changed, not one of the idea\u2019s parts.',
+    ),
 });
 
 export type RefinedIdeaContent = z.infer<typeof refinedIdeaContentSchema>;
@@ -48,7 +64,11 @@ export type RefinedIdeaContent = z.infer<typeof refinedIdeaContentSchema>;
  * into the absent field the content schema and its readers declare.
  */
 export const refinedIdeaResponseSchema = refinedIdeaContentSchema.extend({
-  openQuestions: openQuestionsSchema.nullable(),
+  openQuestions: openQuestionsSchema
+    .nullable()
+    .describe(
+      'Only the material questions the next workflow must answer; null when the revision states none.',
+    ),
 });
 
 /** The stored refined idea revision: its substance bound to the submission and cycle it came from. */
@@ -71,9 +91,26 @@ export const refinedIdeaArtifact = {
  * could develop it, and the essential author decision that stops the workflow when one is missing.
  */
 export const framingResponseSchema = z.object({
-  framing: z.string().trim().min(1),
-  questions: z.array(z.string().trim().min(1)),
-  authorDecision: z.object({ question: z.string().trim().min(1) }).nullable(),
+  framing: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The author\u2019s proposed change and the few questions that could develop it.'),
+  questions: z
+    .array(z.string().trim().min(1))
+    .describe('The questions this refinement conversation should develop.'),
+  authorDecision: z
+    .object({
+      question: z
+        .string()
+        .trim()
+        .min(1)
+        .describe('The essential decision only the author can make.'),
+    })
+    .nullable()
+    .describe(
+      'The essential author decision already missing from the input, or null when none is.',
+    ),
 });
 
 export type FramingResponse = z.infer<typeof framingResponseSchema>;
@@ -97,8 +134,18 @@ export type EditorDisposition = (typeof editorDispositions)[number];
 
 /** The focused questions the editor asks of each contributor, or null when it asks none. */
 export const editorHelpSchema = z.object({
-  researcher: z.string().trim().min(1).nullable(),
-  projectGuide: z.string().trim().min(1).nullable(),
+  researcher: z
+    .string()
+    .trim()
+    .min(1)
+    .nullable()
+    .describe('The focused question for the Researcher, or null when it is not asked.'),
+  projectGuide: z
+    .string()
+    .trim()
+    .min(1)
+    .nullable()
+    .describe('The focused question for the Project guide, or null when it is not asked.'),
 });
 
 export type EditorHelp = z.infer<typeof editorHelpSchema>;
@@ -109,10 +156,27 @@ export type EditorHelp = z.infer<typeof editorHelpSchema>;
  * written to its own immutable revision artifact, never duplicated here.
  */
 export const editorTurnSchema = z.object({
-  disposition: z.enum(editorDispositions),
-  response: z.string().trim().min(1),
-  reason: z.string().trim().min(1).nullable(),
-  help: editorHelpSchema.nullable(),
+  disposition: z
+    .enum(editorDispositions)
+    .describe('What the editor did with the Challenger\u2019s concern or this edit task.'),
+  response: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('The short plain response addressed to the next role.'),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .nullable()
+    .describe(
+      'The author-facing reason an unsuitable or author-decision-needed return needs, or null for every other disposition.',
+    ),
+  help: editorHelpSchema
+    .nullable()
+    .describe(
+      'The named focused questions for the contributors, or null unless the disposition is help-requested.',
+    ),
 });
 
 export type EditorTurn = z.infer<typeof editorTurnSchema>;
@@ -134,7 +198,11 @@ export const editorHelpArtifact = {
  * turn plus the refined idea it revises, when it revises one.
  */
 export const editorTurnResponseSchema = editorTurnSchema.extend({
-  refinedIdea: refinedIdeaResponseSchema.nullable(),
+  refinedIdea: refinedIdeaResponseSchema
+    .nullable()
+    .describe(
+      'The refined idea revision this turn writes, or null unless the disposition is revised.',
+    ),
 });
 
 export type EditorTurnResponse = z.infer<typeof editorTurnResponseSchema>;

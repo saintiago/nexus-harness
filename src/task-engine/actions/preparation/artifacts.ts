@@ -3,7 +3,11 @@ import { preparationStages, type PreparationStage } from '../../../configuration
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
 import { findingResponseSchema } from '../develop/artifacts.js';
-import { findingDispositionSchema, findingSchema } from '../review/artifacts.js';
+import {
+  findingDispositionSchema,
+  findingSchema,
+  reportedFindingSchema,
+} from '../review/artifacts.js';
 import { terminalReasonSchema } from '../terminal-reason.js';
 
 /**
@@ -88,48 +92,53 @@ export const stageRoundExhaustionDeclaration = {
 
 /** One authoritative document the author produced or revised, relative to the stage worktree. */
 export const authoredDocumentSchema = z.object({
-  path: z.string().trim().min(1),
-  description: z.string().trim().min(1),
+  path: z.string().trim().min(1).describe('The document path inside the shared checkout.'),
+  description: z.string().trim().min(1).describe('Why this document changed.'),
 });
 
 /** One bounded implementation task the Architect planned. */
 export const plannedTaskSchema = z.object({
-  summary: z.string().trim().min(1),
-  scope: z.string().trim().min(1),
-  completionCriteria: z.array(z.string().trim().min(1)).min(1),
-  prerequisites: z.array(z.number().int().nonnegative()),
+  summary: z.string().trim().min(1).describe('The task in one short line.'),
+  scope: z.string().trim().min(1).describe('What the task covers and what it leaves out.'),
+  completionCriteria: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .describe('The observable results that make the task complete.'),
+  prerequisites: z
+    .array(z.number().int().nonnegative())
+    .describe('The zero-based indexes of the earlier tasks in this plan that must finish first.'),
 });
 
 export type PlannedTask = z.infer<typeof plannedTaskSchema>;
 
 /** One upstream return: the problematic input, its consequence and the correction needed. */
 export const upstreamRequestSchema = z.object({
-  stage: z.enum(upstreamStages),
-  problem: z.string().trim().min(1),
-  consequence: z.string().trim().min(1),
-  correction: z.string().trim().min(1),
+  stage: z.enum(upstreamStages).describe('The earlier stage whose input needs correction.'),
+  problem: z.string().trim().min(1).describe('The problematic input.'),
+  consequence: z.string().trim().min(1).describe('What the input prevents or contradicts.'),
+  correction: z.string().trim().min(1).describe('The concrete correction that is needed.'),
 });
 
 export type UpstreamRequest = z.infer<typeof upstreamRequestSchema>;
 
 /** One applicability skip the author proposes, with the existing inputs that satisfy the stage. */
 export const skipProposalSchema = z.object({
-  reason: z.string().trim().min(1),
-  references: z.array(z.string().trim().min(1)).min(1),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('Why the stage is irrelevant or its existing inputs already satisfy it.'),
+  references: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .describe(
+      'The existing inputs that satisfy the stage, such as document citations or retained paths. They stay inputs: a skip neither commits nor excludes them from evaluation.',
+    ),
 });
 
 /** One reference to a saved artifact file, such as a prototype observation record or screenshot. */
-export const artifactReferenceSchema = z.object({ path: z.string().trim().min(1) });
-
-/** One location as the evaluator reports it: an absent line is null for the strict schema. */
-const reportedLocationSchema = z.object({
-  path: z.string(),
-  line: z.number().int().positive().nullable(),
-});
-
-/** One evaluated finding as the evaluator reports it. */
-const reportedFindingSchema = findingSchema.extend({
-  locations: z.array(reportedLocationSchema),
+export const artifactReferenceSchema = z.object({
+  path: z.string().trim().min(1).describe('The saved record path inside the round artifact area.'),
 });
 
 /**
@@ -137,25 +146,58 @@ const reportedFindingSchema = findingSchema.extend({
  * upstream request. Finding responses use the shared findings contract.
  */
 export const stageAuthorResponseSchema = z.object({
-  outcome: z.enum(['authored', 'skip-proposed', 'needs-input', 'return-upstream']),
-  summary: z.string(),
-  documents: z.array(authoredDocumentSchema),
+  outcome: z
+    .enum(['authored', 'skip-proposed', 'needs-input', 'return-upstream'])
+    .describe(
+      'What this round did: authored the stage work, proposed an evaluated skip, needs an author decision, or returns the work to an earlier stage.',
+    ),
+  summary: z.string().describe('What was authored, proposed or found, in one short account.'),
+  documents: z
+    .array(authoredDocumentSchema)
+    .describe('The authoritative documents this revision changed, each with why it changed.'),
   /**
    * Additional non-document paths the stage owns and commits in the shared checkout, such as the
    * prototype's Storybook stories. They are stage-owned work, never authoritative documents.
    */
-  sourcePaths: z.array(z.string().trim().min(1)),
+  sourcePaths: z
+    .array(z.string().trim().min(1))
+    .describe(
+      'Additional stage-owned authored files this revision commits in the shared checkout, such as Storybook sources. Never files that were merely read, and empty unless the outcome is authored.',
+    ),
   /**
    * The Storybook Refinement author's saved prototype observation record, or null for every other
    * stage and outcome. The record is validated against the producer-owned observation contract
    * before the round can be evaluated; an applicable prototype cannot be accepted without it.
    */
-  observation: artifactReferenceSchema.nullable(),
-  plan: z.array(plannedTaskSchema),
-  skip: skipProposalSchema.nullable(),
-  question: z.string().nullable(),
-  upstream: upstreamRequestSchema.nullable(),
-  findingResponses: z.array(findingResponseSchema),
+  observation: artifactReferenceSchema
+    .nullable()
+    .describe(
+      'The Storybook Refinement author\u2019s own saved browser observation record inside the round artifact area, or null. Only authored prototype work declares one.',
+    ),
+  plan: z
+    .array(plannedTaskSchema)
+    .describe(
+      'The Architecture author\u2019s bounded implementation tasks; empty for every other stage and outcome.',
+    ),
+  skip: skipProposalSchema
+    .nullable()
+    .describe(
+      'The applicability skip proposal, or null unless the outcome is skip-proposed. A revision round cannot propose a skip.',
+    ),
+  question: z
+    .string()
+    .nullable()
+    .describe('The specific author decision needed, or null unless the outcome is needs-input.'),
+  upstream: upstreamRequestSchema
+    .nullable()
+    .describe(
+      'The problematic input, its consequence and the required correction, or null unless the outcome is return-upstream.',
+    ),
+  findingResponses: z
+    .array(findingResponseSchema)
+    .describe(
+      'One entry for each eligible prior finding ID and none for any other ID; empty when the round inherits none.',
+    ),
 });
 
 export type StageAuthorResponse = z.infer<typeof stageAuthorResponseSchema>;
@@ -179,19 +221,41 @@ export const stageAuthorArtifact = {
  * only be accepted when the author proposed one.
  */
 export const stageEvaluationResponseSchema = z.object({
-  assessedRevision: z.number().int().positive(),
-  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
-  reason: z.string(),
+  assessedRevision: z
+    .number()
+    .int()
+    .positive()
+    .describe('The authored revision number this decision assesses.'),
+  verdict: z
+    .enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream'])
+    .describe(
+      'Accepted, accepted-skip for the author\u2019s proposed skip, changes-requested or return-upstream.',
+    ),
+  reason: z.string().describe('Why the evidence and current findings support this verdict.'),
   /**
    * The Storybook Refinement evaluator's own saved prototype observation record, or null for every
    * other stage and for an evaluated applicability skip. Accepting applicable prototype work
    * requires it; a change request or upstream return retains it when the evaluator performed a
    * preview, so the observed defect evidence reaches the repair handoff.
    */
-  observation: artifactReferenceSchema.nullable(),
-  findings: z.array(reportedFindingSchema),
-  priorFindings: z.array(findingDispositionSchema),
-  upstream: upstreamRequestSchema.nullable(),
+  observation: artifactReferenceSchema
+    .nullable()
+    .describe(
+      'The Storybook Refinement evaluator\u2019s own saved browser observation record inside the round artifact area, or null. Accepting applicable prototype work needs it; an evaluated applicability skip carries none.',
+    ),
+  findings: z
+    .array(reportedFindingSchema)
+    .describe('Every finding still present in the assessed revision, each with its stable ID.'),
+  priorFindings: z
+    .array(findingDispositionSchema)
+    .describe(
+      'One disposition for each inherited finding ID and none for any other ID; an open disposition requires the finding in findings.',
+    ),
+  upstream: upstreamRequestSchema
+    .nullable()
+    .describe(
+      'The problematic input, its consequence and the required correction, or null unless the verdict is return-upstream.',
+    ),
 });
 
 export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSchema>;
@@ -199,11 +263,11 @@ export type StageEvaluationResponse = z.infer<typeof stageEvaluationResponseSche
 /** One repository path the evaluator assessed or relied on: its observed revision and existence. */
 export const assessedContentSchema = z.object({
   /** The canonical checkout-relative path of the assessed repository content. */
-  path: z.string().min(1),
+  path: z.string().min(1).describe('The canonical checkout-relative path of the assessed content.'),
   /** The revision at which the content was observed; it must stay readable while retained. */
-  revision: z.string().min(1),
+  revision: z.string().min(1).describe('The revision the content was observed at.'),
   /** False when the assessed revision deletes the path; a deletion is retained, not replaced. */
-  exists: z.boolean(),
+  exists: z.boolean().describe('False when the assessed revision deletes the path.'),
 });
 
 export type AssessedContent = z.infer<typeof assessedContentSchema>;

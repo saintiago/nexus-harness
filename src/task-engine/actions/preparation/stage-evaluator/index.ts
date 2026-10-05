@@ -321,6 +321,15 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         `Assess the exact authored revision ${String(author.revision)} and resolve every prior ` +
           'finding. Accept adequate work, the author\u2019s evaluated skip or a concrete upstream ' +
           'return; separate necessary changes from optional suggestions.',
+        'Return the response object only; do not write or overwrite the action-owned stage records ' +
+          '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
+          'adds the observed acceptance basis and persists your decision.',
+        settings.stage === 'prototype'
+          ? 'Accepting applicable prototype work needs your own saved browser observation; an ' +
+            'evaluated applicability skip carries none. The observation contract above states the ' +
+            'record and the round artifact area.'
+          : 'The observation field is null; only the Storybook Refinement stage retains an ' +
+            'observation record.',
         'The assessed repository content retained for this evaluation (path at revision, or a ' +
           'retained deletion): ' +
           JSON.stringify(basis.content),

@@ -347,6 +347,21 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             ? 'Propose the current decision for this reassessed work: reuse retained accepted work whose content and inputs still match, or repair what changed.'
             : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to every current finding, or rebut with reasons.',
+        'Return the response object only; do not write or overwrite the action-owned stage records ' +
+          '(author.json, plan.json, evaluation.json, result.json or the state records). The action ' +
+          'adds the stage and authored revision metadata and persists your report.',
+        'An authored outcome declares the changed authoritative documents in documents and any ' +
+          'additional stage-owned authored files it commits in sourcePaths; never declare files ' +
+          'that were merely read. A skip-proposed, needs-input or return-upstream outcome carries ' +
+          'empty documents and sourcePaths, and a proposed skip puts the existing inputs that ' +
+          'satisfy the stage in skip.references.',
+        'Only the Architecture stage supplies plan entries; every other stage and outcome returns ' +
+          'an empty plan array.',
+        settings.stage === 'prototype'
+          ? 'Accepted applicable prototype work needs your own saved browser observation; the ' +
+            'observation contract above states the record and the round artifact area.'
+          : 'The observation field is null; only the Storybook Refinement stage retains an ' +
+            'observation record.',
         findings.length === 0
           ? 'No prior findings are supplied for this round; return an empty findingResponses array.'
           : `Eligible prior finding IDs: ${findings

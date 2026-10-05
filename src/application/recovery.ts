@@ -50,11 +50,23 @@ export type RecoveryDecision = { readonly kind: 'resume' } | { readonly kind: 'n
 
 /** The response format requested from the recovery agent and parsed from its output. */
 export const recoveryReportSchema = z.strictObject({
-  summary: z.string().trim().min(1),
-  decision: z.union([
-    z.strictObject({ kind: z.literal('resume') }),
-    z.strictObject({ kind: z.literal('needs-attention') }),
-  ]),
+  summary: z
+    .string()
+    .trim()
+    .min(1)
+    .describe(
+      'The cause or remaining uncertainty, actions taken, ticket and queue changes, discarded work, and why resumption is ready or human attention is required.',
+    ),
+  decision: z
+    .union([
+      z.strictObject({
+        kind: z.literal('resume').describe('The normal queue can continue.'),
+      }),
+      z.strictObject({
+        kind: z.literal('needs-attention').describe('The execution cannot continue without help.'),
+      }),
+    ])
+    .describe('Resume only when the normal queue can continue; otherwise needs-attention.'),
 });
 
 /** The recovery agent's report, from the Application provided interface. */
@@ -389,6 +401,8 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       'Use {"kind": "needs-attention"} as the decision when the execution cannot continue. ' +
         'Application saves and publishes the report and restarts the worker only after a resume ' +
         'decision.',
+      'Return the response object only; do not write the report file. Application parses your ' +
+        'response, saves the report and publishes it.',
     ].join('\n'),
   ].join('\n\n');
 }

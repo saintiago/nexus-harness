@@ -57,6 +57,13 @@ export const preparationSharedInstructions = [
   'changes from optional suggestions and accepting adequate work. Shared-memory search/save is',
   'explicit when the invocation carries the memory tools; no preparation role schedules automatic',
   'memory consumption.',
+  'Return the response object; do not write or overwrite action-owned author.json, evaluation.json,',
+  'result.json, plan.json or state records. The action adds saved-record metadata. Authors declare',
+  'changed authoritative documents in documents; sourcePaths declares additional stage-owned',
+  'authored files, never files merely read. Every non-authored outcome has empty sourcePaths.',
+  'Supporting existing inputs belong in skip.references. Only Architecture supplies an',
+  'implementation plan. Observation requirements and allowed outcomes follow the supplied stage',
+  'response rules.',
 ].join('\n');
 
 /** The stage's own area root inside the shared issue workspace. */
@@ -236,6 +243,8 @@ export async function stageContextText(settings: StageContextSettings): Promise<
     ...previousEvaluation,
     ...prototype,
     ...reassessment,
-    'Stage area: each round keeps author.json and evaluation.json under artifacts/<round>/; result.json records the terminal result.',
+    'Stage area: the action owns and writes artifacts/<round>/author.json, plan.json, ' +
+      'evaluation.json and result.json and the state records current-round.json and result.json; ' +
+      'do not write or overwrite them. result.json records the terminal result.',
   ].join('\n\n');
 }

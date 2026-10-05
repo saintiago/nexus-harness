@@ -309,7 +309,7 @@ export async function projectGuidanceText(root: string): Promise<string | null> 
   ].join('\n');
 }
 
-import { parseAgentReport } from './agent-reports.js';
+import { actionOwnedRecordsText, parseAgentReport } from './agent-reports.js';
 
 export { parseAgentReport, responseFormatText } from './agent-reports.js';
 
@@ -358,6 +358,11 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
       ideaAttributionText,
       ideaSourceScopeText,
       ideaCommunicationText,
+      actionOwnedRecordsText([
+        path.join(settings.root, 'artifacts') +
+          ' (the captured inputs, refinements, contributions, responses and decisions the actions save)',
+        path.join(settings.root, 'state') + ' (the refinement state records)',
+      ]),
       settings.context,
     ].join('\n\n'),
     outputSchema: z.toJSONSchema(settings.schema),

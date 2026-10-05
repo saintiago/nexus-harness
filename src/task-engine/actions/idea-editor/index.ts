@@ -342,11 +342,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       'below. Its `idea` part states the author\u2019s proposed change, why it matters and the',
       'principle behind it; `projectFit` states why it belongs in this project; `feasibility`',
       'states a plausible way forward given the known constraints and evidence; `openQuestions`',
-      'lists only the material questions the next workflow must answer and may be omitted.',
+      'lists only the material questions the next workflow must answer and reports null when the',
+      'revision states none.',
       'Preserve the author\u2019s intent and do not turn the idea into requirements, design',
       'decisions or an implementation plan. If pursuing the idea does not look sensible, return',
       'it as unsuitable with the author-facing reason; ask an essential author decision plainly',
       'when only the author can make it.',
+      'This task returns "revised", "unsuitable" or "author-decision-needed" only. A revised ' +
+        'turn carries the refinedIdea; an unsuitable or author-decision-needed return carries the ' +
+        'author-facing reason and no refinedIdea, and reports help as null.',
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { omitCurrentCycleOf: null }),
@@ -443,6 +447,10 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
             'help from the researcher or the Project guide, naming the specific questions. If the',
             'idea is unsuitable, explain why; ask an essential author decision plainly when only',
             'the author can make it.',
+            'A help-requested turn names at least one focused question and reports null for the ' +
+              'role it does not ask; every other disposition reports help as null. An unsuitable ' +
+              'or author-decision-needed return carries the author-facing reason and no ' +
+              'refinedIdea; answered, rebutted and help-requested turns report no refinedIdea.',
           ]),
       refinedIdeaDeliverableInstruction,
       await capturedIdeaText(root, plan, input),
