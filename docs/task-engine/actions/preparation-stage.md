@@ -149,9 +149,11 @@ an applicability skip when corrected scope makes the stage irrelevant; evaluatio
 applicability. Existing authored cleanup and applicability reassessment preserve obsolete-work
 reconciliation; a skip cannot commit or silently discard stage-owned work.
 
-Accepted and accepted-skip require no current blocking problem; changes-requested requires at least
-one, explained in Markdown. These are evaluator judgment obligations, not machine finding-count
-checks. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Validate
+Accepted and accepted-skip apply the [bounded material-quality
+standard](../../agent-runtime/preparation-roles.md#bounded-material-quality) and require no known
+material issue; changes-requested requires at least one, explained in Markdown. Remaining
+suggestions explain why they are nonblocking. These are evaluator judgment obligations, not
+machine finding-count checks. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Validate
 outcome/verdict pairing, destination, correction, role-specific fields, plan and applicable
 evidence; do not parse narrative to verify the verdict. There are no finding IDs, response/status
 records, dispositions or matching checks across rounds. `assessedRevision` is action-observed saved
@@ -171,10 +173,12 @@ The [project workflow
 requirements](../../project-workflow.md#current-worktree-evaluation-requirements) own document-stage
 acceptance, compatible shared-document edits, retained continuation and examples. Requirements,
 UX/UI and Architecture assess the ticket against current authoritative documents in the shared
-worktree, regardless of authorship or commit history. Context supplies the ticket, attributed
-conversation, upstream reports, current author Markdown and functional outcome/plan, repository
-instructions and readable previous author/evaluation reports. The evaluator inspects relevant
-existing documents itself; an empty changed-document list does not restrict its scope or prevent
+worktree, regardless of authorship or commit history. Context follows the [preparation prompt
+outcomes](../../agent-runtime/preparation-roles.md#preparation-prompt-outcomes): readable captured
+scope and attributed feedback, directly available current corrections, and accessible references
+to upstream artifacts and historical reports. The current author Markdown and functional outcome/plan
+remain inspectable. Preserve repository guidance without duplicating runtime-supplied instructions.
+The evaluator inspects relevant existing documents itself; an empty changed-document list does not restrict its scope or prevent
 invocation. Architecture also evaluates the current implementation plan.
 
 Before evaluation, commit declared documents and applicable prototype sources in the shared
@@ -195,6 +199,111 @@ Downstream decision reads check the completed report association and captured hu
 pending corrections and applicable prototype evidence. They do not compare completed document
 approvals with historical file revisions or demand renewed approval of an unchanged document.
 Architecture acceptance returns directly to handoff; there is no combined preparation publication.
+
+### Prompt context and evidence
+
+Assemble a common preparation context for all authors and evaluators. After the selected profile's
+role purpose, outcome and specific standards, order it as follows:
+
+1. Shared material-quality, applicability, scope, ownership and coherence guidance.
+2. Readable captured task intent and attributed conversation, followed by active correction context.
+3. Worktree location, repository-instruction paths, accepted upstream and local history references,
+   and the current work to assess. Reassessment states that an earlier decision is pending and
+   identifies the changed input; it cannot confer acceptance.
+4. Reporting mechanics: the assigned Markdown path, action-owned paths, applicable declaration and
+   observation rules, and the minimal response contract. Prototype observation details belong here,
+   only for the prototype roles. Include each rule once, rather than repeating shared reporting
+   instructions in the author/evaluator suffixes.
+
+Generic runtime instructions retain their existing precedence. Preparation's work and quality
+guidance precedes its reporting mechanics in every route and selectable profile.
+
+#### Readable captured source
+
+Render the captured summary, description and conversation deterministically as readable text.
+Preserve expressed scope, exclusions, acceptance conditions, questions, disagreements, links and
+evidence paths. Keep the description's meaningful structure; do not invent exclusions, resolve
+conflicting statements or shorten content by dropping qualifications. Render rich-text paragraphs,
+headings, lists, links, code, tables and other meaningful nodes without their administrative JSON.
+Other captured fields carrying task instructions or evidence also receive readable text or an
+explicit inspection reference; omission applies to administrative data, not arbitrary task content.
+Give non-text evidence a readable reference. For an unsupported meaningful structure, explicitly
+identify the unrendered content and its source location and require inspection before relying on
+it; never silently discard it or present an incomplete rendering as complete intent.
+
+Attribute each comment by captured author and source comment identity, preserving captured order
+and available chronology. Mark known Nexus publication acknowledgements using the parent's saved
+publication identities, rather than promoting them to human decisions or omitting them silently.
+Bot attribution, missing authorship and uncertain origin remain explicit; an owner's account name
+alone cannot establish that a publication was human feedback. Agents distinguish human direction
+from assessments using this attribution and source evidence. Administrative API envelopes, avatars,
+watchers, status bookkeeping and time tracking do not enter the readable context.
+
+Before invocation, retain the exact `{ issue, conversation }` used for this context in
+`captured-source.json` beside the invocation's assigned Markdown report, and supply its absolute
+path. This action-owned evidence copy is not a new role response, control record or source of
+decisions. It remains available after reselection changes the parent snapshot. Write it from the
+same captured values used by the existing source-identity check; never query Jira or derive the
+identity from rendered text. Leave retained copies unchanged in later invocations. Failure to retain
+readable source evidence is an execution fault.
+
+#### References and active corrections
+
+Give upstream results and retained author/evaluator records accessible absolute paths, with stage,
+role, round, revision or assessed revision, and outcome/verdict attribution where recorded. Include
+their Markdown paths when bound, and the stage history directory for further evidence. The current
+author record, report, declarations and Architecture plan are read through these references, not
+embedded in full. Legacy combined records remain readable at their original paths without rewriting
+them. Validate referenced current, upstream and repair records through existing producer-owned
+readers and report bindings; switching presentation to paths does not bypass report usability,
+source association, revision checks or producer-attributed rejection retention.
+An accepted or skipped upstream result requires its producing author and evaluator records before
+consumer invocation. Missing required records use the producing role's rejection handling; absent
+upstream stages remain legitimate, and retained legacy combined records need no Markdown binding.
+
+Active correction context is distinct from supporting history. Include the retained human question
+and captured answer/feedback, the upstream request's concrete correction, outstanding report
+rejection reasons and evidence references, and the latest still-relevant evaluator assessment
+directly. For a bound upstream return, validate and include the returning assessment alongside its
+functional correction; legacy returns retain their problem and consequence text. For a
+changes-requested assessment, or a return-upstream assessment whose correction is pending, include
+its validated Markdown as active concerns, preserving problem, consequence, correction, optional
+suggestions and uncertainty. Use the original narrative rather
+than extracting a machine finding set or generating a lossy summary. Accepted assessments are
+supporting references, not active demands for optional improvements.
+
+Find the most recent preceding evaluation across intervening author-only rounds. A return, question,
+restart or `new` route label does not clear its concerns. Provide relevant intervening author reports
+as attributed references, explicitly requiring inspection of their corrections and disagreements.
+An evaluator supplies a complete account of material concerns that remain in the assessed work,
+including earlier concerns it judges unresolved. A subsequent current evaluation supersedes the
+earlier assessment for this purpose; no program parses Markdown to infer resolution. Explicit
+pending upstream routes and outstanding rejection feedback retain their existing clearing rules.
+Reassessment against changed input still requires a fresh judgment even after an earlier acceptance.
+
+There is no prompt-size cutoff for active concerns and no narrative parser, summary service, new
+finding schema or lifecycle store. Historical bodies are referenced; a report still carrying an
+active correction is included because a path alone would hide the repair obligation. Evidence and
+allowances remain in their existing stores. Missing or changed bound evidence uses existing
+attributable rejection handling, never acceptance, a manufactured skip or an upstream product rule.
+
+#### Repository instructions and verification
+
+Reference the connected worktree's `AGENTS.md` and require applicable repository instructions to be
+followed. Do not embed its contents. When the provider supplies those instructions natively, this
+path adds no duplicate body; otherwise the role reads applicable instruction files before work.
+Keep nested applicable instructions and the repository file intact. Linked design documents are
+evidence to consult, not additional role instructions. This uses file access already required for
+preparation and needs no provider-detection flag or new runtime capability.
+
+Verify actual assembled invocations through application profile composition and AgentRuntime to the
+coding-provider request, covering all eight roles and relevant profile reuse/variants. Check order,
+single guidance delivery, source meaning and attribution, readable references, and directly present
+active corrections. Exercise response, reassessment, upstream-return, author-only question/return,
+restart and rejection continuation with controlled evidence. Both native instruction delivery and
+explicit file-reading must preserve repository guidance without preparation embedding another copy.
+Keep existing report-integrity, source/revision, prototype observation, current-worktree evaluation
+and finite allowance regressions; shorter prompts alone are not acceptance evidence.
 
 ### Applicability references and retained data
 
@@ -247,9 +356,10 @@ prototype inspection. Return upstream for a concrete input defect, not a compati
 edit. Changed human intent, missing/corrupt reports or changed inspected prototype sources require
 normal reassessment.
 
-Re-entry supplies previous author/evaluator reports and any upstream request as complete narrative
-context or readable local references, including the latest findings even after an author-only return
-or input request. No traversal derives an unresolved ID set or waits for disposition records. The
+Re-entry supplies previous author/evaluator reports through readable, attributed local history
+references. Current upstream requests, unresolved findings and rejection feedback remain directly
+available, including after an author-only return or input request; their full supporting evidence
+remains accessible. No traversal derives an unresolved ID set or waits for disposition records. The
 next evaluator judges whether previous concerns remain and reports actionable current findings.
 A missing later evaluation is not an implicit resolution or acceptance. Current terminal records
 and pending routes govern advancement; do not search past an intervening unfinished or invalid round
@@ -354,7 +464,8 @@ preview evidence. Tool installation belongs to the [profile setup](../../agent-r
 
 Architecture produces one or more bounded tasks with summary, scope, completion criteria and
 zero-based prerequisite indices. Its evaluator checks outcome coverage, size, duplication and a valid
-acyclic graph. Existing adequate technical design receives direct acceptance while this plan still
-receives evaluation. Source issue creation, links and ranking stay outside stage roles. The first
+acyclic graph. Existing technical design meeting the bounded material-quality standard receives
+direct acceptance while this plan still receives evaluation. Source issue creation, links and
+ranking stay outside stage roles. The first
 implementation continues the shared checkout; prototype references remain available to all planned tasks. Preparation
 has no documentation assembly, documentation-only PR, repository reviewer or merge/check state.

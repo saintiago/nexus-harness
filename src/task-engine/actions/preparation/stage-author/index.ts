@@ -34,6 +34,7 @@ import {
   type StageAuthorResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
+import { capturedSourcePathOf, retainCapturedSource } from '../readable-source.js';
 import {
   checkoutRelative,
   resolveSkipReference,
@@ -511,19 +512,18 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           'revise and no earlier round retains one.',
       );
     }
-    // The most recent preceding evaluation supplies the repair context for this round; an
-    // unusable record is preserved under the evaluator responsibility instead of failing without
-    // evidence.
+    // The most recent preceding evaluation supplies the still-relevant concerns for this
+    // invocation; an intervening author-only round, a return, a question, a restart or a `new`
+    // route label never clears them. An unusable record is preserved under the evaluator
+    // responsibility instead of failing without evidence.
     let precedingEvaluation: RetainedStageEvaluationOutput | null = null;
     let precedingEvaluationRound: number | null = null;
-    if (plan.route !== 'new') {
-      for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
-        const retained = await readEvaluation(earlier);
-        if (retained !== null) {
-          precedingEvaluation = retained;
-          precedingEvaluationRound = earlier;
-          break;
-        }
+    for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
+      const retained = await readEvaluation(earlier);
+      if (retained !== null) {
+        precedingEvaluation = retained;
+        precedingEvaluationRound = earlier;
+        break;
       }
     }
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
@@ -531,16 +531,36 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
     // A response round and a pending reassessment both revise the preceding authored revision
     // rather than starting from nothing; the new round's own directory holds only its response.
     const revising = task === 'respond' || plan.route === 'reassess';
+    const authorRound = revising ? (preceding?.round ?? plan.round) : plan.round;
+    // Author rounds retained after that evaluation carry corrections and disagreements the next
+    // role must inspect; a missing later evaluation resolves nothing.
+    const interveningAuthors: { round: number; author: RetainedStageAuthorOutput }[] = [];
+    if (precedingEvaluationRound !== null) {
+      for (let earlier = precedingEvaluationRound + 1; earlier < authorRound; earlier += 1) {
+        const retained = await readAuthor(earlier);
+        if (retained !== null) {
+          interveningAuthors.push({ round: earlier, author: retained });
+        }
+      }
+    }
+    const capturedSource = capturedSourcePathOf(assignedReport.path);
+    await retainCapturedSource({
+      file: capturedSource,
+      task: selection.task,
+      conversation: selection.conversation,
+    });
     const context = await stageContextText({
       selection,
       plan,
       stageRoot: root,
       worktree,
       author: revising ? (preceding?.author ?? author) : author,
-      authorRound: revising ? (preceding?.round ?? plan.round) : plan.round,
-      evaluation: revising ? precedingEvaluation : null,
-      evaluationRound: revising ? precedingEvaluationRound : null,
+      authorRound,
+      evaluation: precedingEvaluation,
+      evaluationRound: precedingEvaluationRound,
+      interveningAuthors,
       report: assignedReport,
+      capturedSource,
       retained:
         plan.route === 'reassess'
           ? await (async () => {
@@ -551,33 +571,19 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             })()
           : null,
       feedback: outstanding,
-      rejectUnreadableReport,
-    });
-    // The pre-invocation revision is the evidence that a deletion committed during the invocation
-    // was tracked before this edit; the post-invocation head no longer retains it.
-    const before = await settings.git.inspectRepository(worktree);
-    if (!before.ok) {
-      throw new Error(before.fault.message);
-    }
-    const result = await settings.runner.run({
-      operation: 'stage-author',
-      invocationId,
-      profile: authorProfile,
-      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
-      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
-      workspace: { root: selection.workspace.root },
-      context: [
-        context,
+      work: [
         task === 'propose'
           ? plan.route === 'reassess'
-            ? 'Propose the current decision for this reassessed work: repair what changed and leave adequate current documents unchanged; a submission may declare no changed files.'
+            ? 'Propose the current decision for this reassessed work: repair what changed and ' +
+              'leave adequate current documents unchanged; a submission may declare no changed files.'
             : 'Propose this round\u2019s work or an evaluated skip for the exact revision you author.'
           : 'Revise the authored revision in answer to the current findings, explaining ' +
             'corrections, disagreements and remaining problems in the assigned Markdown report. ' +
             'When the findings show that the corrected scope makes the stage irrelevant, you may ' +
             'propose an applicability skip instead of further work; evaluation decides its ' +
             'applicability.',
-        `Assigned Markdown report: ${assignedReport.path}`,
+      ],
+      reporting: [
         'Write the complete narrative report to that path before returning: what you authored or ' +
           'proposed, declaration explanations, the skip rationale, corrections, disagreements and ' +
           'remaining problems, using the supplied previous reports as context. Return the minimal ' +
@@ -611,7 +617,23 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
           roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
         ]),
         responseFormatText(stageAuthorResponseSchema),
-      ].join('\n\n'),
+      ],
+      rejectUnreadableReport,
+    });
+    // The pre-invocation revision is the evidence that a deletion committed during the invocation
+    // was tracked before this edit; the post-invocation head no longer retains it.
+    const before = await settings.git.inspectRepository(worktree);
+    if (!before.ok) {
+      throw new Error(before.fault.message);
+    }
+    const result = await settings.runner.run({
+      operation: 'stage-author',
+      invocationId,
+      profile: authorProfile,
+      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
+      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
+      workspace: { root: selection.workspace.root },
+      context,
       outputSchema: z.toJSONSchema(stageAuthorResponseSchema),
       task: selection.taskKey,
     });

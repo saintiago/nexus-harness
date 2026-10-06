@@ -2,12 +2,29 @@
 
 ## Shared instructions
 
-Supply these instructions once per invocation, followed by the selected role's constant prompt and
-its task-specific inputs. Use the connected worktree, captured author input, attributed conversation,
+Lead preparation guidance with the selected role's purpose, desired outcome and quality standards.
+Supply shared guidance once per invocation; put reporting mechanics after the work and its context.
+Use the connected worktree, captured author input, attributed conversation,
 accepted upstream outputs and project documents. Human intent governs; agent summaries are revisable
 history. Keep source attribution and material uncertainty. Do not retrieve Jira, publish source
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
+
+### Bounded material quality
+
+Authors and evaluators actively improve clarity, simplicity, usability, coherence and maintainability
+within the requested scope and their stage's responsibility. Before submission or acceptance, resolve
+known material weaknesses and worthwhile simplifications. Ground a required change in a concrete
+problem, the affected user or responsibility, and the expected benefit; explain the evidence and
+correction. Passing functional checks or meeting a minimal checklist alone does not establish quality.
+
+Taste, hypothetical future needs and equally good alternatives do not justify further revisions.
+Stop when no known material issue remains, not when no imaginable improvement exists. Explain why
+remaining suggestions are nonblocking. Existing work that meets this standard receives direct
+evaluation and acceptance without manufactured edits, citations or a reuse skip. Apply the standard
+to the selected role's work; visual and motion assessment belongs only where relevant.
+
+### Reporting and workflow boundaries
 
 Write the narrative at the supplied Markdown report path. Return only the minimal response object;
 do not write or overwrite action-owned `author.json`, `evaluation.json`, `result.json`, `plan.json`
@@ -25,8 +42,8 @@ and evaluator when enabled; no preparation role schedules automatic memory consu
 
 Evaluate applicability first. Propose an applicability skip when the stage is irrelevant, with
 reasons in Markdown and optional functional evidence references; document citations are not
-mandatory. Preserve and directly evaluate adequate existing documents. If inputs prevent a feasible
-clean result, identify the problematic input, correction and owning earlier stage. Ask the user only
+mandatory. Directly evaluate existing documents under the bounded material-quality standard. If
+inputs prevent a feasible clean result, identify the problematic input, correction and owning earlier stage. Ask the user only
 for a material decision that available context cannot resolve. Do not turn a provider/tool failure
 into an upstream product requirement.
 
@@ -34,14 +51,14 @@ Authors preserve scope and explain corrections, answers, disagreements and remai
 their assigned Markdown report, using previous reports as context without per-finding
 response/status records. Document evaluators assess the ticket's requested changes against the
 current shared worktree documents, regardless of authorship or commit history. They do not require
-document edits, citations or historical approval reuse to accept adequate content. Compatible
-later-stage edits to shared documents do not force an upstream return; a concrete input defect uses
+document edits, citations or historical approval reuse to accept content meeting that standard.
+Compatible later-stage edits to shared documents do not force an upstream return; a concrete input defect uses
 normal findings. Evaluators inspect current content, judge whether earlier concerns remain and seek
 useful improvements as well as omissions. Write actionable current findings in Markdown without
 stable IDs or disposition records; return only the functional verdict/routing and applicable
 observation fields. Explain benefits and evidence, separate necessary changes from optional
-suggestions, and accept adequate work. Simplicity and reduced user effort matter; fewer clicks must
-preserve clarity, accessibility and error prevention.
+suggestions, explaining why the latter are nonblocking. Simplicity and reduced user effort matter;
+fewer clicks must preserve clarity, accessibility and error prevention.
 
 Apply the connected project's existing design and ownership principles to keep cumulative changes
 coherent within scope. Before evaluation, authors reconcile affected existing intent with the
@@ -54,12 +71,117 @@ Evaluators inspect the resulting design and applicable implementation, affected 
 existing behavior, not just additions or the author's summary. Seek contradictions, unnecessary
 complexity, scattered ownership and interaction inconsistencies. Necessary findings identify the
 concrete problem, evidence, consequence and required correction through the existing finding and
-return paths. Preserve stage responsibility, adequate-work acceptance and optional suggestions;
+return paths. Preserve stage responsibility, bounded material-quality acceptance and optional suggestions;
 reconciliation grants no unrelated redesign, extra attempts or bypass of current-revision evaluation.
 
 This shared guidance reaches every preparation author and evaluator once through the supplied
 stage context. Selected profiles carry their role-specific instructions; they do not duplicate the
 shared guidance. Applicability skips still receive evaluation and do not create unnecessary work.
+
+## Preparation prompt outcomes
+
+### Affected categories and journey
+
+These requirements cover the assembled invocation guidance for all eight preparation roles:
+Requirements Analyst/Evaluator, UX Designer/Evaluator, Prototype Developer/Evaluator in Storybook
+Refinement, and Architect/Architecture Evaluator. Affected categories are role purpose and quality,
+task intent and owner feedback, repository instructions, supporting evidence and repair context.
+
+The journey is: receive the selected role's outcome and standards -> understand captured human
+scope and current corrections -> consult relevant documents and referenced evidence -> author or
+independently evaluate current work -> resolve material problems through existing correction paths
+-> submit the narrative and functional response -> advance after current evaluation.
+
+### Activities and rules
+
+1. Use a common context structure with stage-specific standards. Lead with the invoked role's
+   purpose, desired outcome and applicable quality standards, then readable task intent, current
+   corrections and evidence references. Put report paths, declarations and response mechanics
+   afterward. Shared obligations and role guidance reach every selectable profile once, including
+   repair and reassessment invocations; generic runtime guidance retains its existing responsibility.
+2. Present captured task input as concise readable scope, exclusions and attributed human feedback
+   instead of raw Jira JSON. Preserve meaningful content, source attribution, material uncertainty
+   and human precedence over agent summaries. Distinguish owner decisions from agent assessments
+   and source-publication messages. Keep contradictory or unsettled human intent explicit; do not
+   invent a resolution. Omit administrative metadata such as avatars, API envelopes and time tracking.
+   Preserve access to the captured source as evidence; readability must not silently change intent.
+3. Preserve repository instructions and `AGENTS.md` itself. When the coding runtime already supplies
+   applicable repository guidance, preparation must not embed another copy. When it does not,
+   keep that guidance available to the role. Linked project documents remain evidence to consult,
+   rather than additional role instructions.
+4. Supply accepted upstream artifacts and historical author/evaluator reports through explicit,
+   accessible paths or history references, with enough stage, role, revision and outcome attribution
+   to identify their relevance, rather than embedding their full contents. Preserve original history
+   and access to its full evidence, including legacy reports and rejection evidence. An evaluator
+   must be able to inspect the current author's work, report and functional outcome or plan.
+5. Keep current owner corrections, upstream correction requests, unresolved findings and outstanding
+   report-rejection feedback directly available in the invocation. Include the concrete problem,
+   consequence and required correction when present, with references to supporting evidence.
+   A reference to a past report alone cannot hide the active repair obligations. An author-only
+   return, input request or restart cannot implicitly resolve previous concerns. Preserve relevant
+   explanations and disagreements so the next evaluator can judge current work independently;
+   do not infer resolution from a missing later evaluation or introduce finding lifecycle records.
+6. Apply [bounded material quality](#bounded-material-quality) through each role's standards below.
+   Charter, UX, visual and motion guidance applies to relevant experience work; internal/nonvisual
+   work retains evaluated applicability skips and does not acquire UI exercises. Preserve current
+   workflow ownership, finite allowances, evidence validation, revision-bound evaluation and
+   delivery review/merge/check gates. Shorter prompts cannot weaken these protections.
+7. Completion requires revised role guidance and prompt assembly delivered and verified through
+   actual assembled invocations for every preparation author/evaluator, relevant profile variants
+   and repair/reassessment contexts. Verify preserved task intent, active corrections and readable
+   evidence access, as well as ordering and removal of duplicate content. Documentation edits or
+   checks of unused prompt constants alone do not demonstrate completion.
+
+### Observable acceptance examples
+
+| Situation | Observable result |
+| --- | --- |
+| Each preparation author or evaluator receives its normal invocation | Its preparation guidance opens with that role's purpose, outcome and relevant standards; task/context follows and reporting mechanics come afterward. Requirements receives observable-outcome guidance, UX journey guidance, Storybook rendered-experience guidance and Architecture ownership/feasibility guidance. |
+| Captured input contains scope, exclusions, owner clarification, an earlier agent assessment and Jira administrative fields | Readable context preserves the meaningful scope and attributed feedback, distinguishes human direction from agent history and omits administrative JSON. An unresolved human conflict remains explicit; original source evidence is accessible. |
+| The runtime supplies repository instructions, or a supported runtime does not | The role retains applicable repository guidance in either case. Preparation does not duplicate runtime-supplied `AGENTS.md`, and the repository file remains intact. |
+| Upstream acceptance and several historical reports support a later stage | Context gives accessible, attributed artifact/report references rather than their full bodies. The role can read the evidence relevant to its work, including the current author's report and Architecture plan where applicable. |
+| Repair resumes after an upstream return, an author-only input request or a report rejection | Current corrections and still-unresolved concerns are directly available with their problem, consequence and requested correction where recorded; the full reports and rejected evidence remain accessible. Neither missing evaluation nor concise context erases an obligation. |
+| Work passes checks but leaves a known material ambiguity, unnecessary mechanism or awkward applicable journey | The author improves it before submission, or the evaluator requests a concrete correction with evidence, affected user/responsibility and expected benefit within that stage's scope. |
+| Existing work meets the requested outcome with no known material issue, while another treatment is equally good | It receives direct acceptance without manufactured edits. Any remaining suggestion explains why it is nonblocking; preference or hypothetical need does not cause another round. |
+| This internal Nexus prompt change reaches UX and Storybook roles | Existing reporting-terminal scope and evaluated skip rules apply; no visual, motion or prototype exercise is invented. Applicable connected-product UI work still requires independent rendered inspection and existing observations. |
+| Revised guidance is delivered | Observed assembled prompts for all eight roles, relevant variants and correction paths satisfy these outcomes and preserve evidence and existing gates. A shorter line count alone does not establish success. |
+
+### Scope and unsettled decisions
+
+Source: the captured HARN-115 description and Aleksei Rysaev's supplied conversation. This follows
+the existing product-grounded guidance from HARN-113. The preserved KAN-82 prompt is motivating
+evidence of verbose assembly, not authority to change KAN's product or active run.
+
+No material product decision remains unsettled in the supplied direction. Prompt composition,
+readable-source transformation and verification design belong to Architecture. This adds no
+judge/reviewer layer, scoring system, report schema, workflow gate or product scope, and deletes
+no history.
+
+### Interface and composition
+
+Use the existing [AgentRuntime instruction interface](architecture.md#interface). Application
+composition attaches the invoked role's constants to every selectable profile for that role,
+including a profile reused for several roles. Each constant opens with purpose and desired outcome,
+then its specific quality standards: observable and unambiguous outcomes for Requirements; clear,
+efficient, product-grounded journeys for UX; independently inspectable rendered experience for
+Storybook; and feasible ownership, focused contracts and bounded delivery work for Architecture.
+Creators improve the work and evaluators independently challenge it under
+[bounded material quality](#bounded-material-quality). Model or profile selection cannot lower
+these obligations. Shared quality guidance is supplied once after these constants, before task
+context; role-specific guidance does not duplicate it.
+
+[Preparation actions](../task-engine/actions/preparation-stage.md#prompt-context-and-evidence)
+own readable captured input, correction selection, attributed evidence references and the final
+reporting section. They render source content without another agent invocation or a generated
+summary becoming authority. They retain original source and report evidence and validate the
+existing producer associations even when only references enter the prompt. Agents consult relevant
+documents, judge intent and conflicts, and explain their decisions. The runtime preserves the
+caller context; it does not summarize source input, choose business roles or interpret findings.
+
+Reporting instructions have one preparation-owned home in the final context section. Supply each
+applicable declaration, observation and response rule there once; keep role responsibilities and
+quality ahead of it. This changes instruction composition and evidence presentation, not role
+response schemas, workflow decisions, review gates or finding lifecycle state.
 
 ## Requirements Analyst
 
@@ -158,9 +280,10 @@ stage returns, revision-bound observations and delivery review remain in force.
    Preserve the existing observation contract rather than introducing a score or new report schema.
 5. Necessary findings identify the observed problem, its product/user consequence and the needed
    correction. A material usability or product-direction problem can block acceptance even when
-   every control works. Personal taste or optional polish remains a suggestion; accept adequate
-   work. When navigation, hierarchy or another interaction/design decision in the UX proposal is
-   the cause, return to UX with the concrete correction instead of limiting repair to prototype
+   every control works. Apply [bounded material quality](#bounded-material-quality); explain why
+   remaining polish suggestions are nonblocking. When navigation, hierarchy or another
+   interaction/design decision in the UX proposal is the cause, return to UX with the concrete
+   correction instead of limiting repair to prototype
    bugs. A prototype that misrepresents an adequate proposal is repaired in Storybook Refinement.
    Reconcile owning experience documents and obtain current evaluation after material corrections.
 6. Production UI implementation follows the same product grounding, preserves the evaluated
@@ -217,7 +340,7 @@ their existing boundary.
 | A mobile preview fits without overflow but has awkward scanning, crowded controls or excessive travel to complete the journey | For a mobile journey, the evaluator exercises it at a relevant mobile viewport and judges comfort and effort. Fit alone does not establish acceptance. |
 | Motion is part of the product's design direction | Creators apply its stated purpose and the evaluator observes transitions or other affected motion in the running preview, relating observations to that purpose rather than relying only on still images. |
 | The prototype faithfully renders a UX proposal whose interaction/design choice causes a material problem | The evaluator returns a concrete correction to UX. Corrected owning decisions and rendered work receive the existing current-revision evaluation. If the proposal is adequate and only the prototype is wrong, the prototype repair path applies. |
-| The experience supports product intent and users, but the evaluator prefers another color treatment or minor polish | The evaluator accepts adequate work and records any preference as optional, without forcing a repair round. |
+| The experience supports product intent and users with no known material issue, but the evaluator prefers another color treatment or minor polish | The evaluator accepts the work and explains why the suggestion is nonblocking, without forcing a repair round. |
 | Production UI is implemented from accepted preparation, or materially changes its design | The developer uses product direction and retained prototype evidence, preserves the evaluated experience, and validates the implemented journey. A material change updates owning decisions and receives appropriate experience validation. |
 | An internal Nexus instruction change does not alter the reporting terminal, or a connected project has no applicable imagery/motion guidance | Existing evaluated UX/prototype skips remain available for the internal change. UI guidance uses available project intent without inventing design documents, imagery or animation obligations. |
 | A preview is unavailable, or only code, text or the author's screenshots have been reviewed | An applicable Storybook prototype receives no design acceptance until the evaluator performs its own required live interaction and image inspection. Execution failures stay at their owning boundary. |
@@ -247,4 +370,5 @@ Trace acceptance outcomes through the design and assess feasibility, ownership, 
 failure handling. Seek simpler responsibilities, reuse and lower coupling. Check the implementation
 plan collectively covers the outcome without oversized or overlapping tasks. Return work upstream
 only when an input needs correction; architectural difficulties that can be cleanly solved here
-belong here. Accept adequate existing design directly, while evaluating the implementation plan.
+belong here. Apply the bounded material-quality standard to existing design directly, while
+evaluating the implementation plan.

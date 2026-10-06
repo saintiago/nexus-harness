@@ -110,7 +110,7 @@ reports.
 ## Evaluation and stage applicability
 
 Each preparation stage begins with its author assessing the requested change and stage applicability.
-An irrelevant stage permits a skip with reasons; adequate existing documents receive normal
+An irrelevant stage permits a skip with reasons; existing documents receive normal
 evaluation without a special existing-document skip. Accepted skips are durable results and advance
 immediately, without manufacturing a document or prototype. Missing information requires clarification
 or an upstream return.
@@ -151,7 +151,7 @@ clarifications govern intent when resumed.
 Affected categories are preparation evaluation, implementation review, role/report contracts,
 cross-round context, retained history and delivery protection. Participants are all preparation
 authors and evaluators, developers, reviewers and operators continuing retained work. The journey
-is: inspect the captured ticket, current shared documents and previous reports -> preserve adequate
+is: inspect the captured ticket, current shared documents and previous reports -> preserve sound
 content or repair defects -> evaluate within the selected stage -> hand off implementation ->
 develop and verify -> review the task-relevant implementation -> repair current problems as needed
 -> merge and confirm required CI. Reports carry context through the existing loops without a
@@ -160,11 +160,12 @@ tracked per-finding lifecycle.
 Activities and rules:
 
 1. Requirements, UX/UI and Architecture evaluators assess the ticket's requested changes against
-   the current authoritative documents in the shared worktree. Accept adequate content regardless
+   the current authoritative documents in the shared worktree. Accept content meeting the
+   [bounded material-quality standard](agent-runtime/preparation-roles.md#bounded-material-quality) regardless
    of who wrote it, whether this author changed it, or its commit history. Architecture's
    implementation plan still receives evaluation.
-2. Existing sufficient documents need no mandatory document citations, special existing-document
-   skip proposal or historical approval reuse. Authors may leave adequate documents unchanged;
+2. Existing documents meeting that standard need no mandatory document citations, special existing-document
+   skip proposal or historical approval reuse. Authors may leave those documents unchanged;
    missing edits or citation lists alone cannot block evaluation or acceptance. An irrelevant stage
    still permits a normally evaluated applicability skip. Applicable prototype evaluation inspects
    the current preview and retains both roles' required observation evidence.
@@ -219,7 +220,7 @@ Observable acceptance examples:
 | A developer completes a repair, disagrees with a previous review or leaves a problem unresolved | The status-only response is saved with its observed metadata and Markdown association in `development.json`; Markdown explains changes, verification, corrections, disagreements and remaining problems. A missing `findingResponses` array is not a rejection reason. |
 | A reviewer assesses an implementation after an earlier review | It receives previous reviews, developer artifacts, task requirements and verification evidence, writes its assessment and actionable findings in Markdown, and returns only verdict for the reviewed revision. Resolved historical problems need no disposition record; unresolved problems remain grounds for current findings. |
 | Task correctness requires correcting pre-existing code outside the latest diff | The reviewer may inspect and report that defect with evidence, impact and repair guidance. Its scope follows the task rather than a commit range; unrelated cleanup is not required. |
-| Current evidence shows no blocking problems, or shows a blocking defect | Adequate work is accepted despite optional suggestions. A blocking defect requires changes with actionable current findings; control/functional-data, report-readability and applicable binding checks reject unusable output; prose is not parsed for verdict consistency or cross-round matching. |
+| Current evidence shows no blocking problems, or shows a blocking defect | Preparation applies the bounded material-quality standard; delivery retains its review acceptance boundary. Optional suggestions do not block acceptance. A blocking defect requires changes with actionable current findings; control/functional-data, report-readability and applicable binding checks reject unusable output; prose is not parsed for verdict consistency or cross-round matching. |
 | A run resumes with reports written under the former finding contract | The reports remain readable historical context. Continuation uses the simplified current contract without rewriting history, requiring retroactive lifecycle records or resetting allowances. |
 | A retained run resumes or the change is delivered | Retained work, histories, findings and consumed allowances survive. An active runtime is not disturbed; completion still requires normal review, merge and required CI evidence. |
 
@@ -236,7 +237,10 @@ belongs to Architecture within these requirements.
 Requirements Analyst defines affected categories, journey, activities, rules and observable
 acceptance examples from source intent and existing requirements. Requirements Evaluator checks
 clarity, coverage, contradictions and unnecessary scope and seeks simpler rules and stronger
-acceptance examples. Adequate existing requirements receive direct acceptance. Product choices
+acceptance examples. All preparation stages apply the [bounded material-quality
+standard](agent-runtime/preparation-roles.md#bounded-material-quality), including direct assessment
+of existing work without manufactured edits. Existing requirements meeting it receive direct
+acceptance. Product choices
 requiring author agreement remain explicit questions; an agent does not manufacture human approval. Accepted
 requirements and evaluation supply UX and Architecture.
 
@@ -275,8 +279,8 @@ project's design principles. Architecture Evaluator traces required outcomes and
 ownership, failure handling, contract completeness and opportunities to simplify. If no feasible
 clean design supports the inputs, return a concrete finding to Requirements, UX or Storybook.
 After correction, proceed forward again, reevaluating affected outputs and retaining usable work.
-Existing sufficient design receives direct acceptance, while the implementation plan still requires
-evaluation.
+Existing design meeting the bounded material-quality standard receives direct acceptance, while
+the implementation plan still requires evaluation.
 
 Architecture also produces an evaluated implementation plan: one or more bounded tasks, dependencies
 and completion criteria that collectively deliver the accepted outcome. There is no Planner workflow,
@@ -386,7 +390,7 @@ verdicts.
 | Given / activity | Observable result |
 | --- | --- |
 | Requirements commits a rule and UX then changes the same document | UX sees the Requirements commit in the same real Git checkout and branch. Storybook and Architecture receive that accumulated history; no cross-checkout assembly overwrites either change. Runtime author/evaluator working directories resolve to the real checkout. |
-| A stage authors work, receives findings and responds | Its evaluator assesses the current content and narrative response with earlier reports as context, judges whether earlier problems remain without per-finding tracking, and accepts adequate work despite optional suggestions. No combined documentation review follows Architecture. |
+| A stage authors work, receives findings and responds | Its evaluator assesses the current content and narrative response with earlier reports as context, judges whether earlier problems remain without per-finding tracking, and applies the bounded material-quality standard with nonblocking suggestions explained. No combined documentation review follows Architecture. |
 | Existing Requirements, UX/UI or Architecture documents satisfy the ticket | The evaluator accepts the current documents directly without mandatory document citations or an existing-document skip proposal. Architecture still supplies an evaluated implementation plan. |
 | No useful UX/prototype work applies | The evaluator assesses the proposed applicability skip. An accepted skip advances without an invented document, prototype or browser observation. |
 | Nexus preparation changes internal workflow without an explicit reporting-terminal change | UX and Prototype propose skips under docs/ux-ui.md and their evaluators assess applicability. The existing reporting terminal is retained; no terminal redesign or mock Jira/PR navigation is added. |

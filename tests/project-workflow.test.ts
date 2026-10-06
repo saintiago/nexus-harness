@@ -27,7 +27,11 @@ import { preparationRoleInstructions, type PreparationRole } from '../src/agent-
 import type { BoundAction } from '../src/task-engine/index.js';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { stageAuthorArtifact } from '../src/task-engine/actions/preparation/artifacts.js';
-import { preparationSharedInstructions } from '../src/task-engine/actions/preparation/context.js';
+import {
+  preparationReportingGuidance,
+  preparationSharedGuidance,
+} from '../src/task-engine/actions/preparation/context.js';
+import { capturedSourcePathOf } from '../src/task-engine/actions/preparation/readable-source.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
@@ -646,18 +650,22 @@ describe('preparation binding dispatch', () => {
     const selectionFile = path.join(directory, 'selection.json');
     const worktree = preparationWorktree(root);
     const revision = 'a'.repeat(40);
+    const capturedTask = { id: '1', key: 'NEX-1', fields: { summary: 'Coherent change' } };
+    const capturedConversation = [{ id: 'c1', body: 'Original request.' }];
+    const agentsMarkdown = '# Repository guidance\n\nSENTINEL-AGENTS-BODY\n';
     await writeFile(
       selectionFile,
       JSON.stringify({
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: { id: '1', key: 'NEX-1', fields: { summary: 'Coherent change' } },
-        conversation: [{ id: 'c1', body: 'Original request.' }],
+        task: capturedTask,
+        conversation: capturedConversation,
         workspace: { root },
         stage: 'ux',
       }),
     );
     await mkdir(path.join(worktree, 'docs'), { recursive: true });
+    await writeFile(path.join(worktree, 'AGENTS.md'), agentsMarkdown);
     for (const stage of preparationStages) {
       await writeFile(path.join(worktree, 'docs', `${stage}.md`), `# ${stage}\n`);
     }
@@ -698,37 +706,35 @@ describe('preparation binding dispatch', () => {
         'charter or equivalent purpose, intended users, accepted UX, existing experience, design language',
         'and motion guidance where applicable. Apply the Nexus UI applicability guidance for Nexus work',
         'an internal workflow change does not authorize a reporting-terminal',
-        'direction in the proposal; matching tokens or colors and working controls alone do not establish',
-        'a suitable experience. Keep material conflicts or missing product decisions explicit. Seek a',
+        'in the proposal: matching tokens or colors and working controls alone do not establish a suitable',
+        'Judge the journey for clarity, effort and error prevention. Keep material conflicts or missing',
       ],
       'ux-evaluator': [
-        'Assess the proposal against the connected product\u2019s charter or equivalent purpose,',
-        'intended users, accepted UX, existing experience, design language and motion guidance where',
-        'applicable, and judge how it supports the product\u2019s intent and intended users;',
-        'matching tokens or colors and working controls alone do not establish a suitable experience.',
-        'Optional polish alone is not a reason to block acceptance.',
+        'Assess the proposal against the connected product\u2019s charter or equivalent purpose, intended',
+        'users, accepted UX, existing experience, design language and motion guidance where applicable,',
+        'and judge how it supports the product\u2019s intent and intended users; matching tokens or colors and',
+        'working controls alone do not establish a suitable experience.',
+        'Challenge awkward choices and omitted behavior with evidence and the affected user\u2019s consequence.',
       ],
       'prototype-author': [
-        'states. Use the connected product\u2019s charter or equivalent purpose, intended users, accepted',
-        'UX, existing experience, design language and motion guidance where applicable to realize its',
-        'direction, using representative content and states rather than treating token matching or',
+        'Build or adapt Storybook stories using the connected product\u2019s charter or equivalent purpose,',
+        'applicable; use representative content and states rather than treating token matching or',
         'under the supplied round artifact area using the observation contract.',
       ],
       'prototype-evaluator': [
         'independent browser interaction and rendered-image',
         'inspection are required, and neither the author\u2019s evidence nor a text-only review substitutes',
         'Evaluate a proposed applicability skip without manufacturing a preview',
-        'the connected product\u2019s intent and intended users, using its charter or equivalent purpose,',
-        'accepted UX, existing experience, design language and motion guidance where applicable.',
-        'visual hierarchy, layout, readability,',
-        'density, imagery, discoverability and the effort to complete the journey, including comfort and',
-        'Inspect applicable motion in the live preview',
-        'against its stated purpose;',
-        'proportionally to the affected experience',
+        'Judge the rendered experience for the connected product\u2019s intent and intended users, using its',
+        'charter or equivalent purpose, accepted UX, existing experience, design language and motion',
+        'guidance where applicable: assess visual hierarchy, layout, readability, density, imagery,',
+        'discoverability and the effort to complete the journey, including comfort and practical use for',
+        'Inspect applicable motion in the live preview against its stated purpose; screenshots alone',
+        'responsive/mobile journeys.',
         'Return to UX when the proposal itself needs correction',
-        'with delivery review',
-        'product/user consequence',
-        'personal taste or optional polish remains a suggestion. Accept adequate',
+        'source inspection may diagnose an observed UX issue but is not the primary Storybook assessment.',
+        'Necessary findings identify the problem, its product/user consequence and the needed correction.',
+        'product-direction problem can block acceptance even when every control works.',
         'text-only inspection cannot establish usability acceptance',
       ],
       'architecture-author': [],
@@ -798,6 +804,7 @@ describe('preparation binding dispatch', () => {
 
     let issued = 0;
     const prompts: string[] = [];
+    const assignedReports: string[] = [];
     const codingRuntime: CodingRuntime = {
       async execute(request) {
         prompts.push(request.prompt);
@@ -880,17 +887,42 @@ describe('preparation binding dispatch', () => {
       const roles = stageRoles[planned.stage];
       const label = `${planned.stage} ${planned.part}`;
       // The shared preparation guidance reaches every author and evaluator once, carrying the
-      // reconciliation and resulting-design inspection obligations within their scope limits.
-      expect(occurrences(prompt, preparationSharedInstructions), label).toBe(1);
+      // bounded material-quality standard and the reconciliation and resulting-design inspection
+      // obligations within their scope limits.
+      expect(occurrences(prompt, preparationSharedGuidance), label).toBe(1);
       for (const obligation of [
+        'resolve known material weaknesses and worthwhile simplifications',
+        'explain why remaining suggestions are nonblocking',
+        'Existing work that meets this standard receives direct evaluation and acceptance',
         'Before evaluation, authors reconcile',
         'Remove superseded rules and mechanisms together with',
         'correct it at its owning boundary',
         'Evaluators inspect the resulting design and applicable implementation, affected interactions',
-        'Preserve stage responsibility, adequate-work acceptance and',
+        'Preserve stage responsibility, bounded material-quality',
       ]) {
         expect(occurrences(prompt, obligation), `${label}: ${obligation}`).toBe(1);
       }
+      // Role purpose, outcome and standards lead; shared quality precedes the captured task and
+      // its context; reporting mechanics follow the work and context, supplied once.
+      const indexOf = (part: string): number => prompt.indexOf(part);
+      expect(indexOf(planned.instructions[0]!), `${label} role leads`).toBeGreaterThanOrEqual(0);
+      expect(
+        indexOf(planned.instructions[0]!),
+        `${label} role before shared guidance`,
+      ).toBeLessThan(indexOf(preparationSharedGuidance));
+      expect(
+        indexOf(preparationSharedGuidance),
+        `${label} shared guidance before captured source`,
+      ).toBeLessThan(indexOf('Captured issue input and conversation (authoritative):'));
+      expect(
+        indexOf('Captured issue input and conversation (authoritative):'),
+        `${label} captured source before worktree references`,
+      ).toBeLessThan(indexOf('Connected project worktree:'));
+      expect(
+        indexOf('Connected project worktree:'),
+        `${label} context before reporting`,
+      ).toBeLessThan(indexOf(preparationReportingGuidance));
+      expect(occurrences(prompt, preparationReportingGuidance), `${label} reporting`).toBe(1);
       // The invoked role's constant prompt and its configured instructions reach the provider
       // once, alongside the complete captured task context.
       expect(occurrences(prompt, planned.instructions.join('\n\n')), `${label} role constant`).toBe(
@@ -913,11 +945,14 @@ describe('preparation binding dispatch', () => {
       }
       if (planned.stage === 'architecture') {
         // Adequate existing design receives direct evaluation: no Architecture instruction or
-        // schema description keeps the removed existing-document skip guidance.
+        // schema description keeps the removed existing-document skip guidance, and the shared
+        // bounded material-quality standard carries the direct-acceptance obligation.
         expect(prompt, label).not.toContain('permits the skip');
         expect(prompt, label).not.toContain('justified skip');
         if (planned.part === 'evaluator') {
-          expect(prompt).toContain('Accept adequate existing design directly');
+          expect(prompt).toContain(
+            'Directly evaluate existing documents under the bounded material-quality standard',
+          );
         }
       }
       const configuredProfile = configuration.agentRuntime.profiles.find(
@@ -934,6 +969,16 @@ describe('preparation binding dispatch', () => {
       expect(prompt).toContain('Captured issue input and conversation (authoritative):');
       expect(prompt).toContain('Original request.');
       expect(prompt).toContain(`Connected project worktree: ${worktree}`);
+      // Repository guidance is directed by path and never embedded as another AGENTS.md body.
+      expect(prompt).toContain(`"${path.join(worktree, 'AGENTS.md')}"`);
+      expect(prompt).not.toContain('SENTINEL-AGENTS-BODY');
+      // The invocation's assigned report path is stated once, in the reporting section.
+      const assignedReport = /Assigned Markdown report: (.+)/.exec(prompt)![1]!;
+      assignedReports.push(assignedReport);
+      expect(
+        occurrences(prompt, `Assigned Markdown report: ${assignedReport}`),
+        `${label} assigned report once`,
+      ).toBe(1);
       if (planned.part === 'author') {
         expect(prompt).toContain(
           'Propose this round\u2019s work or an evaluated skip for the exact revision you author.',
@@ -948,6 +993,15 @@ describe('preparation binding dispatch', () => {
       expect(prompt).not.toContain(preparationRoleInstructions[otherRole][0]!);
       expect(prompt).not.toContain(preparationRoleInstructions[otherRole].join('\n\n'));
     });
+    // The exact captured source stays retained beside every invocation's assigned report, and the
+    // repository instruction file remains intact.
+    for (const assignedReport of assignedReports) {
+      expect(JSON.parse(await readFile(capturedSourcePathOf(assignedReport), 'utf8'))).toEqual({
+        issue: capturedTask,
+        conversation: capturedConversation,
+      });
+    }
+    await expect(readFile(path.join(worktree, 'AGENTS.md'), 'utf8')).resolves.toBe(agentsMarkdown);
     // Both selectable prototype-author ladder variants were exercised.
     expect(
       invocations

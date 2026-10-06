@@ -124,8 +124,8 @@ const stageRoleArtifacts = {
 };
 
 /**
- * Read a retained role outcome through its producer declaration. Parsing failures retain the raw
- * outcome and any recoverable Markdown under the producing role before the consumer fails or
+ * Read a retained role outcome through its producer declaration. Invalid or required missing
+ * records retain the available evidence under the producing role before the consumer fails or
  * routes stale. Evidence capture must not depend on a successfully parsed report binding.
  */
 export async function readStageRoleArtifact<
@@ -138,12 +138,20 @@ export async function readStageRoleArtifact<
   readonly role: Role;
   readonly profile: string | null;
   readonly context: string;
+  /** A consumer of a retained result requires this record; history may legitimately omit it. */
+  readonly required?: boolean;
 }): Promise<z.output<(typeof stageRoleArtifacts)[Role]['schema']> | null> {
   const root = stageRoot(settings.issueRoot, settings.stage);
   const declaration = stageRoleArtifacts[settings.role];
   const file = roundArtifactFile(root, settings.round, declaration.pathFromArtifactsRoot);
   try {
-    return await readStageArtifact(root, settings.round, declaration);
+    const record = await readStageArtifact(root, settings.round, declaration);
+    if (record === null && settings.required === true) {
+      throw new Error(
+        `Required retained ${settings.stage} ${settings.role} record at "${file}" does not exist.`,
+      );
+    }
+    return record;
   } catch (error) {
     // Recover attribution independently of outcome validity; the invocation doing this read did
     // not produce the rejected record. Unrecoverable invocation metadata stays explicitly unknown.
