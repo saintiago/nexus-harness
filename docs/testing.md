@@ -292,6 +292,16 @@ or aggregate PR and no admission based only on source Done. Existing action test
 of changed-head approval, failed verification/checks and missing merge/post-merge evidence.
 Recovery cannot delete the preparation continuation's donor checkout.
 
+For handoff queue ranking, control actual source order, candidate-query membership and mapped
+preparation statuses. Exercise one-ticket and branching plans, including prerequisite order differing
+from prerequisite-list order, preparation both ahead of and behind implementation, and no remaining
+preparation. Verify resulting rank and retained acknowledgements rather than a fixed sequence of rank
+calls. Interrupt ranking, including a move whose response is lost, and replay with the same ticket
+identities; unfinished ranking cannot close the original. Connect the resulting order to actual
+selection: available implementation precedes preparation, while absent prerequisite completion or
+Waiting for Feedback still permits eligible preparation. Keep these focused scenarios in existing
+handoff and selection coverage; the serial parent and delivery gates remain unchanged.
+
 Test prototype evidence validation and fault/repair routing with controlled responses, then run a
 real isolated Storybook fixture in Chromium through Playwright MCP and the actual assigned prototype
 profiles. Both roles interact with a state-changing journey, receive and inspect screenshot images,
