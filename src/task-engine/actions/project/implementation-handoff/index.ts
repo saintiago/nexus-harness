@@ -1,8 +1,13 @@
 import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
-import type { JiraAdapter, JiraIssue } from '../../../../adapters/jira.js';
-import { messageOf } from '../../../../result.js';
+import type {
+  JiraAdapter,
+  JiraIssue,
+  JiraIssueIdentity,
+  JiraIssueQuery,
+} from '../../../../adapters/jira.js';
+import { messageOf, ok, type Result } from '../../../../result.js';
 import type { BoundAction, EventPublisher } from '../../../index.js';
 import {
   preparationStages,
@@ -52,13 +57,14 @@ import { readHandoff, readSelection, writeHandoff } from '../state.js';
  * HandoffImplementation is the parent-owned Architecture handoff. After an evaluated Architecture
  * result and its implementation plan, it freezes the accepted plan identity and the retained
  * preparation revision, creates one linked implementation ticket per planned task in stable
- * topological order, writes each ticket's implementation input, ranks prerequisites before their
- * dependents and admits the tickets to the configured ready status, then closes the original with
- * a preparation-handoff comment. Every creation, link, input, rank and admission acknowledgement
- * is retained so an interrupted or uncertain effect is reconciled without duplicates, and
- * unexpected human status changes are preserved. There is no documentation assembly,
- * documentation-only pull request or preparation publication gate; a retained preparation-only
- * publication from the removed workflow requests explicit reconciliation before any ticket effect.
+ * topological order, writes each ticket's implementation input, ranks every planned ticket ahead
+ * of the remaining preparation queue with prerequisites before their dependents, admits the
+ * tickets to the configured ready status and closes the original with a preparation-handoff
+ * comment. Every creation, link, input, rank and admission acknowledgement is retained so an
+ * interrupted or uncertain effect is reconciled without duplicates, and unexpected human status
+ * changes are preserved. There is no documentation assembly, documentation-only pull request or
+ * preparation publication gate; a retained preparation-only publication from the removed workflow
+ * requests explicit reconciliation before any ticket effect.
  */
 
 export type ImplementationHandoffSettings = {
@@ -70,12 +76,37 @@ export type ImplementationHandoffSettings = {
   readonly workspaceRoot: string;
   /** The configured Jira field that retains an issue's workspace root. */
   readonly workspacePointerField: string;
+  /** The configured ranked task candidate query the parent selects implementation from. */
+  readonly selection: JiraIssueQuery;
+  /** The separate idea candidate query, applied to the same project connection. */
+  readonly ideas: JiraIssueQuery;
   /**
-   * The configured status the Architecture selection left the original in. The handoff may only
-   * close that retained status (or repeat an already-applied Done); any other state is an
-   * unexpected human change the handoff preserves.
+   * The configured idea statuses. Submitted and active ideas refine, and the approved-idea
+   * admission continues preparation whenever the stage mappings exist; a Waiting for Feedback
+   * item never anchors the ranking.
    */
-  readonly architectureStatus: string | null;
+  readonly ideaStatuses: {
+    readonly submitted: string;
+    readonly active: string;
+    readonly approved: string;
+    readonly waitingForFeedback: string;
+  };
+  /**
+   * The configured preparation stage mappings; absent for a delivery-only project. The
+   * Architecture mapping is also the status the Architecture selection left the original in: the
+   * handoff may only close that retained status (or repeat an already-applied Done); any other
+   * state is an unexpected human change the handoff preserves.
+   */
+  readonly preparation:
+    | {
+        readonly statuses: {
+          readonly requirements: string;
+          readonly uxProposal: string;
+          readonly storybookRefinement: string;
+          readonly architecture: string;
+        };
+      }
+    | undefined;
   /** The configured implementation-ticket creation, linking and admission settings. */
   readonly implementation: {
     readonly issueType: string;
@@ -165,6 +196,39 @@ function sameInput(left: ImplementationInput, right: ImplementationInput): boole
 export function createImplementationHandoff(settings: ImplementationHandoffSettings): BoundAction {
   return async () => {
     const selection = await readSelection(settings.selectionFile);
+    const architectureStatus = settings.preparation?.statuses.architecture ?? null;
+    /**
+     * The statuses the configured mappings route to a preparation stage: submitted and active
+     * ideas refine, and the approved-idea admission and the four stage mappings continue
+     * preparation. Waiting for Feedback and Done are never anchors, even when a mapping names
+     * one of them.
+     */
+    const preparationStatuses = [
+      ...new Set([
+        settings.ideaStatuses.submitted,
+        settings.ideaStatuses.active,
+        ...(settings.preparation === undefined
+          ? []
+          : [
+              settings.ideaStatuses.approved,
+              settings.preparation.statuses.requirements,
+              settings.preparation.statuses.uxProposal,
+              settings.preparation.statuses.storybookRefinement,
+              settings.preparation.statuses.architecture,
+            ]),
+      ]),
+    ].filter(
+      (status) =>
+        status !== settings.ideaStatuses.waitingForFeedback && status !== settings.doneStatus,
+    );
+    /**
+     * The union of the configured candidate queries, restricted to this project's preparation
+     * statuses: the remaining preparation the handed-off implementation must precede.
+     */
+    const preparationQuery =
+      `project = ${jqlString(settings.project)} AND ` +
+      `status in (${preparationStatuses.map(jqlString).join(', ')}) AND ` +
+      `((${settings.selection.query}) OR (${settings.ideas.query}))`;
     const root = selection.workspace.root;
     const architectureRoot = stageRoot(root, 'architecture');
     const plan = await readStagePlan(architectureRoot);
@@ -238,7 +302,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     async function sourceProblem(): Promise<string | null> {
       const source = await readIssue(settings.jira, selection.source.issueId);
       const status = statusNameOf(source);
-      if (status === settings.architectureStatus) return null;
+      if (status === architectureStatus) return null;
       if (
         status === settings.doneStatus &&
         handoff.tickets.length === tasks.length &&
@@ -247,7 +311,7 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         )
       )
         return null;
-      return `Issue ${selection.taskKey} is in status "${status ?? 'unknown'}"; implementation handoff requires "${settings.architectureStatus}" and preserves unexpected human changes.`;
+      return `Issue ${selection.taskKey} is in status "${status ?? 'unknown'}"; implementation handoff requires "${architectureStatus}" and preserves unexpected human changes.`;
     }
     const sourceState = await sourceProblem();
     if (sourceState !== null) return failed(sourceState);
@@ -408,6 +472,8 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     const firstIndex = taskOrder[0] as number;
     /** Each processed ticket's resolved workspace root, so its dependents record the same one. */
     const resolvedWorkspaces = new Map<number, string>();
+    /** Each processed ticket's prerequisite keys, for the final order verification. */
+    const prerequisitesByTicket = new Map<string, readonly string[]>();
     for (const index of taskOrder) {
       const task = tasks[index] as PlannedTask;
       const paused = await sourceProblem();
@@ -536,28 +602,16 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         ticketsByTask.set(index, ticket);
         await saveHandoff();
       }
-      if (prerequisiteKeys.length > 0) {
-        const ordered = await settings.jira.searchIssues({
-          query: `project = ${jqlString(settings.project)}`,
-          orderBy: 'Rank ASC',
-        });
-        if (!ordered.ok) return failed(ordered.fault.message);
-        const keys = ordered.value.map((issue) => issue.key);
-        if (!keys.includes(ticket.key) || prerequisiteKeys.some((key) => !keys.includes(key))) {
-          return failed('The source rank order omits an implementation ticket or prerequisite.');
-        }
-        const last = prerequisiteKeys.reduce((left, right) =>
-          keys.indexOf(left) > keys.indexOf(right) ? left : right,
-        );
-        if (keys.indexOf(ticket.key) < keys.indexOf(last)) {
-          // Move only a premature dependent down, preserving unrelated higher-ranked work.
-          const ranked = await settings.jira.rankIssue(ticket.issueId, { after: last });
-          if (!ranked.ok) return failed(ranked.fault.message);
-        }
-        ticket = { ...ticket, ranked: true };
-        ticketsByTask.set(index, ticket);
-        await saveHandoff();
-      }
+      // Rank every planned ticket, including the first and tasks without prerequisites: it must
+      // precede the remaining preparation queue and follow its prerequisites in actual source
+      // order. The observed order is re-read on every pass, so an acknowledged ticket whose rank
+      // response was lost is corrected instead of trusted.
+      const rankingProblem = await rankTicket(ticket, prerequisiteKeys);
+      if (rankingProblem !== null) return failed(rankingProblem);
+      prerequisitesByTicket.set(ticket.key, prerequisiteKeys);
+      ticket = { ...ticket, ranked: true };
+      ticketsByTask.set(index, ticket);
+      await saveHandoff();
       // Admission is distinct from later human status changes. Replays finish only the recorded
       // initial-to-ready transition or recognize its already-applied target.
       // The issue is re-read so the transition never acts on a status observed before the
@@ -602,13 +656,18 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
     }
 
     const tickets = retainedTickets();
+    // Confirm the completed order before publishing the handoff: every planned ticket precedes
+    // remaining preparation and every prerequisite precedes its dependent. A move the source did
+    // not apply leaves the handoff unfinished for replay even when its rank request was accepted.
+    const orderProblem = await verifyRankedOrder(tickets, prerequisitesByTicket);
+    if (orderProblem !== null) return failed(orderProblem);
     // Close the original with the completed handoff and every implementation link. Only the status
     // the Architecture selection left behind (or a repeated Done) may be closed: an unexpected
     // human pause or reroute is preserved instead of overwritten.
     const source = await readIssue(settings.jira, selection.source.issueId);
     const sourceStatus = statusNameOf(source);
     const allowed = [
-      ...(settings.architectureStatus === null ? [] : [settings.architectureStatus]),
+      ...(architectureStatus === null ? [] : [architectureStatus]),
       settings.doneStatus,
     ];
     if (
@@ -732,6 +791,124 @@ export function createImplementationHandoff(settings: ImplementationHandoffSetti
         return stable;
       }
       return recorded;
+    }
+
+    /**
+     * The earliest remaining preparation ticket in observed source rank, excluding the original
+     * issue being handed off, or null when the project's preparation queue is empty.
+     */
+    async function preparationAnchor(): Promise<Result<JiraIssueIdentity | null>> {
+      const found = await settings.jira.searchIssues({
+        query: preparationQuery,
+        orderBy: 'Rank ASC',
+      });
+      if (!found.ok) return found;
+      return ok(found.value.find((issue) => issue.key !== selection.taskKey) ?? null);
+    }
+
+    /**
+     * Complete one ticket's queue ranking against the freshly observed source order: it must
+     * follow its prerequisites and precede the earliest remaining preparation anchor. A ticket
+     * that precedes a prerequisite moves immediately after its last prerequisite in actual source
+     * order; otherwise a ticket that follows the anchor moves immediately before it. Moving one
+     * ticket never changes the relative order of the other source issues. Returns the reason the
+     * ranking cannot be established, or null once the observed order satisfies both constraints.
+     */
+    async function rankTicket(
+      ticket: HandoffTicket,
+      prerequisiteKeys: readonly string[],
+    ): Promise<string | null> {
+      const observed = await settings.jira.searchIssues({
+        query: `project = ${jqlString(settings.project)}`,
+        orderBy: 'Rank ASC',
+      });
+      if (!observed.ok) return observed.fault.message;
+      const order = observed.value.map((issue) => issue.key);
+      const position = order.indexOf(ticket.key);
+      if (position < 0) {
+        return `The source rank order omits implementation ticket ${ticket.key}.`;
+      }
+      const missing = prerequisiteKeys.filter((key) => !order.includes(key));
+      if (missing.length > 0) {
+        return (
+          `The source rank order omits the prerequisite(s) ${missing.join(', ')} of ` +
+          `implementation ticket ${ticket.key}.`
+        );
+      }
+      const found = await preparationAnchor();
+      if (!found.ok) return found.fault.message;
+      const anchor = found.value;
+      const anchorPosition = anchor === null ? -1 : order.indexOf(anchor.key);
+      if (anchor !== null && anchorPosition < 0) {
+        return `The source rank order omits the preparation anchor ${anchor.key}.`;
+      }
+      if (prerequisiteKeys.length > 0) {
+        const last = prerequisiteKeys.reduce((left, right) =>
+          order.indexOf(left) > order.indexOf(right) ? left : right,
+        );
+        if (position < order.indexOf(last)) {
+          // Move only a premature dependent down, preserving unrelated higher-ranked work.
+          const ranked = await settings.jira.rankIssue(ticket.issueId, { after: last });
+          if (!ranked.ok) return ranked.fault.message;
+          return null;
+        }
+      }
+      if (anchor !== null && position > anchorPosition) {
+        const ranked = await settings.jira.rankIssue(ticket.issueId, { before: anchor.key });
+        if (!ranked.ok) return ranked.fault.message;
+      }
+      return null;
+    }
+
+    /**
+     * Confirm the completed order before publishing the handoff: every planned ticket precedes
+     * remaining preparation and every prerequisite precedes its dependent.
+     */
+    async function verifyRankedOrder(
+      tickets: readonly HandoffTicket[],
+      prerequisites: ReadonlyMap<string, readonly string[]>,
+    ): Promise<string | null> {
+      const observed = await settings.jira.searchIssues({
+        query: `project = ${jqlString(settings.project)}`,
+        orderBy: 'Rank ASC',
+      });
+      if (!observed.ok) return observed.fault.message;
+      const order = observed.value.map((issue) => issue.key);
+      const found = await preparationAnchor();
+      if (!found.ok) return found.fault.message;
+      const anchor = found.value;
+      const anchorPosition = anchor === null ? -1 : order.indexOf(anchor.key);
+      if (anchor !== null && anchorPosition < 0) {
+        return `The source rank order omits the preparation anchor ${anchor.key}.`;
+      }
+      for (const ticket of tickets) {
+        const position = order.indexOf(ticket.key);
+        if (position < 0) {
+          return `The source rank order omits implementation ticket ${ticket.key}.`;
+        }
+        if (anchor !== null && position > anchorPosition) {
+          return (
+            `Implementation ticket ${ticket.key} still follows the remaining preparation ` +
+            `anchor ${anchor.key}; the handoff is not complete.`
+          );
+        }
+        for (const key of prerequisites.get(ticket.key) ?? []) {
+          const prerequisitePosition = order.indexOf(key);
+          if (prerequisitePosition < 0) {
+            return (
+              `The source rank order omits the prerequisite ${key} of implementation ` +
+              `ticket ${ticket.key}.`
+            );
+          }
+          if (prerequisitePosition > position) {
+            return (
+              `Prerequisite ${key} still follows its dependent implementation ` +
+              `ticket ${ticket.key}; the handoff is not complete.`
+            );
+          }
+        }
+      }
+      return null;
     }
 
     /** One uncertain creation's reconciliation against the planned task's source-side identity. */

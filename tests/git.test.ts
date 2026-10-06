@@ -1265,7 +1265,13 @@ describe('Git adapter', () => {
             },
           }),
         readComments: () => ok([]),
-        searchIssues: () => ok([]),
+        // The project holds the created ticket; no label match and no preparation-status issue.
+        searchIssues: (query) => {
+          if (query.query.includes('labels = ') || query.query.includes('status in (')) {
+            return ok([]);
+          }
+          return ok([{ id: '2', key: 'NEX-2' }]);
+        },
         createIssue: () => ok({ id: '2', key: 'NEX-2' }),
         linkIssues: () => ok(undefined),
         updateFields: () => ok(undefined),
@@ -1282,7 +1288,22 @@ describe('Git adapter', () => {
           project: 'NEX',
           workspaceRoot: path.join(path.dirname(root), 'workspaces'),
           workspacePointerField: 'workspace',
-          architectureStatus: 'Architecture',
+          selection: { query: 'project = NEX AND status = "To Do"', orderBy: 'Rank ASC' },
+          ideas: { query: 'project = NEX AND status = "Idea"', orderBy: 'Rank ASC' },
+          ideaStatuses: {
+            submitted: 'Idea',
+            active: 'Idea Refinement',
+            approved: 'Draft',
+            waitingForFeedback: 'Waiting for Feedback',
+          },
+          preparation: {
+            statuses: {
+              requirements: 'Requirements',
+              uxProposal: 'UX Proposal',
+              storybookRefinement: 'Storybook Refinement',
+              architecture: 'Architecture',
+            },
+          },
           implementation: { issueType: 'Task', labels: [], status: 'To Do', linkType: 'Relates' },
           doneStatus: 'Done',
           git,
@@ -2335,6 +2356,17 @@ describe('Git adapter', () => {
               .map(([id, issue]) => ({ id, key: issue.key })),
           );
         }
+        if (query.query.includes('status in (')) {
+          // The original remains the project's only preparation-status issue; the handoff
+          // excludes it when it looks for a remaining preparation anchor.
+          const listed = /status in \(([^)]*)\)/.exec(query.query)?.[1] ?? '';
+          const statuses = [...listed.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+          return ok(
+            [...issues.entries()]
+              .filter(([, issue]) => statuses.includes(issue.status))
+              .map(([id, issue]) => ({ id, key: issue.key })),
+          );
+        }
         if (query.query.includes('key in (')) {
           const keys = [...query.query.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
           return ok(
@@ -2358,7 +2390,30 @@ describe('Git adapter', () => {
       project: 'NEX',
       workspaceRoot: workspaces,
       workspacePointerField: 'workspace',
-      architectureStatus: 'Architecture',
+      selection: {
+        query:
+          'project = NEX AND status in ("Draft", "Requirements", "UX Proposal", ' +
+          '"Storybook Refinement", "Architecture", "To Do", "In Progress", "In Review")',
+        orderBy: 'Rank ASC',
+      },
+      ideas: {
+        query: 'project = NEX AND status in ("Idea", "Idea Refinement")',
+        orderBy: 'Rank ASC',
+      },
+      ideaStatuses: {
+        submitted: 'Idea',
+        active: 'Idea Refinement',
+        approved: 'Draft',
+        waitingForFeedback: 'Waiting for Feedback',
+      },
+      preparation: {
+        statuses: {
+          requirements: 'Requirements',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+      },
       implementation: {
         issueType: 'Task',
         labels: ['implementation'],

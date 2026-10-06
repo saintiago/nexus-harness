@@ -361,7 +361,10 @@ export function createActionBinding(
         project: taskSource.project,
         workspaceRoot: workspaceRoot(nexus),
         workspacePointerField: taskSource.fields.workspacePointer,
-        architectureStatus: taskSource.preparation?.statuses.architecture ?? null,
+        selection: taskSource.selection,
+        ideas: taskSource.ideas.selection,
+        ideaStatuses: taskSource.ideas.statuses,
+        preparation: taskSource.preparation,
         implementation: {
           issueType: implementation.issueType,
           labels: implementation.labels,

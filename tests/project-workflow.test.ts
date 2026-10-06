@@ -1910,6 +1910,21 @@ async function handoff(options: {
   readonly initialTicketStatus?: string;
   readonly ticketStatusAfterFirst?: string;
   readonly initialRankOrder?: readonly string[];
+  /**
+   * Preparation-status issues in the project. `covered: false` marks one that exists in a
+   * preparation status but is outside the configured candidate queries.
+   */
+  readonly preparation?: readonly {
+    readonly key: string;
+    readonly status: string;
+    readonly covered?: boolean;
+  }[];
+  /** Fail the first rank request without recording any effect. */
+  readonly failRankOnce?: boolean;
+  /** Lose the first rank response after the source already applied the move. */
+  readonly loseRankResponseOnce?: boolean;
+  /** Accept the first rank request without applying it, as an unconfirmed effect. */
+  readonly dropRankOnce?: boolean;
   readonly missingPreparation?: boolean;
   readonly preparationBranch?: string;
   /** The branch the retained checkout actually sits on, when it differs from the record. */
@@ -1932,6 +1947,7 @@ async function handoff(options: {
   readonly tickets: readonly {
     readonly key: string;
     readonly summary: string;
+    readonly ranked?: boolean;
     readonly admission?: { readonly initialStatus: string; readonly completed: boolean };
   }[];
   readonly status: () => string;
@@ -1942,6 +1958,9 @@ async function handoff(options: {
   readonly createdFields: readonly Readonly<Record<string, unknown>>[];
   readonly failures: readonly string[];
   readonly jiraCalls: readonly string[];
+  /** The original's status and published comments after the first invocation only. */
+  readonly firstOutcomeStatus: () => string;
+  readonly firstOutcomeComments: () => number;
   readonly inputs: readonly unknown[];
   readonly workspacePointers: readonly string[];
   readonly files: readonly string[];
@@ -2195,6 +2214,7 @@ async function handoff(options: {
   const workspacePointers: string[] = [];
   let linkAttempts = 0;
   let createAttempts = 0;
+  let rankAttempts = 0;
   let rankOrder = [...(options.initialRankOrder ?? [])];
   const { jira, calls: jiraCalls } = scriptedJira({
     readIssue: (issueId) => {
@@ -2284,13 +2304,32 @@ async function handoff(options: {
       return ok(undefined);
     },
     rankIssue: (issueId, target) => {
-      ranked.push(`${issueId} after ${'after' in target ? target.after : target.before}`);
+      ranked.push(
+        `${issueId} ${'after' in target ? 'after' : 'before'} ` +
+          `${'after' in target ? target.after : target.before}`,
+      );
+      rankAttempts += 1;
+      if (options.failRankOnce === true && rankAttempts === 1) {
+        return { ok: false, fault: { message: 'the rank request was rejected' } };
+      }
+      if (options.dropRankOnce === true && rankAttempts === 1) {
+        // The provider acknowledged the request without applying the move.
+        return ok(undefined);
+      }
       const ticket = createdTickets.find((candidate) => candidate.id === issueId);
       if (ticket === undefined) {
         return { ok: false, fault: { message: `Unknown issue "${issueId}".` } };
       }
       rankOrder = rankOrder.filter((candidate) => candidate !== ticket.key);
-      if ('after' in target) rankOrder.splice(rankOrder.indexOf(target.after) + 1, 0, ticket.key);
+      if ('after' in target) {
+        rankOrder.splice(rankOrder.indexOf(target.after) + 1, 0, ticket.key);
+      } else {
+        rankOrder.splice(rankOrder.indexOf(target.before), 0, ticket.key);
+      }
+      if (options.loseRankResponseOnce === true && rankAttempts === 1) {
+        // The source applied the move but its response never reached Nexus.
+        return { ok: false, fault: { message: 'the rank response was lost' } };
+      }
       return ok(undefined);
     },
     searchIssues: (query) => {
@@ -2304,6 +2343,21 @@ async function handoff(options: {
                 (ticket.fields['labels'] as readonly string[]).includes(label ?? ''),
             )
             .map((ticket) => ({ id: ticket.id, key: ticket.key })),
+        );
+      }
+      if (query.query.includes('status in (')) {
+        const listed = /status in \(([^)]*)\)/.exec(query.query)?.[1] ?? '';
+        const statuses = [...listed.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+        return ok(
+          (options.preparation ?? [])
+            .filter(
+              (candidate) =>
+                candidate.covered !== false &&
+                statuses.includes(candidate.status) &&
+                rankOrder.includes(candidate.key),
+            )
+            .sort((left, right) => rankOrder.indexOf(left.key) - rankOrder.indexOf(right.key))
+            .map((candidate) => ({ id: `9${candidate.key}`, key: candidate.key })),
         );
       }
       if (query.query.includes('key in (')) {
@@ -2345,7 +2399,22 @@ async function handoff(options: {
     project: 'NEX',
     workspaceRoot,
     workspacePointerField: 'workspace',
-    architectureStatus: 'Architecture',
+    selection: { query: 'project = NEX AND status = "To Do"', orderBy: 'Rank ASC' },
+    ideas: { query: 'project = NEX AND status = "Idea"', orderBy: 'Rank ASC' },
+    ideaStatuses: {
+      submitted: 'Idea',
+      active: 'Idea Refinement',
+      approved: 'Draft',
+      waitingForFeedback: 'Waiting for Feedback',
+    },
+    preparation: {
+      statuses: {
+        requirements: 'Requirements',
+        uxProposal: 'UX Proposal',
+        storybookRefinement: 'Storybook Refinement',
+        architecture: 'Architecture',
+      },
+    },
     implementation: {
       issueType: 'Task',
       labels: ['implementation'],
@@ -2363,6 +2432,8 @@ async function handoff(options: {
     },
   });
   const firstOutcome = await handoffAction();
+  const firstOutcomeStatus = status;
+  const firstOutcomeComments = comments.length;
   if (options.ticketStatusAfterFirst !== undefined) {
     ticketStatuses.set('101', options.ticketStatusAfterFirst);
   }
@@ -2423,6 +2494,8 @@ async function handoff(options: {
   return {
     outcome,
     firstOutcome,
+    firstOutcomeStatus: () => firstOutcomeStatus,
+    firstOutcomeComments: () => firstOutcomeComments,
     workspaceRoot,
     ticketStatus: (index = 0) => ticketStatuses.get(createdTickets[index]?.id ?? '101'),
     tickets: handoffRecord.tickets ?? [],
@@ -2594,6 +2667,188 @@ describe('architecture implementation handoff', () => {
     expect(JSON.stringify(result.createdFields[3]?.['description'])).toContain(
       'Prerequisites: NEX-3, NEX-4, NEX-2',
     );
+  });
+
+  it('ranks a one-ticket plan ahead of covered preparation, excluding the original and uncovered issues', async () => {
+    const result = await handoff({
+      tasks: [
+        {
+          summary: 'Add the lint gate',
+          scope: 'bounded',
+          completionCriteria: ['completed'],
+          prerequisites: [],
+        },
+      ],
+      initialRankOrder: ['NEX-1', 'NEX-8', 'NEX-9', 'NEX-2'],
+      preparation: [
+        { key: 'NEX-1', status: 'Architecture' },
+        // In a preparation status but outside the configured candidate queries.
+        { key: 'NEX-8', status: 'Requirements', covered: false },
+        { key: 'NEX-9', status: 'Requirements' },
+      ],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.outcome).toBe('handed-off');
+    // The ticket moves immediately before the earliest covered preparation anchor; the original
+    // and the uncovered preparation-status issue keep their positions.
+    expect(result.rankOrder).toEqual(['NEX-1', 'NEX-8', 'NEX-2', 'NEX-9']);
+    expect(result.ranked).toEqual(['101 before NEX-9']);
+    expect(result.tickets.map((ticket) => ticket.ranked)).toEqual([true]);
+    // The anchor search carries the configured candidate queries and status mappings.
+    expect(result.jiraCalls).toContain(
+      'search:project = "NEX" AND status in ("Idea", "Idea Refinement", "Draft", ' +
+        '"Requirements", "UX Proposal", "Storybook Refinement", "Architecture") AND ' +
+        '((project = NEX AND status = "To Do") OR (project = NEX AND status = "Idea")) ' +
+        'order by Rank ASC',
+    );
+  });
+
+  it('ranks a chain ahead of preparation with every prerequisite before its dependent', async () => {
+    const tasks = [[], [0], [0, 1]].map((prerequisites, index) => ({
+      summary: String.fromCharCode(65 + index),
+      scope: 'bounded',
+      completionCriteria: ['completed'],
+      prerequisites,
+    }));
+    const result = await handoff({
+      tasks,
+      initialRankOrder: ['NEX-9'],
+      preparation: [{ key: 'NEX-9', status: 'Requirements' }],
+    });
+
+    expect(result.outcome).toBe('handed-off');
+    expect(result.rankOrder).toEqual(['NEX-2', 'NEX-3', 'NEX-4', 'NEX-9']);
+    expect(result.ranked).toEqual(['101 before NEX-9', '102 before NEX-9', '103 before NEX-9']);
+  });
+
+  it('places independent tasks ahead of preparation without reordering them against each other', async () => {
+    const tasks = [[], []].map((prerequisites, index) => ({
+      summary: String.fromCharCode(65 + index),
+      scope: 'bounded',
+      completionCriteria: ['completed'],
+      prerequisites,
+    }));
+    const result = await handoff({
+      tasks,
+      initialRankOrder: ['NEX-9', 'NEX-3', 'NEX-2'],
+      preparation: [{ key: 'NEX-9', status: 'Architecture' }],
+    });
+
+    expect(result.outcome).toBe('handed-off');
+    // The source's own order between unrelated implementation tickets is preserved.
+    expect(result.rankOrder).toEqual(['NEX-2', 'NEX-3', 'NEX-9']);
+    expect(result.ranked).toEqual(['101 before NEX-9', '102 before NEX-9']);
+  });
+
+  it('ranks a branching plan ahead of two preparation anchors with prerequisites first', async () => {
+    const tasks = [[], [0], [0], [1, 2]].map((prerequisites, index) => ({
+      summary: String.fromCharCode(65 + index),
+      scope: 'bounded',
+      completionCriteria: ['completed'],
+      prerequisites,
+    }));
+    const result = await handoff({
+      tasks,
+      initialRankOrder: ['NEX-8', 'NEX-9'],
+      preparation: [
+        { key: 'NEX-8', status: 'Requirements' },
+        { key: 'NEX-9', status: 'Architecture' },
+      ],
+    });
+
+    expect(result.outcome).toBe('handed-off');
+    expect(result.rankOrder).toEqual(['NEX-2', 'NEX-3', 'NEX-4', 'NEX-5', 'NEX-8', 'NEX-9']);
+    expect(result.ranked).toEqual([
+      '101 before NEX-8',
+      '102 before NEX-8',
+      '103 before NEX-8',
+      '104 before NEX-8',
+    ]);
+  });
+
+  it('leaves an already-valid implementation order in place while acknowledging every ticket', async () => {
+    const tasks = [[], [0]].map((prerequisites, index) => ({
+      summary: String.fromCharCode(65 + index),
+      scope: 'bounded',
+      completionCriteria: ['completed'],
+      prerequisites,
+    }));
+    const result = await handoff({
+      tasks,
+      initialRankOrder: ['NEX-2', 'NEX-3', 'NEX-9'],
+      preparation: [{ key: 'NEX-9', status: 'Requirements' }],
+    });
+
+    expect(result.outcome).toBe('handed-off');
+    expect(result.ranked).toEqual([]);
+    expect(result.rankOrder).toEqual(['NEX-2', 'NEX-3', 'NEX-9']);
+    expect(result.tickets.map((ticket) => ticket.ranked)).toEqual([true, true]);
+  });
+
+  it.each([
+    {
+      failure: 'a rejected rank request',
+      attempt: { failRankOnce: true },
+      // The rejected request recorded no effect, so replay applies the same move again.
+      ranked: ['101 before NEX-9', '101 before NEX-9', '102 before NEX-9'],
+    },
+    {
+      failure: 'a lost rank response',
+      attempt: { loseRankResponseOnce: true },
+      // The move already applied; replay acknowledges it and moves only the dependent.
+      ranked: ['101 before NEX-9', '102 before NEX-9'],
+    },
+  ])(
+    'resumes $failure with the same tickets after re-inspecting the actual order',
+    async ({ attempt, ranked }) => {
+      const tasks = [[], [0]].map((prerequisites, index) => ({
+        summary: String.fromCharCode(65 + index),
+        scope: 'bounded',
+        completionCriteria: ['completed'],
+        prerequisites,
+      }));
+      const result = await handoff({
+        tasks,
+        initialRankOrder: ['NEX-9'],
+        preparation: [{ key: 'NEX-9', status: 'Requirements' }],
+        ...attempt,
+        retry: true,
+      });
+
+      expect(result.firstOutcome).toBe('failed');
+      expect(result.outcome).toBe('handed-off');
+      expect(result.rankOrder).toEqual(['NEX-2', 'NEX-3', 'NEX-9']);
+      expect(result.ranked).toEqual(ranked);
+      expect(result.tickets.map((ticket) => ticket.key)).toEqual(['NEX-2', 'NEX-3']);
+    },
+  );
+
+  it('does not complete the original while the observed order still trails preparation', async () => {
+    const result = await handoff({
+      tasks: [
+        {
+          summary: 'Add the lint gate',
+          scope: 'bounded',
+          completionCriteria: ['completed'],
+          prerequisites: [],
+        },
+      ],
+      initialRankOrder: ['NEX-9', 'NEX-2'],
+      preparation: [{ key: 'NEX-9', status: 'Requirements' }],
+      dropRankOnce: true,
+      retry: true,
+    });
+
+    expect(result.firstOutcome).toBe('failed');
+    // The unfinished order left the original open and unpublished for replay.
+    expect(result.firstOutcomeStatus()).toBe('Architecture');
+    expect(result.firstOutcomeComments()).toBe(0);
+    expect(result.failures[0]).toContain('still follows the remaining preparation anchor NEX-9');
+    expect(result.outcome).toBe('handed-off');
+    expect(result.rankOrder).toEqual(['NEX-2', 'NEX-9']);
+    expect(result.comments).toHaveLength(1);
+    expect(result.status()).toBe('Done');
   });
 
   it('resolves forward prerequisite identities through topological creation and retains their planned indexes', async () => {

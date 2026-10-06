@@ -612,6 +612,51 @@ describe('SelectWork admission and routing', () => {
     expect(deferred.selection).toMatchObject({ taskKey: 'NEX-3' });
   });
 
+  it('selects available implementation ahead of preparation in the ranked queue', async () => {
+    const selected = await select({
+      preparation: true,
+      issues: [issue('1', 'NEX-1', 'To Do'), issue('2', 'NEX-2', 'Requirements')],
+    });
+
+    // The handoff's completed ranking places implementation first; selection claims it before
+    // the preparation ticket that follows.
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-1', stage: 'delivery' });
+  });
+
+  it('lets eligible preparation proceed while prerequisite completion defers implementation', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-defer-preparation-'));
+    temporaryDirectories.push(directory);
+    const workspaces = path.join(directory, 'workspaces');
+    const linked = await linkedImplementation(workspaces, 'NEX-2', 'NEX-1');
+    const selected = await select({
+      preparation: true,
+      issues: [
+        issue('2', 'NEX-2', 'To Do', { [pointerField]: linked }),
+        issue('1', 'NEX-1', 'Done'),
+        issue('3', 'NEX-3', 'Requirements'),
+      ],
+      selectionFile: path.join(directory, 'selection.json'),
+      workspaceRoot: workspaces,
+    });
+
+    // The unavailable implementation ticket is deferred, not completed, and the ranked queue
+    // proceeds to the eligible preparation ticket.
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-3', stage: 'requirements' });
+  });
+
+  it('skips a waiting ticket and selects the eligible preparation that follows it', async () => {
+    const selected = await select({
+      preparation: true,
+      issues: [issue('1', 'NEX-1', 'Waiting for Feedback'), issue('2', 'NEX-2', 'Requirements')],
+    });
+
+    // A waiting item is not selectable and does not block the eligible preparation behind it.
+    expect(selected.result).toBe('selected');
+    expect(selected.selection).toMatchObject({ taskKey: 'NEX-2', stage: 'requirements' });
+  });
+
   it('admits a dependent implementation once its prerequisite holds completion evidence', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-admit-'));
     temporaryDirectories.push(directory);
