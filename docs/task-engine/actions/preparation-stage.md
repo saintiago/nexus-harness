@@ -149,9 +149,11 @@ an applicability skip when corrected scope makes the stage irrelevant; evaluatio
 applicability. Existing authored cleanup and applicability reassessment preserve obsolete-work
 reconciliation; a skip cannot commit or silently discard stage-owned work.
 
-Accepted and accepted-skip require no current blocking problem; changes-requested requires at least
-one, explained in Markdown. These are evaluator judgment obligations, not machine finding-count
-checks. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Validate
+Accepted and accepted-skip apply the [bounded material-quality
+standard](../../agent-runtime/preparation-roles.md#bounded-material-quality) and require no known
+material issue; changes-requested requires at least one, explained in Markdown. Remaining
+suggestions explain why they are nonblocking. These are evaluator judgment obligations, not
+machine finding-count checks. Return-upstream requires a concrete UpstreamRequest to an allowed earlier stage. Validate
 outcome/verdict pairing, destination, correction, role-specific fields, plan and applicable
 evidence; do not parse narrative to verify the verdict. There are no finding IDs, response/status
 records, dispositions or matching checks across rounds. `assessedRevision` is action-observed saved
@@ -171,10 +173,12 @@ The [project workflow
 requirements](../../project-workflow.md#current-worktree-evaluation-requirements) own document-stage
 acceptance, compatible shared-document edits, retained continuation and examples. Requirements,
 UX/UI and Architecture assess the ticket against current authoritative documents in the shared
-worktree, regardless of authorship or commit history. Context supplies the ticket, attributed
-conversation, upstream reports, current author Markdown and functional outcome/plan, repository
-instructions and readable previous author/evaluation reports. The evaluator inspects relevant
-existing documents itself; an empty changed-document list does not restrict its scope or prevent
+worktree, regardless of authorship or commit history. Context follows the [preparation prompt
+outcomes](../../agent-runtime/preparation-roles.md#preparation-prompt-outcomes): readable captured
+scope and attributed feedback, directly available current corrections, and accessible references
+to upstream artifacts and historical reports. The current author Markdown and functional outcome/plan
+remain inspectable. Preserve repository guidance without duplicating runtime-supplied instructions.
+The evaluator inspects relevant existing documents itself; an empty changed-document list does not restrict its scope or prevent
 invocation. Architecture also evaluates the current implementation plan.
 
 Before evaluation, commit declared documents and applicable prototype sources in the shared
@@ -247,9 +251,10 @@ prototype inspection. Return upstream for a concrete input defect, not a compati
 edit. Changed human intent, missing/corrupt reports or changed inspected prototype sources require
 normal reassessment.
 
-Re-entry supplies previous author/evaluator reports and any upstream request as complete narrative
-context or readable local references, including the latest findings even after an author-only return
-or input request. No traversal derives an unresolved ID set or waits for disposition records. The
+Re-entry supplies previous author/evaluator reports through readable, attributed local history
+references. Current upstream requests, unresolved findings and rejection feedback remain directly
+available, including after an author-only return or input request; their full supporting evidence
+remains accessible. No traversal derives an unresolved ID set or waits for disposition records. The
 next evaluator judges whether previous concerns remain and reports actionable current findings.
 A missing later evaluation is not an implicit resolution or acceptance. Current terminal records
 and pending routes govern advancement; do not search past an intervening unfinished or invalid round
@@ -354,7 +359,8 @@ preview evidence. Tool installation belongs to the [profile setup](../../agent-r
 
 Architecture produces one or more bounded tasks with summary, scope, completion criteria and
 zero-based prerequisite indices. Its evaluator checks outcome coverage, size, duplication and a valid
-acyclic graph. Existing adequate technical design receives direct acceptance while this plan still
-receives evaluation. Source issue creation, links and ranking stay outside stage roles. The first
+acyclic graph. Existing technical design meeting the bounded material-quality standard receives
+direct acceptance while this plan still receives evaluation. Source issue creation, links and
+ranking stay outside stage roles. The first
 implementation continues the shared checkout; prototype references remain available to all planned tasks. Preparation
 has no documentation assembly, documentation-only PR, repository reviewer or merge/check state.

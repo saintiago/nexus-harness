@@ -36,8 +36,11 @@ repair necessary findings through finite delivery -> merge and confirm required 
    author's summary is insufficient. Seek contradictions, unnecessary complexity, scattered
    ownership and interaction inconsistencies. Necessary findings explain the concrete problem,
    evidence, consequence and required correction, and use the existing finding and return paths.
-5. Preserve adequate-work acceptance and the distinction between necessary corrections and optional
-   suggestions. Alternative designs or personal preferences alone cannot block acceptance. Use the
+5. Preparation uses the [bounded material-quality
+   standard](preparation-roles.md#bounded-material-quality); delivery retains its existing review
+   acceptance boundary. Preserve the distinction between necessary corrections and optional
+   suggestions, explaining why remaining suggestions are nonblocking. Alternative designs or
+   personal preferences alone cannot block acceptance. Use the
    existing finite rounds, upstream returns and repair flow without granting extra attempts,
    reviving stale approval or bypassing evaluation, review or merge/check protections.
 6. Keep authoritative role documentation and actual supplied prompts consistent. Meaningful
@@ -53,7 +56,7 @@ repair necessary findings through finite delivery -> merge and confirm required 
 | A developer replaces a mechanism that owns persisted state and validation | The contributed change aligns documentation and code and removes the obsolete dependent state, validation and tests within scope; the old mechanism is not retained accidentally alongside its replacement. |
 | Several affected callers contain exceptions with a confirmed shared cause | The author or developer reconciles the cause at its owning boundary. Evaluation/review checks the resulting responsibilities and interactions rather than accepting another caller-specific exception. |
 | The current revision leaves an affected contradiction, unnecessary mechanism, ownership problem or inconsistent interaction | Evaluation/review identifies the evidenced problem and necessary correction through the existing finite workflow. A correction receives assessment against its current revision. |
-| The work meets the outcome, but an evaluator/reviewer prefers another design or optional polish | Adequate work is accepted; the preference stays an optional suggestion and does not require a repair round. |
+| The work meets the outcome with no known material issue, but an evaluator/reviewer prefers another design or optional polish | Work is accepted under its applicable standard; the preference stays an optional suggestion with its nonblocking rationale and does not require a repair round. |
 | Each of the eight preparation roles, developer and reviewer is invoked through its normal path | Captured assembled invocation instructions contain the applicable reconciliation or inspection obligations and preserve scope and acceptance limits. Developer repairs and relevant profile variants retain those obligations. Role documentation agrees with those prompts. |
 | This instruction change reaches UX and Prototype without an explicit reporting-terminal change | Authors propose skips citing existing adequate experience and Nexus UI guidance; evaluators assess those skips. No new Nexus UI or prototype is invented. |
 | A correction exhausts an allowance, changes an approved revision or has failed required checks | Existing exhaustion, reevaluation and delivery protections still apply. Coherence instructions cannot grant another attempt, transfer stale approval or establish completion without the required evidence. |
