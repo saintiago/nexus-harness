@@ -304,9 +304,10 @@ retained work and reports incompatible repository or branch identity rather than
 it. The precise workspace and admission contracts belong to Architecture.
 
 Validate the dependency graph before applying handoff effects and create tasks in a topological
-order. Rank prerequisites before dependent tasks using actual Jira
-rank order, moving a premature dependent after its last prerequisite without moving it ahead of
-unrelated higher-ranked work. A dependent ticket cannot start implementation before its prerequisites
+order. Rank the handed-off implementation tickets ahead of remaining preparation tickets, with
+prerequisites before dependent tasks in actual Jira rank order, under
+[implementation before further preparation](#implementation-before-further-preparation).
+A dependent ticket cannot start implementation before its prerequisites
 have completed with merge/check evidence. Retain created ticket identities as operations succeed.
 Reconcile uncertain creation against the source issue and planned task before retrying; interruption must not
 duplicate tickets. Record each new ticket's initial admission status separately from later source
@@ -318,7 +319,43 @@ After every planned ticket exists and is linked, move the original to Done with 
 comment and the implementation links. The original never enters finite delivery. Even one
 implementation task gets a new ticket. Original Done means the handoff exists, not feature delivery.
 Created tickets start at the configured Implementation/ready status and compete in normal source
-rank order rather than bypassing higher-ranked project work.
+rank order after the handoff has placed them ahead of remaining preparation work.
+
+### Implementation before further preparation
+
+The affected categories are handoff ranking, prerequisite ordering and serial queue selection.
+The operator's journey is: accept Architecture and its plan -> hand off implementation tickets ->
+finish available implementation -> select the next preparation ticket. Activities are ranking the
+handoff, selecting one eligible ticket and completing its normal delivery before selecting again.
+
+Rules:
+
+1. A completed Architecture handoff places every implementation ticket from its accepted plan
+   ahead of every remaining preparation ticket in the same project's queue. Preparation tickets
+   are those routed to Idea Refinement, Requirements, UX Proposal, Storybook Refinement or
+   Architecture. This applies to a one-ticket plan and to independent tasks as well as dependents.
+2. The resulting implementation order respects all prerequisites. A dependent can start only
+   after its prerequisites have the existing required delivery completion evidence. Implementation
+   priority does not waive verification, review, merge or required checks.
+3. With that handoff order, the serial parent finishes eligible implementation before starting
+   the next preparation. An implementation ticket is available when it meets the existing selection
+   and prerequisite-completion rules. When no implementation is available, normal source-rank
+   selection may proceed to eligible preparation; priority does not make a blocked ticket eligible.
+4. Selection continues to follow source rank, and handoff replay preserves planned ticket
+   identities and finishes missing ranking effects before reporting a completed handoff. No parallel
+   ticket execution or separate selection-priority mechanism is introduced. This change gives no
+   new priority rule among unrelated implementation tickets.
+
+Observable acceptance examples (P and Q are eligible preparation tickets):
+
+| Situation | Observable result |
+| --- | --- |
+| P and Q precede a newly handed-off implementation ticket I in source rank | On completed handoff, I ranks ahead of both P and Q. The serial parent completes I's normal delivery before starting P or Q. |
+| A handoff produces A, B depending on A, and C depending on both A and B, while P is queued | All three rank ahead of P, with A before B before C. A completes before B starts, B completes before C starts, and C completes before P starts. |
+| A handoff produces A, B depending on A, C depending on A, and D depending on both B and C | All four rank ahead of P and Q; A precedes B and C, and both B and C precede D. The parent delivers them one at a time; either order of B and C is acceptable. |
+| A handed-off implementation ticket already ranks ahead of P and Q and satisfies its prerequisites | Completed handoff leaves it ahead of preparation; the serial parent selects it in source order. |
+| Every remaining implementation ticket is waiting for author feedback or lacks prerequisite merge/check completion, while P is eligible | The parent may select P. The unavailable implementation tickets are neither selected nor declared complete. |
+| Handoff ranking is interrupted before every planned ticket is ahead of P and Q | The handoff is not reported complete. Replay finishes the missing ranking using the same tickets; completed handoff leaves every planned ticket ahead of P and Q with prerequisites first. |
 
 ## Finite Delivery
 
@@ -402,7 +439,7 @@ verdicts.
 | Nexus implements browser/image-verification capabilities while its own prototype stage is skipped | An isolated implementation test fixture supplies a running Storybook preview with a journey and relevant states. Both prototype author and evaluator capabilities perform real browser interaction and image/layout inspection with concrete evidence. Fixture observations verify those capabilities without reviving the removed Nexus UI mock or replacing the evaluated applicability skip. |
 | Architecture accepts a plan with two implementation tickets | Both tickets are created and linked to the source and accepted evidence; the original becomes Done as a handoff. No preparation-only PR is opened, and no claim of feature delivery is made. |
 | Ticket creation/linking or the original Done update is interrupted | Replay reconciles recorded/source identities and performs missing effects. Exactly the planned tickets and links exist; unexpected human status changes remain preserved. |
-| The two planned tickets are delivered, with the second depending on the first | The first continues the actual preparation checkout/branch and delivers its committed documents with implementation in PR 1. After its merge/check completion, the second starts from that merged base and delivers PR 2. Dependencies and normal source ranking are respected; there is no final aggregate PR. |
+| The two planned tickets are delivered, with the second depending on the first | The first continues the actual preparation checkout/branch and delivers its committed documents with implementation in PR 1. After its merge/check completion, the second starts from that merged base and delivers PR 2. Both rank ahead of remaining preparation, prerequisites are respected, and there is no final aggregate PR. |
 | An implementation head changes after review, verification fails, a required check fails, or merge/post-merge evidence is absent | Earlier review approval cannot authorize the changed head, and the ticket cannot complete without current verification, actual revision-specific review and required merge/check evidence. Invocation faults produce no invented verdict or unrelated retry path. |
 | Preparation roles run with memory enabled and Nexus is launched for development | Every author/evaluator can explicitly search/save shared memory; no new automatic recall/ingestion is introduced. Documentation reflects these roles and the workflow, and Nexus uses a visible WSL terminal with color support. |
 

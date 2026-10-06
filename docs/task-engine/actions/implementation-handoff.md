@@ -78,8 +78,10 @@ frozen basis and with the ticket's link and admission finished; that ticket keep
 path. Finished effects with a current-contract basis and missing input require reconciliation, since
 that input owns preparation continuation and prerequisites.
 
-Rank prerequisites before dependents using actual source rank, preserving unrelated higher-ranked
-work. After all tickets have input records and completed admission/link/rank effects, publish their
+Rank every handed-off implementation ticket ahead of remaining preparation tickets in the project,
+with prerequisites before dependents in actual source rank, following the
+[project workflow requirements](../../project-workflow.md#implementation-before-further-preparation).
+After all tickets have input records and completed admission/link/rank effects, publish their
 links in plan order and transition the original to Done. The comment states preparation handoff,
 without claiming implementation shipped. Even one planned task creates a distinct implementation
 issue. Repetition finishes missing effects without duplicate issues or comments.
@@ -89,7 +91,8 @@ issue. Repetition finishes missing effects without duplicate issues or comments.
 Resolve prerequisites through each ticket's actual completed delivery artifact and source completion;
 Done on the preparation issue supplies no delivery evidence. Missing merge/check evidence defers
 implementation and keeps prerequisite work first; provider faults remain faults. Tickets otherwise
-compete in the normal ranked queue.
+compete in the source-ranked serial queue, with the completed handoff placing its implementation
+ahead of remaining preparation under the project workflow requirements.
 
 The first implementation receives the recorded repository reference and comparison base, preserving
 preparation commits and branch. Later tickets obtain their own checkout from updated merged base;
