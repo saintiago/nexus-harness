@@ -11,6 +11,13 @@ and the [completion declaration](complete-task.md#output). Use the configured
 [Jira adapter](../../adapters/jira.md#interface) for source effects. No GitHub publication capability
 is needed here. Selection and PrepareWorkspace consume the input declaration owned by this action.
 
+Construction supplies the project's existing idea and task candidate queries and preparation status
+mappings, alongside the ticket-creation settings. Preparation statuses include submitted/active Idea,
+the approved-idea admission status (Draft), Requirements, UX Proposal, Storybook Refinement and
+Architecture. Derive these inputs from existing project settings; introduce no new operator setting.
+Ranked identity searches and explicit before/after rank operations suffice; the adapter contract
+does not change.
+
 ### Output
 
 Retain the accepted plan identity, plan-index-to-ticket mapping, original source identity and each
@@ -78,18 +85,58 @@ frozen basis and with the ticket's link and admission finished; that ticket keep
 path. Finished effects with a current-contract basis and missing input require reconciliation, since
 that input owns preparation continuation and prerequisites.
 
-Rank prerequisites before dependents using actual source rank, preserving unrelated higher-ranked
-work. After all tickets have input records and completed admission/link/rank effects, publish their
+Rank every handed-off implementation ticket ahead of remaining preparation tickets in the project,
+with prerequisites before dependents in actual source rank, following the
+[project workflow requirements](../../project-workflow.md#implementation-before-further-preparation).
+The ranking procedure and replay acknowledgement are defined below.
+After all tickets have input records and completed admission/link/rank effects, publish their
 links in plan order and transition the original to Done. The comment states preparation handoff,
 without claiming implementation shipped. Even one planned task creates a distinct implementation
 issue. Repetition finishes missing effects without duplicate issues or comments.
+
+## Queue ranking
+
+Use the union of the configured candidate queries, restricted to this project and its preparation
+statuses, to find remaining preparation in Rank ASC order. Exclude the original issue being handed
+off. Waiting for Feedback and Done are not preparation anchors. Status filtering uses the existing
+mapping rather than issue labels, descriptions or hard-coded status names. The searches return
+identities; no additional issue-field projection or eligibility policy is needed for ranking.
+
+Process every ticket in stable topological plan order, including the first ticket and tasks with no
+declared prerequisites. Before ranking a ticket, read fresh project-wide Rank ASC order so it includes
+created tickets not yet admitted to the candidate queries, and find the earliest remaining preparation
+anchor. Use the prerequisite keys retained in the ticket's input, including the preparation
+continuation prerequisite. Require the ticket, its prerequisites and any preparation anchor to occur
+in the observed rank order; missing identities or failed searches cannot establish completed ranking.
+
+All previously processed prerequisites precede preparation. If the ticket precedes a prerequisite,
+move it immediately after its last prerequisite in actual source order. Otherwise, if it follows the
+earliest preparation anchor, move it immediately before that anchor. If neither condition holds,
+leave its rank unchanged. These moves preserve the established prerequisite-before-preparation
+invariant without requiring a contiguous implementation block or imposing an order on unrelated
+implementation tickets. With no preparation anchor, only prerequisite correction is needed. Moving
+one ticket never changes the relative order of the other source issues.
+
+Retain the existing per-ticket ranking acknowledgement after the observed order or acknowledged rank
+effect satisfies both constraints, including when no move is needed. Finish ranking before that
+ticket's ready-status admission. On unfinished-handoff replay, inspect actual rank again even for
+acknowledged tickets: a lost rank response can have applied the move, and an earlier acknowledgement
+does not prove the current order. Reuse the frozen plan, inputs and ticket identities; no rank target,
+priority flag or additional checkpoint is persisted.
+
+Before publishing the completed handoff and closing the original, re-read source rank and remaining
+preparation and confirm every planned ticket precedes preparation and every prerequisite precedes its
+dependent. A failed operation or unsatisfied final order leaves the handoff unfinished under the
+existing failure/replay path. There is no new retry loop or selection scheduler. Completed historical
+handoffs and their admitted tickets require no migration.
 
 ## Selection and delivery admission
 
 Resolve prerequisites through each ticket's actual completed delivery artifact and source completion;
 Done on the preparation issue supplies no delivery evidence. Missing merge/check evidence defers
 implementation and keeps prerequisite work first; provider faults remain faults. Tickets otherwise
-compete in the normal ranked queue.
+compete in the source-ranked serial queue, with the completed handoff placing its implementation
+ahead of remaining preparation under the project workflow requirements.
 
 The first implementation receives the recorded repository reference and comparison base, preserving
 preparation commits and branch. Later tickets obtain their own checkout from updated merged base;
