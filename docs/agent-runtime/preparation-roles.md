@@ -157,6 +157,32 @@ readable-source transformation and verification design belong to Architecture. T
 judge/reviewer layer, scoring system, report schema, workflow gate or product scope, and deletes
 no history.
 
+### Interface and composition
+
+Use the existing [AgentRuntime instruction interface](architecture.md#interface). Application
+composition attaches the invoked role's constants to every selectable profile for that role,
+including a profile reused for several roles. Each constant opens with purpose and desired outcome,
+then its specific quality standards: observable and unambiguous outcomes for Requirements; clear,
+efficient, product-grounded journeys for UX; independently inspectable rendered experience for
+Storybook; and feasible ownership, focused contracts and bounded delivery work for Architecture.
+Creators improve the work and evaluators independently challenge it under
+[bounded material quality](#bounded-material-quality). Model or profile selection cannot lower
+these obligations. Shared quality guidance is supplied once after these constants, before task
+context; role-specific guidance does not duplicate it.
+
+[Preparation actions](../task-engine/actions/preparation-stage.md#prompt-context-and-evidence)
+own readable captured input, correction selection, attributed evidence references and the final
+reporting section. They render source content without another agent invocation or a generated
+summary becoming authority. They retain original source and report evidence and validate the
+existing producer associations even when only references enter the prompt. Agents consult relevant
+documents, judge intent and conflicts, and explain their decisions. The runtime preserves the
+caller context; it does not summarize source input, choose business roles or interpret findings.
+
+Reporting instructions have one preparation-owned home in the final context section. Supply each
+applicable declaration, observation and response rule there once; keep role responsibilities and
+quality ahead of it. This changes instruction composition and evidence presentation, not role
+response schemas, workflow decisions, review gates or finding lifecycle state.
+
 ## Requirements Analyst
 
 Define the affected categories, journey, activities, rules and observable acceptance examples.

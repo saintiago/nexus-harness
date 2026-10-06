@@ -200,6 +200,108 @@ pending corrections and applicable prototype evidence. They do not compare compl
 approvals with historical file revisions or demand renewed approval of an unchanged document.
 Architecture acceptance returns directly to handoff; there is no combined preparation publication.
 
+### Prompt context and evidence
+
+Assemble a common preparation context for all authors and evaluators. After the selected profile's
+role purpose, outcome and specific standards, order it as follows:
+
+1. Shared material-quality, applicability, scope, ownership and coherence guidance.
+2. Readable captured task intent and attributed conversation, followed by active correction context.
+3. Worktree location, repository-instruction paths, accepted upstream and local history references,
+   and the current work to assess. Reassessment states that an earlier decision is pending and
+   identifies the changed input; it cannot confer acceptance.
+4. Reporting mechanics: the assigned Markdown path, action-owned paths, applicable declaration and
+   observation rules, and the minimal response contract. Prototype observation details belong here,
+   only for the prototype roles. Include each rule once, rather than repeating shared reporting
+   instructions in the author/evaluator suffixes.
+
+Generic runtime instructions retain their existing precedence. Preparation's work and quality
+guidance precedes its reporting mechanics in every route and selectable profile.
+
+#### Readable captured source
+
+Render the captured summary, description and conversation deterministically as readable text.
+Preserve expressed scope, exclusions, acceptance conditions, questions, disagreements, links and
+evidence paths. Keep the description's meaningful structure; do not invent exclusions, resolve
+conflicting statements or shorten content by dropping qualifications. Render rich-text paragraphs,
+headings, lists, links, code, tables and other meaningful nodes without their administrative JSON.
+Other captured fields carrying task instructions or evidence also receive readable text or an
+explicit inspection reference; omission applies to administrative data, not arbitrary task content.
+Give non-text evidence a readable reference. For an unsupported meaningful structure, explicitly
+identify the unrendered content and its source location and require inspection before relying on
+it; never silently discard it or present an incomplete rendering as complete intent.
+
+Attribute each comment by captured author and source comment identity, preserving captured order
+and available chronology. Mark known Nexus publication acknowledgements using the parent's saved
+publication identities, rather than promoting them to human decisions or omitting them silently.
+Bot attribution, missing authorship and uncertain origin remain explicit; an owner's account name
+alone cannot establish that a publication was human feedback. Agents distinguish human direction
+from assessments using this attribution and source evidence. Administrative API envelopes, avatars,
+watchers, status bookkeeping and time tracking do not enter the readable context.
+
+Before invocation, retain the exact `{ issue, conversation }` used for this context in
+`captured-source.json` beside the invocation's assigned Markdown report, and supply its absolute
+path. This action-owned evidence copy is not a new role response, control record or source of
+decisions. It remains available after reselection changes the parent snapshot. Write it from the
+same captured values used by the existing source-identity check; never query Jira or derive the
+identity from rendered text. Leave retained copies unchanged in later invocations. Failure to retain
+readable source evidence is an execution fault.
+
+#### References and active corrections
+
+Give upstream results and retained author/evaluator records accessible absolute paths, with stage,
+role, round, revision or assessed revision, and outcome/verdict attribution where recorded. Include
+their Markdown paths when bound, and the stage history directory for further evidence. The current
+author record, report, declarations and Architecture plan are read through these references, not
+embedded in full. Legacy combined records remain readable at their original paths without rewriting
+them. Validate referenced current, upstream and repair records through existing producer-owned
+readers and report bindings; switching presentation to paths does not bypass report usability,
+source association, revision checks or producer-attributed rejection retention.
+
+Active correction context is distinct from supporting history. Include the retained human question
+and captured answer/feedback, the upstream request's concrete correction, outstanding report
+rejection reasons and evidence references, and the latest still-relevant evaluator assessment
+directly. For a bound upstream return, validate and include the returning assessment alongside its
+functional correction; legacy returns retain their problem and consequence text. For a
+changes-requested assessment, or a return-upstream assessment whose correction is pending, include
+its validated Markdown as active concerns, preserving problem, consequence, correction, optional
+suggestions and uncertainty. Use the original narrative rather
+than extracting a machine finding set or generating a lossy summary. Accepted assessments are
+supporting references, not active demands for optional improvements.
+
+Find the most recent preceding evaluation across intervening author-only rounds. A return, question,
+restart or `new` route label does not clear its concerns. Provide relevant intervening author reports
+as attributed references, explicitly requiring inspection of their corrections and disagreements.
+An evaluator supplies a complete account of material concerns that remain in the assessed work,
+including earlier concerns it judges unresolved. A subsequent current evaluation supersedes the
+earlier assessment for this purpose; no program parses Markdown to infer resolution. Explicit
+pending upstream routes and outstanding rejection feedback retain their existing clearing rules.
+Reassessment against changed input still requires a fresh judgment even after an earlier acceptance.
+
+There is no prompt-size cutoff for active concerns and no narrative parser, summary service, new
+finding schema or lifecycle store. Historical bodies are referenced; a report still carrying an
+active correction is included because a path alone would hide the repair obligation. Evidence and
+allowances remain in their existing stores. Missing or changed bound evidence uses existing
+attributable rejection handling, never acceptance, a manufactured skip or an upstream product rule.
+
+#### Repository instructions and verification
+
+Reference the connected worktree's `AGENTS.md` and require applicable repository instructions to be
+followed. Do not embed its contents. When the provider supplies those instructions natively, this
+path adds no duplicate body; otherwise the role reads applicable instruction files before work.
+Keep nested applicable instructions and the repository file intact. Linked design documents are
+evidence to consult, not additional role instructions. This uses file access already required for
+preparation and needs no provider-detection flag or new runtime capability.
+
+Verify actual assembled invocations through application profile composition and AgentRuntime to the
+coding-provider request, covering all eight roles and relevant profile reuse/variants. Check order,
+single guidance delivery, source meaning and attribution, readable references, and directly present
+active corrections. Exercise response, reassessment, upstream-return, author-only question/return,
+restart and rejection continuation with controlled evidence. Both native instruction delivery and
+explicit file-reading must preserve repository guidance without preparation embedding another copy.
+Keep existing report-integrity, source/revision, prototype observation, current-worktree evaluation
+and finite allowance regressions; shorter prompts alone are not acceptance evidence.
+
 ### Applicability references and retained data
 
 Optional references support a skip reason but do not select historical approvals or owned assets.

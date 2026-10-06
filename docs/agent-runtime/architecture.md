@@ -22,6 +22,9 @@ with its separately configured operational tools.
 The [preparation role contract](preparation-roles.md#shared-instructions) owns shared preparation
 guidance and each stage's specific instructions. Preparation callers supply the shared guidance
 once in their context; selected profiles carry only the invoked role's specific instructions.
+Role constants lead with purpose, outcome and specific quality. Preparation callers order shared
+quality, readable task/correction context and supporting evidence before a single reporting section,
+under the [preparation composition contract](preparation-roles.md#interface-and-composition).
 Developer and reviewer coherence obligations belong in their complete role prompts, including
 developer repairs and every selectable ladder entry. A profile reused by several roles carries
 only the invoked role's instructions. Model, effort and tool choices do not change those obligations.
@@ -128,6 +131,13 @@ Prompt assembly combines:
 
 Preserve the supplied context completely. If provider limits prevent this, return an input failure
 instead of silently truncating it.
+
+Repository instructions can arrive through the provider's native workspace discovery. Preparation
+context supplies accessible instruction-file paths and directs the role to read any applicable
+guidance not already supplied; it does not embed another `AGENTS.md` body. The runtime adds no
+duplicate repository content, instruction-discovery parser or provider-capability setting. Existing
+file tools keep guidance available for providers without native discovery. Business callers own
+their evidence presentation; the runtime does not shorten source material or historical reports.
 
 Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
 when memory tools are enabled; role prompts need not duplicate that policy.
