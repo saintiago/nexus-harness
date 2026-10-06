@@ -177,6 +177,37 @@ stage returns, revision-bound observations and delivery review remain in force.
    subsequent preparation and delivery runs receive the guidance; documentation or unused prompt
    constants alone do not establish completion.
 
+### Interface and data handling
+
+These obligations use the existing [AgentRuntime instruction
+interface](architecture.md#interface). Application composition supplies the selected role's
+constant instructions to every selectable profile for that role. The four UX/prototype constants
+carry their applicable product-grounding duties; the complete
+[DevelopmentRole prompt](development-role.md#constant-prompt) carries the production duties,
+including repairs. Keep specialized rendered-experience assessment with the prototype roles rather
+than adding it to runtime base instructions or shared instructions for unrelated preparation roles.
+A profile reused across roles receives only the invoked role's instructions, once per invocation.
+
+[Preparation actions](../task-engine/actions/preparation-stage.md#responsibility-and-interface)
+supply the captured human input, connected worktree, accepted upstream references and retained
+correction evidence. [Develop](../task-engine/actions/develop.md#interface) supplies the task and
+local history for production work; the [implementation
+handoff](../task-engine/actions/implementation-handoff.md#output) supplies accepted preparation
+references in that task input. Roles read applicable product direction and experience documents in
+the worktree, using those references and repository instructions.
+Document discovery and design judgment remain agent responsibilities; the runtime does not parse
+product documents, choose an aesthetic or synthesize a design policy.
+
+Use the existing [prototype observation
+contract](../task-engine/actions/preparation-stage.md#prototype-observations) and assigned Markdown
+assessment for evidence. Stage actions own evidence validation, revision bindings and correction
+routing; roles judge the experience and explain which owning decision needs correction. Production
+developers preserve the evaluated direction or reconcile material changes with the owning decisions
+and appropriate experience validation through the existing delivery process. This guidance adds no
+public fields, document registry, persistent state, scoring, workflow transitions or automatic
+retries. Implementation correctness remains with delivery review, and execution failures remain at
+their existing boundary.
+
 ### Observable acceptance examples
 
 | Situation | Observable result |

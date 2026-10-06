@@ -301,6 +301,13 @@ WebP; format headers alone do not establish readable rendered pixels. The evalua
 is readable, matches the assessed prototype content and covers applicable acceptance examples and UX
 questions. Agent observations remain attributed evidence, not machine proof of usability.
 
+Apply the [product-grounded UI guidance](../../agent-runtime/preparation-roles.md#product-grounded-ui-work)
+when judging the rendered experience. The evaluator's record describes its independent inspection;
+the author's evidence cannot substitute for it. Use existing actions and observed results to record
+applicable motion exercised in the live preview, and visual conclusions for rendered-image
+inspection. The assigned Markdown assessment relates concrete observations to product intent and
+intended users. No additional observation fields or machine design-quality validation are required.
+
 The prototype author response declares its source paths and observation ArtifactRef; the evaluator
 response declares its separate observation ArtifactRef. Other stage responses and evaluated skips
 carry null. The prototype result retains both observation references for downstream consumers.
