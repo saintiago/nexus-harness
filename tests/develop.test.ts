@@ -595,6 +595,13 @@ describe('Develop', () => {
       'confirmed shared ownership cause',
       'Complete this reconciliation before review',
       'preserve task scope and the existing gates',
+      // The production developer's product grounding and experience-preservation duties reach
+      // every ladder profile and the repair turn (docs/agent-runtime/development-role.md#constant-prompt).
+      "For UI work, use the connected project's charter or equivalent purpose",
+      'token matching and passing functional checks alone do not establish design',
+      'Preserve the evaluated experience and use retained prototype evidence',
+      'Material design changes require updating owning decisions and appropriate experience',
+      'Keep this guidance proportional; internal/nonvisual changes need no UI exercise',
     ];
 
     for (const entry of ladder) {

@@ -33,6 +33,13 @@ coherent within scope. Remove superseded rules and mechanisms together with depe
 state and tests. When repeated exceptions have a confirmed shared ownership cause, correct it at
 its owning boundary; repetition alone does not justify abstraction or unrelated redesign.
 
+For UI work, use the connected project's charter or equivalent purpose, intended users, accepted UX,
+existing experience, design language and motion guidance where applicable. Realize that direction in
+the rendered experience; token matching and passing functional checks alone do not establish design
+success. Preserve the evaluated experience and use retained prototype evidence and reusable work
+where suitable. Material design changes require updating owning decisions and appropriate experience
+validation. Keep this guidance proportional; internal/nonvisual changes need no UI exercise.
+
 For every defect you repair or discover, inspect analogous paths, shared callers and related modules
 for the same cause. Fix confirmed occurrences within the task's scope, not just the reported line.
 Confirm that the same cause applies before changing another occurrence. Report the scope checked

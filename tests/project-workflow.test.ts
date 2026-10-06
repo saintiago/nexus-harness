@@ -685,6 +685,57 @@ describe('preparation binding dispatch', () => {
       architecture: configured.architecture.evaluator,
     };
 
+    /**
+     * The product-grounding and assessment duties each role's constant must deliver to the
+     * provider (docs/agent-runtime/preparation-roles.md#product-grounded-ui-work). Only the four
+     * UX/prototype constants carry them; the unrelated preparation roles keep empty lists so the
+     * same check also detects specialized duties leaking through shared guidance.
+     */
+    const productGroundingDuties: Readonly<Record<PreparationRole, readonly string[]>> = {
+      'requirements-author': [],
+      'requirements-evaluator': [],
+      'ux-author': [
+        'charter or equivalent purpose, intended users, accepted UX, existing experience, design language',
+        'and motion guidance where applicable. Apply the Nexus UI applicability guidance for Nexus work',
+        'an internal workflow change does not authorize a reporting-terminal',
+        'direction in the proposal; matching tokens or colors and working controls alone do not establish',
+        'a suitable experience. Keep material conflicts or missing product decisions explicit. Seek a',
+      ],
+      'ux-evaluator': [
+        'Assess the proposal against the connected product\u2019s charter or equivalent purpose,',
+        'intended users, accepted UX, existing experience, design language and motion guidance where',
+        'applicable, and judge how it supports the product\u2019s intent and intended users;',
+        'matching tokens or colors and working controls alone do not establish a suitable experience.',
+        'Optional polish alone is not a reason to block acceptance.',
+      ],
+      'prototype-author': [
+        'states. Use the connected product\u2019s charter or equivalent purpose, intended users, accepted',
+        'UX, existing experience, design language and motion guidance where applicable to realize its',
+        'direction, using representative content and states rather than treating token matching or',
+        'under the supplied round artifact area using the observation contract.',
+      ],
+      'prototype-evaluator': [
+        'independent browser interaction and rendered-image',
+        'inspection are required, and neither the author\u2019s evidence nor a text-only review substitutes',
+        'Evaluate a proposed applicability skip without manufacturing a preview',
+        'the connected product\u2019s intent and intended users, using its charter or equivalent purpose,',
+        'accepted UX, existing experience, design language and motion guidance where applicable.',
+        'visual hierarchy, layout, readability,',
+        'density, imagery, discoverability and the effort to complete the journey, including comfort and',
+        'Inspect applicable motion in the live preview',
+        'against its stated purpose;',
+        'proportionally to the affected experience',
+        'Return to UX when the proposal itself needs correction',
+        'with delivery review',
+        'product/user consequence',
+        'personal taste or optional polish remains a suggestion. Accept adequate',
+        'text-only inspection cannot establish usability acceptance',
+      ],
+      'architecture-author': [],
+      'architecture-evaluator': [],
+    };
+    const specializedDuties = Object.values(productGroundingDuties).flat();
+
     /** One author's controlled skip proposal over the stage's current checkout document. */
     const skipProposal = (stage: PreparationStage): unknown => ({
       outcome: 'skip-proposed',
@@ -846,6 +897,20 @@ describe('preparation binding dispatch', () => {
         1,
       );
       expect(occurrences(prompt, planned.instructions[0]!), `${label} role identity`).toBe(1);
+      // The named duties prove the provider receives the applicable product grounding and
+      // creator/evaluator assessment obligations, not merely an included constant. The
+      // unrelated preparation roles must not receive the specialized rendered-experience duties.
+      const role = planned.part === 'author' ? roles.author : roles.evaluator;
+      const duties = productGroundingDuties[role];
+      if (duties.length === 0) {
+        for (const duty of specializedDuties) {
+          expect(prompt, `${label} excludes specialized duty`).not.toContain(duty);
+        }
+      } else {
+        for (const duty of duties) {
+          expect(occurrences(prompt, duty), `${label}: ${duty}`).toBe(1);
+        }
+      }
       if (planned.stage === 'architecture') {
         // Adequate existing design receives direct evaluation: no Architecture instruction or
         // schema description keeps the removed existing-document skip guidance.
@@ -881,6 +946,7 @@ describe('preparation binding dispatch', () => {
       // A profile reused across roles carries only the invoked role's instructions.
       const otherRole = planned.part === 'author' ? roles.evaluator : roles.author;
       expect(prompt).not.toContain(preparationRoleInstructions[otherRole][0]!);
+      expect(prompt).not.toContain(preparationRoleInstructions[otherRole].join('\n\n'));
     });
     // Both selectable prototype-author ladder variants were exercised.
     expect(

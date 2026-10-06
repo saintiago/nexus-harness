@@ -147,6 +147,25 @@ Review authoritative role documentation against the delivered prompts. Controlle
 prove instruction delivery and existing routing, not model compliance, cumulative design quality
 or absence of regressions in a month-long run.
 
+### Product-grounded UI instruction delivery
+
+Extend the existing action-to-provider instruction checks for the UX author/evaluator, prototype
+author/evaluator and production developer, following the
+[role-owned contract](agent-runtime/preparation-roles.md#interface-and-data-handling). Capture actual
+assembled prompts through application composition and AgentRuntime, including every selectable
+prototype-author/developer profile and a developer repair. Verify each role's applicable product
+grounding and creator or evaluator duties, not merely inclusion of an imported constant. Check
+independent live interaction and image inspection, applicable live motion, product/user reasoning,
+UX versus prototype correction ownership and delivery-review separation where those duties apply.
+Preserve proportionality, adequate-work acceptance and evaluated skips. Exercise a profile reused
+across roles to check that specialized duties do not leak into unrelated roles.
+
+Reuse existing observation, upstream-return, repair and delivery-gate tests; this change introduces
+no schema or routing mechanism. Review delivered instructions against owning role documents.
+Recording providers establish instruction delivery, not model compliance or rendered design quality.
+Unchanged browser/image tooling does not require another host capability exercise for this guidance
+change; applicable product prototypes still require their own independent observations.
+
 ## Test discipline
 
 Keep edge cases at the narrowest effective scope. Add broader coverage only for interactions that
