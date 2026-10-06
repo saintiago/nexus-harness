@@ -257,6 +257,9 @@ embedded in full. Legacy combined records remain readable at their original path
 them. Validate referenced current, upstream and repair records through existing producer-owned
 readers and report bindings; switching presentation to paths does not bypass report usability,
 source association, revision checks or producer-attributed rejection retention.
+An accepted or skipped upstream result requires its producing author and evaluator records before
+consumer invocation. Missing required records use the producing role's rejection handling; absent
+upstream stages remain legitimate, and retained legacy combined records need no Markdown binding.
 
 Active correction context is distinct from supporting history. Include the retained human question
 and captured answer/feedback, the upstream request's concrete correction, outstanding report

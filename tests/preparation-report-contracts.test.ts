@@ -729,14 +729,69 @@ it('attributes an unusable upstream context report to its stage author', async (
   await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
 });
 
-it.each([
-  { role: 'author' as const, change: 'changed' as const },
-  { role: 'author' as const, change: 'removed' as const },
-  { role: 'evaluator' as const, change: 'changed' as const },
-  { role: 'evaluator' as const, change: 'removed' as const },
-])(
-  'rejects the $change upstream $role Markdown before the next stage is invoked',
-  async ({ role, change }) => {
+it('keeps absent upstream stages and legacy combined upstream evidence usable', async () => {
+  const { selectionFile, root } = await stageArea();
+  const selection = selectionDeclaration.schema.parse(
+    JSON.parse(await readFile(selectionFile, 'utf8')),
+  );
+  await expect(upstreamReferences(selection, 'ux')).resolves.toEqual([]);
+  const roundRoot = path.join(root, 'artifacts', '3');
+  const author = JSON.parse(
+    await readFile(path.join(root, 'artifacts', '2', 'author.json'), 'utf8'),
+  );
+  await writeFile(path.join(roundRoot, 'author.json'), JSON.stringify({ ...author, revision: 3 }));
+  await writeFile(
+    path.join(roundRoot, 'evaluation.json'),
+    JSON.stringify({
+      assessedRevision: 3,
+      verdict: 'accepted-skip',
+      reason: 'Not applicable.',
+      findings: [],
+      observation: null,
+      upstream: null,
+      basis: {
+        author: { path: path.join(roundRoot, 'author.json') },
+        authorIdentity: 'legacy',
+        sourceIdentity: 'legacy',
+        upstream: [],
+        content: [],
+      },
+    }),
+  );
+  await writeFile(
+    path.join(roundRoot, 'result.json'),
+    JSON.stringify({
+      stage,
+      outcome: 'skipped',
+      authoredRevision: 3,
+      documents: [],
+      outputs: [],
+      evaluation: { path: path.join(roundRoot, 'evaluation.json') },
+      reason: 'Not applicable.',
+      returnStage: null,
+      returnFinding: null,
+    }),
+  );
+  const references = await upstreamReferences(selection, 'architecture');
+  expect(references).toHaveLength(1);
+  expect(references[0]?.lines.join('\n')).toContain('requirements stage result (skipped):');
+  await expect(readReportFeedback(root)).resolves.toEqual([]);
+});
+
+it.each(
+  (['author', 'evaluator'] as const).flatMap((consumer) =>
+    (['author', 'evaluator'] as const).flatMap((role) =>
+      (['changed', 'removed', 'missing-record'] as const).flatMap((change) =>
+        (change === 'missing-record'
+          ? (['skipped', 'accepted'] as const)
+          : (['skipped'] as const)
+        ).map((resultOutcome) => ({ consumer, role, change, resultOutcome })),
+      ),
+    ),
+  ),
+)(
+  'rejects $change $resultOutcome upstream $role evidence before the next stage $consumer is invoked',
+  async ({ consumer, role, change, resultOutcome }) => {
     const { selectionFile, root } = await stageArea();
     const issueRoot = path.dirname(root);
     const common = {
@@ -745,23 +800,24 @@ it.each([
       git: scriptedGit([repositoryState()]).git,
       publish: () => undefined,
     };
-    // A real requirements round authors a skip, an evaluator accepts it and the stage result is
-    // saved, so a later stage builds on bound upstream Markdown.
+    // A real requirements round retains an evaluated authored revision or applicability skip.
+    const response =
+      resultOutcome === 'accepted'
+        ? { ...conformingSkipResponse, outcome: 'authored', skip: null }
+        : conformingSkipResponse;
+    const verdict = resultOutcome === 'accepted' ? 'accepted' : 'accepted-skip';
     await expect(
-      createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+      createStageAuthor({ ...common, runner: authorRunner(response, []) })({
         task: 'propose',
       }),
-    ).resolves.toBe('skip-proposed');
+    ).resolves.toBe(response.outcome);
     await expect(
       createStageEvaluator({
         ...common,
-        runner: evaluatorRunner(
-          { verdict: 'accepted-skip', observation: null, upstream: null },
-          [],
-        ),
+        runner: evaluatorRunner({ verdict, observation: null, upstream: null }, []),
       })(),
-    ).resolves.toBe('accepted-skip');
-    await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
+    ).resolves.toBe(verdict);
+    await expect(createStageResult(common)({ outcome: resultOutcome })).resolves.toBe('saved');
     const record = path.join(
       root,
       'artifacts',
@@ -771,13 +827,8 @@ it.each([
     const saved = JSON.parse(await readFile(record, 'utf8')) as {
       readonly report: { readonly path: string };
     };
-    if (change === 'changed') {
-      await writeFile(saved.report.path, 'Replacement report.\n');
-    } else {
-      await rm(saved.report.path);
-    }
 
-    // The downstream UX author must not reach its provider on changed or missing upstream
+    // The downstream UX role must not reach its provider on changed or missing upstream
     // evidence: the reference read validates the producer binding first.
     const uxSelection = path.join(issueRoot, 'ux-selection.json');
     await writeFile(
@@ -810,7 +861,31 @@ it.each([
       publish: () => undefined,
       runner: authorRunner(conformingSkipResponse, contexts),
     });
-    await expect(uxAuthor({ task: 'propose' })).rejects.toThrow(
+    if (consumer === 'evaluator') {
+      await expect(uxAuthor({ task: 'propose' })).resolves.toBe('skip-proposed');
+      contexts.length = 0;
+    }
+    if (change === 'changed') {
+      await writeFile(saved.report.path, 'Replacement report.\n');
+    } else if (change === 'removed') {
+      await rm(saved.report.path);
+    } else {
+      await rm(record);
+    }
+    const invoke =
+      consumer === 'author'
+        ? () => uxAuthor({ task: 'propose' })
+        : createStageEvaluator({
+            selectionFile: uxSelection,
+            stage: 'ux',
+            git: common.git,
+            publish: () => undefined,
+            runner: evaluatorRunner(
+              { verdict: 'accepted-skip', observation: null, upstream: null },
+              contexts,
+            ),
+          });
+    await expect(invoke()).rejects.toThrow(
       change === 'changed' ? /does not match the identity recorded/ : /does not exist/,
     );
     expect(contexts).toEqual([]);
@@ -820,13 +895,20 @@ it.each([
       kind: 'rejection',
       scope: { area: root, workId: 'KAN-76', role: `requirements-${role}` },
       source: { path: record },
-      assignedReport: saved.report,
+      assignedReport: change === 'missing-record' ? null : saved.report,
       operation: `stage-${role}`,
       reason:
         change === 'changed'
           ? expect.stringContaining('does not match')
           : expect.stringContaining('does not exist'),
     });
+    if (change === 'missing-record') {
+      expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+        invocationId: null,
+        output: null,
+        profile: 'nexus-sol',
+      });
+    }
     await expect(readReportFeedback(path.join(issueRoot, 'ux'))).resolves.toEqual([]);
   },
 );
@@ -1333,6 +1415,30 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
   },
 );
 
+/** Alternating headings and lists must preserve the association of scope and exclusion. */
+function scopeList(type: 'bulletList' | 'orderedList') {
+  const paragraph = (text: string) => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+  const nested = (text: string) => ({
+    type: 'bulletList',
+    content: [{ type: 'listItem', content: [paragraph(text)] }],
+  });
+  return {
+    type,
+    attrs: { order: 4 },
+    content: [
+      {
+        type: 'listItem',
+        content: [
+          paragraph('In scope:'),
+          nested('Password reset'),
+          paragraph('Out of scope:'),
+          nested('Enterprise SSO'),
+        ],
+      },
+    ],
+  };
+}
+
 /** The rich captured issue the readable-rendering check inspects: structure, administration and
  * an unsupported meaningful node. */
 const readableIssue = {
@@ -1345,6 +1451,7 @@ const readableIssue = {
       type: 'doc',
       version: 1,
       content: [
+        scopeList('bulletList'),
         { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Scope' }] },
         {
           type: 'paragraph',
@@ -1638,6 +1745,9 @@ it('renders captured source readably, retains its exact evidence and embeds no A
   expect(context).toContain('4. Fourth step.');
   expect(context).toContain('| SSO | Excluded by the table: enterprise SSO. |');
   expect(context).toContain('- [ ] Checklist: keep the shortcuts.');
+  expect(context).toContain(
+    '- In scope:\n    - Password reset\n    Out of scope:\n    - Enterprise SSO',
+  );
   // Captured relationships stay readable evidence instead of being dismissed as administration.
   expect(context).toContain('- parent:');
   expect(context).toContain('- HARN-100 "Parent epic" (Epic, status In Progress)');
@@ -1729,6 +1839,83 @@ it('renders captured source readably, retains its exact evidence and embeds no A
     issue: readableIssue,
     conversation: readableConversation,
   });
+});
+
+it.each(['bulletList', 'orderedList'] as const)(
+  'preserves alternating paragraphs and nested %s lists in every captured source field',
+  (type) => {
+    const list = scopeList(type);
+    const document = { type: 'doc', content: [list] };
+    const text = capturedSourceText({
+      sourcePath: '/tmp/captured-source.json',
+      task: {
+        key: 'KAN-76',
+        fields: {
+          description: document,
+          customfield_10100: document,
+          customfield_10101: {
+            type: 'doc',
+            content: [
+              {
+                type: 'table',
+                content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [list] }] }],
+              },
+            ],
+          },
+        },
+      },
+      conversation: [{ id: 'c1', body: document }],
+      publications: [],
+    });
+    const marker = type === 'orderedList' ? '4.' : '-';
+    expect(
+      text.split(
+        `${marker} In scope:\n    - Password reset\n    Out of scope:\n    - Enterprise SSO`,
+      ),
+    ).toHaveLength(3);
+    expect(text).toContain(
+      `${marker} In scope:\n     - Password reset\n     Out of scope:\n     - Enterprise SSO`,
+    );
+    expect(text).toContain(
+      `| ${marker} In scope: - Password reset Out of scope: - Enterprise SSO |`,
+    );
+    expect(text.match(/Password reset/g)).toHaveLength(4);
+    expect(text.match(/Enterprise SSO/g)).toHaveLength(4);
+  },
+);
+
+it('preserves inline qualifications after a checklist nested list', () => {
+  const text = capturedSourceText({
+    sourcePath: '/tmp/captured-source.json',
+    task: {
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'taskList',
+              content: [
+                {
+                  type: 'taskItem',
+                  attrs: { state: 'TODO' },
+                  content: [
+                    { type: 'text', text: 'In scope:' },
+                    scopeList('bulletList'),
+                    { type: 'text', text: 'Keep these qualifications.' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    conversation: [],
+    publications: [],
+  });
+  expect(text).toContain('- [ ] In scope:\n    - In scope:');
+  expect(text.indexOf('Enterprise SSO')).toBeLessThan(text.indexOf('Keep these qualifications.'));
+  expect(text.match(/Keep these qualifications/g)).toHaveLength(1);
 });
 
 it('renders every rich-text child once with its captured structure and numbering', () => {

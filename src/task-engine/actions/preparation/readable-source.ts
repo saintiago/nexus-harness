@@ -262,7 +262,7 @@ function renderList(
   });
 }
 
-/** One list item's own blocks, followed by its nested lists, each rendered once. */
+/** One list item's children, rendered once in captured order under its enclosing marker. */
 function renderListItem(
   item: Readonly<Record<string, unknown>>,
   marker: string,
@@ -270,22 +270,20 @@ function renderListItem(
   depth: number,
   indent: string,
 ): string[] {
-  const contents = nodesOf(item.content).filter(isObject);
-  const blocks = contents
-    .filter((child) => !isListNode(child))
-    .flatMap((child) => renderBlock(child, sourcePath, 0));
-  const nested = contents
-    .filter(isListNode)
-    .flatMap((child) => renderBlock(child, sourcePath, depth + 1));
-  if (blocks.length === 0) {
-    return [`${indent}${marker.trimEnd()}`, ...nested];
+  const lines: string[] = [];
+  for (const child of nodesOf(item.content)) {
+    if (isListNode(child)) {
+      if (lines.length === 0) lines.push(`${indent}${marker.trimEnd()}`);
+      lines.push(...renderBlock(child, sourcePath, depth + 1));
+    } else {
+      for (const line of renderBlock(child, sourcePath, 0)) {
+        lines.push(
+          lines.length === 0 ? `${indent}${marker}${line.trimStart()}` : `${indent}  ${line}`,
+        );
+      }
+    }
   }
-  const [first, ...rest] = blocks;
-  return [
-    `${indent}${marker}${first?.trimStart() ?? ''}`,
-    ...rest.map((line) => `${indent}  ${line}`),
-    ...nested,
-  ];
+  return lines.length === 0 ? [`${indent}${marker.trimEnd()}`] : lines;
 }
 
 /** One checklist's items: task-item content is inline, with nested lists rendered under it. */
@@ -301,18 +299,30 @@ function renderTaskList(
     }
     const attrs = isObject(item.attrs) ? item.attrs : {};
     const state = attrs.state === 'DONE' ? 'x' : ' ';
-    const contents = nodesOf(item.content).filter(isObject);
-    const text = contents
-      .filter((child) => !isListNode(child))
-      .map((child) => renderInline(child, sourcePath))
-      .join('')
-      .split('\n')
-      .map((line) => line.trim())
-      .join(' ');
-    const nested = contents
-      .filter(isListNode)
-      .flatMap((child) => renderBlock(child, sourcePath, depth + 1));
-    return [`${indent}- [${state}] ${text}`.trimEnd(), ...nested];
+    const lines: string[] = [];
+    let inline = '';
+    const flushInline = () => {
+      const text = inline
+        .split('\n')
+        .map((line) => line.trim())
+        .join(' ');
+      if (text !== '' || lines.length === 0) {
+        lines.push(
+          (lines.length === 0 ? `${indent}- [${state}] ${text}` : `${indent}  ${text}`).trimEnd(),
+        );
+      }
+      inline = '';
+    };
+    for (const child of nodesOf(item.content)) {
+      if (isListNode(child)) {
+        flushInline();
+        lines.push(...renderBlock(child, sourcePath, depth + 1));
+      } else {
+        inline += renderInline(child, sourcePath);
+      }
+    }
+    flushInline();
+    return lines;
   });
 }
 

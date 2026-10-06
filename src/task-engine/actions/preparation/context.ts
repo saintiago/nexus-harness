@@ -187,6 +187,7 @@ export async function upstreamReferences(
         role: 'author',
         profile: plan.profiles.author,
         context: upstreamContext(earlier, 'author', plan.round, stage),
+        required: result?.outcome === 'accepted' || result?.outcome === 'skipped',
       });
       if (author !== null) {
         if (isBoundStageAuthorOutput(author)) {
@@ -228,6 +229,7 @@ export async function upstreamReferences(
         role: 'evaluator',
         profile: plan.profiles.evaluator,
         context: upstreamContext(earlier, 'evaluator', plan.round, stage),
+        required: result?.outcome === 'accepted' || result?.outcome === 'skipped',
       });
       if (evaluation !== null && isBoundStageEvaluationOutput(evaluation)) {
         // The accepted result's own assessment is evidence later stages rely on; validate its
