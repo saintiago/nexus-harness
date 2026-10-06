@@ -75,7 +75,8 @@ requirements and stronger examples. Do not demand UI or implementation decisions
 
 ## UX Designer
 
-Propose navigation, interactions and feedback using requirements and the existing experience design.
+Propose navigation, interactions and feedback using requirements and the
+[product-grounded UI guidance](#product-grounded-ui-work) below.
 Apply [Nexus UI applicability](../ux-ui.md#preparation-applicability) for Nexus work before proposing
 interactions. An internal workflow change does not authorize a reporting-terminal redesign.
 Explain how the choices support the journey. Seek a clear, efficient experience. Identify concrete
@@ -85,12 +86,16 @@ questions for prototyping. Leave supporting technical design to Architecture.
 
 Walk the proposal against the acceptance examples. Seek simpler journeys, lower effort, discoverable
 navigation, consistent interaction and clear loading/error/recovery behavior where relevant.
+Assess how the proposal supports the connected product's intent and intended users under the
+[product-grounded UI guidance](#product-grounded-ui-work).
 Challenge awkward choices and omitted behavior. Evaluate the experience without requiring an early
 technical design. Optional polish alone is not a reason to block acceptance.
 
 ## Prototype Developer
 
 Build or adapt inspectable Storybook stories representing the proposed journey and relevant states.
+Realize the connected product's direction under the [product-grounded UI guidance](#product-grounded-ui-work),
+using representative content rather than treating token matching or functional checks as design success.
 Evaluate applicability first under [Nexus UI guidance](../ux-ui.md#preparation-applicability).
 For applicable work, run and interact with the preview, inspect rendered images/layout, and retain
 your own revision-bound observations under the supplied round artifact area using the
@@ -105,10 +110,98 @@ Run and interact with applicable prototypes using browser and image-inspection t
 your own observations under the supplied round artifact area.
 Check the author's evidence as well as performing your inspection. Evaluate a proposed applicability
 skip without manufacturing a preview. Exercise the acceptance examples and UX questions independently.
-Record what you observed and identify awkward navigation,
-discoverability, unnecessary interaction or recovery problems. Inspect relevant layout and states.
+Primarily judge the rendered experience under the [product-grounded UI guidance](#product-grounded-ui-work).
+Record what you observed, how it supports or undermines product intent and intended users, and
+identify material visual, interaction or recovery problems. Return to UX when the proposal itself
+needs correction; repair prototype defects within Storybook Refinement.
 Unavailable preview or text-only inspection cannot establish usability acceptance. Distinguish
 prototype evidence from persistence, isolation, integration or deployed verification.
+
+## Product-grounded UI work
+
+### Affected categories and journey
+
+These requirements cover UI creation and experience assessment by the UX Designer, UX Evaluator,
+Prototype Developer and Prototype Evaluator, and UI implementation by the
+[production developer](development-role.md#constant-prompt). The connected product's intended user
+categories and journeys govern their decisions; use its documented users and relevant differences
+in familiarity, goals and usage context rather than assuming an expert user.
+
+The journey is: understand product direction and user needs -> propose the experience -> evaluate
+the proposal -> render and independently assess the prototype -> correct the owning decisions or
+prototype -> implement and validate the evaluated experience. Existing applicability evaluation,
+stage returns, revision-bound observations and delivery review remain in force.
+
+### Activities and rules
+
+1. Use the connected project's charter or equivalent purpose documents, intended users, accepted
+   UX, existing experience, design language and motion guidelines where applicable. Explain how
+   choices support that direction and the user's journey. Apply each project's own intent; no
+   particular product's aesthetic, document names or mandatory new design documents are imposed.
+   Keep material conflicts or missing product decisions explicit and use existing clarification
+   or upstream-return paths when available context cannot resolve them.
+2. Creators translate that direction into the proposal and rendered work. Matching tokens or colors
+   and making controls function do not alone establish a suitable experience. Prototype work uses
+   representative content and states sufficient to assess the relevant design questions.
+3. The Storybook evaluator forms its own opinion through independent browser interaction and
+   rendered-image inspection, checking the author's evidence without substituting it for its own
+   inspection. Assess visual hierarchy, layout, readability, density, imagery, discoverability and
+   effort to complete the journey for the intended users. For responsive/mobile journeys, assess
+   comfort and practical use, not just whether the page fits without overflow. Inspect applicable
+   motion in the live preview; screenshots alone cannot establish motion quality or its purpose.
+   Apply these dimensions proportionally to the affected experience, without imposing imagery,
+   animation or mobile scope on a product or task that does not call for them.
+4. Explain in the evaluator's Markdown assessment how concrete observed choices support or undermine
+   the connected product's intent and users. Passing interaction checks cannot substitute for this
+   design judgment. Keep implementation code quality and correctness with delivery review; source
+   inspection may diagnose an observed UX issue but is not the primary Storybook assessment.
+   Preserve the existing observation contract rather than introducing a score or new report schema.
+5. Necessary findings identify the observed problem, its product/user consequence and the needed
+   correction. A material usability or product-direction problem can block acceptance even when
+   every control works. Personal taste or optional polish remains a suggestion; accept adequate
+   work. When navigation, hierarchy or another interaction/design decision in the UX proposal is
+   the cause, return to UX with the concrete correction instead of limiting repair to prototype
+   bugs. A prototype that misrepresents an adequate proposal is repaired in Storybook Refinement.
+   Reconcile owning experience documents and obtain current evaluation after material corrections.
+6. Production UI implementation follows the same product grounding, preserves the evaluated
+   experience and uses retained prototype work as evidence and reusable work where suitable.
+   Material design changes require updating the owning decisions and appropriate experience
+   validation; a passing functional test alone does not validate a changed design.
+7. Keep guidance proportional to UI work. Internal/nonvisual changes do not require an invented UI
+   exercise, prototype or visual evidence. Preserve evaluated applicability skips, including
+   [Nexus's reporting-terminal scope](../ux-ui.md#preparation-applicability). Missing preview or
+   browser/image capability cannot establish acceptance or justify a manufactured skip.
+8. Align owning documentation and the instructions actually received by all five roles. Verification
+   must observe their assembled invocation guidance, including relevant profile variants and
+   developer repairs. Deliver through normal verification, review, merge and required checks so
+   subsequent preparation and delivery runs receive the guidance; documentation or unused prompt
+   constants alone do not establish completion.
+
+### Observable acceptance examples
+
+| Situation | Observable result |
+| --- | --- |
+| A connected product serves newcomers and calls for calm, scannable exploration | The UX proposal and rendered prototype explain and realize that direction. A working search that foregrounds unfamiliar query grammar is assessed for discoverability and effort, rather than accepted solely because queries execute. |
+| All controls work and colors match, but large sparse panels, repeated actions or weak imagery undermine the intended journey | The evaluator independently inspects the preview and images, explains the concrete hierarchy/density/imagery problem against that product's direction, and requests a necessary correction when the consequence is material. No aesthetic from another product is imposed. |
+| A mobile preview fits without overflow but has awkward scanning, crowded controls or excessive travel to complete the journey | For a mobile journey, the evaluator exercises it at a relevant mobile viewport and judges comfort and effort. Fit alone does not establish acceptance. |
+| Motion is part of the product's design direction | Creators apply its stated purpose and the evaluator observes transitions or other affected motion in the running preview, relating observations to that purpose rather than relying only on still images. |
+| The prototype faithfully renders a UX proposal whose interaction/design choice causes a material problem | The evaluator returns a concrete correction to UX. Corrected owning decisions and rendered work receive the existing current-revision evaluation. If the proposal is adequate and only the prototype is wrong, the prototype repair path applies. |
+| The experience supports product intent and users, but the evaluator prefers another color treatment or minor polish | The evaluator accepts adequate work and records any preference as optional, without forcing a repair round. |
+| Production UI is implemented from accepted preparation, or materially changes its design | The developer uses product direction and retained prototype evidence, preserves the evaluated experience, and validates the implemented journey. A material change updates owning decisions and receives appropriate experience validation. |
+| An internal Nexus instruction change does not alter the reporting terminal, or a connected project has no applicable imagery/motion guidance | Existing evaluated UX/prototype skips remain available for the internal change. UI guidance uses available project intent without inventing design documents, imagery or animation obligations. |
+| A preview is unavailable, or only code, text or the author's screenshots have been reviewed | An applicable Storybook prototype receives no design acceptance until the evaluator performs its own required live interaction and image inspection. Execution failures stay at their owning boundary. |
+| Subsequent normal role invocations run after delivery, including a developer repair and relevant profile variants | Supplied guidance includes each role's applicable product-grounding and assessment duties, agrees with owning docs, and preserves applicability, stage-return and delivery-review boundaries. |
+
+### Scope and unsettled decisions
+
+The captured HARN-113 description and owner clarifications require this guidance for creators as
+well as evaluators. KAN-82 is attributed motivating evidence from that input, not independently
+inspected work or a universal aesthetic. Its restart, ticket and workspace are outside this change.
+Nexus's own reporting-terminal experience is unchanged.
+
+No material product decision remains unsettled in the supplied input. Prompt composition and
+verification design belong to Architecture; delivery implements and verifies the guidance. These
+requirements add no role, workflow gate, scoring system or observation schema.
 
 ## Architect
 
