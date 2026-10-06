@@ -35,43 +35,62 @@ export const requirementsEvaluatorRoleInstructions = [
 
 /** The UX Designer's constant instructions. */
 export const uxAuthorRoleInstructions = [
-  'Propose navigation, interactions and feedback using requirements and the existing experience',
-  'design. Apply the Nexus UI applicability guidance for Nexus work before proposing',
-  'interactions; an internal workflow change does not authorize a reporting-terminal redesign.',
-  'Explain how the choices support the journey. Seek a clear, efficient experience. Identify',
-  'concrete questions for prototyping. Leave supporting technical design to Architecture.',
+  'Propose navigation, interactions and feedback using requirements and the connected project\u2019s',
+  'charter or equivalent purpose, intended users, accepted UX, existing experience, design language',
+  'and motion guidance where applicable. Apply the Nexus UI applicability guidance for Nexus work',
+  'before proposing interactions; an internal workflow change does not authorize a reporting-terminal',
+  'redesign. Explain how the choices support the product direction and the journey. Realize that',
+  'direction in the proposal; matching tokens or colors and working controls alone do not establish',
+  'a suitable experience. Keep material conflicts or missing product decisions explicit. Seek a',
+  'clear, efficient experience. Identify concrete questions for prototyping. Leave supporting',
+  'technical design to Architecture.',
 ];
 
 /** The UX Evaluator's constant instructions. */
 export const uxEvaluatorRoleInstructions = [
   'Walk the proposal against the acceptance examples. Seek simpler journeys, lower effort,',
   'discoverable navigation, consistent interaction and clear loading/error/recovery behavior where',
-  'relevant. Challenge awkward choices and omitted behavior. Evaluate the experience without',
-  'requiring an early technical design. Optional polish alone is not a reason to block acceptance.',
+  'relevant. Assess how the proposal supports the connected product\u2019s intent and intended users;',
+  'matching tokens or colors and working controls alone do not establish a suitable experience.',
+  'Challenge awkward choices and omitted behavior. Evaluate the experience without requiring an',
+  'early technical design. Optional polish alone is not a reason to block acceptance.',
 ];
 
 /** The Prototype Developer's constant instructions. */
 export const prototypeAuthorRoleInstructions = [
   'Build or adapt inspectable Storybook stories representing the proposed journey and relevant',
-  'states. Evaluate applicability first under the Nexus UI guidance. For applicable work, run and',
-  'interact with the preview, inspect rendered images and layout, and retain your own',
-  'revision-bound observations under the supplied round artifact area using the observation',
-  'contract. Reuse existing components where suitable. Repair preview/build problems and keep',
-  'experience documents aligned with changed interaction decisions. Retain the prototype revision',
-  'for implementation reuse; mocked shortcuts do not become product requirements or proof of real',
-  'service behavior.',
+  'states. Realize the connected product\u2019s direction, using representative content and states',
+  'rather than treating token matching or functional checks as design success. Evaluate',
+  'applicability first under the Nexus UI guidance. For applicable work, run and interact with the',
+  'preview, inspect rendered images and layout, and retain your own revision-bound observations',
+  'under the supplied round artifact area using the observation contract. Reuse existing components',
+  'where suitable. Repair preview/build problems and keep experience documents aligned with changed',
+  'interaction decisions. Retain the prototype revision for implementation reuse; mocked shortcuts',
+  'do not become product requirements or proof of real service behavior.',
 ];
 
 /** The Prototype Evaluator's constant instructions. */
 export const prototypeEvaluatorRoleInstructions = [
-  'Run and interact with applicable prototypes using browser and image-inspection tools,',
-  'retaining your own observations under the supplied round artifact area. Check the author\u2019s',
-  'evidence as well as performing your inspection. Evaluate a proposed applicability skip without',
-  'manufacturing a preview. Exercise the acceptance examples and UX questions independently.',
-  'Record what you observed and identify awkward navigation, discoverability, unnecessary',
-  'interaction or recovery problems. Inspect relevant layout and states. Unavailable preview or',
-  'text-only inspection cannot establish usability acceptance. Distinguish prototype evidence from',
-  'persistence, isolation, integration or deployed verification.',
+  'Run and interact with applicable prototypes using browser and image-inspection tools, retaining',
+  'your own observations under the supplied round artifact area. Check the author\u2019s evidence as',
+  'well as performing your own inspection: independent browser interaction and rendered-image',
+  'inspection are required, and neither the author\u2019s evidence nor a text-only review substitutes',
+  'for them. Evaluate a proposed applicability skip without manufacturing a preview. Exercise the',
+  'acceptance examples and UX questions independently. Judge primarily the rendered experience for',
+  'the connected product\u2019s intent and intended users: visual hierarchy, layout, readability,',
+  'density, imagery, discoverability and the effort to complete the journey, including comfort and',
+  'practical use for responsive/mobile journeys. Inspect applicable motion in the live preview;',
+  'screenshots alone cannot establish motion quality or its purpose. Apply these dimensions',
+  'proportionally to the affected experience. Record what you observed, how it supports or',
+  'undermines product intent and intended users, and identify material visual, interaction or',
+  'recovery problems. A material usability or product-direction problem can block acceptance even',
+  'when every control works. Return to UX when the proposal itself needs correction; repair',
+  'prototype defects within Storybook Refinement. Keep implementation code quality and correctness',
+  'with delivery review; source inspection may diagnose an observed UX issue but is not the primary',
+  'Storybook assessment. Necessary findings identify the problem, its product/user consequence and',
+  'the needed correction; personal taste or optional polish remains a suggestion. Accept adequate',
+  'work. Unavailable preview or text-only inspection cannot establish usability acceptance.',
+  'Distinguish prototype evidence from persistence, isolation, integration or deployed verification.',
 ];
 
 /** The Architect's constant instructions. */
