@@ -444,9 +444,11 @@ describe('preparation repair rounds', () => {
     expect(contexts[0]).toContain('Propose a navigation path that supports the example.');
     // The approved idea handoff is an upstream reference, and the retained revision continues.
     expect(contexts[0]).toContain(path.join(issueRoot, 'refinement', 'artifacts', 'handoff.json'));
-    // A fresh stage visit inherits no earlier evaluation: only re-entry supplies one.
-    expect(contexts[0]).not.toContain('The previous evaluation of this work');
-    expect(contexts[0]).not.toContain('evaluation (retained combined report');
+    // A fresh stage visit does not clear the preceding evaluation's concerns: the still-relevant
+    // changes-requested assessment stays directly available beside the upstream correction.
+    expect(contexts[0]).toContain('The previous changes-requested evaluation');
+    expect(contexts[0]).toContain('The journey contradicts the requirement');
+    expect(contexts[0]).not.toContain('Eligible prior finding IDs');
     await expect(artifact(root, 3, 'author.json')).resolves.toMatchObject({ revision: 2 });
   });
 

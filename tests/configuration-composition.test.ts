@@ -38,7 +38,10 @@ import {
   type NexusConfiguration,
   type ProjectConfiguration,
 } from '../src/configuration/index.js';
-import { preparationSharedInstructions } from '../src/task-engine/actions/preparation/context.js';
+import {
+  preparationReportingGuidance,
+  preparationSharedGuidance,
+} from '../src/task-engine/actions/preparation/context.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
 const configurationDirectory = '/etc/nexus/project';
@@ -376,10 +379,13 @@ describe('AgentRuntime construction', () => {
       for (const instruction of instructions) {
         expect(request.prompt, `${role}: ${instruction}`).toContain(instruction);
       }
-      // The shared preparation guidance belongs to the action-supplied stage context, never to a
-      // selected profile: a profile carries only the invoked role's specific instructions.
-      expect(attached.join('\n')).not.toContain(preparationSharedInstructions);
-      expect(request.prompt).not.toContain(preparationSharedInstructions);
+      // The shared preparation guidance and the reporting mechanics belong to the action-supplied
+      // stage context, never to a selected profile: a profile carries only the invoked role's
+      // specific instructions.
+      expect(attached.join('\n')).not.toContain(preparationSharedGuidance);
+      expect(attached.join('\n')).not.toContain(preparationReportingGuidance);
+      expect(request.prompt).not.toContain(preparationSharedGuidance);
+      expect(request.prompt).not.toContain(preparationReportingGuidance);
       expect(request.prompt).toContain(context);
       for (const other of selected) {
         if (other.role !== role) {

@@ -50,6 +50,7 @@ import {
   type StageEvaluationResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
+import { capturedSourcePathOf, retainCapturedSource } from '../readable-source.js';
 import {
   preparationWorktree,
   readStageRoleArtifact,
@@ -311,18 +312,27 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     }
 
     const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-    // A response or reassessment round judges the preceding evaluation's concerns against the
-    // current revision it assesses; a fresh round was already evaluated on its own revision, if at
-    // all.
+    // The most recent preceding evaluation supplies the still-relevant concerns for this
+    // assessment; an intervening author-only round, a return, a question, a restart or a `new`
+    // route label never clears them.
     let previous: RetainedStageEvaluationOutput | null = null;
     let previousRound: number | null = null;
-    if (plan.route !== 'new') {
-      for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
-        const retained = await readEvaluation(earlier);
+    for (let earlier = plan.round - 1; earlier >= 1; earlier -= 1) {
+      const retained = await readEvaluation(earlier);
+      if (retained !== null) {
+        previous = retained;
+        previousRound = earlier;
+        break;
+      }
+    }
+    // Author rounds retained after that evaluation carry corrections and disagreements the
+    // evaluator must inspect before judging the current revision.
+    const interveningAuthors: { round: number; author: RetainedStageAuthorOutput }[] = [];
+    if (previousRound !== null) {
+      for (let earlier = previousRound + 1; earlier < plan.round; earlier += 1) {
+        const retained = await readAuthor(earlier);
         if (retained !== null) {
-          previous = retained;
-          previousRound = earlier;
-          break;
+          interveningAuthors.push({ round: earlier, author: retained });
         }
       }
     }
@@ -352,6 +362,12 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
               : { outcome: terminal.outcome, reason: terminal.reason };
           })()
         : null;
+    const capturedSource = capturedSourcePathOf(assignedReport.path);
+    await retainCapturedSource({
+      file: capturedSource,
+      task: selection.task,
+      conversation: selection.conversation,
+    });
     const context = await stageContextText({
       selection,
       plan,
@@ -361,24 +377,21 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       authorRound: plan.round,
       evaluation: previous,
       evaluationRound: previousRound,
+      interveningAuthors,
       report: assignedReport,
+      capturedSource,
       retained: retainedDecision,
       feedback: outstanding,
-      rejectUnreadableReport,
-    });
-    const result = await settings.runner.run({
-      operation: 'stage-evaluator',
-      invocationId,
-      profile: evaluatorProfile,
-      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
-      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
-      workspace: { root: selection.workspace.root },
-      context: [
-        context,
+      work: [
         `Assess the exact authored revision ${String(author.revision)} and judge whether earlier ` +
           'concerns remain. Accept adequate work, the author\u2019s evaluated skip or a concrete ' +
           'upstream return; separate necessary changes from optional suggestions.',
-        `Assigned Markdown report: ${assignedReport.path}`,
+        `The repository revision this evaluation observes: ${basis.repositoryRevision}. Assess ` +
+          'the ticket against the current authoritative documents and the changed stage work in ' +
+          'the supplied shared checkout; a submission that declares no changed files does not ' +
+          'restrict your scope.',
+      ],
+      reporting: [
         'Write the complete assessment to that path before returning: the current findings with ' +
           'their evidence, the acceptance, skip or change explanation, any optional suggestions ' +
           'and remaining disagreements. Return the minimal response object only; the action adds ' +
@@ -389,10 +402,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             'record and the round artifact area.'
           : 'The observation field is null; only the Storybook Refinement stage retains an ' +
             'observation record.',
-        `The repository revision this evaluation observes: ${basis.repositoryRevision}. ` +
-          'Assess the ticket against the current authoritative documents and the changed stage ' +
-          'work in the supplied shared checkout; a submission that declares no changed files ' +
-          'does not restrict your scope.',
         ...(basis.content.length === 0
           ? []
           : [
@@ -413,7 +422,17 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
           roundArtifactFile(root, plan.round, stageResultArtifact.pathFromArtifactsRoot),
         ]),
         responseFormatText(stageEvaluationResponseSchema),
-      ].join('\n\n'),
+      ],
+      rejectUnreadableReport,
+    });
+    const result = await settings.runner.run({
+      operation: 'stage-evaluator',
+      invocationId,
+      profile: evaluatorProfile,
+      // The invocation's workspace is the preparation issue root; AgentRuntime resolves the one
+      // shared checkout at its worktree/ child. Stage areas only hold artifacts.
+      workspace: { root: selection.workspace.root },
+      context,
       outputSchema: z.toJSONSchema(stageEvaluationResponseSchema),
       task: selection.taskKey,
     });

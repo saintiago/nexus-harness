@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { readBoundReport, type ReportBinding } from '../agent-reports.js';
 import { messageOf, type ArtifactRef } from '../../../result.js';
-import { readDocumentText } from '../documents.js';
 import { issueSummary } from '../source.js';
 import type { Selection } from '../select-task/artifacts.js';
 import {
@@ -15,6 +14,8 @@ import {
   isBoundStageAuthorOutput,
   isBoundStageEvaluationOutput,
   stageAuthorArtifact,
+  stageEvaluationArtifact,
+  stagePlanArtifact,
   stageResultArtifact,
   type PreparationStage,
   type RetainedStageAuthorOutput,
@@ -37,48 +38,48 @@ import {
   type ReportRejection,
   type RetainedReportFeedback,
 } from '../report-feedback.js';
+import { capturedSourceText } from './readable-source.js';
 
 /**
- * The context every evaluated preparation role receives: the shared preparation instructions, the
- * captured issue input and conversation as the authoritative source, the connected project
- * worktree, references to accepted upstream outputs and the current round's authored revision and
- * preceding evaluation as readable repair context. Role constants come from the selected profile;
- * this module supplies the stage material and the shared guidance.
+ * The context every evaluated preparation role receives. The selected profile supplies the role's
+ * constant purpose and standards; this module supplies the shared work and quality guidance once,
+ * the readable captured source with its active corrections, references to the worktree, repository
+ * instructions, upstream artifacts and local history, and finally the reporting mechanics. It
+ * renders captured values directly and references retained bodies instead of embedding them.
  */
 
 /**
- * The shared instructions every preparation role carries once per invocation, ahead of its
- * role-specific context. The preparation roles document owns the wording.
+ * The shared work and quality guidance every preparation role carries once per invocation, after
+ * its role-specific instructions and before the task context. The preparation roles document owns
+ * the wording.
  */
-export const preparationSharedInstructions = [
-  'Preparation role (shared by every evaluated preparation stage): use the supplied shared',
-  'repository for edits and inspection; each stage retains its own artifact area. Use the captured',
-  'author input, attributed conversation, accepted upstream outputs and project documents. Human',
-  'intent governs; agent summaries are revisable history. Keep source attribution and material',
-  'uncertainty. Do not retrieve Jira, publish source comments, change issue status or create',
-  'implementation issues; source operations belong to the parent. Assess only the selected stage’s',
-  'responsibilities.',
-  'Write the narrative at the supplied Markdown report path. Return only the minimal response',
-  'object; do not write or overwrite action-owned author.json, evaluation.json, result.json,',
-  'plan.json or state records. The action adds observed identity, revision and report-binding',
-  'metadata. Authors declare changed authoritative documents in documents; sourcePaths declares',
-  'additional stage-owned authored files, never files merely read. Every non-authored outcome has',
-  'empty documents and sourcePaths. Only Architecture supplies an implementation plan.',
-  'Observation requirements and allowed outcomes follow the supplied stage response rules.',
-  'Evaluate applicability first. Propose an applicability skip only when the stage is irrelevant,',
-  'explained in the report; optional skip.references are functional evidence and may be empty.',
-  'Adequate existing documents receive direct evaluation in the current worktree without mandatory',
-  'citations or a special reuse skip. If inputs prevent a feasible clean result, identify the',
-  'problematic input, correction and owning earlier stage in the report and return the destination',
-  'and correction functionally. Ask the user only for a material decision that available context',
-  'cannot resolve, and do not turn a provider or tool failure into an upstream product requirement.',
-  'Authors preserve scope and explain corrections, answers, disagreements and remaining problems in',
-  'their Markdown report, using previous reports as context without per-finding response or status',
-  'records. Evaluators inspect current content, judge whether earlier concerns remain and seek',
-  'useful improvements as well as omissions. Report actionable current findings in Markdown without',
-  'stable IDs or disposition records, separating necessary changes from optional suggestions and',
-  'accepting adequate work. Shared-memory search/save is explicit when the invocation carries the',
-  'memory tools; no preparation role schedules automatic memory consumption.',
+export const preparationSharedGuidance = [
+  'Preparation guidance (shared once by every evaluated preparation stage; the selected role’s',
+  'purpose and standards are supplied above):',
+  'Authors and evaluators actively improve clarity, simplicity, usability, coherence and',
+  'maintainability within the requested scope and their stage’s responsibility. Before submission',
+  'or acceptance, resolve known material weaknesses and worthwhile simplifications. Ground a',
+  'required change in a concrete problem, the affected user or responsibility, and the expected',
+  'benefit; explain the evidence and correction. Passing functional checks or meeting a minimal',
+  'checklist alone does not establish quality. Taste, hypothetical future needs and equally good',
+  'alternatives do not justify further revisions: stop when no known material issue remains, not',
+  'when no imaginable improvement exists, and explain why remaining suggestions are nonblocking.',
+  'Existing work that meets this standard receives direct evaluation and acceptance without',
+  'manufactured edits, citations or a reuse skip. Apply the standard to the selected role’s work;',
+  'visual and motion assessment belongs only where relevant.',
+  'Use the connected worktree, captured author input, attributed conversation, accepted upstream',
+  'outputs and project documents. Human intent governs; agent summaries are revisable history.',
+  'Keep source attribution and material uncertainty. Do not retrieve Jira, publish source comments,',
+  'change issue status or create implementation issues; source operations belong to the parent.',
+  'Assess only the selected stage’s responsibilities. Shared-memory search/save is explicit when',
+  'the invocation carries the memory tools; no preparation role schedules automatic memory',
+  'consumption.',
+  'Evaluate applicability first. Propose an applicability skip when the stage is irrelevant, with',
+  'reasons in the report and optional functional evidence references; document citations are not',
+  'mandatory. Directly evaluate existing documents under the bounded material-quality standard. If',
+  'inputs prevent a feasible clean result, identify the problematic input, correction and owning',
+  'earlier stage. Ask the user only for a material decision that available context cannot resolve.',
+  'Do not turn a provider or tool failure into an upstream product requirement.',
   'Apply the connected project’s existing design and ownership principles to keep cumulative',
   'changes coherent within scope. Before evaluation, authors reconcile affected existing intent',
   'with the requested outcome across requirements, experience, architecture, documentation and',
@@ -90,9 +91,32 @@ export const preparationSharedInstructions = [
   'and existing behavior, not just additions or the author’s summary. Seek contradictions,',
   'unnecessary complexity, scattered ownership and interaction inconsistencies. Necessary findings',
   'identify the concrete problem, evidence, consequence and required correction through the',
-  'existing finding and return paths. Preserve stage responsibility, adequate-work acceptance and',
-  'optional suggestions; reconciliation grants no unrelated redesign, extra attempts or bypass of',
-  'current-revision evaluation.',
+  'existing finding and return paths. Preserve stage responsibility, bounded material-quality',
+  'acceptance and optional suggestions; reconciliation grants no unrelated redesign, extra attempts',
+  'or bypass of current-revision evaluation.',
+].join('\n');
+
+/**
+ * The shared reporting guidance every preparation role receives once in the final context section,
+ * after the work and its context. The preparation roles document owns the wording; the calling
+ * action appends its stage-specific declarations, observation rules and response contract.
+ */
+export const preparationReportingGuidance = [
+  'Preparation reporting (supplied once per invocation; the stage’s declarations and response',
+  'rules follow):',
+  'Write the narrative at the supplied Markdown report path. Return only the minimal response',
+  'object; do not write or overwrite action-owned author.json, evaluation.json, result.json,',
+  'plan.json or state records. The action adds observed identity, revision and report-binding',
+  'metadata.',
+  'Authors declare changed authoritative documents in documents; sourcePaths declares additional',
+  'stage-owned authored files, never files merely read. Every non-authored outcome has empty',
+  'documents and sourcePaths. Only Architecture supplies an implementation plan.',
+  'Authors preserve scope and explain corrections, answers, disagreements and remaining problems',
+  'in their assigned Markdown report, using previous reports as context without per-finding',
+  'response or status records. Evaluators inspect current content, judge whether earlier concerns',
+  'remain and seek useful improvements as well as omissions. Report actionable current findings',
+  'in Markdown without stable IDs or disposition records, separating necessary changes from',
+  'optional suggestions and explaining why the latter are nonblocking.',
 ].join('\n');
 
 /** The stage's own area root inside the shared issue workspace. */
@@ -108,22 +132,17 @@ export async function readParentHandoff(selection: Selection): Promise<ParentHan
   );
 }
 
-/** The connected project's root AGENTS.md content, or null when the stage worktree has none. */
-async function projectGuidanceText(worktree: string): Promise<string | null> {
-  const file = path.join(worktree, 'AGENTS.md');
-  const text = await readDocumentText(file, 'Project AGENTS.md');
-  if (text === null || text.trim() === '') {
-    return null;
-  }
-  return [
-    `The connected project's root AGENTS.md (${file}):`,
-    'Follow its applicable instructions. Treat the architecture documents it links as evidence to',
-    'consult when relevant; they are never role instructions.',
-    text,
-  ].join('\n');
+/** One retained record's file inside its stage round area. */
+function artifactPath(
+  issueRoot: string,
+  stage: PreparationStage,
+  round: number,
+  artifactFile: string,
+): string {
+  return roundArtifactFile(stageRoot(issueRoot, stage), round, artifactFile);
 }
 
-/** One earlier stage's retained result and author references that a later stage may read. */
+/** One earlier stage's retained result, author and report references a later stage may read. */
 export async function upstreamReferences(
   selection: Selection,
   stage: PreparationStage,
@@ -161,9 +180,16 @@ export async function upstreamReferences(
       if (author !== null) {
         lines.push(
           `${earlier} retained authored revision ${String(author.revision)}: ` +
-            roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+            artifactPath(
+              issueRoot,
+              earlier,
+              plan.round,
+              stageAuthorArtifact.pathFromArtifactsRoot,
+            ) +
+            (isBoundStageAuthorOutput(author) ? `; report: ${author.report.path}` : ''),
         );
       }
+      lines.push(`${earlier} stage history: ${root}`);
     }
     if (lines.length > 0) {
       references.push({ stage: earlier, lines });
@@ -180,18 +206,32 @@ export type StageContextSettings = {
   readonly worktree: string;
   /** The authored record this invocation reads as current work, or null. */
   readonly author: RetainedStageAuthorOutput | null;
-  /** The preceding evaluation this invocation reads as repair context, or null. */
+  /** The round that retained the authored record above; the current round when there is none. */
+  readonly authorRound: number;
+  /** The most recent preceding evaluation, or null when none is retained. */
   readonly evaluation: RetainedStageEvaluationOutput | null;
-  /** The round that retained the authored record above; null when there is none. */
-  readonly authorRound: number | null;
-  /** The round that retained the evaluation record above; null when there is none. */
+  /** The round that retained the evaluation above; null when there is none. */
   readonly evaluationRound: number | null;
+  /**
+   * Earlier author rounds retained after that evaluation and before the current work. Their
+   * reports stay inspectable so a later role judges their corrections without inferred resolution.
+   */
+  readonly interveningAuthors: readonly {
+    readonly round: number;
+    readonly author: RetainedStageAuthorOutput;
+  }[];
   /** The assigned Markdown report path for this invocation's own response. */
   readonly report: ArtifactRef;
+  /** The retained copy of the exact captured source this context renders. */
+  readonly capturedSource: string;
   /** The stage's retained terminal result when an upstream correction requires reassessment. */
   readonly retained: { readonly outcome: string; readonly reason: string | null } | null;
   /** The outstanding report rejections of this stage that the invocation must correct. */
   readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
+  /** The route-specific work instruction for this invocation. */
+  readonly work: readonly string[];
+  /** The stage-specific declarations, observation rules and response contract for this stage. */
+  readonly reporting: readonly string[];
   /**
    * Preserve an unreadable bound producer report as that producer's rejection evidence, then
    * fail: the responsible role receives the correction obligation instead of the evidence
@@ -229,54 +269,44 @@ async function reportText(settings: {
   }
 }
 
-/** The functional outcome fields of one authored revision, separate from its Markdown narrative. */
-function authorOutcomeView(author: RetainedStageAuthorOutput): unknown {
-  return {
-    outcome: author.outcome,
-    documents: author.documents,
-    sourcePaths: author.sourcePaths,
-    observation: author.observation,
-    plan: author.plan,
-    skip: author.skip,
-    question: author.question,
-    upstream: author.upstream,
-  };
-}
-
-/** One authored revision as context: its functional outcome and complete readable Markdown. */
-async function authorSection(settings: {
-  readonly author: RetainedStageAuthorOutput;
+/**
+ * Validate one referenced bound report through its producer binding without placing its body in
+ * the prompt. Referencing a report must not bypass record usability: a missing or changed report
+ * is preserved as its producer's rejection evidence before the invocation continues.
+ */
+async function validateBoundReport(settings: {
+  readonly binding: ReportBinding & { readonly profile: string };
+  readonly role: 'author' | 'evaluator';
   readonly round: number;
+  readonly kind: string;
   readonly reject: StageContextSettings['rejectUnreadableReport'];
-}): Promise<string> {
-  const { author } = settings;
-  if (!isBoundStageAuthorOutput(author)) {
-    return [
-      `The current authored revision is ${String(author.revision)} (retained combined report; ` +
-        'readable history judged against the current response rules):',
-      JSON.stringify(author, null, 2),
-    ].join('\n');
-  }
-  const text = await reportText({
-    binding: author,
-    role: 'author',
-    round: settings.round,
-    kind: 'Stage author report',
-    reject: settings.reject,
-  });
-  return [
-    `The current authored revision is ${String(author.revision)} (stage ${author.stage}, profile ` +
-      `${author.profile}, invocation ${author.invocationId}); its assigned Markdown report: ` +
-      author.report.path,
-    'The complete authored Markdown report:',
-    text,
-    'The functional authored outcome and plan:',
-    JSON.stringify(authorOutcomeView(author), null, 2),
-  ].join('\n');
+}): Promise<void> {
+  await reportText(settings);
 }
 
-/** One preceding evaluation as context: its verdict and complete readable Markdown assessment. */
-async function evaluationSection(settings: {
+/**
+ * True when an evaluation left a correction this stage must still address: a changes-requested
+ * assessment, or the returned assessment whose concrete correction is still the retained pending
+ * return from this stage. A consumed return and every accepted assessment are supporting history.
+ */
+function activeEvaluation(
+  evaluation: RetainedStageEvaluationOutput,
+  handoff: ParentHandoff | null,
+  stage: PreparationStage,
+): boolean {
+  if (evaluation.verdict === 'changes-requested') {
+    return true;
+  }
+  return (
+    evaluation.verdict === 'return-upstream' &&
+    handoff?.return !== null &&
+    handoff?.return !== undefined &&
+    handoff.return.from === stage
+  );
+}
+
+/** One active preceding evaluation: its complete validated concerns, directly available. */
+async function activeEvaluationSection(settings: {
   readonly evaluation: RetainedStageEvaluationOutput;
   readonly round: number;
   readonly reject: StageContextSettings['rejectUnreadableReport'];
@@ -301,13 +331,13 @@ async function evaluationSection(settings: {
       `${evaluation.profile}, invocation ${evaluation.invocationId}, assessed revision ` +
       `${String(evaluation.assessedRevision)}); its assigned Markdown report: ` +
       evaluation.report.path,
-    'The complete evaluation Markdown report (context for corrections, disagreements and ' +
-      'remaining problems):',
+    'The complete validated evaluation Markdown (active concerns: problem, consequence, required ' +
+      'correction, optional suggestions and uncertainty):',
     text,
   ].join('\n');
 }
 
-/** One retained upstream return as context: its correction and the returning report's evidence. */
+/** One retained upstream return as context: its concrete correction and the returning assessment. */
 async function returnSection(settings: {
   readonly handoff: ParentHandoff | null;
   readonly selection: Selection;
@@ -340,7 +370,7 @@ async function returnSection(settings: {
         `${settings.selection.taskKey}.`,
     });
     if (text !== null) {
-      lines.push('The complete returning report:', text);
+      lines.push('The complete returning assessment:', text);
     }
   } else {
     if (returned.problem !== undefined) lines.push(`Problem: ${returned.problem}`);
@@ -354,64 +384,275 @@ async function returnSection(settings: {
   return lines.join('\n');
 }
 
-/** Assemble the preparation role's context for the current round. */
-export async function stageContextText(settings: StageContextSettings): Promise<string> {
+/** The readable captured source section with its retained evidence reference. */
+function capturedSourceSection(
+  settings: StageContextSettings,
+  handoff: ParentHandoff | null,
+): string {
   const issues = issueSummary(settings.selection.task);
-  const handoff = await readParentHandoff(settings.selection);
-  const upstream = await upstreamReferences(settings.selection, settings.plan.stage);
-  const guidance = await projectGuidanceText(settings.worktree);
+  return [
+    'Captured issue input and conversation (authoritative):',
+    `Selected issue: ${settings.selection.taskKey}${issues === null ? '' : ` "${issues}"`}`,
+    capturedSourceText({
+      sourcePath: settings.capturedSource,
+      task: settings.selection.task,
+      conversation: settings.selection.conversation,
+      publications: handoff?.publications ?? [],
+    }),
+    `The exact captured source is retained at ${settings.capturedSource}; inspect it before ` +
+      'relying on any content this rendering does not display.',
+  ].join('\n');
+}
+
+/** The active corrections this invocation must address directly, or that none are retained. */
+async function activeCorrectionsSection(
+  settings: StageContextSettings,
+  handoff: ParentHandoff | null,
+): Promise<string> {
+  const items: string[] = [];
   const feedback =
     handoff?.feedback !== null &&
     handoff?.feedback !== undefined &&
     handoff.feedback.stage === settings.plan.stage
       ? [
-          `Retained human feedback for this stage: ${handoff.feedback.question}`,
-          'Treat the author\u2019s clarification as governing intent when it resolves the question.',
+          `Retained human question for this stage: ${handoff.feedback.question}`,
+          'The captured conversation above carries the human answer or feedback that followed; ' +
+            'treat the captured clarification as governing intent when it resolves the question.',
         ].join('\n')
       : null;
+  if (feedback !== null) {
+    items.push(feedback);
+  }
   const returned = await returnSection({
     handoff,
     selection: settings.selection,
     stage: settings.plan.stage,
     reject: settings.rejectUnreadableReport,
   });
-  const previousEvaluation =
-    settings.evaluation === null
-      ? []
+  if (returned !== null) {
+    items.push(returned);
+  }
+  items.push(...reportFeedbackContextText(settings.feedback));
+  if (
+    settings.evaluation !== null &&
+    activeEvaluation(settings.evaluation, handoff, settings.plan.stage)
+  ) {
+    items.push(
+      await activeEvaluationSection({
+        evaluation: settings.evaluation,
+        round: settings.evaluationRound ?? settings.authorRound,
+        reject: settings.rejectUnreadableReport,
+      }),
+    );
+  }
+  return items.length === 0
+    ? 'Active corrections: none retained for this stage; the references and history below are context.'
+    : [
+        'Active corrections (address these directly; history does not replace them):',
+        ...items,
+      ].join('\n\n');
+}
+
+/** The reassessment statement identifying the changed input that requires a fresh decision. */
+function reassessmentSection(
+  settings: StageContextSettings,
+  handoff: ParentHandoff | null,
+): string[] {
+  if (settings.plan.route !== 'reassess') {
+    return [];
+  }
+  const changed =
+    handoff?.return !== null &&
+    handoff?.return !== undefined &&
+    handoff.return.to === settings.plan.stage
+      ? `the ${handoff.return.from} upstream correction above`
+      : handoff?.feedback !== null &&
+          handoff?.feedback !== undefined &&
+          handoff.feedback.stage === settings.plan.stage
+        ? 'the retained human question and its captured answer above'
+        : 'a refreshed upstream input';
+  return [
+    [
+      'This stage’s earlier decision is pending reassessment: an upstream input changed.',
+      `Changed input: ${changed}.`,
+      settings.retained === null
+        ? 'No retained terminal result is readable; obtain a current decision for this stage.'
+        : `Retained earlier ${settings.retained.outcome} result: ` +
+          `${settings.retained.reason ?? 'no reason retained'}.`,
+      'Assess the current content against the corrected input: leave adequate current',
+      'documents unchanged, repair what the correction affects and confirm the result through',
+      'this round’s current evaluation. An earlier acceptance cannot authorize changed content.',
+    ].join('\n'),
+  ];
+}
+
+/** The current authored work as attributed references, never as an embedded report body. */
+async function currentWorkLines(settings: StageContextSettings): Promise<string[]> {
+  const { author } = settings;
+  if (author === null) {
+    return [
+      'No authored revision exists yet for this round; author the work or propose an evaluated skip.',
+    ];
+  }
+  const bound = isBoundStageAuthorOutput(author);
+  if (bound) {
+    await validateBoundReport({
+      binding: author,
+      role: 'author',
+      round: settings.authorRound,
+      kind: 'Stage author report',
+      reject: settings.rejectUnreadableReport,
+    });
+  }
+  const identity =
+    `The current authored revision is ${String(author.revision)} (stage ${author.stage}, ` +
+    `outcome ${author.outcome}` +
+    (bound
+      ? `, profile ${author.profile}, invocation ${author.invocationId}).`
+      : '; retained combined report, readable history judged against the current response rules).');
+  const lines = [
+    identity,
+    'Its retained author record: ' +
+      artifactPath(
+        settings.selection.workspace.root,
+        author.stage,
+        settings.authorRound,
+        stageAuthorArtifact.pathFromArtifactsRoot,
+      ),
+  ];
+  lines.push(
+    bound
+      ? `Its assigned Markdown report: ${author.report.path}`
+      : 'Its complete former narrative is retained in the record above.',
+    'Read the record, its declarations and the report before judging; they are referenced rather ' +
+      'than embedded.',
+  );
+  return lines;
+}
+
+/** One supporting-history reference for a preceding evaluation that left no active correction. */
+async function supportingEvaluationLine(settings: StageContextSettings): Promise<string | null> {
+  const evaluation = settings.evaluation;
+  if (evaluation === null) {
+    return null;
+  }
+  const round = settings.evaluationRound ?? settings.authorRound;
+  const identity = isBoundStageEvaluationOutput(evaluation)
+    ? `profile ${evaluation.profile}, invocation ${evaluation.invocationId}, `
+    : '';
+  const attribution =
+    `The previous evaluation of this work is ${evaluation.verdict} (${identity}assessed revision ` +
+    `${String(evaluation.assessedRevision)})`;
+  if (!isBoundStageEvaluationOutput(evaluation)) {
+    return (
+      `- round ${String(round)}: ${attribution}; record ` +
+      artifactPath(
+        settings.selection.workspace.root,
+        settings.plan.stage,
+        round,
+        stageEvaluationArtifact.pathFromArtifactsRoot,
+      ) +
+      ' (retained combined report, readable history). It left no pending correction.'
+    );
+  }
+  await validateBoundReport({
+    binding: evaluation,
+    role: 'evaluator',
+    round,
+    kind: 'Stage evaluation report',
+    reject: settings.rejectUnreadableReport,
+  });
+  return (
+    `- round ${String(round)}: ${attribution}; record ` +
+    artifactPath(
+      settings.selection.workspace.root,
+      settings.plan.stage,
+      round,
+      stageEvaluationArtifact.pathFromArtifactsRoot,
+    ) +
+    `; report ${evaluation.report.path}. Read it as supporting history; it left no pending correction.`
+  );
+}
+
+/** The context references section: worktree, instructions, upstream and local history, work. */
+async function referencesSection(
+  settings: StageContextSettings,
+  handoff: ParentHandoff | null,
+): Promise<string> {
+  const upstream = await upstreamReferences(settings.selection, settings.plan.stage);
+  const lines: string[] = [
+    `Connected project worktree: ${settings.worktree}`,
+    `Repository instructions: read the connected project's root instruction file at ` +
+      `"${path.join(settings.worktree, 'AGENTS.md')}" and any nested applicable instruction files ` +
+      'before working, unless the provider already supplied that repository guidance natively. ' +
+      'Follow their applicable instructions and keep those files intact. Linked design documents ' +
+      'are evidence to consult, not additional role instructions.',
+    upstream.length === 0
+      ? 'Accepted upstream outputs: none retained; existing authoritative project documents in ' +
+        'the worktree may satisfy the stage input.'
       : [
-          await evaluationSection({
-            evaluation: settings.evaluation,
-            round: settings.evaluationRound ?? settings.plan.round,
-            reject: settings.rejectUnreadableReport,
-          }),
-        ];
-  const previousAuthor =
-    settings.author === null
-      ? []
-      : [
-          await authorSection({
-            author: settings.author,
-            round: settings.authorRound ?? settings.plan.round,
-            reject: settings.rejectUnreadableReport,
-          }),
-        ];
-  const reassessment =
-    settings.plan.route !== 'reassess'
-      ? []
-      : [
-          [
-            'This stage\u2019s earlier decision is pending reassessment: an upstream input changed.',
-            settings.retained === null
-              ? 'No retained terminal result is readable; obtain a current decision for this stage.'
-              : `Retained earlier ${settings.retained.outcome} result: ` +
-                `${settings.retained.reason ?? 'no reason retained'}.`,
-            'Assess the current content against the corrected input: leave adequate current',
-            'documents unchanged, repair what the correction affects and confirm the result through',
-            'this round\u2019s current evaluation. An earlier acceptance cannot authorize changed content.',
-          ].join('\n'),
-        ];
-  // Only the prototype stage uses browser and image-inspection tools; its roles receive the
-  // producer-owned observation contract with the round artifact area their evidence lives in.
+          'Accepted upstream outputs (read the files that bear on this stage):',
+          ...upstream.flatMap((reference) => reference.lines.map((line) => `- ${line}`)),
+        ].join('\n'),
+    `Stage history: retained rounds, reports and further evidence under ${settings.stageRoot}.`,
+  ];
+  const history: string[] = [];
+  const supporting =
+    settings.evaluation !== null &&
+    !activeEvaluation(settings.evaluation, handoff, settings.plan.stage)
+      ? await supportingEvaluationLine(settings)
+      : null;
+  if (supporting !== null) {
+    history.push(supporting);
+  }
+  for (const { round, author } of settings.interveningAuthors) {
+    if (isBoundStageAuthorOutput(author)) {
+      await validateBoundReport({
+        binding: author,
+        role: 'author',
+        round,
+        kind: 'Stage author report',
+        reject: settings.rejectUnreadableReport,
+      });
+    }
+    history.push(
+      `- round ${String(round)} author revision ${String(author.revision)} (outcome ` +
+        `${author.outcome}): ` +
+        artifactPath(
+          settings.selection.workspace.root,
+          settings.plan.stage,
+          round,
+          stageAuthorArtifact.pathFromArtifactsRoot,
+        ) +
+        (isBoundStageAuthorOutput(author) ? `; report: ${author.report.path}` : ''),
+    );
+  }
+  if (history.length > 0) {
+    lines.push(
+      [
+        'Local history references (read the corrections, answers and disagreements they retain):',
+        ...history,
+      ].join('\n'),
+    );
+  }
+  lines.push(...reassessmentSection(settings, handoff));
+  lines.push(['This invocation’s work:', ...settings.work].join('\n'));
+  lines.push(['Current work to assess:', ...(await currentWorkLines(settings))].join('\n'));
+  if (settings.plan.stage === 'architecture') {
+    lines.push(
+      'The Architecture implementation plan this decision covers: ' +
+        roundArtifactFile(
+          settings.stageRoot,
+          settings.plan.round,
+          stagePlanArtifact.pathFromArtifactsRoot,
+        ),
+    );
+  }
+  return lines.join('\n\n');
+}
+
+/** The reporting mechanics section: assigned path, declaration rules and response contract once. */
+function reportingSection(settings: StageContextSettings): string {
   const prototype =
     settings.plan.stage === 'prototype'
       ? [
@@ -421,32 +662,25 @@ export async function stageContextText(settings: StageContextSettings): Promise<
         ]
       : [];
   return [
-    preparationSharedInstructions,
-    `Preparation stage: ${settings.plan.stage}, round ${String(settings.plan.round)}.`,
-    `Selected issue: ${settings.selection.taskKey}${issues === null ? '' : ` "${issues}"`}`,
-    'Captured issue input and conversation (authoritative):',
-    JSON.stringify(
-      { issue: settings.selection.task, conversation: settings.selection.conversation },
-      null,
-      2,
-    ),
-    ...(feedback === null ? [] : [feedback]),
-    ...(returned === null ? [] : [returned]),
-    `Connected project worktree: ${settings.worktree}`,
-    ...(guidance === null ? [] : [guidance]),
-    upstream.length === 0
-      ? 'Accepted upstream outputs: none retained; existing authoritative project documents in the worktree may satisfy the stage input.'
-      : [
-          'Accepted upstream outputs (read the files that bear on this stage):',
-          ...upstream.flatMap((reference) => reference.lines.map((line) => `- ${line}`)),
-        ].join('\n'),
-    ...reportFeedbackContextText(settings.feedback),
-    ...previousAuthor,
-    ...previousEvaluation,
+    preparationReportingGuidance,
+    `Assigned Markdown report: ${settings.report.path}`,
     ...prototype,
-    ...reassessment,
-    'Stage area: the action owns and writes artifacts/<round>/author.json, plan.json, ' +
-      'evaluation.json and result.json and the state records current-round.json and result.json; ' +
-      'do not write or overwrite them. result.json records the terminal result.',
+    ...settings.reporting,
+  ].join('\n\n');
+}
+
+/** Assemble the preparation role's context for the current round. */
+export async function stageContextText(settings: StageContextSettings): Promise<string> {
+  const handoff = await readParentHandoff(settings.selection);
+  return [
+    preparationSharedGuidance,
+    [
+      `Preparation stage: ${settings.plan.stage}, round ${String(settings.plan.round)}.`,
+      `Round route: ${settings.plan.route}.`,
+    ].join('\n'),
+    capturedSourceSection(settings, handoff),
+    await activeCorrectionsSection(settings, handoff),
+    await referencesSection(settings, handoff),
+    reportingSection(settings),
   ].join('\n\n');
 }

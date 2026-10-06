@@ -16,6 +16,7 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { upstreamReferences } from '../src/task-engine/actions/preparation/context.js';
+import { capturedSourcePathOf } from '../src/task-engine/actions/preparation/readable-source.js';
 import {
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -356,7 +357,12 @@ it('rejects the captured KAN-76 skip while a conforming skip reaches evaluation'
   });
   await expect(evaluator()).resolves.toBe('accepted-skip');
   const evaluatorContext = evaluatorContexts.join('\n');
-  expect(evaluatorContext).toContain('"outcome": "skip-proposed"');
+  // The current author is attributed through readable references; its full record and report are
+  // referenced by path rather than embedded as raw JSON.
+  expect(evaluatorContext).toContain('outcome skip-proposed');
+  expect(evaluatorContext).toContain(path.join(root, 'artifacts', '3', 'author.json'));
+  expect(evaluatorContext).not.toContain('"outcome": "skip-proposed"');
+  expect(evaluatorContext).not.toContain('Requirements author report');
   expect(evaluatorContext).toContain('Assess the exact authored revision 3');
   expect(evaluatorContext).toContain('do not write or overwrite action-owned author.json');
   const evaluation = JSON.parse(
@@ -476,9 +482,11 @@ it.each(['author', 'evaluation'] as const)(
     const contexts: string[] = [];
     const author = createStageAuthor({ ...common, runner: authorRunner(response, contexts) });
     await expect(author({ task: 'propose' })).rejects.toThrow(/is not valid JSON/);
-    // A valid round-2 author stops preceding-history traversal. This older record is read only
-    // by deletion validation after invocation, and must still retain the correct producer scope.
-    expect(contexts).toHaveLength(1);
+    // A malformed round-1 evaluation is the most recent preceding evaluation for this new round,
+    // so it is preserved under the evaluator responsibility before the author is invoked. A valid
+    // round-2 author stops the earlier author traversal, so that older record is read only by
+    // deletion validation after invocation.
+    expect(contexts).toHaveLength(kind === 'author' ? 1 : 0);
     const role = kind === 'author' ? 'author' : 'evaluator';
     const scope = stageReportScope({
       project: projectOfWorkspace(path.dirname(root)),
@@ -499,7 +507,7 @@ it.each(['author', 'evaluation'] as const)(
     else await writeFile(file, original);
     await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
     await expect(author({ task: 'propose' })).resolves.toBe('authored');
-    expect(contexts[1]?.includes(malformed)).toBe(kind === 'author');
+    if (kind === 'author') expect(contexts[1]).toContain(malformed);
     if (kind === 'evaluation') {
       await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
       const evaluatorContexts: string[] = [];
@@ -718,7 +726,7 @@ it('attributes an unusable upstream context report to its stage author', async (
   await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
 });
 
-it('evaluates a new round directly without reading a preceding result or evaluation for reuse', async () => {
+it('surfaces an unusable preceding evaluation to a new round without reusing or overwriting it', async () => {
   const { selectionFile, root } = await stageArea();
   const common = {
     selectionFile,
@@ -747,8 +755,32 @@ it('evaluates a new round directly without reading a preceding result or evaluat
       returnFinding: null,
     }),
   );
-  // The new round assesses the current worktree: the malformed preceding evaluation is retained
-  // history, never a content source the round depends on.
+  // A new route label does not clear retained concerns: the most recent preceding evaluation is
+  // read through its producer-owned reader, and its unusable bytes become attributable rejection
+  // evidence instead of silently disappearing from the fresh round.
+  const rejectedContexts: string[] = [];
+  const rejected = createStageEvaluator({
+    ...common,
+    runner: evaluatorRunner(
+      { verdict: 'accepted-skip', observation: null, upstream: null },
+      rejectedContexts,
+    ),
+  });
+  await expect(rejected()).rejects.toThrow(/is not valid JSON/);
+  expect(rejectedContexts).toEqual([]);
+  expect(await readFile(file, 'utf8')).toBe(malformed);
+  const rejection = (await readReportFeedback(root))[0]!;
+  expect(rejection.record).toMatchObject({
+    kind: 'rejection',
+    scope: { area: root, workId: 'KAN-76', role: 'requirements-evaluator' },
+    source: { path: file },
+    output: malformed,
+    operation: 'stage-evaluator',
+  });
+
+  // Once the responsible producer's record is readable, the new round assesses the current
+  // worktree directly: the historical completed result is not reused as an acceptance basis.
+  await rm(file);
   const evaluatorContexts: string[] = [];
   const evaluator = createStageEvaluator({
     ...common,
@@ -762,14 +794,13 @@ it('evaluates a new round directly without reading a preceding result or evaluat
     ),
   });
   await expect(evaluator()).resolves.toBe('accepted-skip');
-  expect(evaluatorContexts[0]).not.toContain('reused');
   const saved = JSON.parse(
     await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
   ) as { readonly basis: { readonly content: unknown } };
   expect(saved.basis.content).toEqual([]);
-  // The retained record is untouched history.
-  expect(await readFile(file, 'utf8')).toBe(malformed);
-  await expect(readReportFeedback(root)).resolves.toEqual([]);
+  // The accepted replacement retires the rejection while its evidence remains readable history.
+  const retained = await readReportFeedback(root);
+  expect(retained.map((entry) => entry.record.kind).sort()).toEqual(['correction', 'rejection']);
 });
 
 it.each([
@@ -1196,3 +1227,495 @@ it.each(['changed', 'deleted', 'replaced by a directory'])(
     await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
   },
 );
+
+/** The rich captured issue the readable-rendering check inspects: structure, administration and
+ * an unsupported meaningful node. */
+const readableIssue = {
+  id: '11045',
+  key: 'HARN-115',
+  self: 'https://api.test/issue/11045',
+  fields: {
+    summary: 'Refine the journey',
+    description: {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Scope' }] },
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'text',
+              text: 'Support newcomers with clear defaults.',
+              marks: [{ type: 'strong' }],
+            },
+            { type: 'hardBreak' },
+            { type: 'text', text: 'Keep the existing keyboard shortcuts.' },
+          ],
+        },
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [{ type: 'text', text: 'Excluded: enterprise SSO.' }],
+                },
+              ],
+            },
+            {
+              type: 'listItem',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    { type: 'text', text: 'Acceptance: a newcomer completes onboarding unaided.' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'codeBlock',
+          attrs: { language: 'bash' },
+          content: [{ type: 'text', text: 'nexus run' }],
+        },
+        { type: 'mediaSingle', content: [] },
+        { type: 'futureBlock' },
+      ],
+    },
+    labels: ['harness-task', 'nexus-source-HARN-115-1'],
+    customfield_10015: 'A meaningful custom field.',
+    statuscategorychangedate: '2026-10-06T18:48:21.527+0200',
+    timespent: null,
+    workratio: -1,
+    avatarUrls: { '48x48': 'https://example.test/avatar.png' },
+    attachment: [{ id: 'a1', filename: 'journey.png', mimeType: 'image/png' }],
+  },
+};
+
+/** The captured conversation: human direction, a conflicting human statement and a Nexus
+ * publication acknowledgement retained by the parent handoff. */
+const readableConversation = [
+  {
+    id: 'c1',
+    author: { displayName: 'Aleksei Rysaev', accountId: 'acct-human', accountType: 'atlassian' },
+    created: '2026-10-06T18:00:00.000+0200',
+    body: {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Do not add site search.' }] },
+      ],
+    },
+  },
+  {
+    id: 'c2',
+    author: { displayName: 'Aleksei Rysaev', accountId: 'acct-human', accountType: 'atlassian' },
+    created: '2026-10-06T18:05:00.000+0200',
+    body: {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Site search is required.' }] },
+      ],
+    },
+  },
+  {
+    id: 'c3',
+    author: { displayName: 'Harness', accountId: 'acct-bot', accountType: 'app' },
+    created: '2026-10-06T18:10:00.000+0200',
+    body: {
+      type: 'doc',
+      version: 1,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Prepared the task.' }] }],
+    },
+  },
+];
+
+/** One requirements stage area whose captured source carries readable structure and conflict. */
+async function readableStageArea(): Promise<{
+  readonly selectionFile: string;
+  readonly root: string;
+  readonly issueRoot: string;
+  readonly worktree: string;
+}> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-readable-source-'));
+  temporaryDirectories.push(directory);
+  const issueRoot = path.join(directory, 'HARN-115');
+  const root = path.join(issueRoot, stage);
+  const worktree = path.join(issueRoot, 'worktree');
+  await mkdir(path.join(worktree, 'docs'), { recursive: true });
+  await writeFile(path.join(worktree, 'docs', 'requirements.md'), '# Requirements\n');
+  await writeFile(path.join(worktree, 'docs', 'testing.md'), '# Testing\n');
+  await writeFile(
+    path.join(worktree, 'AGENTS.md'),
+    '# Repository instructions\n\nSENTINEL-AGENTS-BODY\n',
+  );
+  const selectionFile = path.join(directory, 'selection.json');
+  await writeFile(
+    selectionFile,
+    JSON.stringify({
+      taskKey: 'HARN-115',
+      source: { kind: 'jira', issueId: '11045' },
+      task: readableIssue,
+      conversation: readableConversation,
+      workspace: { root: issueRoot },
+      stage,
+    }),
+  );
+  await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+  await writeFile(
+    path.join(issueRoot, 'parent', 'handoff.json'),
+    JSON.stringify({
+      stage,
+      upstreamReturns: 0,
+      feedback: null,
+      return: null,
+      awaitingStages: [],
+      tickets: [],
+      publications: [{ kind: 'comment', id: 'c3' }],
+    }),
+  );
+  await mkdir(path.join(root, 'state'), { recursive: true });
+  await mkdir(path.join(root, 'artifacts', '1'), { recursive: true });
+  await writeFile(
+    path.join(root, 'state', 'current-round.json'),
+    JSON.stringify({
+      stage,
+      round: 1,
+      route: 'new',
+      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+    }),
+  );
+  return { selectionFile, root, issueRoot, worktree };
+}
+
+it('renders captured source readably, retains its exact evidence and embeds no AGENTS.md body', async () => {
+  const { selectionFile, root, worktree } = await readableStageArea();
+  const contexts: string[] = [];
+  const author = createStageAuthor({
+    selectionFile,
+    stage,
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+    runner: authorRunner(conformingSkipResponse, contexts),
+  });
+  await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+  const context = contexts[0]!;
+
+  // Expressed scope, exclusions, acceptance conditions and structure survive as readable text.
+  expect(context).toContain('Summary: Refine the journey');
+  expect(context).toContain('## Scope');
+  expect(context).toContain('**Support newcomers with clear defaults.**');
+  expect(context).toContain('- Excluded: enterprise SSO.');
+  expect(context).toContain('- Acceptance: a newcomer completes onboarding unaided.');
+  expect(context).toContain('```bash');
+  expect(context).toContain('nexus run');
+  expect(context).toContain('- customfield_10015: A meaningful custom field.');
+
+  // Attribution, chronology, the Nexus publication mark and the still-unresolved human conflict.
+  expect(context).toContain(
+    'Comment c1 — Aleksei Rysaev <acct-human> [atlassian account] at 2026-10-06T18:00:00.000+0200',
+  );
+  expect(context).toContain('Comment c3 — Harness <acct-bot> [app account]');
+  expect(context).toContain(
+    '[Nexus publication acknowledgement "comment" — a Nexus-authored message, not human ' +
+      'direction or an agent assessment.]',
+  );
+  expect(context.indexOf('Do not add site search.')).toBeLessThan(
+    context.indexOf('Site search is required.'),
+  );
+
+  // Administrative provider data stays out of the prompt and is only listed as omitted.
+  expect(context).not.toContain('"avatarUrls"');
+  expect(context).not.toContain('"workratio"');
+  expect(context).not.toContain('"statuscategorychangedate"');
+  expect(context).not.toContain('"self":');
+  expect(context).toContain('Administrative issue fields omitted from this rendering:');
+  // Attachments are captured evidence: they receive an explicit inspection reference to the
+  // retained source instead of being dropped as administration.
+  expect(context).toContain('- attachment:');
+  expect(context).toContain('the captured attachments (files or other non-text evidence)');
+
+  // Unsupported meaningful content is identified with its source location, never silently dropped.
+  const reportPath = /Assigned Markdown report: (.+)/.exec(context)![1]!;
+  const capturedSource = capturedSourcePathOf(reportPath);
+  expect(context).toContain('This rendering does not display a Jira "futureBlock" node');
+  expect(context).toContain('embedded media (an image or attachment)');
+  expect(context).toContain(`inspect the captured source at "${capturedSource}"`);
+
+  // The exact captured values are retained beside the invocation's report.
+  expect(context).toContain(`The exact captured source is retained at ${capturedSource}`);
+  expect(JSON.parse(await readFile(capturedSource, 'utf8'))).toEqual({
+    issue: readableIssue,
+    conversation: readableConversation,
+  });
+
+  // Repository guidance is referenced by path, never embedded, and the repository file is intact.
+  expect(context).toContain(
+    `read the connected project's root instruction file at "${path.join(worktree, 'AGENTS.md')}"`,
+  );
+  expect(context).not.toContain('SENTINEL-AGENTS-BODY');
+  expect(await readFile(path.join(worktree, 'AGENTS.md'), 'utf8')).toContain(
+    'SENTINEL-AGENTS-BODY',
+  );
+
+  // Reselection for the next invocation leaves the earlier retained evidence accessible and intact.
+  const refreshedIssue = {
+    ...readableIssue,
+    fields: { ...readableIssue.fields, summary: 'Refreshed scope' },
+  };
+  await writeFile(
+    selectionFile,
+    JSON.stringify({
+      taskKey: 'HARN-115',
+      source: { kind: 'jira', issueId: '11045' },
+      task: refreshedIssue,
+      conversation: [],
+      workspace: { root: path.dirname(root) },
+      stage,
+    }),
+  );
+  await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+  const refreshed = contexts[1]!;
+  expect(refreshed).toContain('Summary: Refreshed scope');
+  const refreshedSource = capturedSourcePathOf(
+    /Assigned Markdown report: (.+)/.exec(refreshed)![1]!,
+  );
+  expect(refreshedSource).not.toBe(capturedSource);
+  expect(JSON.parse(await readFile(refreshedSource, 'utf8'))).toEqual({
+    issue: refreshedIssue,
+    conversation: [],
+  });
+  expect(JSON.parse(await readFile(capturedSource, 'utf8'))).toEqual({
+    issue: readableIssue,
+    conversation: readableConversation,
+  });
+});
+
+it('references current work and supporting history instead of embedding their report bodies', async () => {
+  const { selectionFile, root } = await stageArea();
+  const common = {
+    selectionFile,
+    stage,
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+  };
+
+  // Round 3 authors a skip and an accepted evaluation binds it, establishing readable history.
+  await expect(
+    createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+      task: 'propose',
+    }),
+  ).resolves.toBe('skip-proposed');
+  const evaluatorContexts: string[] = [];
+  await expect(
+    createStageEvaluator({
+      ...common,
+      runner: evaluatorRunner(
+        { verdict: 'accepted-skip', observation: null, upstream: null },
+        evaluatorContexts,
+      ),
+    })(),
+  ).resolves.toBe('accepted-skip');
+  const authorRecord = path.join(root, 'artifacts', '3', 'author.json');
+  const savedAuthor = JSON.parse(await readFile(authorRecord, 'utf8')) as {
+    readonly report: { readonly path: string };
+  };
+  const savedEvaluation = JSON.parse(
+    await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
+  ) as { readonly report: { readonly path: string } };
+
+  // The evaluator attributes the current author through its record and report, not its body.
+  expect(evaluatorContexts[0]).toContain(authorRecord);
+  expect(evaluatorContexts[0]).toContain(savedAuthor.report.path);
+  expect(evaluatorContexts[0]).not.toContain('Requirements author report');
+
+  // A completed stage exposes its result, authored revision, report and history as attributed
+  // upstream references for later stages, never as embedded bodies.
+  await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
+  const upstream = await upstreamReferences(
+    selectionDeclaration.schema.parse(JSON.parse(await readFile(selectionFile, 'utf8'))),
+    'ux',
+  );
+  expect(upstream).toHaveLength(1);
+  expect(upstream[0]!.stage).toBe('requirements');
+  const upstreamLines = upstream[0]!.lines.join('\n');
+  expect(upstreamLines).toContain('requirements stage result (skipped):');
+  expect(upstreamLines).toContain(
+    `requirements retained authored revision 3: ${authorRecord}; report: ${savedAuthor.report.path}`,
+  );
+  expect(upstreamLines).toContain(`requirements stage history: ${root}`);
+
+  // The response round reads the accepted evaluation as supporting history and the current
+  // authored revision through attributed references only.
+  await mkdir(path.join(root, 'artifacts', '4'), { recursive: true });
+  await writeFile(
+    path.join(root, 'state', 'current-round.json'),
+    JSON.stringify({
+      stage,
+      round: 4,
+      route: 'next',
+      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+    }),
+  );
+  const responseContexts: string[] = [];
+  await expect(
+    createStageAuthor({
+      ...common,
+      runner: authorRunner(conformingSkipResponse, responseContexts),
+    })({
+      task: 'respond',
+    }),
+  ).resolves.toBe('skip-proposed');
+  const responseContext = responseContexts[0]!;
+  expect(responseContext).toContain('The previous evaluation of this work is accepted-skip');
+  expect(responseContext).toContain(savedEvaluation.report.path);
+  expect(responseContext).toContain(
+    'Read it as supporting history; it left no pending correction.',
+  );
+  expect(responseContext).toContain('The current authored revision is 3');
+  expect(responseContext).toContain(authorRecord);
+  expect(responseContext).toContain(savedAuthor.report.path);
+  expect(responseContext).not.toContain('Requirements author report');
+  expect(responseContext).not.toContain('Requirements evaluation report');
+  expect(responseContext).toContain(
+    `Stage history: retained rounds, reports and further evidence under ${root}`,
+  );
+});
+
+it('supplies a retained human question and captured answer directly to an author-only continuation', async () => {
+  const { selectionFile, root } = await stageArea();
+  const issueRoot = path.dirname(root);
+  await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
+  await writeFile(
+    path.join(issueRoot, 'parent', 'handoff.json'),
+    JSON.stringify({
+      stage,
+      upstreamReturns: 0,
+      feedback: {
+        stage,
+        question: 'Which requirement governs the excluded SSO scope?',
+      },
+      return: null,
+      awaitingStages: [],
+      tickets: [],
+      publications: [],
+    }),
+  );
+  const contexts: string[] = [];
+  const author = createStageAuthor({
+    selectionFile,
+    stage,
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+    runner: authorRunner(conformingSkipResponse, contexts),
+  });
+  await expect(author({ task: 'propose' })).resolves.toBe('skip-proposed');
+  const context = contexts[0]!;
+  expect(context).toContain(
+    'Retained human question for this stage: Which requirement governs the excluded SSO scope?',
+  );
+  expect(context).toContain(
+    'treat the captured clarification as governing intent when it resolves the question',
+  );
+  expect(context).toContain(
+    'Active corrections (address these directly; history does not replace them):',
+  );
+  expect(context).not.toContain('Eligible prior finding IDs');
+});
+
+it('keeps a bound changes-requested evaluation directly available as active corrections', async () => {
+  const { selectionFile, root } = await stageArea();
+  const common = {
+    selectionFile,
+    stage,
+    git: scriptedGit([repositoryState()]).git,
+    publish: () => undefined,
+  };
+  await expect(
+    createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+      task: 'propose',
+    }),
+  ).resolves.toBe('skip-proposed');
+
+  // The evaluator's complete narrative carries the problem, the required correction and an
+  // explicitly nonblocking suggestion.
+  const activeMarkdown =
+    '# Requirements evaluation report\n\n' +
+    'Problem: the exclusion contradicts the captured scope.\n' +
+    'Required correction: restore enterprise SSO to the scope.\n' +
+    'Optional suggestion (nonblocking): clarify the onboarding example.\n';
+  let evaluationReport = '';
+  const evaluator = createStageEvaluator({
+    ...common,
+    runner: {
+      async run(request) {
+        evaluationReport = /Assigned Markdown report: (.+)/.exec(request.context)![1]!;
+        await writeAssignedReport(request.context, activeMarkdown);
+        return ok({
+          output: JSON.stringify({
+            verdict: 'changes-requested',
+            observation: null,
+            upstream: null,
+          }),
+        });
+      },
+    },
+  });
+  await expect(evaluator()).resolves.toBe('changes-requested');
+
+  // The response round receives the original complete assessment as active concerns, without a
+  // machine finding set or an inferred resolution.
+  await mkdir(path.join(root, 'artifacts', '4'), { recursive: true });
+  await writeFile(
+    path.join(root, 'state', 'current-round.json'),
+    JSON.stringify({
+      stage,
+      round: 4,
+      route: 'next',
+      profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+    }),
+  );
+  const responseContexts: string[] = [];
+  await expect(
+    createStageAuthor({
+      ...common,
+      runner: authorRunner(conformingSkipResponse, responseContexts),
+    })({
+      task: 'respond',
+    }),
+  ).resolves.toBe('skip-proposed');
+  const responseContext = responseContexts[0]!;
+  expect(responseContext).toContain('The previous evaluation of this work is changes-requested');
+  expect(responseContext).toContain(`its assigned Markdown report: ${evaluationReport}`);
+  expect(responseContext).toContain(
+    'The complete validated evaluation Markdown (active concerns: problem, consequence, ' +
+      'required correction, optional suggestions and uncertainty):',
+  );
+  expect(responseContext).toContain('Problem: the exclusion contradicts the captured scope.');
+  expect(responseContext).toContain('Required correction: restore enterprise SSO to the scope.');
+  expect(responseContext).toContain(
+    'Optional suggestion (nonblocking): clarify the onboarding example.',
+  );
+  expect(responseContext).not.toContain('Eligible prior finding IDs');
+
+  // The current evaluation of that response also keeps the unresolved concerns directly available.
+  const evaluatorContexts: string[] = [];
+  await expect(
+    createStageEvaluator({
+      ...common,
+      runner: evaluatorRunner(
+        { verdict: 'accepted-skip', observation: null, upstream: null },
+        evaluatorContexts,
+      ),
+    })(),
+  ).resolves.toBe('accepted-skip');
+  expect(evaluatorContexts[0]).toContain(
+    'Required correction: restore enterprise SSO to the scope.',
+  );
+});
