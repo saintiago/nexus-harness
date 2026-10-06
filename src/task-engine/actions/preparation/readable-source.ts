@@ -229,43 +229,66 @@ function renderChildren(
   return nodesOf(node.content).flatMap((child) => renderBlock(child, sourcePath, depth));
 }
 
-/** One list's items with nested content indented under the item marker. */
+/** True for one node that renders as its own list, nested under a parent item. */
+function isListNode(node: unknown): boolean {
+  const type = nodeType(node);
+  return type === 'bulletList' || type === 'orderedList' || type === 'taskList';
+}
+
+/** One ordered list's first number: its captured `order`, never a fabricated restart at one. */
+function orderedStart(node: Readonly<Record<string, unknown>>): number {
+  const attrs = isObject(node.attrs) ? node.attrs : {};
+  return typeof attrs.order === 'number' && attrs.order >= 1 ? Math.trunc(attrs.order) : 1;
+}
+
+/**
+ * One list's items with nested lists rendered under the item's own content. Every child block is
+ * rendered exactly once through its actual structure, and ordered lists keep their captured start.
+ */
 function renderList(
   node: Readonly<Record<string, unknown>>,
   sourcePath: string,
   depth: number,
 ): string[] {
   const ordered = nodeType(node) === 'orderedList';
+  const start = ordered ? orderedStart(node) : 1;
   const indent = '  '.repeat(depth);
   return nodesOf(node.content).flatMap((item, index) => {
     if (!isObject(item)) {
       return [];
     }
-    const marker = ordered ? `${String(index + 1)}. ` : '- ';
-    const blocks = renderChildren(item, sourcePath, 0);
-    if (blocks.length === 0) {
-      return [`${indent}${marker.trimEnd()}`];
-    }
-    const [first, ...rest] = blocks;
-    return [
-      `${indent}${marker}${first?.trimStart() ?? ''}`,
-      ...rest.map((line) => `${indent}  ${line}`),
-      ...nestedListsOf(item, sourcePath, depth + 1),
-    ];
+    const marker = ordered ? `${String(start + index)}. ` : '- ';
+    return renderListItem(item, marker, sourcePath, depth, indent);
   });
 }
 
-/** The nested lists of one list item, rendered under the item's own content. */
-function nestedListsOf(
+/** One list item's own blocks, followed by its nested lists, each rendered once. */
+function renderListItem(
   item: Readonly<Record<string, unknown>>,
+  marker: string,
   sourcePath: string,
   depth: number,
+  indent: string,
 ): string[] {
-  return nodesOf(item.content)
-    .filter((child) => nodeType(child) === 'bulletList' || nodeType(child) === 'orderedList')
-    .flatMap((child) => renderBlock(child, sourcePath, depth));
+  const contents = nodesOf(item.content).filter(isObject);
+  const blocks = contents
+    .filter((child) => !isListNode(child))
+    .flatMap((child) => renderBlock(child, sourcePath, 0));
+  const nested = contents
+    .filter(isListNode)
+    .flatMap((child) => renderBlock(child, sourcePath, depth + 1));
+  if (blocks.length === 0) {
+    return [`${indent}${marker.trimEnd()}`, ...nested];
+  }
+  const [first, ...rest] = blocks;
+  return [
+    `${indent}${marker}${first?.trimStart() ?? ''}`,
+    ...rest.map((line) => `${indent}  ${line}`),
+    ...nested,
+  ];
 }
 
+/** One checklist's items: task-item content is inline, with nested lists rendered under it. */
 function renderTaskList(
   node: Readonly<Record<string, unknown>>,
   sourcePath: string,
@@ -278,13 +301,28 @@ function renderTaskList(
     }
     const attrs = isObject(item.attrs) ? item.attrs : {};
     const state = attrs.state === 'DONE' ? 'x' : ' ';
-    const blocks = renderChildren(item, sourcePath, 0);
-    const [first, ...rest] = blocks;
-    return [
-      `${indent}- [${state}] ${first?.trimStart() ?? ''}`,
-      ...rest.map((line) => `${indent}  ${line}`),
-    ];
+    const contents = nodesOf(item.content).filter(isObject);
+    const text = contents
+      .filter((child) => !isListNode(child))
+      .map((child) => renderInline(child, sourcePath))
+      .join('')
+      .split('\n')
+      .map((line) => line.trim())
+      .join(' ');
+    const nested = contents
+      .filter(isListNode)
+      .flatMap((child) => renderBlock(child, sourcePath, depth + 1));
+    return [`${indent}- [${state}] ${text}`.trimEnd(), ...nested];
   });
+}
+
+/** One table cell's readable single-line text; a cell's children are blocks, not inline nodes. */
+function tableCellText(cell: Readonly<Record<string, unknown>>, sourcePath: string): string {
+  return renderChildren(cell, sourcePath, 0)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .join(' ')
+    .trim();
 }
 
 function renderTable(
@@ -296,9 +334,7 @@ function renderTable(
   const rows = nodesOf(node.content).filter(isObject);
   const lines = rows.map((row) => {
     const cells = nodesOf(row.content).filter(isObject);
-    const values = cells.map((cell) =>
-      renderInlineChildren(cell, sourcePath).replace(/\n/g, ' ').trim(),
-    );
+    const values = cells.map((cell) => tableCellText(cell, sourcePath));
     return `${indent}| ${values.join(' | ')} |`;
   });
   const header = rows[0];
@@ -342,9 +378,6 @@ const administrativeIssueFields: ReadonlySet<string> = new Set([
   'resolutiondate',
   'security',
   'priority',
-  'parent',
-  'subtasks',
-  'issuelinks',
   'watches',
   'votes',
   'creator',
@@ -403,6 +436,67 @@ function renderValue(value: unknown, sourcePath: string, indent: string): string
   return [`${indent}${inspectionNote('one structured captured value', sourcePath)}`];
 }
 
+/** One related issue's readable identity: link relation, key, summary, captured type and status. */
+function relatedIssueText(
+  issue: Readonly<Record<string, unknown>>,
+  relation: string | null,
+): string | null {
+  const fields = isObject(issue.fields) ? issue.fields : null;
+  const key = textOf(issue.key) ?? textOf(issue.id);
+  const summary = fields === null ? null : textOf(fields.summary);
+  if (key === null && summary === null) {
+    return null;
+  }
+  const type = fields !== null && isObject(fields.issuetype) ? textOf(fields.issuetype.name) : null;
+  const status = fields !== null && isObject(fields.status) ? textOf(fields.status.name) : null;
+  const details = [type, status === null ? null : `status ${status}`].filter(
+    (detail): detail is string => detail !== null,
+  );
+  return (
+    `${relation === null ? '' : `${relation} `}${key ?? '[no key captured]'}` +
+    `${summary === null ? '' : ` "${summary}"`}` +
+    `${details.length === 0 ? '' : ` (${details.join(', ')})`}`
+  );
+}
+
+/** One issue link's readable relation, resolved against the captured issue this context renders. */
+function issueLinkText(link: Readonly<Record<string, unknown>>): string | null {
+  const type = isObject(link.type) ? link.type : null;
+  const outward = isObject(link.outwardIssue) ? link.outwardIssue : null;
+  const inward = isObject(link.inwardIssue) ? link.inwardIssue : null;
+  const issue = outward ?? inward;
+  if (issue === null) {
+    return null;
+  }
+  const relation =
+    type === null
+      ? null
+      : (textOf(outward !== null ? type.outward : type.inward) ?? textOf(type.name));
+  return relatedIssueText(issue, relation);
+}
+
+/**
+ * One relationship field's readable lines. A parent, subtask or issue link is meaningful evidence:
+ * its identity, relation and summary stay readable, and an entry the renderer cannot interpret is
+ * explicitly identified for inspection instead of disappearing into the administrative note.
+ */
+function relationshipLines(
+  name: string,
+  entries: readonly unknown[],
+  textOfEntry: (entry: Readonly<Record<string, unknown>>) => string | null,
+  sourcePath: string,
+): string[] {
+  return [
+    `- ${name}:`,
+    ...entries.map((entry) => {
+      const text = isObject(entry) ? textOfEntry(entry) : null;
+      return text === null
+        ? `  ${inspectionNote(`one captured ${name} entry`, sourcePath)}`
+        : `  - ${text}`;
+    }),
+  ];
+}
+
 /** One non-description captured field's readable lines. */
 function renderField(name: string, value: unknown, sourcePath: string): string[] {
   if (name === 'attachment') {
@@ -412,6 +506,30 @@ function renderField(name: string, value: unknown, sourcePath: string): string[]
       '- attachment:',
       `  ${inspectionNote('the captured attachments (files or other non-text evidence)', sourcePath)}`,
     ];
+  }
+  if (name === 'parent') {
+    return relationshipLines(
+      'parent',
+      [value],
+      (entry) => relatedIssueText(entry, null),
+      sourcePath,
+    );
+  }
+  if (name === 'subtasks') {
+    return relationshipLines(
+      'subtasks',
+      Array.isArray(value) ? value : [value],
+      (entry) => relatedIssueText(entry, null),
+      sourcePath,
+    );
+  }
+  if (name === 'issuelinks') {
+    return relationshipLines(
+      'issuelinks',
+      Array.isArray(value) ? value : [value],
+      issueLinkText,
+      sourcePath,
+    );
   }
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return [`- ${name}: ${String(value)}`];

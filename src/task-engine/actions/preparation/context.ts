@@ -27,6 +27,7 @@ import {
   readStageRoleArtifact,
   readStagePlan,
   requireReturnReport,
+  requireStageReport,
   roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
@@ -142,6 +143,16 @@ function artifactPath(
   return roundArtifactFile(stageRoot(issueRoot, stage), round, artifactFile);
 }
 
+/** The context one later stage's read of an earlier stage's retained role record reports. */
+function upstreamContext(
+  earlier: PreparationStage,
+  role: 'author' | 'evaluator',
+  round: number,
+  stage: PreparationStage,
+): string {
+  return `Reading retained ${earlier} ${role} round ${String(round)} for ${stage} context.`;
+}
+
 /** One earlier stage's retained result, author and report references a later stage may read. */
 export async function upstreamReferences(
   selection: Selection,
@@ -175,9 +186,29 @@ export async function upstreamReferences(
         round: plan.round,
         role: 'author',
         profile: plan.profiles.author,
-        context: `Reading retained ${earlier} author round ${String(plan.round)} for ${stage} context.`,
+        context: upstreamContext(earlier, 'author', plan.round, stage),
       });
       if (author !== null) {
+        if (isBoundStageAuthorOutput(author)) {
+          // Referencing an accepted upstream report must not bypass its producer binding: a
+          // missing or changed Markdown is preserved as that author's rejection evidence before
+          // any later stage consumes the acceptance.
+          await requireStageReport({
+            issueRoot,
+            workId: selection.taskKey,
+            stage: earlier,
+            role: 'author',
+            binding: author,
+            profile: author.profile,
+            file: artifactPath(
+              issueRoot,
+              earlier,
+              plan.round,
+              stageAuthorArtifact.pathFromArtifactsRoot,
+            ),
+            context: upstreamContext(earlier, 'author', plan.round, stage),
+          });
+        }
         lines.push(
           `${earlier} retained authored revision ${String(author.revision)}: ` +
             artifactPath(
@@ -188,6 +219,34 @@ export async function upstreamReferences(
             ) +
             (isBoundStageAuthorOutput(author) ? `; report: ${author.report.path}` : ''),
         );
+      }
+      const evaluation = await readStageRoleArtifact({
+        issueRoot,
+        stage: earlier,
+        workId: selection.taskKey,
+        round: plan.round,
+        role: 'evaluator',
+        profile: plan.profiles.evaluator,
+        context: upstreamContext(earlier, 'evaluator', plan.round, stage),
+      });
+      if (evaluation !== null && isBoundStageEvaluationOutput(evaluation)) {
+        // The accepted result's own assessment is evidence later stages rely on; validate its
+        // Markdown binding under the evaluator's report responsibility before exposing the result.
+        await requireStageReport({
+          issueRoot,
+          workId: selection.taskKey,
+          stage: earlier,
+          role: 'evaluator',
+          binding: evaluation,
+          profile: evaluation.profile,
+          file: artifactPath(
+            issueRoot,
+            earlier,
+            plan.round,
+            stageEvaluationArtifact.pathFromArtifactsRoot,
+          ),
+          context: upstreamContext(earlier, 'evaluator', plan.round, stage),
+        });
       }
       lines.push(`${earlier} stage history: ${root}`);
     }

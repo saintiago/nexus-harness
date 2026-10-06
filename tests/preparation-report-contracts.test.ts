@@ -16,7 +16,10 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { upstreamReferences } from '../src/task-engine/actions/preparation/context.js';
-import { capturedSourcePathOf } from '../src/task-engine/actions/preparation/readable-source.js';
+import {
+  capturedSourcePathOf,
+  capturedSourceText,
+} from '../src/task-engine/actions/preparation/readable-source.js';
 import {
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -726,6 +729,108 @@ it('attributes an unusable upstream context report to its stage author', async (
   await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
 });
 
+it.each([
+  { role: 'author' as const, change: 'changed' as const },
+  { role: 'author' as const, change: 'removed' as const },
+  { role: 'evaluator' as const, change: 'changed' as const },
+  { role: 'evaluator' as const, change: 'removed' as const },
+])(
+  'rejects the $change upstream $role Markdown before the next stage is invoked',
+  async ({ role, change }) => {
+    const { selectionFile, root } = await stageArea();
+    const issueRoot = path.dirname(root);
+    const common = {
+      selectionFile,
+      stage,
+      git: scriptedGit([repositoryState()]).git,
+      publish: () => undefined,
+    };
+    // A real requirements round authors a skip, an evaluator accepts it and the stage result is
+    // saved, so a later stage builds on bound upstream Markdown.
+    await expect(
+      createStageAuthor({ ...common, runner: authorRunner(conformingSkipResponse, []) })({
+        task: 'propose',
+      }),
+    ).resolves.toBe('skip-proposed');
+    await expect(
+      createStageEvaluator({
+        ...common,
+        runner: evaluatorRunner(
+          { verdict: 'accepted-skip', observation: null, upstream: null },
+          [],
+        ),
+      })(),
+    ).resolves.toBe('accepted-skip');
+    await expect(createStageResult(common)({ outcome: 'skipped' })).resolves.toBe('saved');
+    const record = path.join(
+      root,
+      'artifacts',
+      '3',
+      role === 'author' ? 'author.json' : 'evaluation.json',
+    );
+    const saved = JSON.parse(await readFile(record, 'utf8')) as {
+      readonly report: { readonly path: string };
+    };
+    if (change === 'changed') {
+      await writeFile(saved.report.path, 'Replacement report.\n');
+    } else {
+      await rm(saved.report.path);
+    }
+
+    // The downstream UX author must not reach its provider on changed or missing upstream
+    // evidence: the reference read validates the producer binding first.
+    const uxSelection = path.join(issueRoot, 'ux-selection.json');
+    await writeFile(
+      uxSelection,
+      JSON.stringify({
+        taskKey: 'KAN-76',
+        source: { kind: 'jira', issueId: '10994' },
+        task: { id: '10994', key: 'KAN-76', fields: {} },
+        conversation: [],
+        workspace: { root: issueRoot },
+        stage: 'ux',
+      }),
+    );
+    await mkdir(path.join(issueRoot, 'ux', 'state'), { recursive: true });
+    await mkdir(path.join(issueRoot, 'ux', 'artifacts', '1'), { recursive: true });
+    await writeFile(
+      path.join(issueRoot, 'ux', 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'ux',
+        round: 1,
+        route: 'new',
+        profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
+      }),
+    );
+    const contexts: string[] = [];
+    const uxAuthor = createStageAuthor({
+      selectionFile: uxSelection,
+      stage: 'ux',
+      git: common.git,
+      publish: () => undefined,
+      runner: authorRunner(conformingSkipResponse, contexts),
+    });
+    await expect(uxAuthor({ task: 'propose' })).rejects.toThrow(
+      change === 'changed' ? /does not match the identity recorded/ : /does not exist/,
+    );
+    expect(contexts).toEqual([]);
+    // The producer owns the rejection: the requirements role retains its attributable evidence
+    // while the consuming stage records nothing of its own.
+    expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+      kind: 'rejection',
+      scope: { area: root, workId: 'KAN-76', role: `requirements-${role}` },
+      source: { path: record },
+      assignedReport: saved.report,
+      operation: `stage-${role}`,
+      reason:
+        change === 'changed'
+          ? expect.stringContaining('does not match')
+          : expect.stringContaining('does not exist'),
+    });
+    await expect(readReportFeedback(path.join(issueRoot, 'ux'))).resolves.toEqual([]);
+  },
+);
+
 it('surfaces an unusable preceding evaluation to a new round without reusing or overwriting it', async () => {
   const { selectionFile, root } = await stageArea();
   const common = {
@@ -1283,12 +1388,123 @@ const readableIssue = {
           attrs: { language: 'bash' },
           content: [{ type: 'text', text: 'nexus run' }],
         },
+        {
+          type: 'orderedList',
+          attrs: { order: 4 },
+          content: [
+            {
+              type: 'listItem',
+              content: [
+                { type: 'paragraph', content: [{ type: 'text', text: 'Fourth step.' }] },
+                {
+                  type: 'bulletList',
+                  content: [
+                    {
+                      type: 'listItem',
+                      content: [
+                        {
+                          type: 'paragraph',
+                          content: [{ type: 'text', text: 'Child constraint.' }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'tableRow',
+              content: [
+                {
+                  type: 'tableHeader',
+                  content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Area' }] }],
+                },
+                {
+                  type: 'tableHeader',
+                  content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Decision' }] }],
+                },
+              ],
+            },
+            {
+              type: 'tableRow',
+              content: [
+                {
+                  type: 'tableCell',
+                  content: [{ type: 'paragraph', content: [{ type: 'text', text: 'SSO' }] }],
+                },
+                {
+                  type: 'tableCell',
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [{ type: 'text', text: 'Excluded by the table: enterprise SSO.' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { state: 'TODO' },
+              content: [{ type: 'text', text: 'Checklist: keep the shortcuts.' }],
+            },
+          ],
+        },
         { type: 'mediaSingle', content: [] },
         { type: 'futureBlock' },
       ],
     },
     labels: ['harness-task', 'nexus-source-HARN-115-1'],
     customfield_10015: 'A meaningful custom field.',
+    parent: {
+      id: '11000',
+      key: 'HARN-100',
+      self: 'https://api.test/issue/11000',
+      fields: {
+        summary: 'Parent epic',
+        issuetype: { name: 'Epic' },
+        status: { name: 'In Progress' },
+      },
+    },
+    subtasks: [
+      {
+        id: '11001',
+        key: 'HARN-101',
+        self: 'https://api.test/issue/11001',
+        fields: {
+          summary: 'Child task',
+          issuetype: { name: 'Sub-task' },
+          status: { name: 'To Do' },
+        },
+      },
+    ],
+    issuelinks: [
+      {
+        id: '10345',
+        self: 'https://api.test/issueLink/10345',
+        type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+        outwardIssue: {
+          id: '11002',
+          key: 'PROJ-2',
+          self: 'https://api.test/issue/11002',
+          fields: {
+            summary: 'Release requires accessibility audit',
+            issuetype: { name: 'Task' },
+            status: { name: 'Done' },
+          },
+        },
+      },
+    ],
     statuscategorychangedate: '2026-10-06T18:48:21.527+0200',
     timespent: null,
     workratio: -1,
@@ -1416,6 +1632,21 @@ it('renders captured source readably, retains its exact evidence and embeds no A
   expect(context).toContain('```bash');
   expect(context).toContain('nexus run');
   expect(context).toContain('- customfield_10015: A meaningful custom field.');
+  // Standard rich-text structures keep their meaning: a nested constraint once, the captured
+  // ordered start, table-cell text and checklist text.
+  expect(context.match(/Child constraint\./g)).toHaveLength(1);
+  expect(context).toContain('4. Fourth step.');
+  expect(context).toContain('| SSO | Excluded by the table: enterprise SSO. |');
+  expect(context).toContain('- [ ] Checklist: keep the shortcuts.');
+  // Captured relationships stay readable evidence instead of being dismissed as administration.
+  expect(context).toContain('- parent:');
+  expect(context).toContain('- HARN-100 "Parent epic" (Epic, status In Progress)');
+  expect(context).toContain('- subtasks:');
+  expect(context).toContain('- HARN-101 "Child task" (Sub-task, status To Do)');
+  expect(context).toContain('- issuelinks:');
+  expect(context).toContain(
+    '- blocks PROJ-2 "Release requires accessibility audit" (Task, status Done)',
+  );
 
   // Attribution, chronology, the Nexus publication mark and the still-unresolved human conflict.
   expect(context).toContain(
@@ -1436,6 +1667,9 @@ it('renders captured source readably, retains its exact evidence and embeds no A
   expect(context).not.toContain('"statuscategorychangedate"');
   expect(context).not.toContain('"self":');
   expect(context).toContain('Administrative issue fields omitted from this rendering:');
+  expect(context).not.toMatch(
+    /Administrative issue fields omitted from this rendering:[^\n]*(parent|subtasks|issuelinks)/,
+  );
   // Attachments are captured evidence: they receive an explicit inspection reference to the
   // retained source instead of being dropped as administration.
   expect(context).toContain('- attachment:');
@@ -1495,6 +1729,121 @@ it('renders captured source readably, retains its exact evidence and embeds no A
     issue: readableIssue,
     conversation: readableConversation,
   });
+});
+
+it('renders every rich-text child once with its captured structure and numbering', () => {
+  const text = capturedSourceText({
+    sourcePath: '/tmp/captured-source.json',
+    task: {
+      key: 'KAN-76',
+      fields: {
+        summary: 'Structured input',
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'bulletList',
+              content: [
+                {
+                  type: 'listItem',
+                  content: [
+                    { type: 'paragraph', content: [{ type: 'text', text: 'Parent constraint' }] },
+                    {
+                      type: 'orderedList',
+                      attrs: { order: 7 },
+                      content: [
+                        {
+                          type: 'listItem',
+                          content: [
+                            {
+                              type: 'paragraph',
+                              content: [{ type: 'text', text: 'Seventh step' }],
+                            },
+                          ],
+                        },
+                        {
+                          type: 'listItem',
+                          content: [
+                            { type: 'paragraph', content: [{ type: 'text', text: 'Eighth step' }] },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              type: 'table',
+              content: [
+                {
+                  type: 'tableRow',
+                  content: [
+                    {
+                      type: 'tableCell',
+                      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Scope' }] }],
+                    },
+                    {
+                      type: 'tableCell',
+                      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Value' }] }],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              type: 'taskList',
+              content: [
+                {
+                  type: 'taskItem',
+                  attrs: { state: 'TODO' },
+                  content: [{ type: 'text', text: 'Checklist text' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    conversation: [
+      {
+        id: 'c1',
+        author: { displayName: 'A human' },
+        body: {
+          type: 'doc',
+          content: [
+            {
+              type: 'table',
+              content: [
+                {
+                  type: 'tableRow',
+                  content: [
+                    {
+                      type: 'tableCell',
+                      content: [
+                        { type: 'paragraph', content: [{ type: 'text', text: 'Comment cell' }] },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    publications: [],
+  });
+  // Nested list content appears exactly once, under its item, with its captured numbering.
+  expect(text.match(/Parent constraint/g)).toHaveLength(1);
+  expect(text.match(/Seventh step/g)).toHaveLength(1);
+  expect(text).toContain('    7. Seventh step');
+  expect(text).toContain('    8. Eighth step');
+  // Table cells and checklist items render their block and inline content, in descriptions and
+  // comment bodies alike.
+  expect(text).toContain('| Scope | Value |');
+  expect(text).toContain('- [ ] Checklist text');
+  expect(text).toContain('| Comment cell |');
 });
 
 it('references current work and supporting history instead of embedding their report bodies', async () => {
