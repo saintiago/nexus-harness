@@ -7,10 +7,9 @@ import { createTaskEngine, type BoundAction } from '../src/task-engine/index.js'
 import { createRouteDeliveryEntry } from '../src/task-engine/actions/route-delivery-entry/index.js';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  outstandingReportFeedback,
-  readReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
   rejectReport,
-  retainSuppliedFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
 import { finiteDelivery } from '../workflows/finite-delivery.js';
 
@@ -178,17 +177,16 @@ describe('retained finite delivery entry', () => {
       const rejectedOutput = await readFile(saved.file, 'utf8');
 
       await expect(prepared.route()).rejects.toThrow();
-      const records = await readReportFeedback(prepared.root);
+      const records = await readValidationErrorHistory(prepared.root);
       expect(records).toHaveLength(1);
       const rejection = records[0]!.record;
       expect(rejection).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: developmentReportScope(prepared.root, 'NEX-1'),
         operation: 'develop',
         output: rejectedOutput,
         assignedReport: { path: saved.reportFile },
       });
-      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
       if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
       else {
         expect(rejection.report).not.toBeNull();
@@ -203,14 +201,14 @@ describe('retained finite delivery entry', () => {
     await writeFile(saved.reportFile, 'Reworded after the turn, still readable.\n');
 
     await expect(prepared.route()).resolves.toBe('verify');
-    await expect(readReportFeedback(prepared.root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(prepared.root)).resolves.toEqual([]);
   });
 
   it.each(['completed', 'failed'] as const)(
-    'finishes only the saved %s invocation correction before retained routing',
+    'clears the pending context from the current bound %s outcome before retained routing',
     async (status) => {
       const prepared = await entry({ development: status });
-      const saved = await saveBoundDevelopment(prepared.root, status);
+      await saveBoundDevelopment(prepared.root, status);
       const scope = developmentReportScope(prepared.root, 'NEX-1');
       const reject = (invocationId: string) =>
         rejectReport({
@@ -225,27 +223,22 @@ describe('retained finite delivery entry', () => {
           reason: `Unusable output from ${invocationId}.`,
         });
       await expect(reject('earlier')).rejects.toThrow('Unusable output');
-      const supplied = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
-      await retainSuppliedFeedback({
-        areaRoot: prepared.root,
-        invocationId: saved.outcome.invocationId,
-        rejections: supplied.map((entry) => ({ path: entry.path })),
-      });
       await expect(reject('later')).rejects.toThrow('Unusable output');
+      const before = await readPendingValidationError({ areaRoot: prepared.root, scope });
+      expect(before?.entries[0]?.invocationId).toBe('later');
       const expectedPhase = status === 'completed' ? 'verify' : 'round';
       expect(await prepared.route()).toBe(expectedPhase);
       expect(await prepared.route()).toBe(expectedPhase);
-      const outstanding = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
-      expect(outstanding).toHaveLength(1);
-      expect(outstanding[0]!.record.invocationId).toBe('later');
-      const records = await readReportFeedback(prepared.root);
-      const corrections = records.filter((entry) => entry.record.kind === 'correction');
-      expect(corrections).toHaveLength(1);
-      expect(corrections[0]!.record).toMatchObject({
-        invocationId: saved.outcome.invocationId,
-        artifact: { path: saved.file },
-        rejections: supplied.map((entry) => ({ path: entry.path })),
-      });
+      // The routed current bound outcome is the owner's validated saved replacement: it clears
+      // the pending context while both rejected invocations stay readable history.
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.root, scope }),
+      ).resolves.toBeNull();
+      const records = await readValidationErrorHistory(prepared.root);
+      expect(records.map((entry) => entry.record.reason)).toEqual([
+        'Unusable output from earlier.',
+        'Unusable output from later.',
+      ]);
     },
   );
 });

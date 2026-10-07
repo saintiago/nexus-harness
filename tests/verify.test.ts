@@ -16,7 +16,7 @@ import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
   projectOfWorkspace,
-  readReportFeedback,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import {
@@ -474,9 +474,7 @@ describe('Verify', () => {
         stat(path.join(workspaceRoot, 'artifacts', '1', 'verification.json')),
       ).rejects.toThrow(/ENOENT/);
       // The unreadable or mismatched report stays attributable under the developer's responsibility.
-      const rejection = (await readReportFeedback(workspaceRoot)).find(
-        (entry) => entry.record.kind === 'rejection',
-      );
+      const rejection = (await readValidationErrorHistory(workspaceRoot))[0];
       expect(rejection?.record).toMatchObject({
         scope: {
           project: projectOfWorkspace(workspaceRoot),

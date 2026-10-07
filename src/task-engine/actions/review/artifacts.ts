@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { readBoundReport, retainedReportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
-import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
+import {
+  clearPendingValidationError,
+  projectOfWorkspace,
+  rejectUnusableRecord,
+  type ReportScope,
+} from '../report-feedback.js';
 
 /**
  * Review's artifact contract: the saved Markdown review and the verdict it supports, bound to the
@@ -88,8 +93,10 @@ export function reviewReportScope(areaRoot: string, taskKey: string): ReportScop
  * Require one retained review outcome to be usable for a workflow decision: it must describe the
  * expected task (when the retained record names one) and, when it carries the current report
  * binding, its assigned Markdown must be readable. An unusable outcome is preserved under the
- * reviewer's report responsibility as attributable rejection evidence before the read fails. A
- * retained combined review stays readable history.
+ * reviewer's report responsibility as attributable validation-error evidence before the read
+ * fails. A retained combined review stays readable history. This shared validation serves history
+ * and other consumers; clearing pending context belongs to the owner's current-round reader and
+ * save paths.
  */
 export async function requireUsableReviewOutcome(settings: {
   readonly areaRoot: string;
@@ -126,8 +133,11 @@ export async function requireUsableReviewOutcome(settings: {
 
 /**
  * Read the current round's saved review outcome for a decision outside Review. An absent record
- * is null; an unusable record is preserved as the reviewer's rejection evidence before the read
- * fails; a returned outcome has already passed its task and report-binding checks.
+ * is null; an unusable record is preserved as the reviewer's validation-error evidence before the
+ * read fails; a returned outcome has already passed its task and report-binding checks. Because
+ * the caller names the owner's current round, validating the saved replacement here also clears a
+ * pending validation-error context, completing an interrupted save/clear without another
+ * review.
  */
 export async function readUsableReviewOutcome(settings: {
   readonly areaRoot: string;
@@ -167,6 +177,12 @@ export async function readUsableReviewOutcome(settings: {
       invocationId: null,
       context: settings.context,
     });
+    if (isBoundReviewOutput(outcome)) {
+      await clearPendingValidationError({
+        areaRoot: settings.areaRoot,
+        scope: reviewReportScope(settings.areaRoot, settings.taskKey),
+      });
+    }
   }
   return outcome;
 }

@@ -3,7 +3,7 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorHelpArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
-  finishRetainedIdeaCorrection,
+  clearRetainedIdeaValidationError,
   ideaReportContracts,
   invokeIdeaRole,
   projectGuidanceText,
@@ -123,9 +123,9 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
         `for idea ${inputRecord.taskKey}.`,
     });
     if (existing !== null) {
-      // The saved contribution already answers for the rejections its invocation was supplied;
-      // an interrupted correction write finishes here without another invocation.
-      await finishRetainedIdeaCorrection({
+      // The saved contribution is the validated replacement this replay reads back; an
+      // interrupted save/clear finishes here without another invocation.
+      await clearRetainedIdeaValidationError({
         root,
         workId: inputRecord.taskKey,
         contract: ideaReportContracts.projectGuidance,
@@ -184,7 +184,7 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);
-    await outcome.finishFeedback({ path: file }, stored);
+    await outcome.clearPendingError();
     return contributed(inputRecord.taskKey, plan.cycle, file);
   };
 }

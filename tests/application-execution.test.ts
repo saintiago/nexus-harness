@@ -45,7 +45,11 @@ import {
   createAnalyzeExperience,
   type ExperienceAnalystRequest,
 } from '../src/task-engine/actions/analyze-experience/index.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import {
+  readPendingValidationError,
+  readValidationErrorHistory,
+  type ReportScope,
+} from '../src/task-engine/actions/report-feedback.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
@@ -1286,13 +1290,11 @@ describe('Application execution', () => {
     expect(first.reason).toContain('does not match the response format');
     expect(invocations).toBe(1);
     const recoveryArea = path.join(executed.executionDirectory, 'recovery');
-    const rejection = (await readReportFeedback(recoveryArea)).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(recoveryArea))[0];
     expect(rejection?.record).toMatchObject({
       scope: {
         project: 'NEX',
-        workId: 'NEX',
+        workId: 'NEX-1',
         area: recoveryArea,
         role: 'recovery',
         reportKind: 'recovery-report',
@@ -1302,10 +1304,10 @@ describe('Application execution', () => {
       reason: expect.stringContaining('does not match the response format'),
     });
 
-    // Recovery cleared the selection; a later execution reselects different retained work. The
-    // recovery responsibility still matches, so the next permitted invocation receives it.
+    // Recovery cleared the selection; a later execution reselects the same retained work, so the
+    // next permitted invocation receives the pending context.
     await rm(selectionFile);
-    await writeFile(selectionFile, JSON.stringify(selection('NEX-2')));
+    await writeFile(selectionFile, JSON.stringify(selection('NEX-1')));
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
       workflow: 'project',
@@ -1318,10 +1320,18 @@ describe('Application execution', () => {
     expect(context).toContain('{"summary":"No decision was returned."}');
     expect(context).toContain('Rejected output (exact returned bytes):');
 
-    // Only the producer-validated saved replacement records the correction; history remains.
-    const records = await readReportFeedback(recoveryArea);
-    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
-    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+    // The producer-validated saved replacement clears the pending context; history remains.
+    const scope: ReportScope = {
+      project: 'NEX',
+      workId: 'NEX-1',
+      area: recoveryArea,
+      role: 'recovery',
+      reportKind: 'recovery-report',
+    };
+    await expect(readPendingValidationError({ areaRoot: recoveryArea, scope })).resolves.toBeNull();
+    const records = await readValidationErrorHistory(recoveryArea);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.record.kind).toBe('validation-error');
   });
 
   it('retains a missing recovery Markdown and stops for attention', async () => {
@@ -1355,13 +1365,11 @@ describe('Application execution', () => {
     });
     expect(executed.notifications).toHaveLength(0);
     const recoveryArea = path.join(executed.executionDirectory, 'recovery');
-    const rejection = (await readReportFeedback(recoveryArea)).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(recoveryArea))[0];
     expect(rejection?.record).toMatchObject({
       scope: {
         project: 'NEX',
-        workId: 'NEX',
+        workId: 'no-selected-work',
         area: recoveryArea,
         role: 'recovery',
         reportKind: 'recovery-report',
@@ -1373,8 +1381,8 @@ describe('Application execution', () => {
       },
     });
 
-    // The next execution's permitted invocation receives the rejection, writes its Markdown and
-    // records the correction, so only replacing the file could not clear the obligation.
+    // The next execution's permitted invocation receives the pending context, writes its Markdown
+    // and saves the replacement, so the context clears.
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
       workflow: 'project',
@@ -1384,9 +1392,9 @@ describe('Application execution', () => {
     const context = executed.invocations[1]?.context ?? '';
     expect(context).toContain('Violated rule:');
     expect(context).toContain('does not exist');
-    const records = await readReportFeedback(recoveryArea);
-    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
-    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+    const records = await readValidationErrorHistory(recoveryArea);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.record.kind).toBe('validation-error');
   });
 
   it('stops for attention when the retained recovery feedback is unreadable', async () => {
@@ -1400,10 +1408,10 @@ describe('Application execution', () => {
       workflow: 'project',
     });
 
-    // Missing or unusable evidence is an explicit error, never an empty feedback set: the
-    // invocation that cannot receive its required correction does not run unawares.
+    // Missing or unusable evidence is an explicit error, never an empty context: the invocation
+    // that cannot receive its required diagnosis does not run unawares.
     expect(result.outcome).toBe('needs-attention');
-    expect(result.reason).toContain('could not read its retained report feedback');
+    expect(result.reason).toContain('could not read its pending validation-error context');
     expect(executed.invocations).toHaveLength(0);
   });
 

@@ -16,7 +16,8 @@ project configuration, available failure/output, execution-state paths, issue wo
 known, the assigned Markdown path and the decision-only RecoveryResponse format. Missing error
 information remains absent. Include the selected workflow definition and relevant state/artifact
 declarations so reconciliation uses their actual formats. Include relevant report-rejection
-references and the producer-owned feedback declarations.
+references and the applicable pending validation-error context as readable failure evidence;
+do not supply a correction-record protocol.
 
 Run in a separate operational [workspace](../workspace.md#layout-and-reference), outside the
 issue workspace whose finite delivery attempt may be discarded. Application invokes recovery

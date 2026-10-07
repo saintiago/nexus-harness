@@ -37,8 +37,8 @@ import {
   roundArtifactDirectory,
 } from '../src/task-engine/actions/preparation/storage.js';
 import {
-  outstandingReportFeedback,
-  readReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import { savePrototypeObservation } from './support/prototype-observation.js';
 import { writeAssignedReport } from './support/agent-runner.js';
@@ -323,10 +323,10 @@ describe('prototype observation evidence', () => {
         stage: 'prototype',
         role: 'author',
       });
-      const feedback = await readReportFeedback(stageRoot);
+      const feedback = await readValidationErrorHistory(stageRoot);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]?.record).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: authorScope,
         invocationId: (JSON.parse(originalAuthor) as { invocationId: string }).invocationId,
         operation: 'stage-author',
@@ -342,11 +342,11 @@ describe('prototype observation evidence', () => {
       await writeFile(authorFile, originalAuthor);
       await expect(evaluate()).resolves.toBe('accepted');
       expect(evaluation.contexts.at(-1)).not.toContain(
-        'Outstanding report rejections of this report responsibility',
+        'Pending validation error of this report responsibility',
       );
-      await expect(
-        outstandingReportFeedback({ areaRoot: stageRoot, scope: authorScope }),
-      ).resolves.toHaveLength(1);
+      expect(
+        (await readPendingValidationError({ areaRoot: stageRoot, scope: authorScope }))?.entries,
+      ).toHaveLength(1);
 
       // The next author round receives the retained diagnosis and retires it only on validated save.
       const nextDirectory = roundArtifactDirectory(stageRoot, 2);
@@ -377,11 +377,9 @@ describe('prototype observation evidence', () => {
       expect(correction.contexts[0]).toContain(source);
       if (output !== null) expect(correction.contexts[0]).toContain(output);
       await expect(
-        outstandingReportFeedback({ areaRoot: stageRoot, scope: authorScope }),
-      ).resolves.toEqual([]);
-      expect(
-        (await readReportFeedback(stageRoot)).filter((entry) => entry.record.kind === 'rejection'),
-      ).toEqual(feedback);
+        readPendingValidationError({ areaRoot: stageRoot, scope: authorScope }),
+      ).resolves.toBeNull();
+      expect(await readValidationErrorHistory(stageRoot)).toEqual(feedback);
     },
   );
 
@@ -413,7 +411,7 @@ describe('prototype observation evidence', () => {
     });
     // Reading a retained record never rewrites it: the former inventory stays byte-for-byte.
     expect(JSON.parse(await readFile(authorObservation, 'utf8'))).toEqual(retained);
-    await expect(readReportFeedback(stageRoot)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(stageRoot)).resolves.toEqual([]);
   });
 
   it('requires the author to save a readable observation for applicable prototype work', async () => {
@@ -592,19 +590,19 @@ describe('prototype observation evidence', () => {
       role: 'evaluator',
     });
     expect(
-      (await outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope })).find(
-        (entry) => entry.record.reason.includes('is not readable rendered image evidence'),
-      )?.record,
+      (await readPendingValidationError({ areaRoot: stageRoot, scope: evaluatorScope }))
+        ?.entries[0],
     ).toMatchObject({
-      scope: evaluatorScope,
       operation: 'stage-evaluator',
       output: JSON.stringify(brokenReport),
       source: null,
       reason: expect.stringContaining('is not readable rendered image evidence'),
     });
-    await expect(
-      outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
-    ).resolves.toHaveLength(2);
+    // The latest diagnosis is the pending context; both rejections stay readable history.
+    expect(
+      (await readPendingValidationError({ areaRoot: stageRoot, scope: evaluatorScope }))?.entries,
+    ).toHaveLength(1);
+    expect(await readValidationErrorHistory(stageRoot)).toHaveLength(2);
 
     // The repaired evidence saves the verdict and retires exactly the rejections it answered.
     const acceptedContexts: string[] = [];
@@ -629,17 +627,13 @@ describe('prototype observation evidence', () => {
       })(),
     ).resolves.toBe('accepted');
     const acceptedContext = acceptedContexts.join('\n');
-    expect(acceptedContext).toContain(
-      'Outstanding report rejections of this report responsibility',
-    );
+    expect(acceptedContext).toContain('Pending validation error of this report responsibility');
     expect(acceptedContext).toContain('is not readable rendered image evidence');
     expect(acceptedContext).toContain('Rejected output (exact returned bytes):');
     await expect(
-      outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
-    ).resolves.toEqual([]);
-    expect(
-      (await readReportFeedback(stageRoot)).filter((entry) => entry.record.kind === 'rejection'),
-    ).toHaveLength(2);
+      readPendingValidationError({ areaRoot: stageRoot, scope: evaluatorScope }),
+    ).resolves.toBeNull();
+    expect(await readValidationErrorHistory(stageRoot)).toHaveLength(2);
     await expect(readStageArtifact(stageRoot, 1, stageEvaluationArtifact)).resolves.toMatchObject({
       verdict: 'accepted',
       observation: { path: fresh },
@@ -1050,9 +1044,14 @@ describe('prototype observation evidence', () => {
       stage: 'prototype',
       role: 'author',
     });
-    await expect(
-      outstandingReportFeedback({ areaRoot: path.join(root, 'prototype'), scope: authorScope }),
-    ).resolves.toHaveLength(1);
+    expect(
+      (
+        await readPendingValidationError({
+          areaRoot: path.join(root, 'prototype'),
+          scope: authorScope,
+        })
+      )?.entries,
+    ).toHaveLength(1);
   });
 
   it('accepts a document the author deleted and committed during the invocation', async () => {

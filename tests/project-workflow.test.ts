@@ -36,7 +36,7 @@ import { createImplementationHandoff } from '../src/task-engine/actions/project/
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { readValidationErrorHistory } from '../src/task-engine/actions/report-feedback.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
   acceptedResultIdentity,
@@ -1586,10 +1586,10 @@ describe('parent preparation publication', () => {
       expect(published.outcome).toBe('failed');
       expect(published.comments).toEqual([]);
       expect(published.status()).toBe('UX Proposal');
-      expect(await readReportFeedback(area)).toMatchObject([
+      expect(await readValidationErrorHistory(area)).toMatchObject([
         {
           record: {
-            kind: 'rejection',
+            kind: 'validation-error',
             scope: { role: `ux-${role}` },
             reason: expect.stringContaining('does not exist'),
           },
@@ -1627,10 +1627,10 @@ describe('parent preparation publication', () => {
       expect(published.comments).toEqual([]);
       expect(published.status()).toBe('UX Proposal');
       expect(published.feedback()).toBeNull();
-      expect(await readReportFeedback(area)).toMatchObject([
+      expect(await readValidationErrorHistory(area)).toMatchObject([
         {
           record: {
-            kind: 'rejection',
+            kind: 'validation-error',
             scope: { role: 'ux-author' },
           },
         },
@@ -1662,7 +1662,7 @@ describe('parent preparation publication', () => {
     });
     expect(published.outcome).toBe('waiting');
     expect(published.status()).toBe('Waiting for Feedback');
-    expect(await readReportFeedback(area)).toEqual([]);
+    expect(await readValidationErrorHistory(area)).toEqual([]);
   });
 
   it('rejects a damaged current return before publication writes source or handoff state', async () => {
@@ -1888,10 +1888,10 @@ describe('parent preparation publication', () => {
       expect(published.failures.join('\n')).toContain(
         damage === 'missing-report' ? 'does not exist' : 'invocationId',
       );
-      const feedback = await readReportFeedback(area);
+      const feedback = await readValidationErrorHistory(area);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]!.record).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: { role: 'ux-evaluator' },
         assignedReport: { path: availableReport },
         source: { path: producerFile },

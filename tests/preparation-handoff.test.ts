@@ -38,8 +38,8 @@ import {
   stageAuthorArtifact,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
-  readReportFeedback,
-  outstandingReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
@@ -1011,7 +1011,7 @@ describe('preparation repair rounds', () => {
     // changes do not invalidate the saved association, so the return can leave the stage.
     await writeFile(evaluation.report.path, '# Replaced assessment\n\nDifferent bytes.\n');
     await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
-    await expect(readReportFeedback(root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
 
     // A missing report is unusable evidence: the completed return cannot replay without its
     // assessment and the producing role's rejection evidence is retained.
@@ -1021,10 +1021,10 @@ describe('preparation repair rounds', () => {
       outcome: 'returnUpstream',
       returnFinding: { report: { invocationId: expect.any(String) } },
     });
-    const firstFeedback = await readReportFeedback(root);
+    const firstFeedback = await readValidationErrorHistory(root);
     expect(firstFeedback).toHaveLength(1);
     expect(firstFeedback[0]?.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       assignedReport: { path: evaluation.report.path },
     });
@@ -1076,10 +1076,10 @@ describe('preparation repair rounds', () => {
     await expect(destination({ stage: 'requirements', task: 'propose' })).rejects.toThrow(
       /does not exist/,
     );
-    const destinationFeedback = await readReportFeedback(root);
+    const destinationFeedback = await readValidationErrorHistory(root);
     expect(destinationFeedback).toHaveLength(2);
     expect(destinationFeedback.at(-1)?.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       source: { path: path.join(root, 'artifacts/2/evaluation.json') },
       output: await readFile(path.join(root, 'artifacts/2/evaluation.json'), 'utf8'),
@@ -1277,11 +1277,11 @@ describe('preparation retained outcome usability', () => {
           : createStageEvaluator(settings)();
       await expect(invocation).rejects.toThrow(malformed ? /report/ : /does not exist/);
       expect(contexts).toEqual([]);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(1);
       const rejection = feedback[0]!.record;
       expect(rejection).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: { role: `ux-${producerRole}` },
         invocationId: producer.invocationId,
         profile: producer.profile,
@@ -1289,14 +1289,14 @@ describe('preparation retained outcome usability', () => {
         output: damaged,
         assignedReport: malformed ? null : producer.report,
       });
-      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+      if (rejection.kind !== 'validation-error') throw new Error('Expected rejection evidence.');
       // Neither damage leaves readable Markdown to copy; the attempted binding stays as evidence.
       expect(rejection.report).toBeNull();
       await writeFile(file, original);
       expect(
-        await outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+        (await readPendingValidationError({ areaRoot: root, scope: rejection.scope }))?.entries,
       ).toHaveLength(1);
-      expect((await readReportFeedback(root))[0]!.record).toEqual(rejection);
+      expect((await readValidationErrorHistory(root))[0]!.record).toEqual(rejection);
     },
   );
 
@@ -1332,11 +1332,11 @@ describe('preparation retained outcome usability', () => {
       await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
         /does not exist/,
       );
-      const feedback = await readReportFeedback(fixture.root);
+      const feedback = await readValidationErrorHistory(fixture.root);
       expect(feedback).toHaveLength(2);
       for (const [index, entry] of feedback.entries()) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: { role: `ux-${role}` },
           invocationId: producer.invocationId,
           profile: producer.profile,
@@ -1344,7 +1344,8 @@ describe('preparation retained outcome usability', () => {
           output: index === 0 ? damaged : original,
           assignedReport: index === 0 ? { path: missing } : producer.report,
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         // Both rejections are unusable report reads: no Markdown was available to copy.
         expect(entry.record.report).toBeNull();
       }
@@ -1362,7 +1363,7 @@ describe('preparation retained outcome usability', () => {
       const changed = { ...author, revision: author.revision + 1 };
       await writeFile(file, JSON.stringify(changed));
       await expect(finalize({ outcome })).rejects.toThrow(/exact/);
-      expect(await readReportFeedback(root)).toEqual([]);
+      expect(await readValidationErrorHistory(root)).toEqual([]);
 
       // An unusable binding is retained before the changed revision can route the record stale.
       const missing = path.join(root, 'artifacts/2/reports/missing/author.md');
@@ -1376,11 +1377,11 @@ describe('preparation retained outcome usability', () => {
           reason: expect.stringContaining('does not exist'),
         });
       }
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(outcome === 'accepted' ? 2 : 1);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: author.invocationId,
           scope: { role: 'ux-author' },
           source: { path: file },
@@ -1414,7 +1415,7 @@ describe('preparation retained outcome usability', () => {
           change === 'author' ? 'authored report changed' : 'captured issue input changed',
         ),
       });
-      expect(await readReportFeedback(root)).toEqual([]);
+      expect(await readValidationErrorHistory(root)).toEqual([]);
     },
   );
 
@@ -1432,10 +1433,10 @@ describe('preparation retained outcome usability', () => {
     });
     await expect(open({ route: 'next' })).rejects.toThrow(/invocationId/);
     expect(await readStagePlan(root)).toMatchObject({ round: 2 });
-    const feedback = await readReportFeedback(root);
+    const feedback = await readValidationErrorHistory(root);
     expect(feedback).toHaveLength(1);
     expect(feedback[0]!.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-author' },
       source: { path: file },
       output: damaged,
@@ -1479,11 +1480,11 @@ describe('preparation retained outcome usability', () => {
       });
       await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(reason);
       expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(result);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(3);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           profile: producer.profile,
           scope: { workId: selection['taskKey'], role: `ux-${role}` },
           source: { path: file },
@@ -1491,17 +1492,21 @@ describe('preparation retained outcome usability', () => {
           assignedReport: producer.report,
           reason: expect.stringContaining(reason),
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
       // Repairing history alone neither retires feedback nor rewrites its original evidence.
       await writeFile(file, original);
       await writeFile(producer.report.path, 'Later replacement Markdown.');
+      // A later rejection updates the one pending context; the earlier evidence stays history.
       expect(
-        await outstandingReportFeedback({ areaRoot: root, scope: feedback[0]!.record.scope }),
-      ).toHaveLength(3);
+        (await readPendingValidationError({ areaRoot: root, scope: feedback[0]!.record.scope }))
+          ?.entries,
+      ).toHaveLength(1);
       for (const entry of feedback) {
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
     },
@@ -1537,17 +1542,18 @@ describe('preparation retained outcome usability', () => {
         await writeFile(file, damaged);
         await expect(fixture.finalize({ outcome })).rejects.toThrow(/invocationId/);
       }
-      const feedback = await readReportFeedback(fixture.root);
+      const feedback = await readValidationErrorHistory(fixture.root);
       expect(feedback).toHaveLength(exit === 'needsInput' ? 2 : 1);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: { role: `ux-${role}` },
           source: { path: file },
           output: damaged,
           assignedReport: producer.report,
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
     },
@@ -1675,11 +1681,11 @@ describe('preparation retained outcome usability', () => {
       await corrupt();
       await expect(finalize({ outcome: 'needsInput' })).rejects.toThrow(/report/);
       expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(original);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(2);
       for (const entry of feedback)
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: author.invocationId,
           profile: author.profile,
           scope: { role: 'ux-author', reportKind: 'stage-author' },
@@ -1693,7 +1699,7 @@ describe('preparation retained outcome usability', () => {
     const { root, author, finalize } = await boundRound('needs-input');
     await writeFile(author.report.path, 'Reworded readable report.\n');
     await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
-    await expect(readReportFeedback(root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
   });
 
   it.each(['author', 'evaluator'] as const)(
@@ -1723,11 +1729,11 @@ describe('preparation retained outcome usability', () => {
         reason: expect.stringContaining('does not exist'),
       });
       await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(3);
       for (const entry of feedback)
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: producer.invocationId,
           profile: producer.profile,
           scope: {

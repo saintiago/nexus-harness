@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  readReportFeedback,
+  readValidationErrorHistory,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
@@ -324,9 +324,7 @@ describe('StartRound', () => {
       // producer's responsibility.
       expect(await readCurrentRound()).toEqual(before);
       await expect(stat(path.join(root, 'artifacts', '3'))).rejects.toThrow(/ENOENT/);
-      const rejection = (await readReportFeedback(root)).find(
-        (entry) => entry.record.kind === 'rejection',
-      );
+      const rejection = (await readValidationErrorHistory(root))[0];
       expect(rejection?.record).toMatchObject({
         scope: {
           project: path.basename(path.dirname(root)),

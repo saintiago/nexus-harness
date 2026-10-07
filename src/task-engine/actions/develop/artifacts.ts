@@ -3,7 +3,7 @@ import { readBoundReport, retainedReportBindingFields } from '../agent-reports.j
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
 import {
-  finishSuppliedCorrection,
+  clearPendingValidationError,
   projectOfWorkspace,
   rejectUnusableRecord,
   type ReportScope,
@@ -98,10 +98,10 @@ export function developmentReportScope(areaRoot: string, taskKey: string): Repor
  * Require one retained development outcome to be usable for a workflow decision: it must describe
  * the expected task and, when it carries the current report binding, its assigned Markdown must be
  * readable. An unusable outcome is preserved under the developer's report responsibility as
- * attributable rejection evidence before the read fails. A retained combined report stays readable
- * history, and the check never makes a damaged outcome usable.
- * After validation, finish any interrupted correction attributed to this saved invocation, so
- * retained continuation also reconciles it when Develop itself is skipped.
+ * attributable validation-error evidence before the read fails. A retained combined report stays
+ * readable history, and the check never makes a damaged outcome usable. This shared validation
+ * serves history and other consumers; clearing pending context belongs to the owner's
+ * current-round reader and save paths.
  */
 export async function requireUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;
@@ -134,21 +134,15 @@ export async function requireUsableDevelopmentOutcome(settings: {
       error,
     });
   }
-  if (isBoundDevelopmentOutput(settings.outcome)) {
-    await finishSuppliedCorrection({
-      areaRoot: settings.areaRoot,
-      scope: developmentReportScope(settings.areaRoot, settings.taskKey),
-      invocationId: settings.outcome.invocationId,
-      artifact: { path: settings.file },
-      content: settings.outcome,
-    });
-  }
 }
 
 /**
  * Read the current round's saved development outcome for a decision outside Develop. An absent
- * record is null; an unusable record is preserved as the developer's rejection evidence before
- * the read fails; a returned outcome has already passed its task and report-binding checks.
+ * record is null; an unusable record is preserved as the developer's validation-error evidence
+ * before the read fails; a returned outcome has already passed its task and report-binding
+ * checks. Because the caller names the owner's current round, validating the saved replacement
+ * here also clears a pending validation-error context, completing an interrupted save/clear
+ * without another development turn.
  */
 export async function readUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;
@@ -188,6 +182,12 @@ export async function readUsableDevelopmentOutcome(settings: {
       invocationId: null,
       context: settings.context,
     });
+    if (isBoundDevelopmentOutput(outcome)) {
+      await clearPendingValidationError({
+        areaRoot: settings.areaRoot,
+        scope: developmentReportScope(settings.areaRoot, settings.taskKey),
+      });
+    }
   }
   return outcome;
 }

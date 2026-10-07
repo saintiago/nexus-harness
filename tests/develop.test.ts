@@ -22,10 +22,9 @@ import {
 } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import {
-  outstandingReportFeedback,
   projectOfWorkspace,
-  readReportFeedback,
-  retainSuppliedFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { composedRunner, runnerOf, writeAssignedReport } from './support/agent-runner.js';
@@ -816,8 +815,8 @@ describe('Develop', () => {
         publish: (event) => events.push(event),
       })(),
     ).rejects.toThrow(/does not exist/);
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(rejection?.record).toMatchObject({
       scope: {
@@ -967,8 +966,8 @@ describe('Develop', () => {
     ).rejects.toThrow(/ENOENT/);
     // The valid control value cannot save an outcome without its readable report; the rejection
     // keeps the attempted path and records the unavailable Markdown explicitly.
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(rejection?.record).toMatchObject({
       operation: 'develop',
@@ -1011,8 +1010,8 @@ describe('Develop', () => {
       // The malformed retained report is preserved with its bytes, path and validation reason under
       // the developer's report responsibility.
       expect(unused.requests).toHaveLength(0);
-      const retainedRejection = (await readReportFeedback(workspaceRoot)).find(
-        (entry) => entry.record.kind === 'rejection',
+      const retainedRejection = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) => entry.record.kind === 'validation-error',
       );
       expect(retainedRejection?.record).toMatchObject({
         scope,
@@ -1033,18 +1032,13 @@ describe('Develop', () => {
         headRevision,
         summary: 'The repaired round-one report.',
       });
-      await expect(
-        outstandingReportFeedback({ areaRoot: workspaceRoot, scope }),
-      ).resolves.toHaveLength(1);
-      await expect(
-        readFile(
-          path.join(workspaceRoot, 'report-feedback', path.basename(retainedRejection!.path)),
-          'utf8',
-        ),
-      ).resolves.toContain(reason);
+      expect(
+        (await readPendingValidationError({ areaRoot: workspaceRoot, scope }))?.entries,
+      ).toHaveLength(1);
+      await expect(readFile(retainedRejection!.path, 'utf8')).resolves.toContain(reason);
 
       // The next permitted invocation receives the retained rejection; its validated saved
-      // replacement records the correction that retires it.
+      // replacement clears the pending context.
       const repair = scriptedRuntime(
         () => JSON.stringify({ status: 'completed' }),
         'Repaired the round-one report.',
@@ -1058,16 +1052,15 @@ describe('Develop', () => {
         })(),
       ).resolves.toBe('completed');
       const context = repair.requests[0]?.context ?? '';
-      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain('Pending validation error');
       expect(context).toContain(reason);
       expect(context).toContain(output ?? 'The rejected output itself is unavailable');
       expect(context).toContain(retainedFile);
-      await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
-        [],
-      );
-      const records = await readReportFeedback(workspaceRoot);
-      expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
-      expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+      await expect(
+        readPendingValidationError({ areaRoot: workspaceRoot, scope }),
+      ).resolves.toBeNull();
+      const records = await readValidationErrorHistory(workspaceRoot);
+      expect(records).toHaveLength(1);
     },
   );
 
@@ -1108,8 +1101,8 @@ describe('Develop', () => {
       role: 'developer',
       reportKind: 'development',
     };
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(rejection?.record).toMatchObject({
       scope,
@@ -1121,8 +1114,8 @@ describe('Develop', () => {
       code: 'ENOENT',
     });
 
-    // Mere reuse of a retained artifact never records a correction: the rejection stays
-    // outstanding until a producer-validated saved replacement resolves it.
+    // Mere reuse of a retained combined artifact never clears the pending context: the rejection
+    // stays outstanding until a current bound producer-validated replacement resolves it.
     await writeFile(
       path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
       JSON.stringify({
@@ -1147,12 +1140,12 @@ describe('Develop', () => {
     });
     await expect(reused()).resolves.toBe('completed');
     expect(replay.requests).toHaveLength(0);
-    await expect(
-      outstandingReportFeedback({ areaRoot: workspaceRoot, scope }),
-    ).resolves.toHaveLength(1);
+    expect(
+      (await readPendingValidationError({ areaRoot: workspaceRoot, scope }))?.entries,
+    ).toHaveLength(1);
 
     // The next permitted invocation receives the rejection; its validated saved replacement
-    // records the correction that retires it.
+    // clears the pending context.
     await rm(path.join(workspaceRoot, 'artifacts', '1', 'development.json'));
     const retry = scriptedRuntime(() => JSON.stringify({ status: 'completed' }));
     const develop = createDevelop({
@@ -1164,12 +1157,12 @@ describe('Develop', () => {
     await expect(develop()).resolves.toBe('completed');
     expect(retry.requests[0]?.context).toContain('Violated rule:');
     expect(retry.requests[0]?.context).toContain('not a JSON report');
-    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
-      [],
-    );
+    await expect(
+      readPendingValidationError({ areaRoot: workspaceRoot, scope }),
+    ).resolves.toBeNull();
   });
 
-  it('finishes the correction its saved outcome owes when a repetition reuses it', async () => {
+  it('completes an interrupted save/clear when a repetition reuses the saved outcome', async () => {
     const { taskKey, workspaceRoot, selectionFile } = await workspace();
     // A rejected invocation leaves an outstanding rejection for the developer responsibility.
     await expect(
@@ -1187,12 +1180,12 @@ describe('Develop', () => {
       role: 'developer',
       reportKind: 'development',
     };
-    const rejections = await outstandingReportFeedback({ areaRoot: workspaceRoot, scope });
-    expect(rejections).toHaveLength(1);
+    expect(
+      (await readPendingValidationError({ areaRoot: workspaceRoot, scope }))?.entries,
+    ).toHaveLength(1);
 
-    // A later invocation saved its validated replacement and was interrupted before recording the
-    // correction: the saved outcome names its invocation and the supplied evidence names the
-    // rejection it answered.
+    // A later invocation saved its validated replacement and was interrupted before clearing the
+    // pending context: the current bound saved outcome is the replacement its replay validates.
     const markdown = 'Repaired the retry guard.';
     const reportFile = path.join(
       workspaceRoot,
@@ -1217,11 +1210,6 @@ describe('Develop', () => {
       readinessFailure: null,
     };
     await writeRoundArtifact(workspaceRoot, 1, 'development.json', saved);
-    await retainSuppliedFeedback({
-      areaRoot: workspaceRoot,
-      invocationId: 'repair-1',
-      rejections: rejections.map((entry) => ({ path: entry.path })),
-    });
 
     const unused = scriptedRuntime(() => {
       throw new Error('The saved outcome must be reused without another invocation.');
@@ -1235,11 +1223,10 @@ describe('Develop', () => {
       })(),
     ).resolves.toBe('completed');
     expect(unused.requests).toHaveLength(0);
-    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
-      [],
-    );
-    const records = await readReportFeedback(workspaceRoot);
-    expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
-    expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+    await expect(
+      readPendingValidationError({ areaRoot: workspaceRoot, scope }),
+    ).resolves.toBeNull();
+    const records = await readValidationErrorHistory(workspaceRoot);
+    expect(records).toHaveLength(1);
   });
 });

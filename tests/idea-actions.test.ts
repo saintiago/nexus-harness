@@ -53,10 +53,10 @@ import {
   ideaSubmissionInputFile,
 } from '../src/task-engine/actions/idea-storage.js';
 import {
-  outstandingReportFeedback,
   projectOfWorkspace,
+  readPendingValidationError,
   recordIdentity,
-  readReportFeedback,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import {
   projectGuideArtifact,
@@ -986,15 +986,20 @@ describe('idea editor', () => {
         role: 'idea-editor',
         reportKind: 'idea-editor-turn',
       };
-      const conflicts = await outstandingReportFeedback({
+      const conflicts = await readPendingValidationError({
         areaRoot: area.root,
         scope: editorTurnScope,
       });
-      expect(conflicts).toHaveLength(invalidDispositions.length + 1);
-      expect(conflicts.map((entry) => entry.record.reason)).toEqual(
-        expect.arrayContaining([expect.stringContaining('must complete the retained revision')]),
+      expect(conflicts?.entries).toHaveLength(1);
+      expect(conflicts?.entries[0]?.reason).toContain('must complete the retained revision');
+      // A later invalid attempt updates the single pending context; the earlier exact bytes stay
+      // readable history in the order they were rejected.
+      expect(conflicts?.entries[0]?.output).toBe(
+        JSON.stringify(invalidDispositions.at(-1) ?? changed),
       );
-      expect(conflicts.map((entry) => entry.record.output)).toContain(JSON.stringify(changed));
+      expect(
+        (await readValidationErrorHistory(area.root)).map((entry) => entry.record.output),
+      ).toContain(JSON.stringify(changed));
       const recoveryContext = agent.requests[1]?.context ?? '';
       expect(recoveryContext).toContain('Interrupted editor turn recovery');
       expect(recoveryContext).toContain('repeat its content exactly');
@@ -1015,15 +1020,17 @@ describe('idea editor', () => {
       // The completing invocation received the retained rejections and its validated saved turn
       // recorded the corrections that retired them, while the rejection history stays readable.
       const completedContext = agent.requests.at(-1)?.context ?? '';
-      expect(completedContext).toContain('Outstanding report rejection');
+      expect(completedContext).toContain('Pending validation error');
       expect(completedContext).toContain('must complete the retained revision');
-      expect(completedContext).toContain(JSON.stringify(changed).slice(0, 40));
+      expect(completedContext).toContain(
+        JSON.stringify(invalidDispositions.at(-1) ?? changed).slice(0, 40),
+      );
       await expect(
-        outstandingReportFeedback({ areaRoot: area.root, scope: editorTurnScope }),
-      ).resolves.toEqual([]);
-      expect(
-        (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'rejection'),
-      ).toHaveLength(invalidDispositions.length + 1);
+        readPendingValidationError({ areaRoot: area.root, scope: editorTurnScope }),
+      ).resolves.toBeNull();
+      expect(await readValidationErrorHistory(area.root)).toHaveLength(
+        invalidDispositions.length + 1,
+      );
       expect(await readFile(revisionFile, 'utf8')).toBe(savedRevision);
       const savedTurn = await area.read<{
         readonly report: { readonly path: string };
@@ -2027,9 +2034,9 @@ describe('decision publication', () => {
         role,
         reportKind,
       };
-      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
-      expect(feedback).toHaveLength(1);
-      expect(feedback[0]?.record).toMatchObject({
+      const feedback = await readPendingValidationError({ areaRoot: area.root, scope });
+      expect(feedback?.entries).toHaveLength(1);
+      expect(feedback?.entries[0]).toMatchObject({
         operation: role === 'challenger' ? 'Challenger' : 'FrameIdea',
         invocationId: role === 'challenger' ? 'challenger-1' : 'editor-framing-1',
         profile: role === 'challenger' ? 'nexus-challenger' : 'nexus-editor',
@@ -2071,7 +2078,7 @@ describe('decision publication', () => {
       role: 'idea-editor',
       reportKind: 'idea-framing',
     };
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+    await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
   });
 
   /**
@@ -2168,8 +2175,8 @@ describe('decision publication', () => {
         role: 'idea-editor',
         reportKind,
       };
-      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
-      expect(feedback[0]?.record).toMatchObject({ operation, invocationId });
+      const feedback = await readPendingValidationError({ areaRoot: area.root, scope });
+      expect(feedback?.entries[0]).toMatchObject({ operation, invocationId });
     },
   );
 
@@ -2187,7 +2194,7 @@ describe('decision publication', () => {
     expect(approval.jira.comments).toEqual([]);
     await expect(readFile(decisionFile, 'utf8')).resolves.toBe(decisionBytes);
     expect(await area.exists(ideaHandoffFile)).toBe(false);
-    const feedback = await readReportFeedback(area.root);
+    const feedback = await readValidationErrorHistory(area.root);
     expect(feedback[0]?.record).toMatchObject({
       scope: { role: 'idea-editor', reportKind: 'idea-framing' },
       invocationId: 'editor-framing-1',
@@ -2206,7 +2213,7 @@ describe('decision publication', () => {
     await expect(approval.record({ decision: 'approved' })).resolves.toBe('recorded');
     await expect(approval.publishDecision()).resolves.toBe('approved');
     expect(approval.jira.transitions).toEqual(['21']);
-    await expect(readReportFeedback(area.root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(area.root)).resolves.toEqual([]);
   });
 
   it.each(['replay', 'publication'] as const)(
@@ -2223,7 +2230,7 @@ describe('decision publication', () => {
           : approval.publishDecision;
 
       await expect(consume()).rejects.toThrow(/is not valid JSON/u);
-      const feedback = await readReportFeedback(area.root);
+      const feedback = await readValidationErrorHistory(area.root);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]?.record).toMatchObject({
         scope: { role: 'idea-editor', reportKind: 'idea-editor-turn' },
@@ -2290,7 +2297,7 @@ describe('decision publication', () => {
       await expect(approval.record({ decision: 'approved' })).rejects.toThrow(
         /declared content type/u,
       );
-      const feedback = await readReportFeedback(area.root);
+      const feedback = await readValidationErrorHistory(area.root);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]?.record).toMatchObject({
         scope: { role, reportKind },
@@ -2302,8 +2309,8 @@ describe('decision publication', () => {
         assignedReport: damaged.report,
       });
       const retainedReport = feedback[0]?.record;
-      expect(retainedReport?.kind).toBe('rejection');
-      if (retainedReport?.kind === 'rejection') {
+      expect(retainedReport?.kind).toBe('validation-error');
+      if (retainedReport?.kind === 'validation-error') {
         expect(retainedReport.report).not.toBeNull();
         await expect(readFile(retainedReport.report!.path, 'utf8')).resolves.toBe(
           '# Historical contribution\n',
@@ -2321,7 +2328,7 @@ describe('decision publication', () => {
         ...handoff.editorResponses,
         ...handoff.challengerResults,
       ]).toContain(file);
-      await expect(readReportFeedback(area.root)).resolves.toHaveLength(1);
+      await expect(readValidationErrorHistory(area.root)).resolves.toHaveLength(1);
     },
   );
 
@@ -2343,7 +2350,7 @@ describe('decision publication', () => {
 
       await expect(actions.record({ decision: 'approved' })).rejects.toThrow(/does not exist/u);
       expect(await area.exists(ideaHandoffFile)).toBe(false);
-      const feedback = await readReportFeedback(area.root);
+      const feedback = await readValidationErrorHistory(area.root);
       expect(feedback[0]?.record).toMatchObject({
         scope: { role, reportKind },
         source: { path: file },
@@ -2401,7 +2408,9 @@ describe('retained idea reports', () => {
     await expect(capturedIdeaText(area.root, area.plan, boundInput)).resolves.toContain(
       'Substituted evidence.',
     );
-    await expect(readReportFeedback(path.join(path.dirname(area.root), 'ux'))).resolves.toEqual([]);
+    await expect(
+      readValidationErrorHistory(path.join(path.dirname(area.root), 'ux')),
+    ).resolves.toEqual([]);
 
     // A report deleted after the binding was saved is unusable evidence: it is retained as the
     // returning role's rejection instead of being silently dropped.
@@ -2409,10 +2418,10 @@ describe('retained idea reports', () => {
     await expect(capturedIdeaText(area.root, area.plan, boundInput)).rejects.toThrow(
       /does not exist/,
     );
-    const feedback = await readReportFeedback(path.join(path.dirname(area.root), 'ux'));
+    const feedback = await readValidationErrorHistory(path.join(path.dirname(area.root), 'ux'));
     expect(feedback).toHaveLength(1);
     expect(feedback[0]?.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       assignedReport: { path: report },
       source: outcome,
@@ -2463,10 +2472,9 @@ describe('retained idea reports', () => {
       await expect(action({ phase: 'initial' })).rejects.toThrow('could not be read');
       expect(unused.requests).toHaveLength(0);
       const scope = scopeOf(area, 'idea-editor', 'idea-framing');
-      const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
-      expect(feedback).toHaveLength(1);
-      expect(feedback[0]?.record).toMatchObject({
-        scope,
+      const feedback = await readPendingValidationError({ areaRoot: area.root, scope });
+      expect(feedback?.entries).toHaveLength(1);
+      expect(feedback?.entries[0]).toMatchObject({
         operation: 'FrameIdea',
         profile: profiles['idea-editor'],
         invocationId: null,
@@ -2475,16 +2483,16 @@ describe('retained idea reports', () => {
         reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
       });
       await expect(
-        outstandingReportFeedback({
+        readPendingValidationError({
           areaRoot: area.root,
           scope: scopeOf(area, 'idea-editor', 'idea-editor-turn'),
         }),
-      ).resolves.toEqual([]);
+      ).resolves.toBeNull();
 
       await rm(file, { recursive: true });
-      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
-        1,
-      );
+      expect(
+        (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries,
+      ).toHaveLength(1);
       const resumed = scriptedRuntime([framingFixture]);
       const editor = createIdeaEditor({
         ...settings,
@@ -2492,13 +2500,11 @@ describe('retained idea reports', () => {
       });
       await expect(editor({ task: 'frame' })).resolves.toBe('framed');
       const context = resumed.requests[0]?.context ?? '';
-      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain('Pending validation error');
       expect(context).toContain(`Artifact at "${file}" could not be read`);
       expect(context).toContain('unavailable');
-      await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
-      expect(
-        (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'rejection'),
-      ).toHaveLength(1);
+      await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
+      expect(await readValidationErrorHistory(area.root)).toHaveLength(1);
     },
   );
 
@@ -2516,10 +2522,9 @@ describe('retained idea reports', () => {
     await expect(editor({ task: 'edit' })).rejects.toThrow('could not be read');
     expect(unused.requests).toHaveLength(0);
     const scope = scopeOf(area, 'researcher', 'research');
-    const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
-    expect(feedback).toHaveLength(1);
-    expect(feedback[0]?.record).toMatchObject({
-      scope,
+    const feedback = await readPendingValidationError({ areaRoot: area.root, scope });
+    expect(feedback?.entries).toHaveLength(1);
+    expect(feedback?.entries[0]).toMatchObject({
       operation: 'Researcher',
       profile: profiles.researcher,
       source: { path: file },
@@ -2527,17 +2532,17 @@ describe('retained idea reports', () => {
       reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
     });
     await rm(file, { recursive: true });
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
-      1,
-    );
+    expect(
+      (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries,
+    ).toHaveLength(1);
     const resumed = scriptedRuntime([researchResponse], researchReport);
     const researcher = createResearcher({ ...settings, runner: runnerOf(resumed.runtime) });
     await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
     const context = resumed.requests[0]?.context ?? '';
-    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('Pending validation error');
     expect(context).toContain(`Artifact at "${file}" could not be read`);
     expect(context).toContain('unavailable');
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+    await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
   });
 
   it.each([
@@ -2570,7 +2575,7 @@ describe('retained idea reports', () => {
           omitCurrentCycleOf: role,
         }),
       ).rejects.toThrow('could not be read');
-      const feedback = await readReportFeedback(area.root);
+      const feedback = await readValidationErrorHistory(area.root);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]?.record).toMatchObject({
         scope: scopeOf(area, role, reportKind),
@@ -2582,11 +2587,11 @@ describe('retained idea reports', () => {
         reason: expect.stringContaining(`Artifact at "${file}" could not be read`),
       });
       await expect(
-        outstandingReportFeedback({
+        readPendingValidationError({
           areaRoot: area.root,
           scope: { ...scopeOf(area, role, reportKind), workId: 'NEX-2' },
         }),
-      ).resolves.toEqual([]);
+      ).resolves.toBeNull();
     },
   );
 
@@ -2599,7 +2604,7 @@ describe('retained idea reports', () => {
     const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
     await mkdir(file, { recursive: true });
     await expect(retainedHistoryText(area.root, area.plan, options)).resolves.toBe(initial);
-    await expect(readReportFeedback(area.root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(area.root)).resolves.toEqual([]);
   });
 
   it('does not supply legacy research rejection to the current research contract', async () => {
@@ -2621,16 +2626,16 @@ describe('retained idea reports', () => {
       publish: (event) => area.events.push(event),
     });
     await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
-    expect(agent.requests[0]?.context).not.toContain('Outstanding report rejection');
-    await expect(
-      outstandingReportFeedback({
-        areaRoot: area.root,
-        scope: scopeOf(area, 'researcher', 'legacy-research'),
-      }),
-    ).resolves.toHaveLength(1);
+    expect(agent.requests[0]?.context).not.toContain('Pending validation error');
     expect(
-      (await readReportFeedback(area.root)).filter((entry) => entry.record.kind === 'correction'),
-    ).toEqual([]);
+      (
+        await readPendingValidationError({
+          areaRoot: area.root,
+          scope: scopeOf(area, 'researcher', 'legacy-research'),
+        })
+      )?.entries,
+    ).toHaveLength(1);
+    expect(await readValidationErrorHistory(area.root)).toHaveLength(1);
   });
 
   it('preserves an unusable retained research contribution for the next researcher', async () => {
@@ -2649,8 +2654,8 @@ describe('retained idea reports', () => {
 
     await expect(researcher({ phase: 'initial' })).rejects.toThrow(/is not valid JSON/);
     expect(unused.requests).toHaveLength(0);
-    const retained = (await readReportFeedback(area.root)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const retained = (await readValidationErrorHistory(area.root)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(retained?.record).toMatchObject({
       scope,
@@ -2661,11 +2666,11 @@ describe('retained idea reports', () => {
     });
 
     // Replacing the unusable record does not resolve the feedback by itself; the next permitted
-    // researcher receives it and its validated saved contribution records the correction.
+    // researcher receives it and its validated saved contribution clears the pending context.
     await rm(file);
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toHaveLength(
-      1,
-    );
+    expect(
+      (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries,
+    ).toHaveLength(1);
     const recovery = scriptedRuntime([researchResponse], researchReport);
     const next = createResearcher({
       workspace: { root: area.root },
@@ -2674,10 +2679,10 @@ describe('retained idea reports', () => {
     });
     await expect(next({ phase: 'initial' })).resolves.toBe('contributed');
     const context = recovery.requests[0]?.context ?? '';
-    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('Pending validation error');
     expect(context).toContain('is not valid JSON');
     expect(context).toContain(malformed);
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+    await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
   });
 
   it('keeps a damaged outcome’s own invocation and profile attribution in retained feedback', async () => {
@@ -2703,9 +2708,8 @@ describe('retained idea reports', () => {
 
     await expect(researcher({ phase: 'initial' })).rejects.toThrow(/declared content type/u);
     const scope = scopeOf(area, 'researcher', 'research');
-    const retained = (await outstandingReportFeedback({ areaRoot: area.root, scope }))[0];
-    expect(retained?.record).toMatchObject({
-      scope,
+    const retained = (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries[0];
+    expect(retained).toMatchObject({
       operation: 'Researcher',
       invocationId: 'researcher-history-1',
       profile: 'nexus-research-history',
@@ -2723,7 +2727,7 @@ describe('retained idea reports', () => {
     const context = recovery.requests[0]?.context ?? '';
     expect(context).toContain('researcher-history-1');
     expect(context).toContain('nexus-research-history');
-    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
+    await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
   });
 
   it('routes unusable editor and contribution reports to their own producers', async () => {
@@ -2751,10 +2755,9 @@ describe('retained idea reports', () => {
     expect(unusedEditor.requests).toHaveLength(0);
     const guideScope = scopeOf(area, 'project-guide', 'project-guidance');
     const guideRejection = (
-      await outstandingReportFeedback({ areaRoot: area.root, scope: guideScope })
-    )[0];
-    expect(guideRejection?.record).toMatchObject({
-      scope: guideScope,
+      await readPendingValidationError({ areaRoot: area.root, scope: guideScope })
+    )?.entries[0];
+    expect(guideRejection).toMatchObject({
       operation: 'ProjectGuide',
       source: { path: guideFile },
       output: malformedGuidance,
@@ -2776,10 +2779,9 @@ describe('retained idea reports', () => {
     expect(unusedChallenger.requests).toHaveLength(0);
     const editorScope = scopeOf(area, 'idea-editor', 'idea-editor-turn');
     const turnRejection = (
-      await outstandingReportFeedback({ areaRoot: area.root, scope: editorScope })
-    )[0];
-    expect(turnRejection?.record).toMatchObject({
-      scope: editorScope,
+      await readPendingValidationError({ areaRoot: area.root, scope: editorScope })
+    )?.entries[0];
+    expect(turnRejection).toMatchObject({
       source: { path: turnFile },
       output: malformedTurn,
       reason: expect.stringContaining('is not valid JSON'),
@@ -2799,15 +2801,15 @@ describe('retained idea reports', () => {
     });
     await expect(guide({ phase: 'initial' })).resolves.toBe('contributed');
     const guideContext = guideAgent.requests[0]?.context ?? '';
-    expect(guideContext).toContain('Outstanding report rejection');
+    expect(guideContext).toContain('Pending validation error');
     expect(guideContext).toContain(malformedGuidance);
     expect(guideContext).not.toContain(malformedTurn);
     await expect(
-      outstandingReportFeedback({ areaRoot: area.root, scope: guideScope }),
-    ).resolves.toEqual([]);
-    await expect(
-      outstandingReportFeedback({ areaRoot: area.root, scope: editorScope }),
-    ).resolves.toHaveLength(1);
+      readPendingValidationError({ areaRoot: area.root, scope: guideScope }),
+    ).resolves.toBeNull();
+    expect(
+      (await readPendingValidationError({ areaRoot: area.root, scope: editorScope }))?.entries,
+    ).toHaveLength(1);
   });
 
   it('preserves an unusable retained refined idea revision under the editor responsibility', async () => {
@@ -2826,9 +2828,8 @@ describe('retained idea reports', () => {
 
     await expect(challenger()).rejects.toThrow(/is not valid JSON/);
     expect(unused.requests).toHaveLength(0);
-    const retained = (await outstandingReportFeedback({ areaRoot: area.root, scope }))[0];
-    expect(retained?.record).toMatchObject({
-      scope,
+    const retained = (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries[0];
+    expect(retained).toMatchObject({
       source: { path: file },
       output: malformed,
       reason: expect.stringContaining('is not valid JSON'),

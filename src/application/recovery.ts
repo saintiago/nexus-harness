@@ -24,15 +24,12 @@ import { implementationInputDeclaration } from '../task-engine/actions/project/i
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
+  clearPendingValidationError,
+  readPendingValidationError,
   rejectReport,
-  reportFeedbackContextText,
-  reportFeedbackDeclarationText,
-  retainSuppliedFeedback,
-  type ReportRejection,
+  validationErrorContextText,
+  type PendingValidationError,
   type ReportScope,
-  type RetainedReportFeedback,
 } from '../task-engine/actions/report-feedback.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
 import {
@@ -188,6 +185,9 @@ const recoveryReportName = 'recovery';
 /** The saved outcome file of one recovery invocation beside its Markdown report. */
 const recoveryOutcomeName = 'recovery.json';
 
+/** The stable work partition recovery uses when no work item was selected. */
+export const noSelectedWorkId = 'no-selected-work';
+
 /** Recovery's separate operational workspace, under the recovery directory. */
 const workspaceDirectoryName = 'workspace';
 
@@ -306,8 +306,8 @@ type RecoveryContextSettings = {
   /** The action-owned outcome record this invocation must leave to Application. */
   readonly outcomeFile: string;
   readonly stop: RecoveryStop;
-  /** The outstanding recovery-report rejections this invocation was supplied. */
-  readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
+  /** The pending validation error of this recovery report responsibility, or null. */
+  readonly feedback: PendingValidationError | null;
 };
 
 /** One producer-owned declaration the recovery context states: its path and generated schema. */
@@ -464,7 +464,8 @@ async function recoveryContextText(settings: RecoveryContextSettings): Promise<s
         'agent name, Unix start time and invocation ID)',
       `Recovery directory: ${settings.recoveryDirectory}`,
       `Recovery report feedback: ${path.join(settings.recoveryDirectory, 'report-feedback')} ` +
-        '(immutable rejection and correction records of earlier recovery reports)',
+        '(readable validation-error history plus this work item\u2019s pending context, when one is ' +
+        'retained)',
       `Your operational workspace: ${settings.workspace.root} (worktree/ is your working ` +
         'directory and is outside every task workspace)',
     ].join('\n'),
@@ -519,23 +520,7 @@ async function recoveryContextText(settings: RecoveryContextSettings): Promise<s
         'observed identity metadata in the response.',
       actionOwnedRecordsText([settings.outcomeFile]),
     ].join('\n\n'),
-    [
-      'Report rejection and correction declarations',
-      'Before repairing or replacing a rejected report of another role, preserve its available ' +
-        'output and exact rejection reason with the declarations below. Write each immutable ' +
-        'record under its owning area (a preparation stage area, refinement/, or an issue root) ' +
-        'as report-feedback/<record-id>.json with a unique record ID; never write report-feedback ' +
-        'inside your own operational workspace.',
-      'A record scope names the configured project, the work item (the selection task key), the ' +
-        'absolute owning area, and the report responsibility: a preparation stage report uses ' +
-        'role "<stage>-author" with report kind "stage-author" or "<stage>-evaluator" with ' +
-        '"stage-evaluation"; idea refinement uses the invoking role (researcher, project-guide, ' +
-        'challenger, idea-editor) with "research", "project-guidance", "challenge", ' +
-        '"idea-framing" or "idea-editor-turn"; finite delivery uses "developer"/"development" or ' +
-        '"reviewer"/"review".',
-      reportFeedbackDeclarationText(),
-    ].join('\n\n'),
-    ...reportFeedbackContextText(settings.feedback),
+    ...validationErrorContextText(settings.feedback),
   ].join('\n\n');
 }
 
@@ -667,22 +652,21 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       }
       const scope: ReportScope = {
         project: project.taskSource.project,
-        // A recovery report answers for the whole project execution, not one selected work item:
-        // its responsibility must match across selection clears and reselection, so the stable
-        // project identity is the work the feedback belongs to.
-        workId: project.taskSource.project,
+        // Recovery partitions its context by selected work, with a separate no-selected-work
+        // location, so unrelated work items never inherit each other's errors.
+        workId: stop.selection === null ? noSelectedWorkId : stop.selection.task,
         area: directory,
         role: 'recovery',
         reportKind: 'recovery-report',
       };
-      let feedback: Awaited<ReturnType<typeof outstandingReportFeedback>>;
+      let feedback: PendingValidationError | null;
       try {
-        feedback = await outstandingReportFeedback({ areaRoot: directory, scope });
+        feedback = await readPendingValidationError({ areaRoot: directory, scope });
       } catch (error) {
-        // Missing or unusable evidence is an explicit error, never an empty feedback set: an
-        // invocation that cannot receive its required correction must not run unawares.
+        // Missing or unusable evidence is an explicit error, never an empty context: an
+        // invocation that cannot receive its required diagnosis must not run unawares.
         return attention(
-          `Recovery could not read its retained report feedback: ${messageOf(error)}`,
+          `Recovery could not read its pending validation-error context: ${messageOf(error)}`,
         );
       }
       const invocationId = randomUUID();
@@ -690,21 +674,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       // call from overwriting reports earlier ExecutionResults point to.
       const assignedReport = await assignReportPath(directory, invocationId, recoveryReportName);
       const outcomeFile = path.join(path.dirname(assignedReport.path), recoveryOutcomeName);
-      if (feedback.length > 0) {
-        try {
-          // Retain which rejections this invocation answers before it runs, so an interrupted
-          // correction write can finish on the replay path without retiring a later rejection.
-          await retainSuppliedFeedback({
-            areaRoot: directory,
-            invocationId,
-            rejections: feedback.map((entry) => ({ path: entry.path })),
-          });
-        } catch (error) {
-          return attention(
-            `Recovery could not retain its supplied report rejection evidence: ${messageOf(error)}`,
-          );
-        }
-      }
       const context = await recoveryContextText({
         request: execution.request,
         project,
@@ -830,19 +799,13 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         );
       }
       try {
-        // The owner validated and saved the usable replacement; recording its complete identity
-        // retires exactly the rejections this invocation was supplied, preserving their history.
-        await finishSuppliedCorrection({
-          areaRoot: directory,
-          scope,
-          invocationId,
-          artifact: { path: outcomeFile },
-          content: report,
-        });
+        // The owner validated and saved the usable replacement; its pending validation-error
+        // context is cleared while the readable history stays.
+        await clearPendingValidationError({ areaRoot: directory, scope });
       } catch (error) {
         return attention(
-          `The recovery outcome was saved, but its correction evidence could not be recorded: ` +
-            messageOf(error),
+          `The recovery outcome was saved, but its pending validation-error context could not be ` +
+            `cleared: ${messageOf(error)}`,
         );
       }
       saved = { path: outcomeFile };

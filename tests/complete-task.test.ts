@@ -18,7 +18,7 @@ import {
 } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { readValidationErrorHistory } from '../src/task-engine/actions/report-feedback.js';
 import { reviewReportScope } from '../src/task-engine/actions/review/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -353,9 +353,7 @@ describe('CompleteTask', () => {
       stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).rejects.toThrow(/ENOENT/);
     // The unavailable or foreign review stays attributable under the reviewer's responsibility.
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(workspaceRoot))[0];
     expect(rejection?.record).toMatchObject({
       scope: reviewReportScope(workspaceRoot, 'NEX-1'),
       operation: 'review',
@@ -390,7 +388,7 @@ describe('CompleteTask', () => {
 
     // No Markdown-byte gate rejects the approval: its readable report and current revision bind it.
     await expect(completeTask()).resolves.toBe('completed');
-    expect(await readReportFeedback(workspaceRoot)).toEqual([]);
+    expect(await readValidationErrorHistory(workspaceRoot)).toEqual([]);
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).resolves.toBeTruthy();

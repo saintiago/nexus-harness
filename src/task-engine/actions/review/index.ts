@@ -45,12 +45,11 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
+  clearPendingValidationError,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
-  retainSuppliedFeedback,
-  reportFeedbackContextText,
+  validationErrorContextText,
   type ReportScope,
 } from '../report-feedback.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
@@ -318,7 +317,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       verificationArtifact,
       deliveryArtifact,
     );
-    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
     let recorded: RetainedReviewOutput | null;
     try {
       recorded = (await helpers.readOptionalInputArtifacts(reviewArtifact))[0];
@@ -477,15 +476,9 @@ export function createReview(settings: ReviewSettings): BoundAction {
         context: attribution,
       });
       if (isBoundReviewOutput(recorded)) {
-        // The saved review already answers for the rejections its invocation was supplied; an
-        // interrupted correction write finishes here without another invocation.
-        await finishSuppliedCorrection({
-          areaRoot: root,
-          scope,
-          invocationId: recorded.invocationId,
-          artifact: { path: artifactFile },
-          content: recorded,
-        });
+        // The saved review for the delivered head is this revision's validated replacement; an
+        // interrupted save/clear replay completes here without another invocation.
+        await clearPendingValidationError({ areaRoot: root, scope });
       }
       const body = await reviewText(recorded);
       const conversation = await settings.github.readConversation(
@@ -616,20 +609,10 @@ export function createReview(settings: ReviewSettings): BoundAction {
       await developmentSection(),
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
       ...(priorReview === null ? [] : [await priorReviewSection(priorReview)]),
-      ...reportFeedbackContextText(outstanding),
+      ...validationErrorContextText(pending),
       historySection(root, reviews, developments),
       responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
-
-    if (outstanding.length > 0) {
-      // Retain which rejections this invocation answers before it runs, so an interrupted
-      // correction write can finish on replay without retiring a rejection created later.
-      await retainSuppliedFeedback({
-        areaRoot: root,
-        invocationId,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-      });
-    }
 
     const result: AgentResult = await settings.runner.run({
       operation: 'Review',
@@ -735,15 +718,9 @@ export function createReview(settings: ReviewSettings): BoundAction {
       invocationId,
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
-    // The owner validated and saved the usable replacement; recording its complete identity
-    // retires exactly the rejections this invocation was supplied, preserving their history.
-    await finishSuppliedCorrection({
-      areaRoot: root,
-      scope,
-      invocationId,
-      artifact: { path: artifactFile },
-      content: review,
-    });
+    // The owner validated and saved the usable replacement, whatever its verdict; its pending
+    // validation-error context is cleared while the readable history stays.
+    await clearPendingValidationError({ areaRoot: root, scope });
     await publishReport(review, reportFile.text, conversation.value);
     report(review);
     return review.verdict;

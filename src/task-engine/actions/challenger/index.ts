@@ -5,7 +5,7 @@ import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.j
 import { editorResponseArtifact } from '../idea-editor/artifacts.js';
 import {
   capturedIdeaText,
-  finishRetainedIdeaCorrection,
+  clearRetainedIdeaValidationError,
   ideaReportContracts,
   ideaReportReference,
   invokeIdeaRole,
@@ -146,8 +146,8 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       existing.value.revision === revision.value.revision
     ) {
       // This result already answers for this exact revision and editor outcome; reuse it and
-      // finish any correction write its invocation still owes.
-      await finishRetainedIdeaCorrection({
+      // finish any interrupted save/clear its invocation still owes.
+      await clearRetainedIdeaValidationError({
         root,
         workId: input.taskKey,
         contract: ideaReportContracts.challenge,
@@ -238,7 +238,7 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       }
     }
     await writeCycleArtifact(cycleRoot, challengerArtifact, report);
-    await outcome.finishFeedback({ path: file }, report);
+    await outcome.clearPendingError();
     return reported(response.verdict);
   };
 }

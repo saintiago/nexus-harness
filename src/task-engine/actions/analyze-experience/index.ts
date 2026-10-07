@@ -32,15 +32,13 @@ import {
 } from '../agent-reports.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
+  clearPendingValidationError,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
-  reportFeedbackContextText,
-  retainSuppliedFeedback,
-  type ReportRejection,
+  validationErrorContextText,
+  type PendingValidationError,
   type ReportScope,
-  type RetainedReportFeedback,
 } from '../report-feedback.js';
 import {
   experienceActivityFileSuffix,
@@ -260,7 +258,7 @@ function retainedEvidencePath(
 function experienceContextText(
   request: ExperienceRequest,
   scope: EvidenceScope,
-  feedback: readonly RetainedReportFeedback<ReportRejection>[],
+  feedback: PendingValidationError | null,
 ): string {
   const { handoff } = request;
   const workspace = handoff.workspaceRoot;
@@ -341,7 +339,7 @@ function experienceContextText(
       '- Return no observation when the terminal handoff holds no reusable lesson. Do not save ' +
         'routine status reports or entire handoffs.',
     ].join('\n'),
-    ...reportFeedbackContextText(feedback),
+    ...validationErrorContextText(feedback),
   ].join('\n\n');
 }
 
@@ -606,26 +604,22 @@ export function createAnalyzeExperience(
         );
         return { kind: 'outstanding' };
       }
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections its invocation was supplied, preserving their history. An
-      // interrupted correction write also finishes here, on the replay path, without reinvoking.
-      await finishSuppliedCorrection({
+      // The current bound record and its readable Markdown are the owner's validated saved
+      // replacement: a replay of an interrupted save/clear completes the clear here without
+      // another invocation, and an unrelated rejection stays pending in its own context.
+      await clearPendingValidationError({
         areaRoot: scope.root,
         scope: reportScopeOf(request, scope),
-        invocationId: binding.invocationId,
-        artifact: { path: analysisFile(request.identity) },
-        content: read.record,
       });
     }
-    // A usable saved output is reused only once no rejection remains under its responsibility.
-    // Replay retires the corrections its own invocation was supplied; a rejection that invocation
-    // never received — or that a former record carries no invocation identity for — stays for the
-    // next permitted invocation, so reuse cannot present the analysis as settled without it.
-    const outstanding = await outstandingReportFeedback({
+    // A former handoff-shaped analysis with no current binding needs no retroactive Markdown, but
+    // it cannot clear a pending error: the next permitted invocation supplies the current
+    // binding while preserving its accepted observations.
+    const pending = await readPendingValidationError({
       areaRoot: scope.root,
       scope: reportScopeOf(request, scope),
     });
-    if (outstanding.length > 0) {
+    if (pending !== null) {
       return { kind: 'invoke', previous: read.analysis };
     }
     return { kind: 'accepted', analysis: read.analysis };
@@ -924,19 +918,10 @@ export function createAnalyzeExperience(
     const attribution =
       `Experience analysis of ${request.handoff.workId} (${request.handoff.workflow}, attempt ` +
       `${request.handoff.attemptId}, terminal ${request.handoff.terminalId}).`;
-    const suppliedFeedback = await outstandingReportFeedback({
+    const suppliedFeedback = await readPendingValidationError({
       areaRoot: scope.root,
       scope: reportScope,
     });
-    if (suppliedFeedback.length > 0) {
-      // Retain which rejections this invocation answers before it runs, so an interrupted
-      // correction write can finish on replay without retiring a rejection created later.
-      await retainSuppliedFeedback({
-        areaRoot: scope.root,
-        invocationId,
-        rejections: suppliedFeedback.map((entry) => ({ path: entry.path })),
-      });
-    }
     const recordActivity = (activity: AgentEvent): void => {
       activityTail = activityTail.then(async () => {
         try {
@@ -1052,15 +1037,9 @@ export function createAnalyzeExperience(
     // Report correction replaces the binding, never the already accepted observations or their
     // provenance. Submission retries continue to reuse the original functional analysis facts.
     await writeDurableRecord(analysisFile(identity), output);
-    // The owner validated and saved the usable replacement; recording its complete identity
-    // retires exactly the rejections this invocation was supplied, preserving their history.
-    await finishSuppliedCorrection({
-      areaRoot: scope.root,
-      scope: reportScope,
-      invocationId,
-      artifact: { path: analysisFile(identity) },
-      content: output,
-    });
+    // The owner validated and saved the usable replacement; its pending validation-error context
+    // is cleared while the readable history stays.
+    await clearPendingValidationError({ areaRoot: scope.root, scope: reportScope });
     await recordAttempt(identity, 'accepted', null, output.observations.length);
     return {
       profile: output.profile,

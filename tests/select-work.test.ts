@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { readValidationErrorHistory } from '../src/task-engine/actions/report-feedback.js';
 import type { JiraIssue, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import {
@@ -414,16 +414,15 @@ describe('SelectWork admission and routing', () => {
             issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
           }),
         ).rejects.toThrow();
-        const records = await readReportFeedback(workspace);
+        const records = await readValidationErrorHistory(workspace);
         expect(records).toHaveLength(1);
         const rejection = records[0]!.record;
         expect(rejection).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: developmentReportScope(workspace, 'NEX-1'),
           output: await readFile(file, 'utf8'),
           assignedReport: { path: reportFile },
         });
-        if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
         if (kind === 'missing Markdown') expect(rejection.report).toBeNull();
         else expect(await readFile(rejection.report!.path, 'utf8')).toBe(markdown);
         return;

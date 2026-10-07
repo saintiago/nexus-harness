@@ -35,9 +35,9 @@ import {
 } from '../src/task-engine/actions/preparation/storage.js';
 import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
 import {
-  outstandingReportFeedback,
   projectOfWorkspace,
-  readReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import { stageReportScope } from '../src/task-engine/actions/preparation/artifacts.js';
 import { scriptedGit, repositoryState } from './support/git.js';
@@ -501,7 +501,7 @@ it.each(['author', 'evaluation'] as const)(
       stage,
       role,
     });
-    expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+    expect((await readValidationErrorHistory(root))[0]?.record).toMatchObject({
       scope,
       source: { path: file },
       output: malformed,
@@ -511,11 +511,13 @@ it.each(['author', 'evaluation'] as const)(
     });
     if (original === null) await rm(file);
     else await writeFile(file, original);
-    await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
+    expect((await readPendingValidationError({ areaRoot: root, scope }))?.entries).toHaveLength(1);
     await expect(author({ task: 'propose' })).resolves.toBe('authored');
     if (kind === 'author') expect(contexts[1]).toContain(malformed);
     if (kind === 'evaluation') {
-      await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toHaveLength(1);
+      expect((await readPendingValidationError({ areaRoot: root, scope }))?.entries).toHaveLength(
+        1,
+      );
       const evaluatorContexts: string[] = [];
       const evaluator = createStageEvaluator({
         ...common,
@@ -531,10 +533,8 @@ it.each(['author', 'evaluation'] as const)(
       await expect(evaluator()).resolves.toBe('accepted');
       expect(evaluatorContexts[0]).toContain(malformed);
     }
-    await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toEqual([]);
-    expect(
-      (await readReportFeedback(root)).filter((entry) => entry.record.kind === 'rejection'),
-    ).toHaveLength(1);
+    await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+    expect(await readValidationErrorHistory(root)).toHaveLength(1);
   },
 );
 
@@ -609,7 +609,7 @@ it('leaves a malformed older prototype observation untouched while a new round p
   });
   await expect(author({ task: 'propose' })).resolves.toBe('authored');
   await expect(readFile(file, 'utf8')).resolves.toBe(malformed);
-  await expect(readReportFeedback(root)).resolves.toEqual([]);
+  await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
 });
 
 it('retains an author report corrupted during evaluation under the author responsibility', async () => {
@@ -641,7 +641,7 @@ it('retains an author report corrupted during evaluation under the author respon
     },
   });
   await expect(evaluator()).rejects.toThrow(/is not valid JSON/);
-  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+  expect((await readValidationErrorHistory(root))[0]?.record).toMatchObject({
     scope: { area: root, role: 'requirements-author' },
     source: { path: file },
     output: malformed,
@@ -693,14 +693,14 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
       // evaluation completes without a Markdown-byte gate.
       await expect(evaluator()).resolves.toBe('accepted-skip');
       await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.not.toBeNull();
-      await expect(readReportFeedback(root)).resolves.toEqual([]);
+      await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
       return;
     }
     await expect(evaluator()).rejects.toThrow(
       change === 'legitimate' ? /reevaluation is required/ : /invocationId/,
     );
     await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.toBeNull();
-    const feedback = await readReportFeedback(root);
+    const feedback = await readValidationErrorHistory(root);
     if (change === 'legitimate') {
       expect(feedback).toEqual([]);
       return;
@@ -708,7 +708,7 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
     expect(feedback).toHaveLength(1);
     const rejection = feedback[0]!.record;
     expect(rejection).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { area: root, workId: 'KAN-76', role: 'requirements-author' },
       invocationId: null,
       profile: saved.profile,
@@ -718,7 +718,7 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
       operation: 'stage-author',
       reason: expect.stringContaining('invocationId'),
     });
-    if (rejection.kind !== 'rejection' || rejection.report === null) {
+    if (rejection.kind !== 'validation-error' || rejection.report === null) {
       throw new Error('Expected retained author Markdown.');
     }
     await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(markdown);
@@ -728,16 +728,21 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
     await expect(
       createStageEvaluator({ ...common, runner: evaluatorRunner(response, []) })(),
     ).resolves.toBe('accepted-skip');
-    await expect(
-      outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
-    ).resolves.toHaveLength(1);
+    expect(
+      (
+        await readPendingValidationError({
+          areaRoot: root,
+          scope: rejection.scope,
+        })
+      )?.entries,
+    ).toHaveLength(1);
     await author({ task: 'propose' });
     expect(authorContexts[1]).toContain('invocationId');
     expect(authorContexts[1]).toContain(feedback[0]!.path);
     expect(authorContexts[1]).toContain(rejection.report.path);
     await expect(
-      outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
-    ).resolves.toEqual([]);
+      readPendingValidationError({ areaRoot: root, scope: rejection.scope }),
+    ).resolves.toBeNull();
     await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(markdown);
   },
 );
@@ -765,7 +770,7 @@ it('attributes an unusable upstream context report to its stage author', async (
     }),
   );
   await expect(upstreamReferences(selection, 'ux')).rejects.toThrow(/is not valid JSON/);
-  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+  expect((await readValidationErrorHistory(root))[0]?.record).toMatchObject({
     scope: {
       area: root,
       workId: 'KAN-76',
@@ -778,7 +783,9 @@ it('attributes an unusable upstream context report to its stage author', async (
     operation: 'stage-author',
     context: expect.stringContaining('requirements author round 3 for ux context'),
   });
-  await expect(readReportFeedback(path.join(path.dirname(root), 'ux'))).resolves.toEqual([]);
+  await expect(readValidationErrorHistory(path.join(path.dirname(root), 'ux'))).resolves.toEqual(
+    [],
+  );
 });
 
 it('keeps absent upstream stages and legacy combined upstream evidence usable', async () => {
@@ -827,7 +834,7 @@ it('keeps absent upstream stages and legacy combined upstream evidence usable', 
   const references = await upstreamReferences(selection, 'architecture');
   expect(references).toHaveLength(1);
   expect(references[0]?.lines.join('\n')).toContain('requirements stage result (skipped):');
-  await expect(readReportFeedback(root)).resolves.toEqual([]);
+  await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
 });
 
 it.each(
@@ -943,15 +950,15 @@ it.each(
       await expect(invoke()).resolves.toBe(
         consumer === 'author' ? 'skip-proposed' : 'accepted-skip',
       );
-      await expect(readReportFeedback(root)).resolves.toEqual([]);
+      await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
       return;
     }
     await expect(invoke()).rejects.toThrow(/does not exist/);
     expect(contexts).toEqual([]);
     // The producer owns the rejection: the requirements role retains its attributable evidence
     // while the consuming stage records nothing of its own.
-    expect((await readReportFeedback(root))[0]?.record).toMatchObject({
-      kind: 'rejection',
+    expect((await readValidationErrorHistory(root))[0]?.record).toMatchObject({
+      kind: 'validation-error',
       scope: { area: root, workId: 'KAN-76', role: `requirements-${role}` },
       source: { path: record },
       assignedReport: change === 'missing-record' ? null : saved.report,
@@ -959,13 +966,13 @@ it.each(
       reason: expect.stringContaining('does not exist'),
     });
     if (change === 'missing-record') {
-      expect((await readReportFeedback(root))[0]?.record).toMatchObject({
+      expect((await readValidationErrorHistory(root))[0]?.record).toMatchObject({
         invocationId: null,
         output: null,
         profile: 'nexus-sol',
       });
     }
-    await expect(readReportFeedback(path.join(issueRoot, 'ux'))).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(path.join(issueRoot, 'ux'))).resolves.toEqual([]);
   },
 );
 
@@ -1012,9 +1019,9 @@ it('surfaces an unusable preceding evaluation to a new round without reusing or 
   await expect(rejected()).rejects.toThrow(/is not valid JSON/);
   expect(rejectedContexts).toEqual([]);
   expect(await readFile(file, 'utf8')).toBe(malformed);
-  const rejection = (await readReportFeedback(root))[0]!;
+  const rejection = (await readValidationErrorHistory(root))[0]!;
   expect(rejection.record).toMatchObject({
-    kind: 'rejection',
+    kind: 'validation-error',
     scope: { area: root, workId: 'KAN-76', role: 'requirements-evaluator' },
     source: { path: file },
     output: malformed,
@@ -1042,8 +1049,8 @@ it('surfaces an unusable preceding evaluation to a new round without reusing or 
   ) as { readonly basis: Record<string, unknown> };
   expect('content' in saved.basis).toBe(false);
   // The accepted replacement retires the rejection while its evidence remains readable history.
-  const retained = await readReportFeedback(root);
-  expect(retained.map((entry) => entry.record.kind).sort()).toEqual(['correction', 'rejection']);
+  const retained = await readValidationErrorHistory(root);
+  expect(retained.map((entry) => entry.record.kind)).toEqual(['validation-error']);
 });
 
 it.each([
