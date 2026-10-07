@@ -41,19 +41,19 @@ small; introduce a dependency when it reduces total implementation and maintenan
 ### JEv dependency
 
 Consume `@saintiago/jev` from the standalone [JEv package](https://github.com/saintiago/jev-mcp),
-using its [public contract at the delivered revision](https://github.com/saintiago/jev-mcp/blob/8327a6f4166683b3596a42ab7eaa038124616e0a/docs/contracts.md).
+using its [public contract at the delivered revision](https://github.com/saintiago/jev-mcp/blob/6907ad11328dd6598ecea1868106abb217f5a164/docs/contracts.md).
 The package is private and unpublished. Build revision
-`8327a6f4166683b3596a42ab7eaa038124616e0a` with its locked dependencies on Node 24/npm 11,
+`6907ad11328dd6598ecea1868106abb217f5a164` with its locked dependencies on Node 24/npm 11,
 then run `npm pack`. Retain the resulting package as
-`vendor/saintiago-jev-0.0.0-8327a6f.tgz`, declare a runtime `file:` dependency on that tarball and
+`vendor/saintiago-jev-0.0.0-6907ad1.tgz`, declare a runtime `file:` dependency on that tarball and
 commit the npm lockfile integrity. A clean `npm ci` must install its public root exports and
 `jev-mcp` executable without a sibling checkout, registry publication or runtime download.
 The tarball contains the delivered package, not Nexus-owned copies of its provider implementation.
 
-Use this same installed dependency for TypeScript judgments and native stdio MCP. Import only the
-package root; launch its installed `jev-mcp` bin from an absolute installation path, independent of
-the selected project's working directory. The package owns validation, provider endpoint, transport,
-timeouts and safe errors. Nexus supplies evidence and interprets answers. No additional adapter,
-HTTP service or MCP client is needed. Package upgrades replace the pinned tarball and lockfile
-through normal dependency review; installation activation preserves active runtime users under
+Use this installed dependency for native stdio MCP `ask_jev` access. Launch its installed `jev-mcp`
+bin from an absolute installation path, independent of the selected project's working directory.
+The package owns validation, provider endpoint, transport, timeouts, safe errors and opt-in local
+usage logging. Nexus supplies evidence and interprets answers. No additional adapter, HTTP service
+or MCP client is needed. Package upgrades replace the pinned tarball and lockfile through normal
+dependency review; installation activation preserves active runtime users under
 [Application](application.md#installation-activation).

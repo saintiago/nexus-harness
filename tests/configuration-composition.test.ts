@@ -27,11 +27,7 @@ import {
   researcherRoleInstructions,
   reviewerRoleInstructions,
 } from '../src/agent-runtime/index.js';
-import {
-  createJevCapability,
-  jevExecutablePath,
-  type JevCapability,
-} from '../src/application/jev.js';
+import { jevExecutablePath } from '../src/application/jev.js';
 import type { CodingRuntime, CodingRuntimeRequest } from '../src/adapters/coding-runtime.js';
 import {
   createJiraAdapter,
@@ -741,7 +737,11 @@ describe('AgentRuntime construction', () => {
             'mcp_servers.jev.required': false,
             'mcp_servers.jev.enabled_tools': ['ask_jev'],
             'mcp_servers.jev.disabled_tools': [],
-            'mcp_servers.jev.env_vars': ['JEV_API_KEY'],
+            'mcp_servers.jev.env_vars': [
+              'JEV_API_KEY',
+              'JEV_USAGE_LOG_PATH',
+              'JEV_USAGE_LOG_CALLER',
+            ],
           },
         });
         expect(occurrences(requests.at(-1)!.prompt, jevUseGuidance)).toBe(1);
@@ -841,6 +841,14 @@ describe('AgentRuntime construction', () => {
       missingKey.settings.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings,
     ).toMatchObject({ config: { 'mcp_servers.jev.enabled': false } });
     expect(occurrences(missingKey.requests.at(-1)!.prompt, jevUseGuidance)).toBe(0);
+
+    // An empty host value is unavailability, not configuration failure: the server stays disabled.
+    const emptyKey = harness(parsedEnabled, 'developer', { ...hostEnvironment, JEV_API_KEY: '' });
+    await emptyKey.runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+    expect(
+      emptyKey.settings.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings,
+    ).toMatchObject({ config: { 'mcp_servers.jev.enabled': false } });
+    expect(occurrences(emptyKey.requests.at(-1)!.prompt, jevUseGuidance)).toBe(0);
   });
 
   it('owns the reserved JEv server settings a profile configuration supplies', async () => {
@@ -867,7 +875,7 @@ describe('AgentRuntime construction', () => {
       'mcp_servers.jev.required': false,
       'mcp_servers.jev.enabled_tools': ['ask_jev'],
       'mcp_servers.jev.disabled_tools': [],
-      'mcp_servers.jev.env_vars': ['JEV_API_KEY'],
+      'mcp_servers.jev.env_vars': ['JEV_API_KEY', 'JEV_USAGE_LOG_PATH', 'JEV_USAGE_LOG_CALLER'],
     };
 
     const enabled = nexusConfiguration();
@@ -997,53 +1005,5 @@ describe('AgentRuntime construction', () => {
     expect(JSON.stringify(settings)).not.toContain(key);
     expect(requests.at(-1)!.prompt).not.toContain(key);
     expect(JSON.stringify(requests.at(-1)!.toolSettings)).not.toContain(key);
-  });
-});
-
-describe('JEv capability construction', () => {
-  /** The constructed capability, failing the check when the integration is unexpectedly disabled. */
-  function capabilityOf(
-    configuration: NexusConfiguration,
-    environment: Readonly<Record<string, string | undefined>>,
-  ): JevCapability {
-    const capability = createJevCapability(configuration, environment);
-    if (capability === null) {
-      throw new Error('the JEv capability is absent although the integration is enabled');
-    }
-    return capability;
-  }
-
-  it('constructs the public client only for an enabled integration with a host key', () => {
-    const omitted = nexus();
-    expect(createJevCapability(omitted, jevHostEnvironment)).toBeNull();
-
-    const disabled = nexusConfiguration();
-    disabled.jev = { enabled: false, credential: 'jevApiKey' };
-    expect(
-      createJevCapability(
-        parseNexusConfiguration(disabled, installationDirectory),
-        jevHostEnvironment,
-      ),
-    ).toBeNull();
-
-    const enabled = nexusConfiguration();
-    enabled.jev = { enabled: true, credential: 'jevApiKey' };
-    const configuration = parseNexusConfiguration(enabled, installationDirectory);
-    const capability = createJevCapability(configuration, jevHostEnvironment);
-    expect(capability?.kind).toBe('available');
-    if (capability?.kind !== 'available') {
-      throw new Error('the enabled integration did not construct a client');
-    }
-    expect(typeof capability.client.evaluate).toBe('function');
-  });
-
-  it('reports missing credentials and unusable keys without failing construction', () => {
-    const enabled = nexusConfiguration();
-    enabled.jev = { enabled: true, credential: 'jevApiKey' };
-    const configuration = parseNexusConfiguration(enabled, installationDirectory);
-
-    expect(capabilityOf(configuration, {}).kind).toBe('missing-credential');
-    expect(capabilityOf(configuration, { JEV_API_KEY: '' }).kind).toBe('missing-credential');
-    expect(capabilityOf(configuration, { JEV_API_KEY: 'bad\u0000key' }).kind).toBe('unavailable');
   });
 });

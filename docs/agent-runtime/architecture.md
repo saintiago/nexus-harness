@@ -140,11 +140,12 @@ all four idea-refinement roles, development, review, recovery and experience ana
 to every selectable profile, including repair/escalation entries and profiles reused across roles.
 No invocation requires a call merely because the tool is available.
 
-The package owns provider requests, schemas, response validation and MCP transport. Nexus consumes
-its delivered dependency and owns decisions made from its answers. Tool composition preserves the
-role's existing capabilities and restrictions, including experience analysis's search-only memory
-access. Enablement and host credentials follow [configuration](../configuration.md#jev-settings);
-installation and effective tool checks follow [profiles](profiles.md#jev-access).
+The package owns provider requests, schemas, response validation, MCP transport and optional local
+usage logging. Nexus consumes its delivered dependency and owns decisions made from its answers.
+Tool composition preserves the role's existing capabilities and restrictions, including experience
+analysis's search-only memory access. Enablement, host credentials and optional host logging
+settings follow [configuration](../configuration.md#jev-settings); installation and effective tool
+checks follow [profiles](profiles.md#jev-access).
 
 Supply this concise guidance once with enabled access: ask narrow questions with explicit
 alternatives and only relevant evidence; batch questions sharing the same state. JEv returns

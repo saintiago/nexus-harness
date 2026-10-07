@@ -10,14 +10,6 @@ history. Keep source attribution and material uncertainty. Do not retrieve Jira,
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
 
-A caller-supplied JEv applicability record is attributed advisory evidence under the
-[preparation action contract](../task-engine/actions/preparation-stage.md#jev-applicability-advice).
-The author independently checks its basis and stage obligations before using it in a skip proposal;
-the evaluator independently assesses that proposal against current intent and work. Neither role
-returns a JEv record or copies a judgment into an acceptance verdict. Missing or uncertain advice
-keeps the ordinary applicability assessment. Optional `ask_jev` access does not require another
-call to repeat the caller's judgment.
-
 ### Bounded material quality
 
 Authors and evaluators actively improve clarity, simplicity, usability, coherence and maintainability

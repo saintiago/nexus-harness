@@ -1,58 +1,51 @@
 /**
  * Focused integration checks for the delivered, pinned JEv dependency: the committed package
- * installs its public root export and its `jev-mcp` executable, the constructed capability returns
- * the package's structured judgment from a controlled provider response, and the installed stdio
- * server discovers and calls the same judgment. The provider response is supplied, so no live
- * TypeSafe call, credential or sibling checkout is involved.
+ * installs its `jev-mcp` executable, the installed stdio server discovers and calls the judgment
+ * against a controlled provider response, and its host-enabled usage logging appends one local
+ * JSONL record per evaluation without changing ordinary results. Provider responses are supplied,
+ * so no live TypeSafe call, credential or sibling checkout is involved.
  */
 
-import { access, readFile } from 'node:fs/promises';
-import path from 'node:path';
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { JevError, createJevClient, type JevRequest } from '@saintiago/jev';
-import {
-  createJevCapability,
-  jevExecutablePath,
-  type JevCapability,
-} from '../src/application/jev.js';
-import { parseNexusConfiguration } from '../src/configuration/index.js';
-import { nexusConfiguration } from './support/configuration.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { JevRequest } from '@saintiago/jev';
+import { jevExecutablePath } from '../src/application/jev.js';
 import { controlledJevProvider, type ControlledJevProvider } from './support/jev-provider.js';
 import { openMcpSession } from './support/mcp-stdio.js';
 
-const installationDirectory = '/srv/nexus/installation';
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const preload = fileURLToPath(new URL('./fixtures/jev-provider-preload.mjs', import.meta.url));
 const syntheticKey = 'synthetic-jev-host-key';
-const syntheticState =
-  'Synthetic stage note: the requested change has no reporting-terminal scope.';
+const syntheticState = 'Synthetic support note: payouts have been failing for three days.';
 
 /** The provider judgment the controlled TypeSafe endpoint returns. */
 const syntheticJudgment = {
   model: 'jev-1.13.0',
   answers: {
-    stage_applicability: {
+    reply_choice: {
       type: 'choice',
-      choice: 'inapplicable',
-      probabilities: { applicable: 0.02, inapplicable: 0.96, uncertain: 0.02 },
-      confidence: 0.94,
+      choice: 'revise',
+      probabilities: { keep: 0.04, revise: 0.94, uncertain: 0.02 },
+      confidence: 0.92,
     },
   },
   usage: { input_tokens: 128, output_tokens: 6 },
 };
 
-/** One synthetic applicability question sharing one state, as a caller would submit it. */
+/** One synthetic judgment request sharing one state, as an agent would submit it. */
 const syntheticRequest: JevRequest = {
   state: syntheticState,
   questions: {
-    stage_applicability: {
+    reply_choice: {
       type: 'choice',
-      instructions: 'Is this stage applicable to the requested outcome?',
+      instructions: 'Should the draft reply be kept or revised?',
       criteria: {
-        applicable: 'The outcome needs this stage',
-        inapplicable: 'The stage is outside the outcome',
+        keep: 'Send the draft as written',
+        revise: 'Revise the draft before sending',
         uncertain: 'The evidence cannot establish it',
       },
     },
@@ -60,6 +53,7 @@ const syntheticRequest: JevRequest = {
 };
 
 const providers: ControlledJevProvider[] = [];
+const temporaryDirectories: string[] = [];
 
 async function provider(): Promise<ControlledJevProvider> {
   const controlled = await controlledJevProvider();
@@ -67,48 +61,24 @@ async function provider(): Promise<ControlledJevProvider> {
   return controlled;
 }
 
+/** One empty temporary directory for host-selected usage-log destinations. */
+async function temporaryDirectory(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-jev-usage-'));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
 afterEach(async () => {
-  vi.unstubAllGlobals();
   await Promise.all(providers.splice(0).map((controlled) => controlled.close()));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
-/** The parsed configuration with the JEv integration enabled and its host credential referenced. */
-function enabledConfiguration() {
-  const configured = nexusConfiguration();
-  configured.jev = { enabled: true, credential: 'jevApiKey' };
-  return parseNexusConfiguration(configured, installationDirectory);
-}
-
-/** The constructed capability, failing the check when the integration is unexpectedly absent. */
-function capabilityOf(environment: Readonly<Record<string, string | undefined>>): JevCapability {
-  const capability = createJevCapability(enabledConfiguration(), environment);
-  if (capability === null) {
-    throw new Error('the JEv capability is absent although the integration is enabled');
-  }
-  return capability;
-}
-
-/** Route the package's fixed provider endpoint to the controlled origin for this process. */
-function routeFetchTo(origin: string): void {
-  const nativeFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
-    const destination = new URL(
-      typeof input === 'string' || input instanceof URL
-        ? String(input)
-        : (input as { readonly url: string }).url,
-    );
-    if (
-      destination.origin !== 'https://api.typesafe.ai' ||
-      destination.pathname !== '/v1/systemone'
-    ) {
-      throw new Error(`unexpected fetch destination ${destination.href}`);
-    }
-    return nativeFetch(new URL(destination.pathname, origin), init);
-  });
-}
-
 describe('delivered JEv dependency', () => {
-  it('installs the public root export and the executable inside this installation', async () => {
+  it('installs the jev-mcp executable inside this installation', async () => {
     const manifest = JSON.parse(
       await readFile(
         path.join(repositoryRoot, 'node_modules', '@saintiago', 'jev', 'package.json'),
@@ -119,59 +89,11 @@ describe('delivered JEv dependency', () => {
     expect(manifest.name).toBe('@saintiago/jev');
     expect(manifest.version).toBe('0.0.0');
     expect(manifest.bin['jev-mcp']).toBe('./dist/mcp.js');
-    expect(typeof createJevClient).toBe('function');
-    expect(new JevError('unavailable').code).toBe('unavailable');
 
     const executable = jevExecutablePath();
     expect(path.isAbsolute(executable)).toBe(true);
     expect(executable.startsWith(repositoryRoot)).toBe(true);
     await expect(access(executable, constants.X_OK)).resolves.toBeUndefined();
-  });
-
-  it('returns the provider judgment through the constructed capability', async () => {
-    const controlled = await provider();
-    controlled.succeed(syntheticJudgment);
-    routeFetchTo(controlled.origin);
-
-    const capability = capabilityOf({ JEV_API_KEY: syntheticKey });
-    if (capability.kind !== 'available') {
-      throw new Error(`the enabled integration reported ${capability.kind}`);
-    }
-    const result = await capability.client.evaluate(syntheticRequest);
-
-    expect(result).toEqual(syntheticJudgment);
-    expect(controlled.requests).toHaveLength(1);
-    expect(controlled.requests[0]!.method).toBe('POST');
-    expect(controlled.requests[0]!.path).toBe('/v1/systemone');
-    expect(controlled.requests[0]!.authorization).toBe(`Bearer ${syntheticKey}`);
-    expect(JSON.parse(controlled.requests[0]!.body)).toMatchObject({
-      model: 'jev-1.13.0',
-      state: syntheticState,
-      questions: { stage_applicability: { type: 'choice' } },
-    });
-  });
-
-  it('reports a controlled provider failure as a safe package error', async () => {
-    const controlled = await provider();
-    controlled.fail(429, '{"error":"rate limited"}');
-    routeFetchTo(controlled.origin);
-
-    const capability = capabilityOf({ JEV_API_KEY: syntheticKey });
-    if (capability.kind !== 'available') {
-      throw new Error(`the enabled integration reported ${capability.kind}`);
-    }
-    const failure = await capability.client
-      .evaluate(syntheticRequest)
-      .then(() => null)
-      .catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(JevError);
-    const error = failure as JevError;
-    expect(error.code).toBe('rate_limited');
-    expect(error.status).toBe(429);
-    expect(error.message).not.toContain(syntheticKey);
-    expect(error.message).not.toContain(syntheticState);
-    expect(error.message).not.toContain('rate limited');
   });
 });
 
@@ -197,6 +119,119 @@ describe('installed jev-mcp executable', () => {
       expect(result.structuredContent).toEqual(syntheticJudgment);
       const text = result.content.map((part) => part.text ?? '').join('\n');
       expect(JSON.parse(text)).toEqual(syntheticJudgment);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('appends one usage record per evaluation when the host enables logging', async () => {
+    const controlled = await provider();
+    controlled.succeed(syntheticJudgment);
+    const logPath = path.join(await temporaryDirectory(), 'usage.jsonl');
+
+    const session = await openMcpSession(jevExecutablePath(), {
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_USAGE_LOG_PATH: logPath,
+        JEV_USAGE_LOG_CALLER: 'nexus-check',
+        JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    try {
+      const result = await session.call('ask_jev', syntheticRequest);
+      expect(result.isError).toBeFalsy();
+
+      const lines = (await readFile(logPath, 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+      expect(record).toMatchObject({
+        model: 'jev-1.13.0',
+        caller: 'nexus-check',
+        questions: { reply_choice: { type: 'choice' } },
+        answers: syntheticJudgment.answers,
+        usage: syntheticJudgment.usage,
+      });
+      expect(record['timestamp']).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(record['durationMs']).toBeGreaterThanOrEqual(0);
+      // Supplied evidence and the host key never enter the log.
+      expect(JSON.stringify(record)).not.toContain(syntheticState);
+      expect(JSON.stringify(record)).not.toContain(syntheticKey);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('records a failure category without answers when logging is enabled', async () => {
+    const controlled = await provider();
+    controlled.fail(429, '{"error":"rate limited"}');
+    const logPath = path.join(await temporaryDirectory(), 'usage.jsonl');
+
+    const session = await openMcpSession(jevExecutablePath(), {
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_USAGE_LOG_PATH: logPath,
+        JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    try {
+      const result = await session.call('ask_jev', syntheticRequest);
+      expect(result.isError).toBe(true);
+
+      const lines = (await readFile(logPath, 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+      expect(record).toMatchObject({
+        model: 'jev-1.13.0',
+        errorCode: 'rate_limited',
+        questions: { reply_choice: { type: 'choice' } },
+      });
+      expect(record['answers']).toBeUndefined();
+      expect(record['caller']).toBeUndefined();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('writes no usage file when the host sets no logging path', async () => {
+    const controlled = await provider();
+    controlled.succeed(syntheticJudgment);
+    const directory = await temporaryDirectory();
+
+    const session = await openMcpSession(jevExecutablePath(), {
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    try {
+      const result = await session.call('ask_jev', syntheticRequest);
+      expect(result.isError).toBeFalsy();
+      await expect(readdir(directory)).resolves.toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps a successful evaluation when the log destination is unwritable', async () => {
+    const controlled = await provider();
+    controlled.succeed(syntheticJudgment);
+    const destination = path.join(await temporaryDirectory(), 'missing', 'usage.jsonl');
+
+    const session = await openMcpSession(jevExecutablePath(), {
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_USAGE_LOG_PATH: destination,
+        JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    try {
+      const result = await session.call('ask_jev', syntheticRequest);
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual(syntheticJudgment);
     } finally {
       await session.close();
     }

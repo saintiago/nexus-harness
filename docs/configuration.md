@@ -43,7 +43,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Idea refinement | Four role profile references and the maximum conversation cycles per selection |
 | Memory | Optional enablement, service URL, MCP access and experience-analysis profile |
-| JEv | Optional judgment integration, native MCP access and host credential reference |
+| JEv | Optional judgment integration, native MCP `ask_jev` access, host credential reference and host logging enablement |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -123,15 +123,16 @@ configuration; service unavailability degrades only learning. Disabled configura
 ## JEv settings
 
 JEv integration is optional and Nexus-owned. An installation without JEv configuration remains
-valid. Omitted or disabled integration supplies no JEv tools or applicability requests and retains
-the existing full preparation path. Enabled integration supports both native agent access and the
-preparation API use described in [project workflow](project-workflow.md#jev-assisted-applicability).
+valid. Omitted or disabled integration supplies no JEv tools and retains the existing full
+preparation path. Enabled integration composes optional native `ask_jev` agent access and forwards
+the host's documented logging settings.
 The optional `jev` section has `enabled: boolean` and `credential: string`, a reference into
 `credentials`. `credential` is required when enabled and optional when disabled. If present it
 must identify an existing credential entry whose environment name is `JEV_API_KEY`. Unknown
-fields or references are configuration errors; an absent host value is capability unavailability,
+fields or references are configuration errors; an absent host value is access unavailability,
 not invalid configuration. Disabled integration may retain a valid unused credential reference.
-There are no Nexus settings for endpoint, model, confidence threshold, retry or MCP command.
+There are no Nexus settings for endpoint, model, confidence threshold, retry, MCP command or
+usage-log destination.
 
 ```json
 {
@@ -144,33 +145,34 @@ This fragment extends the installation's existing settings. Set `enabled: false`
 to disable the integration. Dependency consumption follows [tech stack](tech-stack.md#jev-dependency);
 Linux native launch follows [profiles](agent-runtime/profiles.md#jev-access).
 
-Resolve `JEV_API_KEY` from the execution host for API use and native MCP launch; configuration
-contains only its reference, never its value. The package owns provider endpoint, schemas and
-transport. Missing credentials or an unavailable JEv capability cannot prevent ordinary Nexus work:
-use the documented [applicability fallback](project-workflow.md#jev-assisted-applicability) and
-[agent continuation](agent-runtime/architecture.md#optional-jev-judgments). Preserve existing
-configuration validation and resolved-setting immutability. Resolve the key only in in-memory
-construction of the API client and in the provider process environment. Native MCP forwards its
-host environment name, never a literal `env` value in tool settings. Keep the host key available
-in workers, recovery and experience-analysis providers while preserving their existing credential
-exclusions. With no key, omit the JEv server and usage guidance and supply preparation's
-`missing-credential` fallback capability; do not fail general component construction.
+Resolve `JEV_API_KEY` from the execution host for native MCP launch; configuration contains only
+its reference, never its value. The package owns provider endpoint, schemas, transport and usage
+logging. Missing credentials or an unavailable JEv server cannot prevent ordinary Nexus work:
+use the documented [agent continuation](agent-runtime/architecture.md#optional-jev-judgments).
+Preserve existing configuration validation and resolved-setting immutability. Native MCP forwards
+host environment names, never a literal `env` value in tool settings. Keep the host key and the
+optional logging settings available in workers, recovery and experience-analysis providers while
+preserving their existing credential exclusions. With no key, omit the JEv server and usage
+guidance; do not fail general component construction.
 
-Use package defaults (`jev-1.13.0`, 10000 ms) for automatic applicability requests. Native launch
-also uses these defaults by forwarding only `JEV_API_KEY`, without inheriting `JEV_MODEL` or
-`JEV_TIMEOUT_MS`. This gives API and MCP one supported configuration. Provider-native JEv startup
-is optional; an unavailable server must not abort an otherwise usable agent invocation. Disabled
-composition disables any inherited server under the reserved `jev` name, including base, selected
-profile and trusted project settings. Available access binds the composed server to a fresh native
-name for each invocation, so inherited transport, literal environment and tool exclusions cannot
-merge into it. Nexus overrides under `jev`, including ancestor-object forms, are replaced by the
-composed settings. Unavailable access creates no new server. Other native settings retain their
-current ownership; original configuration files and personal defaults are not rewritten.
+Use package defaults (`jev-1.13.0`, 10000 ms). Native launch uses these defaults by forwarding only
+`JEV_API_KEY` and the package's optional host logging settings `JEV_USAGE_LOG_PATH` and
+`JEV_USAGE_LOG_CALLER`, without inheriting `JEV_MODEL` or `JEV_TIMEOUT_MS`. Logging stays disabled
+until the host sets the path, a caller label alone has no effect, and Nexus adds no destination or
+record schema of its own. Provider-native JEv startup is optional; an unavailable server must not
+abort an otherwise usable agent invocation. Disabled composition disables any inherited server
+under the reserved `jev` name, including base, selected profile and trusted project settings.
+Available access binds the composed server to a fresh native name for each invocation, so inherited
+transport, literal environment and tool exclusions cannot merge into it. Nexus overrides under
+`jev`, including ancestor-object forms, are replaced by the composed settings. Unavailable access
+creates no new server. Other native settings retain their current ownership; original configuration
+files and personal defaults are not rewritten.
 
 Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
 effects; disabling a configured integration restores that same behavior. With host credentials and
-JEv enabled, API and native MCP access work without placing the secret in saved configuration or
-artifacts. With the credential missing, ordinary preparation and agent work remain possible.
+JEv enabled, native MCP `ask_jev` access works without placing the secret in saved configuration or
+artifacts. With a host logging path set, the delivered server appends local usage records; with the
+credential missing, ordinary preparation and agent work remain possible.
 
 ## Project workflow settings
 

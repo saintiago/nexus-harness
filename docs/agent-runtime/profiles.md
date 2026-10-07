@@ -56,8 +56,9 @@ publication tools are not supplied to stage roles.
 ## JEv access
 
 Use the delivered JEv package's `jev-mcp` executable through provider-native MCP settings when
-[JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` from the
-execution host. Keep its value out of repository configuration, prompts, command arguments,
+[JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` and, when the
+host sets them, the optional `JEV_USAGE_LOG_PATH` and `JEV_USAGE_LOG_CALLER` settings from the
+execution host. Keep credential values out of repository configuration, prompts, command arguments,
 reports and other artifacts. Install the [pinned runtime dependency](../tech-stack.md#jev-dependency)
 with Nexus's normal `npm ci`; a separate global package install is unnecessary. Nexus composition
 resolves the installed bin from its own installation rather than PATH or the target worktree.
@@ -71,7 +72,7 @@ enabled = true
 required = false
 enabled_tools = ["ask_jev"]
 disabled_tools = []
-env_vars = ["JEV_API_KEY"]
+env_vars = ["JEV_API_KEY", "JEV_USAGE_LOG_PATH", "JEV_USAGE_LOG_CALLER"]
 ```
 
 The absolute command is installation-specific and generated at composition, not committed to
@@ -84,19 +85,21 @@ fresh native name, checked against that catalogue. This covers base, profile and
 layers without rewriting any configuration file or changing the Codex home, authentication or
 unrelated tools. Composition removes Nexus override settings under the reserved `jev` name,
 including nested values under `mcp_servers`, before supplying its owned settings. Native provider configuration
-forwards the named host variable without writing its value to a configuration file or command
-argument. API composition imports `createJevClient`
-from the same installation and passes the resolved key in memory. Use the shared defaults described
-in [configuration](../configuration.md#jev-settings); ensure inherited model/timeout variables are
-excluded from the server environment. Omitted/disabled integration, or missing host credentials,
-disables inherited `jev` entries, creates no new JEv server and supplies no JEv guidance.
-An optional startup failure leaves the provider session usable with its other tools.
+forwards the named host settings without writing their values to a configuration file or command
+argument. Use the shared defaults described in [configuration](../configuration.md#jev-settings);
+ensure inherited model/timeout variables are excluded from the server environment. A host logging
+path enables the delivered package's local JSONL usage records; Nexus selects no destination and
+adds no setting of its own. Omitted/disabled integration, or missing host credentials, disables
+inherited `jev` entries, creates no new JEv server and supplies no JEv guidance. An optional startup
+failure leaves the provider session usable with its other tools.
 
 Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
 [AgentRuntime](architecture.md#optional-jev-judgments), including preparation evaluators, recovery
 and experience analysis. Check composition with existing tools, rather than treating a template
-entry as evidence of working access. Disabled access and unavailable-tool continuation must also
-be demonstrated. Nexus adds no MCP client or shared HTTP service for this integration.
+entry as evidence of working access. Host-enabled usage logging is verified through the effective
+settings and an evaluation the delivered server records. Disabled access and unavailable-tool
+continuation must also be demonstrated. Nexus adds no MCP client or shared HTTP service for this
+integration.
 
 ## Prototype browser and image setup
 
