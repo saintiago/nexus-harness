@@ -1,14 +1,15 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { messageOf } from '../../../result.js';
+import { messageOf } from '../../result.js';
 
 /**
- * The readable rendering of one invocation's captured preparation source: the issue's summary,
- * rich-text description and other meaningful fields plus the attributed conversation. The
- * preparation action renders the captured values directly, without another agent invocation or a
- * generated summary, so human intent, conflicts and evidence keep their meaning and attribution
- * while administrative provider envelopes stay out of the prompt. The exact captured
- * `{ issue, conversation }` is retained beside the invocation's report for later inspection.
+ * The readable rendering of one invocation's captured source: the issue's summary, rich-text
+ * description and other meaningful fields plus the attributed conversation, shared by the role
+ * contexts that present captured source. A role renders the captured values directly, without
+ * another agent invocation or a generated summary, so human intent, conflicts and evidence keep
+ * their meaning and attribution while administrative provider envelopes stay out of the prompt.
+ * The exact captured `{ issue, conversation }` is retained beside the invocation's report for
+ * later inspection.
  */
 
 /** The invocation-local copy of the exact captured source values. */
@@ -608,12 +609,13 @@ function commentIdentity(comment: Readonly<Record<string, unknown>>): string {
   return `Comment ${id} — ${attribution}${created === null ? '' : ` at ${created}`}`;
 }
 
-/** One comment's readable attribution, acknowledgement mark and body. */
+/** One comment's readable attribution, acknowledgement mark, notes and body. */
 function renderComment(
   comment: unknown,
   position: number,
   publications: readonly { readonly kind: string; readonly id: string }[],
   sourcePath: string,
+  notes: readonly string[] = [],
 ): string[] {
   if (!isObject(comment)) {
     return [
@@ -636,12 +638,39 @@ function renderComment(
     const editor = textOf(updateAuthor.displayName) ?? textOf(updateAuthor.name);
     lines.push(`   (edited${editor === null ? '' : ` by ${editor}`} at ${updated})`);
   }
+  lines.push(...notes.map((note) => `   ${note}`));
   if (hasContent(comment.body)) {
     lines.push(...renderValue(comment.body, sourcePath, '   '));
   } else {
     lines.push(`   ${inspectionNote('this comment body', sourcePath)}`);
   }
   return lines;
+}
+
+/** One captured issue's readable requirements rendering. */
+export function capturedIssueText(issue: unknown, sourcePath: string): string {
+  return renderIssue(issue, sourcePath).join('\n');
+}
+
+/**
+ * One captured Jira conversation entry's readable attribution and complete body. Notes are
+ * provenance statements the presenting context adds after the entry's identity, such as an
+ * uncertain-origin label; they never replace or summarize the captured body.
+ */
+export function capturedCommentText(settings: {
+  readonly comment: unknown;
+  readonly position: number;
+  readonly sourcePath: string;
+  readonly publications: readonly { readonly kind: string; readonly id: string }[];
+  readonly notes?: readonly string[];
+}): string {
+  return renderComment(
+    settings.comment,
+    settings.position,
+    settings.publications,
+    settings.sourcePath,
+    settings.notes ?? [],
+  ).join('\n');
 }
 
 /** The complete readable rendering of one captured `{ issue, conversation }` source. */

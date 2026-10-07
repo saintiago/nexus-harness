@@ -31,7 +31,7 @@ import {
   preparationReportingGuidance,
   preparationSharedGuidance,
 } from '../src/task-engine/actions/preparation/context.js';
-import { capturedSourcePathOf } from '../src/task-engine/actions/preparation/readable-source.js';
+import { capturedSourcePathOf } from '../src/task-engine/actions/readable-source.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
 import { implementationInputDeclaration } from '../src/task-engine/actions/project/implementation-handoff/artifacts.js';
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';

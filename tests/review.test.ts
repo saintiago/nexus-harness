@@ -5,7 +5,7 @@
  * paid turn is involved.
  */
 
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -122,7 +122,13 @@ function unusedRuntime(): AgentRuntime {
 
 /** One workspace with its prepared identity, current round and selection record. */
 async function workspace(
-  options: { readonly round?: number; readonly name?: string } = {},
+  options: {
+    readonly round?: number;
+    readonly name?: string;
+    readonly task?: unknown;
+    readonly conversation?: readonly unknown[];
+    readonly repositoryWorkspace?: { readonly root: string };
+  } = {},
 ): Promise<{
   readonly workspaceRoot: string;
   readonly selectionFile: string;
@@ -144,6 +150,9 @@ async function workspace(
       {
         taskKey: 'NEX-1',
         repository: '/origin/repository.git',
+        ...(options.repositoryWorkspace === undefined
+          ? {}
+          : { repositoryWorkspace: options.repositoryWorkspace }),
         branch: 'task/NEX-1',
         baseRevision,
       },
@@ -164,7 +173,7 @@ async function workspace(
       {
         taskKey: 'NEX-1',
         source: { kind: 'jira', issueId: '1' },
-        task: {
+        task: options.task ?? {
           id: '1',
           key: 'NEX-1',
           fields: {
@@ -172,7 +181,7 @@ async function workspace(
             description: { type: 'doc', content: [] },
           },
         },
-        conversation: [{ id: 'c1', body: 'Original request.' }],
+        conversation: options.conversation ?? [{ id: 'c1', body: 'Original request.' }],
         workspace: { root: workspaceRoot },
         stage: 'delivery',
       },
@@ -190,6 +199,7 @@ async function writeDeliveredRound(
   options: {
     readonly pullRequestNumber?: number;
     readonly developmentReport?: string;
+    readonly revision?: string;
   } = {},
 ): Promise<void> {
   const helpers = createArtifactHelpers({ root: workspaceRoot });
@@ -197,6 +207,7 @@ async function writeDeliveredRound(
     await readFile(path.join(workspaceRoot, 'state', 'current-round.json'), 'utf8'),
   ) as { readonly number: number };
   const developmentReport = options.developmentReport ?? 'Implemented the retry guard.';
+  const revision = options.revision ?? headRevision;
   const developmentFile = path.join(
     workspaceRoot,
     'artifacts',
@@ -213,14 +224,14 @@ async function writeDeliveredRound(
     profile: 'dev-a',
     status: 'completed',
     baseRevision,
-    headRevision,
+    headRevision: revision,
     role: 'developer',
     report: { path: developmentFile },
     invocationId: 'dev-1',
     readinessFailure: null,
   });
   await helpers.writeOutputArtifact(verificationArtifact, {
-    headRevision,
+    headRevision: revision,
     status: 'passed',
     checks: [
       {
@@ -235,7 +246,7 @@ async function writeDeliveredRound(
     repository,
     pullRequestNumber: options.pullRequestNumber ?? 7,
     pullRequestUrl: `https://github.com/${repository}/pull/${options.pullRequestNumber ?? 7}`,
-    headRevision,
+    headRevision: revision,
   });
 }
 
@@ -269,6 +280,66 @@ async function readReview(
 ): Promise<{ readonly output: ReviewOutput; readonly report: string }> {
   const output = (await readRoundArtifact(workspaceRoot, round, 'review.json')) as ReviewOutput;
   return { output, report: await readFile(output.report.path, 'utf8') };
+}
+
+/** One invocation-local evidence file's exact text, beside the saved review's report. */
+async function readEvidenceText(output: ReviewOutput, name: string): Promise<string> {
+  return readFile(path.join(path.dirname(output.report.path), name), 'utf8');
+}
+
+/** One invocation-local JSON evidence value, beside the saved review's report. */
+async function readEvidence(output: ReviewOutput, name: string): Promise<unknown> {
+  return JSON.parse(await readEvidenceText(output, name)) as unknown;
+}
+
+/** Write the issue's parent handoff with the publication identities it already observed. */
+async function writePublications(
+  workspaceRoot: string,
+  publications: readonly { readonly kind: string; readonly id: string }[],
+): Promise<void> {
+  await mkdir(path.join(workspaceRoot, 'parent'), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, 'parent', 'handoff.json'),
+    `${JSON.stringify(
+      {
+        stage: 'delivery',
+        upstreamReturns: 0,
+        feedback: null,
+        return: null,
+        awaitingStages: [],
+        tickets: [],
+        basis: null,
+        publications,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+}
+
+/**
+ * Make one evidence path unwritable by placing a directory at it. The action assigns the
+ * invocation's report directory before it reads the repository, so the obstruction runs from the
+ * controlled Git operation that precedes retention.
+ */
+async function obstructEvidence(workspaceRoot: string, round: number, name: string): Promise<void> {
+  const reportsRoot = path.join(workspaceRoot, 'artifacts', String(round), 'reports');
+  const invocationDirectories: string[] = [];
+  for (const directory of await readdir(reportsRoot)) {
+    // The assigned invocation directory exists before the reviewer runs and holds no report yet.
+    if ((await readdir(path.join(reportsRoot, directory))).length === 0) {
+      invocationDirectories.push(directory);
+    }
+  }
+  expect(invocationDirectories).toHaveLength(1);
+  await mkdir(path.join(reportsRoot, invocationDirectories[0]!, name), { recursive: true });
+}
+
+/** One round's assigned invocation directories, excluding the development report's area. */
+async function invocationDirectories(workspaceRoot: string, round: number): Promise<string[]> {
+  const reportsRoot = path.join(workspaceRoot, 'artifacts', String(round), 'reports');
+  return (await readdir(reportsRoot)).filter((directory) => directory !== 'dev-1').sort();
 }
 
 const taskIssue = {
@@ -424,13 +495,13 @@ describe('Review', () => {
     expect(context).toContain(
       `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
     );
-    expect(context).toContain(
-      `Comparison diff ${baseRevision}..${headRevision} (orientation only;`,
-    );
-    expect(context).toContain('+feature');
+    expect(context).toContain(`Complete comparison diff ${baseRevision}..${headRevision}`);
+    expect(context).toContain('exact bytes as returned');
+    // The diff body is referenced, never embedded.
+    expect(context).not.toContain('+feature');
     expect(context).toContain('Implemented the retry guard.');
     // The diff is orientation, not a scope boundary, and no previous review exists to consult.
-    expect(context).toContain('task-relevant pre-existing code outside this range is in scope');
+    expect(context).toContain('including pre-existing code outside this range, remains in scope');
     expect(context).not.toContain('Previous review report');
     expect(context).toContain('Return only one JSON object');
     expect(context).not.toContain('priorFindings');
@@ -461,7 +532,7 @@ describe('Review', () => {
       `publishCheck:${headRevision}:${reviewCheck}:success`,
     ]);
     // The parent-owned boundary refreshed the selection; the action leaves the retained record
-    // and saves the complete pull-request conversation in the round's local artifacts.
+    // and retains the invocation-local evidence beside its assigned Markdown report.
     expect(JSON.parse(await readFile(selectionFile, 'utf8'))).toEqual({
       taskKey: 'NEX-1',
       source: { kind: 'jira', issueId: '1' },
@@ -474,11 +545,25 @@ describe('Review', () => {
       workspace: { root: workspaceRoot },
       stage: 'delivery',
     });
-    expect(await readRoundArtifact(workspaceRoot, round, 'pr-conversation.json')).toEqual({
+    expect(await readEvidence(recorded.output, 'pr-conversation.json')).toEqual({
       comments: [{ id: 1, body: 'Human pull-request discussion.' }],
       reviews: [],
       reviewComments: [],
     });
+    expect(await readEvidenceText(recorded.output, 'comparison.diff')).toBe(
+      'diff --git a/feature.txt b/feature.txt\n+feature\n',
+    );
+    expect(await readEvidence(recorded.output, 'captured-source.json')).toEqual({
+      issue: {
+        id: '1',
+        key: 'NEX-1',
+        fields: { summary: 'Implement the retry guard', description: { type: 'doc', content: [] } },
+      },
+      conversation: [{ id: 'c1', body: 'Original request.' }],
+    });
+    expect(context).toContain(
+      `complete captured conversation at ${path.join(path.dirname(recorded.output.report.path), 'captured-source.json')}`,
+    );
     // The saved report is what the outcome event references; the invocation boundaries belong to
     // the caller's agent runner, not to the action.
     expect(events).toEqual([
@@ -543,18 +628,24 @@ describe('Review', () => {
       expect(occurrences(prompt, obligation), obligation).toBe(1);
     }
     expect(occurrences(prompt, reviewerRoleInstructions.join('\n\n'))).toBe(1);
-    // The complete task, conversation and revision-bound evidence reach the provider once.
-    expect(prompt).toContain('Task NEX-1:');
+    // The current requirements, the directly visible direction and the revision-bound evidence
+    // reach the provider once; complete conversations are referenced instead of embedded.
+    expect(prompt).toContain('Task NEX-1 — current captured requirements');
     expect(prompt).toContain('Implement the retry guard');
-    expect(prompt).toContain('Complete task conversation');
+    expect(prompt).toContain(
+      'Task conversation (Jira issue NEX-1, issue 1; complete captured conversation at',
+    );
     expect(prompt).toContain('Original request.');
-    expect(prompt).toContain('Complete pull-request conversation');
+    expect(prompt).toContain(
+      'Pull-request conversation (owner/repository pull request 7; captured comments, reviews and inline review comments in their captured order; complete captured conversation at',
+    );
     expect(prompt).toContain('Human pull-request discussion.');
+    expect(prompt).toContain('Origin uncertain');
     expect(prompt).toContain(
       `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
     );
     expect(prompt).toContain('Implemented the retry guard.');
-    expect(prompt).toContain('task-relevant pre-existing code outside this range is in scope');
+    expect(prompt).toContain('including pre-existing code outside this range, remains in scope');
     expect(prompt).toContain('Return only one JSON object');
     expect(requests[0]!.directory).toBe(path.join(workspaceRoot, 'worktree'));
   });
@@ -1532,6 +1623,13 @@ describe('Review', () => {
     ).resolves.toBe('changesRequested');
 
     expect(requests).toHaveLength(1);
+    // The current round's saved assessment of the earlier head is directly visible, complete and
+    // attributed; an approval is not translated into an approval of the later head.
+    const context = requests[0]?.context ?? '';
+    expect(context).toContain(
+      'Previous review report (round 1, profile nexus-review, invocation rev-1, reviewed revision',
+    );
+    expect(context).toContain('The earlier revision looked right.');
     const recorded = await readReview(workspaceRoot, 1);
     expect(recorded.output).toMatchObject({
       headRevision,
@@ -1566,5 +1664,452 @@ describe('Review', () => {
       verdict: 'inconclusive',
       headRevision,
     });
+  });
+
+  it('retains invocation-local evidence and references complete conversations with attribution', async () => {
+    const summaryBody = 'Nexus-published summary body that must not be embedded.';
+    const handoffBody = 'Nexus handoff comment body that must not be embedded.';
+    const description = {
+      type: 'doc',
+      version: 1,
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'Retry one transient provider failure.' }],
+        },
+      ],
+    };
+    const task = {
+      id: '1',
+      key: 'NEX-1',
+      fields: { summary: 'Implement the retry guard', description },
+    };
+    const paragraph = (text: string) => ({
+      type: 'doc',
+      version: 1,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+    });
+    const jane = { displayName: 'Jane Doe', accountId: 'acc-jane', accountType: 'atlassian' };
+    const conversation = [
+      {
+        id: 'c2',
+        author: jane,
+        created: '2026-10-07T09:00:00.000+0000',
+        body: paragraph('Older human scope clarification.'),
+      },
+      {
+        id: 'c3',
+        author: jane,
+        created: '2026-10-07T10:00:00.000+0000',
+        body: paragraph('Later conflicting human instruction.'),
+      },
+      { id: 'c4', body: 'Unattributed note that may be direction.' },
+      {
+        id: 'c9',
+        author: { displayName: 'Harness', accountId: 'acc-app', accountType: 'app' },
+        created: '2026-10-07T08:00:00.000+0000',
+        body: paragraph(summaryBody),
+      },
+      {
+        id: 'c5',
+        author: { displayName: 'Harness', accountId: 'acc-harness', accountType: 'atlassian' },
+        created: '2026-10-07T07:00:00.000+0000',
+        body: paragraph(handoffBody),
+      },
+    ];
+    const pullRequestConversation = {
+      comments: [
+        {
+          id: 21,
+          body: 'Human pull-request discussion.',
+          user: { login: 'jane', type: 'User' },
+          created_at: '2026-10-07T09:30:00Z',
+          html_url: 'https://github.com/owner/repository/pull/7#issuecomment-21',
+        },
+        {
+          id: 22,
+          body: 'Bot status comment body that must not be embedded.',
+          user: { login: 'ci-bot', type: 'Bot' },
+          created_at: '2026-10-07T09:31:00Z',
+        },
+        { id: 23, body: 'Unattributed pull-request note.' },
+      ],
+      reviews: [
+        {
+          id: 31,
+          state: 'APPROVED',
+          body: 'Automated Nexus Lens review body that must not be embedded.',
+          commit_id: otherRevision,
+          author: lensLogin,
+          user: { login: lensLogin, type: 'Bot' },
+        },
+      ],
+      reviewComments: [
+        {
+          id: 41,
+          body: 'Inline human review comment.',
+          user: { login: 'jane', type: 'User' },
+          in_reply_to_id: 21,
+        },
+      ],
+    };
+    const diff = 'diff --git a/src/queue.ts b/src/queue.ts\n+retry once\n';
+    const { workspaceRoot, selectionFile, round } = await workspace({
+      name: 'evidence',
+      task,
+      conversation,
+    });
+    // The parent retained the identity of its own Jira publication; that acknowledgement, not
+    // the human-looking account type, marks the entry as automation.
+    await writePublications(workspaceRoot, [{ kind: 'review-feedback', id: 'c5' }]);
+    await writeDeliveredRound(workspaceRoot);
+    // A conversation file retained by an earlier round keeps its bytes; the new reference uses
+    // the invocation-local copy.
+    const legacyConversation = '{"comments":[{"id":9}],"reviews":[],"reviewComments":[]}\n';
+    await writeFile(
+      path.join(workspaceRoot, 'artifacts', String(round), 'pr-conversation.json'),
+      legacyConversation,
+      'utf8',
+    );
+    const { runtime, requests } = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Approved.',
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok(diff),
+    });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok(pullRequestConversation),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+    ).resolves.toBe('approved');
+
+    const recorded = await readReview(workspaceRoot, round);
+    const directory = path.dirname(recorded.output.report.path);
+    const capturedSource = path.join(directory, 'captured-source.json');
+    const prConversation = path.join(directory, 'pr-conversation.json');
+    const comparisonDiff = path.join(directory, 'comparison.diff');
+    // The exact captured values and diff bytes are retained beside the assigned Markdown report.
+    expect(await readEvidence(recorded.output, 'captured-source.json')).toEqual({
+      issue: task,
+      conversation,
+    });
+    expect(await readEvidence(recorded.output, 'pr-conversation.json')).toEqual(
+      pullRequestConversation,
+    );
+    expect(await readEvidenceText(recorded.output, 'comparison.diff')).toBe(diff);
+    expect(directory).toContain(path.join('artifacts', String(round), 'reports'));
+    expect(
+      await readFile(
+        path.join(workspaceRoot, 'artifacts', String(round), 'pr-conversation.json'),
+        'utf8',
+      ),
+    ).toBe(legacyConversation);
+
+    const context = requests[0]?.context ?? '';
+    // Every labeled reference is an absolute path to the invocation's complete evidence.
+    expect(context).toContain(`complete captured Jira issue and conversation at ${capturedSource}`);
+    expect(context).toContain(`complete captured conversation at ${capturedSource}`);
+    expect(context).toContain(`complete captured conversation at ${prConversation}`);
+    expect(context).toContain(`valid empty diff): ${comparisonDiff}`);
+    // Human direction and uncertain-origin entries stay directly visible with attribution; the
+    // older and later directions remain explicit and unresolved.
+    expect(context).toContain('Older human scope clarification.');
+    expect(context).toContain('Later conflicting human instruction.');
+    expect(context).toContain(
+      'Jane Doe <acc-jane> [atlassian account] at 2026-10-07T09:00:00.000+0000',
+    );
+    expect(context).toContain('Unattributed note that may be direction.');
+    expect(context).toContain('Human pull-request discussion.');
+    expect(context).toContain('Inline human review comment.');
+    expect(context).toContain('Comment 21 — jane [User account] at 2026-10-07T09:30:00Z');
+    expect(occurrences(context, 'Origin uncertain')).toBe(2);
+    expect(occurrences(context, 'Confirmed automated entries omitted from this section')).toBe(2);
+    // Confirmed automated bodies and the diff body never reach the assembled prompt.
+    expect(context).not.toContain(summaryBody);
+    expect(context).not.toContain(handoffBody);
+    expect(context).not.toContain('Bot status comment body');
+    expect(context).not.toContain('Automated Nexus Lens review body');
+    expect(context).not.toContain('+retry once');
+  });
+
+  it('keeps an earlier invocation snapshot readable after the selection source is refreshed', async () => {
+    const refreshedConversation = [
+      {
+        id: 'r1',
+        author: { displayName: 'Jane Doe', accountId: 'acc-jane', accountType: 'atlassian' },
+        created: '2026-10-07T12:00:00.000+0000',
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'Refreshed human clarification.' }],
+            },
+          ],
+        },
+      },
+    ];
+    const { workspaceRoot, selectionFile, round } = await workspace({ name: 'refresh' });
+    await writeDeliveredRound(workspaceRoot);
+    const first = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'First assessment.',
+    );
+    const { git: firstGit } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('first diff\n'),
+    });
+    const hub = () => ({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(first.runtime),
+        git: firstGit,
+        github: scriptedGitHub(hub()).github,
+      })(),
+    ).resolves.toBe('approved');
+    const firstReview = await readReview(workspaceRoot, round);
+
+    // The parent-owned boundary refreshes the mutable selection record after the assessment.
+    const selection = JSON.parse(await readFile(selectionFile, 'utf8')) as Record<string, unknown>;
+    await writeFile(
+      selectionFile,
+      `${JSON.stringify({ ...selection, conversation: refreshedConversation }, null, 2)}\n`,
+      'utf8',
+    );
+    // The delivered revision advances within the round, so a fresh assessment is required.
+    await writeDeliveredRound(workspaceRoot, { revision: otherRevision });
+    const second = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Second assessment.',
+    );
+    const { git: secondGit } = scriptedGit([repositoryState({ headRevision: otherRevision })], {
+      readDiff: () => ok('second diff\n'),
+    });
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(second.runtime),
+        git: secondGit,
+        github: scriptedGitHub(hub()).github,
+      })(),
+    ).resolves.toBe('approved');
+    const secondReview = await readReview(workspaceRoot, round);
+
+    // The earlier snapshot survives the refresh unchanged; the new invocation has its own paths.
+    expect(path.dirname(secondReview.output.report.path)).not.toBe(
+      path.dirname(firstReview.output.report.path),
+    );
+    expect(await readEvidence(firstReview.output, 'captured-source.json')).toEqual({
+      issue: {
+        id: '1',
+        key: 'NEX-1',
+        fields: { summary: 'Implement the retry guard', description: { type: 'doc', content: [] } },
+      },
+      conversation: [{ id: 'c1', body: 'Original request.' }],
+    });
+    expect(await readEvidence(secondReview.output, 'captured-source.json')).toEqual({
+      issue: {
+        id: '1',
+        key: 'NEX-1',
+        fields: { summary: 'Implement the retry guard', description: { type: 'doc', content: [] } },
+      },
+      conversation: refreshedConversation,
+    });
+    expect(await readEvidenceText(secondReview.output, 'comparison.diff')).toBe('second diff\n');
+    const context = second.requests[0]?.context ?? '';
+    expect(context).toContain('Refreshed human clarification.');
+    expect(context).not.toContain('Original request.');
+    expect(context).toContain(
+      path.join(path.dirname(secondReview.output.report.path), 'captured-source.json'),
+    );
+    // The current round's preceding assessment is included in full for the changed head.
+    expect(context).toContain('Previous review report (round 1, profile nexus-review');
+    expect(context).toContain('First assessment.');
+  });
+
+  it('gives a retained fresh continuation its own evidence after an unusable attempt', async () => {
+    const { workspaceRoot, selectionFile, round } = await workspace({ name: 'continuation' });
+    await writeDeliveredRound(workspaceRoot);
+    const hub = () => ({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok('diff --git a/feature.txt b/feature.txt\n+feature\n'),
+    });
+
+    // An unusable response leaves no saved outcome; its evidence stays readable.
+    const unusable = scriptedRuntime(() => 'not a JSON report', 'Attempted assessment.');
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(unusable.runtime),
+        git,
+        github: scriptedGitHub(hub()).github,
+      })(),
+    ).rejects.toThrow(/unusable output/);
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', String(round), 'review.json')),
+    ).rejects.toThrow(/ENOENT/);
+    const attempts = await invocationDirectories(workspaceRoot, round);
+    expect(attempts).toHaveLength(1);
+    expect(
+      await readFile(
+        path.join(
+          workspaceRoot,
+          'artifacts',
+          String(round),
+          'reports',
+          attempts[0]!,
+          'captured-source.json',
+        ),
+        'utf8',
+      ),
+    ).toContain('Original request.');
+
+    // The retained continuation assesses afresh, retains its own evidence and saves its outcome.
+    const continuation = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Continuation assessment.',
+    );
+    await expect(
+      reviewAction({
+        selectionFile,
+        runner: runnerOf(continuation.runtime),
+        git,
+        github: scriptedGitHub(hub()).github,
+      })(),
+    ).resolves.toBe('approved');
+    const recorded = await readReview(workspaceRoot, round);
+    expect(recorded.report).toBe('Continuation assessment.');
+    expect(await invocationDirectories(workspaceRoot, round)).toHaveLength(2);
+    expect(await readEvidenceText(recorded.output, 'comparison.diff')).toBe(
+      'diff --git a/feature.txt b/feature.txt\n+feature\n',
+    );
+    expect(continuation.requests[0]?.context).toContain(
+      path.join(path.dirname(recorded.output.report.path), 'captured-source.json'),
+    );
+  });
+
+  it.each([
+    { label: 'empty', diff: '' },
+    {
+      label: 'large',
+      diff:
+        'diff --git a/big.txt b/big.txt\n' +
+        Array.from({ length: 4000 }, (_, index) => `+line ${String(index)}\n`).join(''),
+    },
+  ])('stores the complete $label comparison diff without embedding it', async ({ diff }) => {
+    const { workspaceRoot, selectionFile, round } = await workspace({ name: 'diff' });
+    await writeDeliveredRound(workspaceRoot);
+    const { runtime, requests } = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Approved.',
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], {
+      readDiff: () => ok(diff),
+    });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+    ).resolves.toBe('approved');
+
+    const recorded = await readReview(workspaceRoot, round);
+    const file = path.join(path.dirname(recorded.output.report.path), 'comparison.diff');
+    expect(await readEvidenceText(recorded.output, 'comparison.diff')).toBe(diff);
+    expect((await stat(file)).size).toBe(Buffer.byteLength(diff));
+    const context = requests[0]?.context ?? '';
+    expect(context).toContain(`valid empty diff): ${file}`);
+    expect(context).not.toContain('diff --git');
+    expect(context.length).toBeLessThan(diff.length + 20000);
+  });
+
+  it.each(['captured-source.json', 'comparison.diff'] as const)(
+    'fails the fresh assessment when the %s evidence cannot be stored',
+    async (name) => {
+      const { workspaceRoot, selectionFile, round } = await workspace({
+        name: `storage-${name}`,
+      });
+      await writeDeliveredRound(workspaceRoot);
+      const { git } = scriptedGit([repositoryState({ headRevision })], {
+        readDiff: async () => {
+          await obstructEvidence(workspaceRoot, round, name);
+          return ok('diff --git a/feature.txt b/feature.txt\n+feature\n');
+        },
+      });
+      const { github } = scriptedGitHub({
+        readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      });
+
+      // Retention happens before the reviewer runs; the failure is an ordinary execution error
+      // and no review outcome is saved.
+      await expect(
+        reviewAction({ selectionFile, runner: runnerOf(unusedRuntime()), git, github })(),
+      ).rejects.toThrow(/could not be (retained|read)/);
+      await expect(
+        stat(path.join(workspaceRoot, 'artifacts', String(round), 'review.json')),
+      ).rejects.toThrow(/ENOENT/);
+    },
+  );
+
+  it('references evidence readable from a reviewer workspace beside another issue area', async () => {
+    const repositoryArea = path.join(root, 'other-issue');
+    await mkdir(path.join(repositoryArea, 'worktree'), { recursive: true });
+    const { workspaceRoot, selectionFile, round } = await workspace({
+      name: 'separate-area',
+      repositoryWorkspace: { root: repositoryArea },
+    });
+    await writeDeliveredRound(workspaceRoot);
+    const { runtime, requests } = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Approved.',
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+    ).resolves.toBe('approved');
+
+    const recorded = await readReview(workspaceRoot, round);
+    const context = requests[0]?.context ?? '';
+    // The reviewer works in the recorded repository workspace; the evidence lives in the
+    // reviewing issue's artifact area and is referenced by absolute path.
+    expect(requests[0]?.workspaceRoot).toBe(repositoryArea);
+    for (const name of ['captured-source.json', 'pr-conversation.json', 'comparison.diff']) {
+      const file = path.join(path.dirname(recorded.output.report.path), name);
+      expect(path.isAbsolute(file)).toBe(true);
+      expect(file.startsWith(`${workspaceRoot}${path.sep}`)).toBe(true);
+      expect(context).toContain(file);
+      await expect(readFile(file)).resolves.toBeDefined();
+    }
+    expect(context).toContain(
+      `Reviewed revision: ${headRevision} (comparison base ${baseRevision})`,
+    );
   });
 });

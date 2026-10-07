@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { AgentResult } from '../../../agent-runtime/index.js';
@@ -43,7 +42,8 @@ import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
-import { readRequiredRecord } from '../records.js';
+import { capturedIssueText } from '../readable-source.js';
+import { readRecord, readRequiredRecord } from '../records.js';
 import {
   clearPendingValidationError,
   readPendingValidationError,
@@ -53,9 +53,17 @@ import {
   type ReportScope,
 } from '../report-feedback.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
+import {
+  handoffFile,
+  parentAreaDirectory,
+  parentHandoffDeclaration,
+  type ParentHandoff,
+} from '../select-work/artifacts.js';
 import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
+import { humanDirectionSection, type PublicationIdentity } from './context.js';
+import { retainReviewEvidence } from './evidence.js';
 import {
   isBoundReviewOutput,
   requireUsableReviewOutcome,
@@ -158,6 +166,23 @@ async function readChecks(
     throw new Error(result.fault.message);
   }
   return result.value;
+}
+
+/**
+ * The parent-retained publication identities that acknowledge Nexus-written Jira comments, or an
+ * empty list when no readable handoff retains any. The identities only exclude confirmed
+ * publications from the directly visible section; without them an entry stays visible as
+ * uncertain direction, so an absent or unreadable record never hides a possible obligation.
+ */
+async function readPublicationIdentities(root: string): Promise<readonly PublicationIdentity[]> {
+  const file = path.join(root, parentAreaDirectory, handoffFile);
+  let handoff: ParentHandoff | null;
+  try {
+    handoff = await readRecord(file, parentHandoffDeclaration);
+  } catch {
+    return [];
+  }
+  return handoff?.publications ?? [];
 }
 
 /** The most recent value of an artifact history, or null when it has none. */
@@ -520,18 +545,22 @@ export function createReview(settings: ReviewSettings): BoundAction {
     if (!conversation.ok) {
       throw new Error(conversation.fault.message);
     }
-    const conversationFile = path.join(
-      root,
-      'artifacts',
-      String(round.number),
-      'pr-conversation.json',
-    );
-    await writeFile(conversationFile, `${JSON.stringify(conversation.value, null, 2)}\n`, 'utf8');
 
     const diff = await settings.git.readDiff(worktree, prepared.baseRevision, reviewedHead);
     if (!diff.ok) {
       throw new Error(diff.fault.message);
     }
+    // The invocation's evidence is retained and readable before the reviewer sees its references:
+    // the captured source, pull-request conversation and exact comparison diff bytes. Storage
+    // failures are execution errors; a partial or empty substitute is never assembled.
+    const evidence = await retainReviewEvidence({
+      reportFile: assignedReport.path,
+      task: selection.task,
+      conversation: selection.conversation,
+      pullRequestConversation: conversation.value,
+      diff: diff.value,
+    });
+    const publications = await readPublicationIdentities(root);
     const reviews = await helpers.readArtifactHistory(reviewArtifact, (file, error) =>
       rejectUnusableRecord({
         areaRoot: root,
@@ -556,7 +585,11 @@ export function createReview(settings: ReviewSettings): BoundAction {
         error,
       }),
     );
-    const priorReview = latest(reviews);
+    // A fresh assessment at a different head consults the current round's own saved assessment
+    // when one exists; otherwise the latest earlier-round review is the preceding assessment.
+    // Approval does not retire it: the reviewer judges recurrence against the current revision.
+    const priorReview: ArtifactHistoryValue<RetainedReviewOutput> | null =
+      recorded === null ? latest(reviews) : { number: round.number, value: recorded };
 
     /** The previous review report as context: its Markdown text or retained combined record. */
     async function priorReviewSection(
@@ -597,21 +630,26 @@ export function createReview(settings: ReviewSettings): BoundAction {
     }
 
     const context = [
-      `Task ${selection.taskKey}:`,
-      JSON.stringify(selection.task, null, 2),
-      `Complete task conversation (saved in the local selection record ${settings.selectionFile}):\n${JSON.stringify(
-        selection.conversation,
-        null,
-        2,
-      )}`,
-      `Complete pull-request conversation (saved at ${conversationFile}):\n${JSON.stringify(
-        conversation.value,
-        null,
-        2,
-      )}`,
+      `Task ${selection.taskKey} — current captured requirements (complete captured Jira issue ` +
+        `and conversation at ${evidence.capturedSource}):\n` +
+        capturedIssueText(selection.task, evidence.capturedSource),
+      humanDirectionSection({
+        taskKey: selection.taskKey,
+        issueId: selection.source.issueId,
+        taskConversation: selection.conversation,
+        capturedSourcePath: evidence.capturedSource,
+        publications,
+        repository: settings.repository,
+        pullRequestNumber: delivery.pullRequestNumber,
+        pullRequestConversation: conversation.value,
+        prConversationPath: evidence.prConversation,
+        nexusLensLogin: settings.nexusLens.login,
+      }),
       `Reviewed revision: ${reviewedHead} (comparison base ${prepared.baseRevision})`,
-      `Comparison diff ${prepared.baseRevision}..${reviewedHead} (orientation only; ` +
-        `task-relevant pre-existing code outside this range is in scope):\n${diff.value}`,
+      `Complete comparison diff ${prepared.baseRevision}..${reviewedHead}, exact bytes as ` +
+        'returned (orienting evidence only; it does not bound the review — all code relevant to ' +
+        'task correctness, including pre-existing code outside this range, remains in scope; ' +
+        `stored untruncated, including a valid empty diff): ${evidence.comparisonDiff}`,
       await developmentSection(),
       `Verification result for the reviewed revision:\n${JSON.stringify(verification, null, 2)}`,
       ...(priorReview === null ? [] : [await priorReviewSection(priorReview)]),

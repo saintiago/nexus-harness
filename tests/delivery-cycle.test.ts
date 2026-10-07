@@ -368,7 +368,9 @@ describe('delivery cycle', () => {
     const context = reviewerContexts[0] ?? '';
     expect(context).toContain('Added the feature with its configured check.');
     expect(context).toContain(`Reviewed revision: ${delivery.headRevision}`);
-    expect(context).toContain('+feature');
+    // The complete diff is referenced through its invocation-local evidence, not embedded.
+    expect(context).toContain('Complete comparison diff ');
+    expect(context).not.toContain('diff --git');
     expect(context).toContain('Implement the feature');
 
     // CompleteTask confirms the merge and the post-merge check; the parent marks the task Done.
