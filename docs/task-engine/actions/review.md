@@ -126,6 +126,83 @@ of other role contexts, JEv or a new context-ranking service. There is no prompt
 cutoff for active obligations. Reference layout and prompt assembly belong to technical design;
 no material product decision is unsettled.
 
+### Context assembly and evidence storage
+
+Review owns the division between directly visible obligations and referenced evidence. Its existing
+task, outcome and invocation contracts remain unchanged; evidence files are supporting input,
+not new workflow outcomes. Assemble context from the same captured values that are saved for the
+invocation. Do not rank relevance, summarize bodies or ask another agent to select context.
+
+Before a fresh assessment, retain these files beside the assigned Markdown report, under
+`artifacts/<round>/reports/<invocationId>/` in the reviewing issue's artifact area:
+
+| File | Complete content | Inline reference label |
+| --- | --- | --- |
+| `captured-source.json` | The captured `{ issue, conversation }`, in native structures | Jira issue/task identity and complete captured task conversation |
+| `pr-conversation.json` | All captured PR comments, submitted reviews and inline review comments, including provider metadata and thread references | Repository, PR number and complete captured PR conversation |
+| `comparison.diff` | The complete diff for the observed comparison base and reviewed head | Comparison base/head and orientation-only scope warning |
+
+Use absolute paths readable from the recorded repository workspace, which may belong to a different
+issue than the artifact area. The mutable selection record is an input, not a historical evidence
+reference: later refresh or selection must not change what an earlier invocation can inspect.
+Fresh invocations get distinct evidence paths, including repeated assessments within one round.
+Keep earlier round-level conversation files readable where already retained; new references use
+the invocation-local files. Store the diff as returned, including a valid empty diff, without
+truncation or an extra size threshold. Do not copy supporting reports or rewrite legacy evidence.
+
+Build the directly visible human-direction section conservatively from both captured conversations.
+Include every entry not positively identified as automation, with its complete original body and
+available identity, author, creation/edit chronology, source location, thread and reviewed-revision
+metadata. This includes all potentially governing human entries regardless of age; the reviewer
+judges relevance and conflicts against current requirements. Native JSON is an adequate lossless
+rendering, including rich-text bodies and unusual retained structures. A readable rendering must
+preserve the same meaning and fall back to the original value for unsupported content.
+
+Identify automation only through captured provider account/bot metadata, the configured publication
+identity or an available source-owned publication acknowledgement. Do not classify a human account
+as automation from a profile prefix, matching prose or lack of metadata. Entries with missing or
+ambiguous origin remain directly visible, labeled uncertain rather than asserted human intent;
+explain that agent claims and published summaries cannot override human direction. Confirmed
+automated publications stay in the complete referenced conversation and are labeled as such where
+their attribution is presented. There is no age cutoff, word budget, instruction extractor or new
+publication-tracking store. A conversation consisting entirely of possible human direction can
+therefore contribute all its entries inline; reduction must never hide potential obligations.
+
+The remaining directly visible sections contain the current task requirements, current complete
+development narrative with outcome/invocation/head attribution, verification result, preceding
+review narrative and pending validation-error reasons. Select the preceding assessment from the
+current round's saved review when it requires a fresh assessment at a different head; otherwise use
+the latest earlier-round review. Include that assessment's complete original Markdown, or the
+complete legacy combined record, with round, profile, invocation where available, reviewed head and
+verdict. Include it even after approval so the reviewer can judge recurrence; no prose parsing or
+finding-state mechanism decides which concerns remain active. Older reviews and development reports
+remain attributed references in round order. Reference labels include available task, outcome,
+profile, invocation and revision metadata; legacy records are explicitly labeled combined evidence.
+
+Pending validation-error reasons and their responsibility/attempt attribution stay inline. Available
+rejected output and reports retain their existing readable references, with unavailable evidence
+explicitly identified. Only the responsible owner's validation and saved replacement clear pending
+context; presentation does not change that lifecycle. Reading supporting reports must preserve the
+existing producer-owned outcome/report usability checks, without hashes or prose consistency gates.
+
+Save and establish readability of new evidence before invoking the reviewer. Storage/read failures
+fail the fresh assessment through ordinary execution handling; do not substitute an empty
+conversation, partial diff or approval. The assembled invocation instructs the reviewer to read
+complete local evidence as needed to understand earlier concerns and conflicting direction, and
+retains the explicit task-relevant inspection scope outside the comparison range. Replaying a usable
+saved review for the delivered head completes publication without assembling fresh context or
+requiring newly introduced evidence files in older completed reviews.
+
+Verify this boundary through actual assembled provider prompts and readable temporary artifact
+storage: initial assessment, repair, same-round changed-head assessment and retained fresh
+continuation. Assert exact source values and diff bytes behind the references, preservation of older
+invocation snapshots after source refresh, directly visible human/uncertain direction and active
+narratives/errors, and absence of confirmed automated historical bodies and diff bodies from the
+prompt. Include conflicting older human input, provider bot and publication identity, missing
+attribution, legacy reports, large and empty diffs, storage failure and a repository/artifact area
+split. Retain existing saved-review replay, revision, publication and feedback-clearing checks.
+These checks establish evidence delivery, not model compliance or a prompt-size target.
+
 ### Assessment and publication
 
 Use the existing worktree with the reviewer profile. Dependency installation, builds, focused checks
