@@ -114,7 +114,9 @@ accept former combined artifacts with their former required narrative and identi
 with any new binding field must satisfy the new schema; a damaged new record cannot fall back to
 legacy parsing. Retain legacy bytes without adding report paths or rewriting them into Markdown.
 Provide the original combined artifact as readable historical context. Existing usable completed
-legacy outcomes can continue only under their original input/revision/evidence protections; no new
+legacy outcomes can continue only under their owning action's current input/revision/evidence
+protections, including [preparation compatibility](preparation-stage.md#retained-record-compatibility);
+superseded per-file prototype rules do not gate continuation. No new
 Markdown requirement is imposed retroactively. Legacy findings may remain readable fields but no
 longer require machine consistency or lifecycle validation.
 

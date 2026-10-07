@@ -80,6 +80,28 @@ stage-owned cleanup and replay without manufacturing a replacement document. Obs
 revisions remain attributable in the retained repository. Result references
 identify the evaluator decision carrying this basis; a stage name or round number alone is insufficient.
 
+### Authored-work commits and evidence ownership
+
+StageAuthor validates changed-path ownership from pre-invocation tracking and retained authored
+declarations. A retained declaration's evaluated repository revision can establish that its named
+path was deleted. Do not consult browser observation inventories or former acceptance content to
+establish ownership. If a former unfinished declaration lacks sufficient commit evidence, preserve
+the work and use existing attention/reassessment handling rather than infer ownership from absence.
+
+StageEvaluator commits only declared authored work and observes the resulting repository revision.
+Commit preparation returns that revision, without an assessed-content collection. The short-lived
+check that declared work remains committed belongs to commit integrity: it may read declared paths
+at the observed revision, but creates no persisted file binding and never validates a browser
+observation or limits evaluation scope. Keep this check separate from browser evidence loading;
+remove the shared assessed-file schema and its observation/submission/content comparisons.
+
+StageResult preserves authored-work declarations, the exact evaluation reference and, for an
+applicable prototype, the shared branch/revision and both observation references. Downstream
+consumers use the producing stage's retained-decision and evidence readers. They do not reconstruct
+coverage or redefine observation validity. No Git, browser or AgentRuntime contract extension is
+needed: repository observation, native browser tools and existing report bindings retain their
+current responsibilities.
+
 ## Round storage and acceptance
 
 Each stage area owns `state/current-round.json`, `state/result.json` and numbered
@@ -395,6 +417,23 @@ require readable browser assessment and screenshots even when their saved outcom
 without requiring or reconstructing per-file inventories or bindings. New
 inapplicability skips retain no applicable prototype bundle.
 
+The preparation producer separates current schemas from retained compatibility readers. New
+observations and saved acceptance bases omit `content`; their current schemas reject that field.
+Retained readers permit former `content` as opaque historical data, whether present, absent or no
+longer valid under its removed schema. They validate the remaining observation/basis fields without
+supplying an empty inventory, coercing old entries or rewriting saved files. Preserve complete
+recorded values for identity checks separately from the usable current view; removed fields cannot
+silently alter an existing author/evaluation or rejection/correction association.
+
+When an applicable retained result omits observation references, resolve each role's reference from
+its producing author/evaluator outcome for that result's authored revision and evaluation. Resolve
+relative evidence paths against the producing round, not the consumer's current round. Present
+references must agree with those producing outcomes; do not search unrelated rounds or guess
+filenames. If a role has no usable declared evidence, require normal recovery/reassessment. This
+also applies to former reuse-skip results retaining a prototype. An obsolete file-mismatch rejection
+remains historical feedback until the responsible role records a usable correction through existing
+handling; compatibility alone does not retire it or promote rejected output into acceptance.
+
 Reassessment writes a new decision and preserves historical author reports, evaluations, results
 and observations. An interrupted new finalization can resume its saved checkpoint when its current
 basis remains valid; otherwise use normal reassessment. Neither continuation nor schema compatibility
@@ -451,6 +490,32 @@ Applicable observations require exercised journeys, assessment of the relevant e
 and readable rendered-image evidence. No assessed-file inventory or per-file revision is required.
 Keep preview output/browser diagnostics with the observation when they explain a failure. Store screenshots and reports in the role's round artifact area,
 without committing execution evidence into product documentation.
+
+### Observation loading and attribution
+
+The observation reader validates the role, preview/journey fields, artifact-area containment,
+readability and full screenshot decoding. Its inputs are the declared reference, producing round
+and expected role; repository revisions, changed paths and acceptance content are not evidence-reader
+inputs. Use the same producer-owned reader for author submission, evaluator processing, result
+finalization, replay and downstream decision checks. Both roles' records are required for acceptance;
+an evaluator's repair/return can retain its performed inspection without granting acceptance.
+
+Attribution is reached through the saved role outcome that declares the observation. StageAuthor
+and StageEvaluator retain the existing observed task, role/profile, invocation and Markdown binding;
+the evaluation also retains the assessed author revision and action-observed acceptance basis.
+StageResult's evaluation reference and prototype branch/revision connect that evidence to the
+completed decision. Do not add agent-supplied revision claims, per-image/file hashes or a separate
+observation-binding store. These associations identify the producing assessment; neither they nor
+successful decoding prove usability. The evaluator judges evidence adequacy and current preview
+behavior, including relevant unchanged work, and reports material defects through existing routes.
+
+Authors finish authored changes before browser assessment and repeat inspection if subsequent
+changes make their observations inadequate. Evaluators independently inspect the current preview
+and do not edit the assessed work. Fresh finalization retains the existing report/input/repository
+and authored-commit checks described above. Completed evidence checks enforce readability and
+producer association without comparing historical file bytes to later work. Human-input changes,
+explicit pending corrections or concrete evidence inadequacy use normal reassessment, not an
+inventory-based invalidation rule.
 
 Interaction or layout defects become normal findings for repair, or a concrete upstream return when
 an earlier input is wrong. A defect report or upstream return keeps the observation of the preview it
