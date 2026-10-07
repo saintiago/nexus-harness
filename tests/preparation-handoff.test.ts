@@ -15,6 +15,8 @@ import { scriptedGit, repositoryState } from './support/git.js';
 import type { AgentRoleRunner, BoundAction } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
+import { scriptedJira } from './support/jira.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import {
@@ -26,6 +28,7 @@ import {
   readCurrentDecision,
   readStagePlan,
   readStageArtifact,
+  readStageRoleArtifact,
   stageRoot,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { stageReturnSchema } from '../src/task-engine/actions/select-work/artifacts.js';
@@ -1299,6 +1302,153 @@ async function boundRound(
 }
 
 describe('preparation retained outcome usability', () => {
+  it.each(['author', 'evaluator'] as const)(
+    'validates the bound returning %s outcome before clearing replay context',
+    async (role) => {
+      const fixture = await boundRound(
+        role === 'author' ? 'return-upstream' : 'authored',
+        'return-upstream',
+      );
+      const { issueRoot, root, finalize } = fixture;
+      await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      const producer = role === 'author' ? fixture.author : fixture.evaluation!;
+      const file = path.join(
+        root,
+        'artifacts/2',
+        role === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      await writeFile(file, '{invalid');
+      await expect(
+        readStageRoleArtifact({
+          issueRoot,
+          stage: 'ux',
+          workId: 'NEX-1',
+          round: 2,
+          role,
+          profile: producer.profile,
+          context: 'Reading current return.',
+        }),
+      ).rejects.toThrow(/not valid JSON/);
+      await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/not valid JSON/);
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      // Schema-valid but unrelated replacements cannot authorize clearing the retained return.
+      const replacements = [
+        { ...producer, upstream: { ...producer.upstream, correction: 'Different correction.' } },
+        { ...producer, upstream: { ...producer.upstream, stage: 'idea' } },
+        { ...producer, invocationId: 'unrelated-invocation' },
+        { ...producer, taskKey: 'OTHER-1' },
+        { ...producer, stage: 'requirements' },
+        { ...producer, profile: 'other-profile' },
+        {
+          ...producer,
+          report: { path: fixture.author.report.path },
+          invocationId: 'unrelated-report',
+        },
+        { ...producer, ...(role === 'author' ? { revision: 99 } : { assessedRevision: 99 }) },
+      ];
+      for (const replacement of replacements) {
+        await writeFile(file, JSON.stringify(replacement));
+        await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/producing/);
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      }
+      await writeFile(file, original);
+      await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      expect(await readFile(file, 'utf8')).toBe(original);
+      expect(await readValidationErrorHistory(root)).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    { outcome: 'accepted', role: 'author' },
+    { outcome: 'accepted', role: 'evaluator' },
+    { outcome: 'returnUpstream', role: 'author' },
+    { outcome: 'returnUpstream', role: 'evaluator' },
+    { outcome: 'needsInput', role: 'author' },
+  ] as const)(
+    'clears repaired $role context at $outcome preparation publication',
+    async ({ outcome, role }) => {
+      const fixture = await boundRound(
+        outcome === 'needsInput'
+          ? 'needs-input'
+          : outcome === 'returnUpstream' && role === 'author'
+            ? 'return-upstream'
+            : 'authored',
+        outcome === 'returnUpstream' ? 'return-upstream' : 'accepted',
+      );
+      const { issueRoot, root, selectionFile, git, author, evaluation, finalize } = fixture;
+      await expect(finalize({ outcome })).resolves.toBe('saved');
+      const producer = role === 'author' ? author : evaluation!;
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      let status = 'UX Proposal';
+      const transitions: string[] = [];
+      const { jira } = scriptedJira({
+        readIssue: () => ok({ id: '1', key: 'NEX-1', fields: { status: { name: status } } }),
+        readComments: () => ok([]),
+        readTransitions: () =>
+          ok(
+            ['Draft', 'Storybook Refinement', 'Waiting for Feedback'].map((name) => ({
+              id: name,
+              name,
+              to: { id: name, name },
+            })),
+          ),
+        transitionIssue: (_id, transition) => {
+          status = transition;
+          transitions.push(transition);
+          return ok(undefined);
+        },
+        addComment: () => ok({ id: 'comment', body: {} }),
+      });
+      const publish = createPublishPreparation({
+        selectionFile,
+        statuses: {
+          requirements: 'Draft',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+        waitingForFeedback: 'Waiting for Feedback',
+        ideaActive: 'Idea Refinement',
+        jira,
+        git,
+        publish: () => undefined,
+      });
+      const markdown = await readFile(producer.report.path, 'utf8');
+      await rm(producer.report.path);
+      await expect(publish({ stage: 'ux' })).resolves.toBe('failed');
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      expect(transitions).toEqual([]);
+      await writeFile(producer.report.path, markdown);
+      await expect(publish({ stage: 'ux' })).resolves.toBe(
+        outcome === 'needsInput' ? 'waiting' : 'advanced',
+      );
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      expect(transitions).toEqual([
+        outcome === 'accepted'
+          ? 'Storybook Refinement'
+          : outcome === 'needsInput'
+            ? 'Waiting for Feedback'
+            : 'Draft',
+      ]);
+      expect(await readValidationErrorHistory(root)).toHaveLength(1);
+    },
+  );
+
   it.each([
     { consumer: 'author', producerRole: 'author' },
     { consumer: 'author', producerRole: 'evaluator' },

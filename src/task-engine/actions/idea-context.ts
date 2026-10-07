@@ -794,8 +794,10 @@ export async function readRetainedIdeaReport<
  * Clear one reused outcome's pending validation error: reading the saved outcome back through the
  * producer-owned reader is the replay path, and a record that reader accepts — a current bound
  * record with its readable Markdown, or a retained former combined record under its compatibility
- * rules — is the owner's validated replacement, so an interrupted save/clear completes without
- * another invocation. Clearing belongs to this reuse boundary; a mere history read never clears.
+ * rules — can be the owner's validated replacement once the caller also validates required
+ * functional deliverables and applicable associations. An interrupted save/clear then completes
+ * without another invocation. Clearing belongs to this consumption boundary; history reads never
+ * clear by themselves.
  */
 export async function clearRetainedIdeaValidationError<
   Declaration extends AnyIdeaReportDeclaration,

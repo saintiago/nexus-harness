@@ -444,10 +444,15 @@ valid changed inputs still follow ordinary stale routing or reevaluation.
 Report failures retain the available outcome/report and producer-attributed
 validation-error context before failing or marking a completed decision stale. Recovery edits
 alone do not establish usability; resumed owner validation of a saved replacement clears context.
-Upstream-return finalization and completed replay clear the returning role's context after
-validating its producing outcome, including legacy combined outcomes without Markdown bindings.
-For an unbound legacy return, replay reads the current-round producer and checks its authored
-revision, return outcome and destination/correction against the saved result before clearing.
+Current-decision publication clears both validated producers' context after the retained acceptance
+and applicable evidence checks. Question publication clears the validated author; return publication
+clears only the validated returning role. Other stages and historical reads remain non-clearing.
+Upstream-return finalization, completed replay and publication validate the current-round producing
+outcome before clearing, including legacy combined outcomes without Markdown bindings. Check the
+authored revision, evaluated revision when applicable, return outcome and destination/correction
+against the saved result. A bound return also retains its producing outcome path, role, profile,
+invocation and report association. Readable copied Markdown or a terminal envelope alone cannot
+establish a usable replacement.
 
 Completed document-stage decisions can continue under these association and routing checks, without
 retroactive citation bindings or new report fields. An unfinished legacy evaluation that lacks

@@ -474,6 +474,14 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
+      if (
+        existing.value.disposition === 'revised' &&
+        (await cycleRevision(root, plan, taskKey)) === null
+      ) {
+        throw new Error(
+          'A reused revised editor turn must keep its refined idea for this submission and cycle.',
+        );
+      }
       await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,
@@ -559,6 +567,14 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
+      if (
+        existing.value.disposition === 'revised' &&
+        (await cycleRevision(root, plan, taskKey)) === null
+      ) {
+        throw new Error(
+          'A reused revised editor turn must keep its refined idea for this submission and cycle.',
+        );
+      }
       await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,

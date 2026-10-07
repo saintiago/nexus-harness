@@ -1105,11 +1105,16 @@ async function publishPreparation(options: {
         content: [],
       },
       assessedRevision: author.revision,
-      verdict: options.result.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
+      verdict:
+        options.result.outcome === 'returnUpstream'
+          ? 'return-upstream'
+          : options.result.outcome === 'skipped'
+            ? 'accepted-skip'
+            : 'accepted',
       reason: 'Accepted.',
       observation: null,
       findings: [],
-      upstream: null,
+      upstream: options.result.outcome === 'returnUpstream' ? options.result.returnFinding : null,
     }),
   );
 
@@ -1228,6 +1233,7 @@ async function writeBoundRound(options: {
   readonly selectionFile: string;
   readonly stage?: string;
   readonly skipped?: boolean;
+  readonly upstream?: { readonly stage: string; readonly correction: string };
   readonly evaluationMarkdown?: string;
 }): Promise<{ readonly evaluationReportPath: string }> {
   const stage = options.stage ?? 'ux';
@@ -1283,9 +1289,14 @@ async function writeBoundRound(options: {
       content: [],
     },
     assessedRevision: 1,
-    verdict: options.skipped === true ? 'accepted-skip' : 'accepted',
+    verdict:
+      options.upstream !== undefined
+        ? 'return-upstream'
+        : options.skipped === true
+          ? 'accepted-skip'
+          : 'accepted',
     observation: null,
-    upstream: null,
+    upstream: options.upstream ?? null,
     stage,
     taskKey: 'NEX-1',
     profile: 'nexus-sol',
@@ -1778,6 +1789,7 @@ describe('parent preparation publication', () => {
           await writeBoundRound({
             stageArea: stage,
             selectionFile,
+            upstream: { stage: 'requirements', correction: 'Correct the acceptance example.' },
             evaluationMarkdown: '# Assessment\n\nThe controlled narrative.\n',
           })
         ).evaluationReportPath;
@@ -1799,6 +1811,7 @@ describe('parent preparation publication', () => {
           path.join(stage, 'artifacts', '1', 'result.json'),
           JSON.stringify({
             ...accepted,
+            evaluation: { path: path.join(stage, 'artifacts/1/evaluation.json') },
             outcome: 'returnUpstream',
             returnStage: 'requirements',
             returnFinding,
@@ -1843,6 +1856,7 @@ describe('parent preparation publication', () => {
             await writeBoundRound({
               stageArea: stage,
               selectionFile,
+              upstream: { stage: 'requirements', correction: 'Correct the acceptance example.' },
               evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
             })
           ).evaluationReportPath;
@@ -1865,6 +1879,7 @@ describe('parent preparation publication', () => {
             path.join(stage, 'artifacts', '1', 'result.json'),
             JSON.stringify({
               ...accepted,
+              evaluation: { path: path.join(stage, 'artifacts/1/evaluation.json') },
               outcome: 'returnUpstream',
               returnStage: 'requirements',
               returnFinding: {
@@ -1913,6 +1928,7 @@ describe('parent preparation publication', () => {
           await writeBoundRound({
             stageArea: stage,
             selectionFile,
+            upstream: { stage: 'requirements', correction: 'Correct the acceptance example.' },
             evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
           })
         ).evaluationReportPath;
@@ -1926,6 +1942,7 @@ describe('parent preparation publication', () => {
           path.join(stage, 'artifacts', '1', 'result.json'),
           JSON.stringify({
             ...accepted,
+            evaluation: { path: path.join(stage, 'artifacts/1/evaluation.json') },
             outcome: 'returnUpstream',
             returnStage: 'requirements',
             returnFinding: {

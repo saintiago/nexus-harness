@@ -56,6 +56,7 @@ import {
   projectOfWorkspace,
   readPendingValidationError,
   recordIdentity,
+  rejectReport,
   readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import {
@@ -1902,7 +1903,36 @@ describe('decision publication', () => {
       }
       const jira = source();
       const decide = publication(area, jira, selectionFile);
+      const producerFile = path.join(
+        area.cycleRoot(),
+        decision === 'unsuitable'
+          ? editorResponseArtifact.pathFromArtifactsRoot
+          : decision === 'author-decision-needed'
+            ? framingArtifact.pathFromArtifactsRoot
+            : challengerArtifact.pathFromArtifactsRoot,
+      );
+      const producer = JSON.parse(await readFile(producerFile, 'utf8')) as {
+        report: { path: string };
+      };
+      const markdown = await readFile(producer.report.path, 'utf8');
+      await rm(producer.report.path);
+      await expect(decide({ decision })).rejects.toThrow(/does not exist/);
+      const scope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: decision === 'attempts-exhausted' ? 'challenger' : 'idea-editor',
+        reportKind:
+          decision === 'unsuitable'
+            ? 'idea-editor-turn'
+            : decision === 'author-decision-needed'
+              ? 'idea-framing'
+              : 'challenge',
+      };
+      expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+      await writeFile(producer.report.path, markdown);
       await expect(decide({ decision })).resolves.toBe('waiting-for-feedback');
+      await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
       expect(jira.transitions).toEqual(['22']);
       expect(jira.comments).toHaveLength(1);
       const record = JSON.parse(
@@ -2216,6 +2246,141 @@ describe('decision publication', () => {
     await expect(readValidationErrorHistory(area.root)).resolves.toEqual([]);
   });
 
+  it.each(['edit', 'respond', 'respond-after-help'] as const)(
+    'validates the complete saved revised turn before %s reuse',
+    async (task) => {
+      const area = await refinementArea({ cycle: 2, route: 'next' });
+      const approval = await recordedTurnApproval(area);
+      const agent = scriptedRuntime([]);
+      const editor = createIdeaEditor({
+        workspace: { root: area.root },
+        runner: runnerOf(agent.runtime),
+        publish: (event) => area.events.push(event),
+      });
+      const scope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: 'idea-editor',
+        reportKind: 'idea-editor-turn',
+      };
+      const file = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const original = await readFile(file, 'utf8');
+      await writeFile(file, '{invalid');
+      await expect(approval.record({ decision: 'approved' })).rejects.toThrow(/not valid JSON/);
+      await expect(editor({ task })).rejects.toThrow(/not valid JSON/);
+      expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+      const revision = JSON.parse(original) as { cycle: number; submission: number };
+      for (const replacement of [
+        { ...revision, cycle: 1 },
+        { ...revision, submission: 2 },
+      ]) {
+        await writeFile(file, JSON.stringify(replacement));
+        await expect(editor({ task })).rejects.toThrow(/submission and cycle/);
+        expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+      }
+      await writeFile(file, original);
+      await expect(editor({ task })).resolves.toBe(task === 'edit' ? 'written' : 'responded');
+      await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
+      expect(await readFile(file, 'utf8')).toBe(original);
+      expect(agent.requests).toEqual([]);
+      expect(await readValidationErrorHistory(area.root)).toHaveLength(2);
+    },
+  );
+
+  it.each(['fresh', 'replay', 'publication'] as const)(
+    'clears the repaired standalone idea revision during %s approval consumption',
+    async (consumer) => {
+      const area = await refinementArea();
+      await approvedCycle(area);
+      const selectionFile = await selectionFileFor(area);
+      const jira = source();
+      const { record, publishDecision } = decisionActions(area, jira, selectionFile);
+      if (consumer !== 'fresh') await record({ decision: 'approved' });
+      const consume =
+        consumer === 'publication' ? publishDecision : () => record({ decision: 'approved' });
+      const file = path.join(area.cycleRoot(), refinedIdeaArtifact.pathFromArtifactsRoot);
+      const original = await readFile(file, 'utf8');
+      await writeFile(file, '{invalid');
+      await expect(consume()).rejects.toThrow(/not valid JSON/);
+      const scope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: 'idea-editor',
+        reportKind: 'idea-editor-turn',
+      };
+      expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+      await writeFile(file, original);
+      await expect(consume()).resolves.toBe(consumer === 'publication' ? 'approved' : 'recorded');
+      await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
+      expect(await readValidationErrorHistory(area.root)).toHaveLength(1);
+    },
+  );
+
+  it.each(['replay', 'publication'] as const)(
+    'completes repaired idea producer contexts at approval %s',
+    async (consumer) => {
+      const area = await refinementArea({ cycle: 2, route: 'next' });
+      const approval = await recordedTurnApproval(area);
+      const bindings = await approvalBindings(area);
+      const unrelatedScope = {
+        project: projectOfWorkspace(path.dirname(area.root)),
+        workId: 'NEX-1',
+        area: area.root,
+        role: 'researcher',
+        reportKind: 'research',
+      };
+      await expect(
+        rejectReport({
+          areaRoot: area.root,
+          scope: unrelatedScope,
+          invocationId: 'research-error',
+          operation: 'Researcher',
+          profile: 'nexus-research',
+          context: 'Unrelated contribution.',
+          source: null,
+          output: 'invalid',
+          reason: 'Research still needs repair.',
+        }),
+      ).rejects.toThrow('Research still needs repair.');
+      const unrelated = await readPendingValidationError({
+        areaRoot: area.root,
+        scope: unrelatedScope,
+      });
+      const consume =
+        consumer === 'replay'
+          ? () => approval.record({ decision: 'approved' })
+          : approval.publishDecision;
+      for (const [report, role, reportKind] of [
+        [approval.turnReport, 'idea-editor', 'idea-editor-turn'],
+        [bindings.challenger, 'challenger', 'challenge'],
+        [approval.framingReport, 'idea-editor', 'idea-framing'],
+      ] as const) {
+        const scope = {
+          project: projectOfWorkspace(path.dirname(area.root)),
+          workId: 'NEX-1',
+          area: area.root,
+          role,
+          reportKind,
+        };
+        const markdown = await readFile(report, 'utf8');
+        await rm(report);
+        await expect(consume()).rejects.toThrow(/does not exist/);
+        expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+        await writeFile(report, markdown);
+        await expect(consume()).resolves.toBe(consumer === 'replay' ? 'recorded' : 'approved');
+        await expect(
+          readPendingValidationError({ areaRoot: area.root, scope }),
+        ).resolves.toBeNull();
+      }
+      expect(await readValidationErrorHistory(area.root)).toHaveLength(4);
+      await expect(
+        readPendingValidationError({ areaRoot: area.root, scope: unrelatedScope }),
+      ).resolves.toEqual(unrelated);
+      expect(approval.jira.transitions).toEqual(consumer === 'publication' ? ['21'] : []);
+    },
+  );
   it.each(['replay', 'publication'] as const)(
     'retains malformed approved revision evidence during %s',
     async (consumer) => {

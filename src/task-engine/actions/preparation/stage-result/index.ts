@@ -28,7 +28,7 @@ import {
   requireRetainedDecision,
   requireRetainedResultAssociation,
   requireReturnReport,
-  requireStageReport,
+  requireRetainedReturn,
   requireNeedsInputReport,
   roundArtifactDirectory,
   roundArtifactFile,
@@ -173,67 +173,13 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         });
         validated.add('author');
       }
-      if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
-        // A replayed return keeps its returning role's Markdown readable through the producer's
-        // saved binding: an unusable report is preserved as that role's rejection evidence instead
-        // of replaying a correction whose assessment is missing or unreadable.
-        await requireReturnReport({
-          issueRoot,
-          workId: selection.taskKey,
-          returned: {
-            stage: settings.stage,
-            role: completed.returnFinding.role ?? null,
-            report: completed.returnFinding.report,
-          },
-          context:
-            `Replaying the retained ${settings.stage} return of round ${String(plan.round)} for ` +
-            `task ${selection.taskKey}.`,
+      if (outcome === 'returnUpstream') {
+        const returning = await requireRetainedReturn({
+          ...roleContext,
+          profiles: plan.profiles,
+          result: completed,
         });
-        if (completed.returnFinding.role !== null) {
-          validated.add(completed.returnFinding.role);
-        }
-      } else if (outcome === 'returnUpstream') {
-        // Combined returns have no Markdown binding. Validate the current round's producing
-        // functional outcome before completing its pending clear, rather than relying on the
-        // terminal envelope or merely opening history.
-        const author = await readAuthor();
-        if (author === null || author.revision !== completed.authoredRevision) {
-          throw new Error('A retained return must keep its producing authored revision.');
-        }
-        const evaluation = await readEvaluation();
-        const evaluatorReturn = evaluation !== null && evaluation.upstream !== null;
-        const upstream = evaluatorReturn ? evaluation.upstream : author.upstream;
-        if (
-          (evaluatorReturn
-            ? evaluation.verdict !== 'return-upstream' ||
-              evaluation.assessedRevision !== author.revision
-            : author.outcome !== 'return-upstream') ||
-          upstream === null ||
-          upstream.stage !== completed.returnStage ||
-          upstream.correction !== completed.returnFinding?.correction
-        ) {
-          throw new Error('A retained combined return must keep its producing upstream outcome.');
-        }
-        const producer = evaluatorReturn ? evaluation : author;
-        if (producer.report !== undefined) {
-          await requireStageReport({
-            issueRoot,
-            workId: selection.taskKey,
-            stage: settings.stage,
-            role: evaluatorReturn ? 'evaluator' : 'author',
-            binding: producer,
-            profile: producer.profile ?? null,
-            file: roundArtifactFile(
-              root,
-              plan.round,
-              evaluatorReturn
-                ? stageEvaluationArtifact.pathFromArtifactsRoot
-                : stageAuthorArtifact.pathFromArtifactsRoot,
-            ),
-            context: roleContext.context,
-          });
-        }
-        validated.add(evaluatorReturn ? 'evaluator' : 'author');
+        validated.add(returning.role);
       }
       if (
         outcome !== 'exhausted' &&
@@ -592,6 +538,9 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       throw new Error(
         `The ${settings.stage} stage cannot return upstream without naming the earlier stage.`,
       );
+    }
+    if (result.outcome === 'returnUpstream') {
+      await requireRetainedReturn({ ...roleContext, profiles: plan.profiles, result });
     }
     // A finalized round's validated outcomes are the owners' saved replacements: complete any
     // interrupted clear so a resolved error never reaches a later round.

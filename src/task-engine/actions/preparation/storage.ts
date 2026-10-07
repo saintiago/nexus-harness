@@ -613,6 +613,100 @@ export async function requireCurrentAcceptance(settings: AcceptanceSettings): Pr
   await requireDeclaredWork({ git, worktree, author, revision: basis.repositoryRevision });
 }
 
+/**
+ * Validate the current round's producing return before resumed consumption can clear its error.
+ * Reading copied Markdown alone does not establish that the producing outcome still supplies
+ * this revision, destination and correction. History/report readers remain non-clearing.
+ */
+export async function requireRetainedReturn(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly workId: string;
+  readonly round: number;
+  readonly profiles: StageRoundPlan['profiles'];
+  readonly result: PreparationResult;
+  readonly context: string;
+}): Promise<{ readonly role: 'author' | 'evaluator'; readonly profile: string | null }> {
+  const root = stageRoot(settings.issueRoot, settings.stage);
+  const author = await readStageRoleArtifact({
+    ...settings,
+    role: 'author',
+    profile: settings.profiles.author,
+    required: true,
+  });
+  const evaluation = await readStageRoleArtifact({
+    ...settings,
+    role: 'evaluator',
+    profile: settings.profiles.evaluator,
+    required:
+      settings.result.returnFinding?.role === 'evaluator' ||
+      path.resolve(settings.result.evaluation.path) ===
+        roundArtifactFile(root, settings.round, stageEvaluationArtifact.pathFromArtifactsRoot),
+  });
+  if (author === null) {
+    throw new Error('A retained return must keep its producing authored revision.');
+  }
+  const evaluatorReturn = evaluation !== null && evaluation.upstream !== null;
+  const role = evaluatorReturn ? 'evaluator' : 'author';
+  const producer = evaluatorReturn ? evaluation : author;
+  const file = roundArtifactFile(
+    root,
+    settings.round,
+    stageRoleArtifacts[role].pathFromArtifactsRoot,
+  );
+  const bound = producer.report !== undefined;
+  if (producer.report !== undefined) {
+    await requireStageReport({
+      ...settings,
+      role,
+      binding: producer,
+      profile: producer.profile ?? null,
+      file,
+    });
+  }
+  const { result } = settings;
+  const upstream = producer.upstream;
+  if (
+    (evaluatorReturn
+      ? evaluation.verdict !== 'return-upstream' || evaluation.assessedRevision !== author.revision
+      : author.outcome !== 'return-upstream') ||
+    author.revision !== result.authoredRevision ||
+    result.stage !== settings.stage ||
+    result.outcome !== 'returnUpstream' ||
+    upstream === null ||
+    upstream.stage !== result.returnStage ||
+    upstream.stage !== result.returnFinding?.stage ||
+    upstream.correction !== result.returnFinding.correction
+  ) {
+    throw new Error('A retained return must keep its producing upstream outcome.');
+  }
+  const report = result.returnFinding.report;
+  if (
+    (bound
+      ? producer.taskKey !== settings.workId ||
+        producer.stage !== settings.stage ||
+        producer.role !== role ||
+        result.returnFinding.role !== role ||
+        report === null ||
+        path.resolve(report.outcome.path) !== file ||
+        report.profile !== producer.profile ||
+        report.invocationId !== producer.invocationId ||
+        report.report.path !== producer.report?.path
+      : result.returnFinding.role !== null || report !== null) ||
+    path.resolve(result.evaluation.path) !==
+      roundArtifactFile(
+        root,
+        settings.round,
+        evaluation === null
+          ? stageAuthorArtifact.pathFromArtifactsRoot
+          : stageEvaluationArtifact.pathFromArtifactsRoot,
+      )
+  ) {
+    throw new Error('A retained return must keep its producing outcome and report association.');
+  }
+  return { role, profile: producer.profile ?? null };
+}
+
 /** One published upstream return's report association: the returning stage, role and binding. */
 export type ReturnReportReference = {
   /** The stage whose round produced the return and owns the report. */

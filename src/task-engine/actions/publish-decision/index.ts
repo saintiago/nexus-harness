@@ -16,7 +16,9 @@ import {
   type RetainedFraming,
 } from '../idea-editor/artifacts.js';
 import {
+  clearRetainedIdeaValidationError,
   ideaReportContracts,
+  ideaReportScope,
   publishIdeaOutcome,
   readRetainedIdeaReport,
   readRetainedIdeaReportAtFile,
@@ -34,7 +36,7 @@ import {
 } from '../idea-storage.js';
 import { projectGuideArtifact, projectGuideFollowUpArtifact } from '../project-guide/artifacts.js';
 import { readRequiredRecord, writeRecord } from '../records.js';
-import { recordIdentity } from '../report-feedback.js';
+import { clearPendingValidationError, recordIdentity } from '../report-feedback.js';
 import { researchArtifact, researchFollowUpArtifact } from '../researcher/artifacts.js';
 import type { IdeaInput } from '../select-idea/artifacts.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
@@ -312,17 +314,17 @@ async function requireRecordedApproval(settings: {
     throw new Error(`The retained approval names no Challenger result at "${record.challenger}".`);
   }
   const standalone = assessed.value.editorResponse === null;
-  if (!standalone) {
-    await readRetainedIdeaReport({
-      root: settings.root,
-      workId: settings.workId,
-      plan: settings.plan,
-      cycleRoot: ideaCycleDirectory(settings.root, settings.plan.submission, 1),
-      declaration: framingArtifact,
-      contract: ideaReportContracts.framing,
-      context: `${settings.context} Reading the framing the approval falls back to.`,
-    });
-  }
+  const framing = !standalone
+    ? await readRetainedIdeaReport({
+        root: settings.root,
+        workId: settings.workId,
+        plan: settings.plan,
+        cycleRoot: ideaCycleDirectory(settings.root, settings.plan.submission, 1),
+        declaration: framingArtifact,
+        contract: ideaReportContracts.framing,
+        context: `${settings.context} Reading the framing the approval falls back to.`,
+      })
+    : null;
   const declaration: AnyIdeaReportDeclaration = standalone
     ? framingArtifact
     : editorResponseArtifact;
@@ -354,6 +356,32 @@ async function requireRecordedApproval(settings: {
     )
   ) {
     throw new Error('The retained approval does not bind its refined idea and editor outcome.');
+  }
+  // Both terminal consumers reuse this validated current approval. Complete interrupted clears
+  // for its producing responsibilities; unrelated contributions and cycles remain history.
+  for (const [contract, read] of [
+    [standalone ? ideaReportContracts.framing : ideaReportContracts.editorTurn, editor],
+    [ideaReportContracts.challenge, assessed],
+    ...(framing === null ? [] : [[ideaReportContracts.framing, framing] as const]),
+  ] as const) {
+    await clearRetainedIdeaValidationError({
+      root: settings.root,
+      workId: settings.workId,
+      contract,
+      read,
+    });
+  }
+  // The separately stored revision belongs to the editor-turn responsibility even when an
+  // approval used framing without a saved turn.
+  if (standalone) {
+    await clearPendingValidationError({
+      areaRoot: settings.root,
+      scope: ideaReportScope({
+        root: settings.root,
+        workId: settings.workId,
+        ...ideaReportContracts.editorTurn,
+      }),
+    });
   }
   return idea;
 }
@@ -587,7 +615,41 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
     };
     const file = await writeSubmissionArtifact(root, plan.submission, decisionArtifact, record);
     if (decision === 'approved' && revision !== null) {
+      await requireRecordedApproval({
+        root,
+        workId: selection.taskKey,
+        plan,
+        record,
+        context: `RecordIdeaDecision consuming the approval for idea ${selection.taskKey}.`,
+      });
       await writeHandoff(selection, root, plan, revision.path, decisionFile);
+    } else {
+      // Fresh negative decisions also consume the current usable producer outcomes. Saved
+      // negative-envelope replay does not reread those producers and cannot complete their clear.
+      for (const [contract, read] of [
+        [ideaReportContracts.editorTurn, turn],
+        [ideaReportContracts.framing, framing],
+        [ideaReportContracts.challenge, decision === 'attempts-exhausted' ? challenger : null],
+      ] as const) {
+        if (read !== null) {
+          await clearRetainedIdeaValidationError<AnyIdeaReportDeclaration>({
+            root,
+            workId: selection.taskKey,
+            contract,
+            read,
+          });
+        }
+      }
+      if (decision === 'attempts-exhausted') {
+        await clearPendingValidationError({
+          areaRoot: root,
+          scope: ideaReportScope({
+            root,
+            workId: selection.taskKey,
+            ...ideaReportContracts.editorTurn,
+          }),
+        });
+      }
     }
     return reported(settings, record, selection.taskKey, plan.cycle, file);
   };

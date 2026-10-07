@@ -11,7 +11,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  devArtifact,
+  developmentReportScope,
+} from '../src/task-engine/actions/develop/artifacts.js';
 import {
   readValidationErrorHistory,
   readPendingValidationError,
@@ -790,6 +793,27 @@ it.each(['current', 'other head', 'historical'])(
     await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toEqual(
       source === 'current' ? null : pending,
     );
+    expect(await readValidationErrorHistory(root)).toHaveLength(1);
+  },
+);
+
+it.each([1, 0])(
+  'clears a repaired failed developer outcome with repair allowance %s',
+  async (repairAllowance) => {
+    await writeCurrentRound({ number: 1, profile: 'dev-a', reason: 'retained' });
+    await writeDevelopment(1, 'dev-a', 'failed');
+    const scope = developmentReportScope(root, 'NEX-1');
+    const start = startRoundOver([{ profile: 'dev-a', repairAllowance }]);
+    const file = reportPathOf(1, 'developer');
+    const markdown = await readFile(file, 'utf8');
+    await rm(file);
+    await expect(start()).rejects.toThrow(/does not exist/);
+    expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+    expect(await readCurrentRound()).toMatchObject({ number: 1 });
+    await writeFile(file, markdown);
+    await expect(start()).resolves.toBe(repairAllowance === 0 ? 'exhausted' : 'started');
+    expect(await readCurrentRound()).toMatchObject({ number: repairAllowance === 0 ? 1 : 2 });
+    await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
     expect(await readValidationErrorHistory(root)).toHaveLength(1);
   },
 );
