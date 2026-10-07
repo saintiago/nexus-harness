@@ -76,6 +76,16 @@ invocation with the supplied context.
 native provider settings. AgentRuntime transports those settings without owning memory semantics;
 its run interface and complete-context preservation remain unchanged.
 
+Application also composes optional JEv access under
+[configuration](../configuration.md#jev-settings) and the
+[installed-package launch](profiles.md#jev-access). Merge its reserved native MCP settings with
+existing tool settings for every selectable role profile, including recovery and analysis.
+Do not replace the entire native configuration or share a mutable settings object across roles.
+The runtime's `run` contract is unchanged; provider-native MCP owns discovery, launch and calls.
+The enabled tool's guidance is the constant text under Optional JEv judgments below, supplied
+once by composition. Deduplicate that same constant across configured base/profile instructions
+and composed guidance. No tool guidance is supplied when access is disabled or credentials are missing.
+
 additionalContext is caller-prepared text containing the invocation instructions, assigned Markdown
 report path, separate minimal outcome contract, information and any file paths the agent needs.
 Include it in the prompt as supplied; do not read workspace files to discover or construct the
@@ -119,35 +129,6 @@ once, without appending another worktree/ or deriving it from the artifact area.
 Prompt and settings are values. Receive the provider's output and activity as data/streams.
 The adapter may use temporary files when its transport requires them; it does not choose Nexus
 artifact locations.
-
-## Instructions and profiles
-
-Prompt assembly combines:
-
-1. Runtime base instructions.
-2. Selected profile instructions.
-3. Caller-supplied context.
-4. Workspace location.
-
-Preserve the supplied context completely. If provider limits prevent this, return an input failure
-instead of silently truncating it.
-
-Repository instructions can arrive through the provider's native workspace discovery. Preparation
-context supplies accessible instruction-file paths and directs the role to read any applicable
-guidance not already supplied; it does not embed another `AGENTS.md` body. The runtime adds no
-duplicate repository content, instruction-discovery parser or provider-capability setting. Existing
-file tools keep guidance available for providers without native discovery. Business callers own
-their evidence presentation; the runtime does not shorten source material or historical reports.
-
-Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
-when memory tools are enabled; role prompts need not duplicate that policy.
-The experience-analysis profile is invoked by [AnalyzeExperience](../task-engine/actions/analyze-experience.md)
-with search-only AMEM MCP access. The action validates and submits observations. AgentRuntime
-does not import or invoke the Nexus Memory component; ordinary enabled roles retain explicit
-search/save MCP tools through native provider settings.
-
-Profiles define model, effort and available tools. Invocation instructions do not change these
-settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
 
 ### Optional JEv judgments
 
@@ -196,6 +177,35 @@ Disable personal connectors and unrelated integrations, including the GitHub con
 profiles. Harness publication remains outside the agent tool set. Use the provider's native settings
 to configure these tools; do not impose a read-only filesystem policy on the reviewer. Its commands
 must be able to install dependencies, build and run tests, including their file writes.
+
+## Instructions and profiles
+
+Prompt assembly combines:
+
+1. Runtime base instructions.
+2. Selected profile instructions.
+3. Caller-supplied context.
+4. Workspace location.
+
+Preserve the supplied context completely. If provider limits prevent this, return an input failure
+instead of silently truncating it.
+
+Repository instructions can arrive through the provider's native workspace discovery. Preparation
+context supplies accessible instruction-file paths and directs the role to read any applicable
+guidance not already supplied; it does not embed another `AGENTS.md` body. The runtime adds no
+duplicate repository content, instruction-discovery parser or provider-capability setting. Existing
+file tools keep guidance available for providers without native discovery. Business callers own
+their evidence presentation; the runtime does not shorten source material or historical reports.
+
+Runtime base instructions include the shared [memory-use guidance](../memory/integration.md#agent-use)
+when memory tools are enabled; role prompts need not duplicate that policy.
+The experience-analysis profile is invoked by [AnalyzeExperience](../task-engine/actions/analyze-experience.md)
+with search-only AMEM MCP access. The action validates and submits observations. AgentRuntime
+does not import or invoke the Nexus Memory component; ordinary enabled roles retain explicit
+search/save MCP tools through native provider settings.
+
+Profiles define model, effort and available tools. Invocation instructions do not change these
+settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
 
 ## Invocation
 

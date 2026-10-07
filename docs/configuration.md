@@ -126,15 +126,43 @@ JEv integration is optional and Nexus-owned. An installation without JEv configu
 valid. Omitted or disabled integration supplies no JEv tools or applicability requests and retains
 the existing full preparation path. Enabled integration supports both native agent access and the
 preparation API use described in [project workflow](project-workflow.md#jev-assisted-applicability).
-Document the supported enable/disable configuration and host setup; exact setting names and
-dependency installation belong to Architecture.
+The optional `jev` section has `enabled: boolean` and `credential: string`, a reference into
+`credentials`. `credential` is required when enabled and optional when disabled. If present it
+must identify an existing credential entry whose environment name is `JEV_API_KEY`. Unknown
+fields or references are configuration errors; an absent host value is capability unavailability,
+not invalid configuration. Disabled integration may retain a valid unused credential reference.
+There are no Nexus settings for endpoint, model, confidence threshold, retry or MCP command.
+
+```json
+{
+  "jev": { "enabled": true, "credential": "jev" },
+  "credentials": { "jev": { "environment": "JEV_API_KEY" } }
+}
+```
+
+This fragment extends the installation's existing settings. Set `enabled: false` or omit `jev`
+to disable the integration. Dependency consumption follows [tech stack](tech-stack.md#jev-dependency);
+Linux native launch follows [profiles](agent-runtime/profiles.md#jev-access).
 
 Resolve `JEV_API_KEY` from the execution host for API use and native MCP launch; configuration
 contains only its reference, never its value. The package owns provider endpoint, schemas and
 transport. Missing credentials or an unavailable JEv capability cannot prevent ordinary Nexus work:
 use the documented [applicability fallback](project-workflow.md#jev-assisted-applicability) and
 [agent continuation](agent-runtime/architecture.md#optional-jev-judgments). Preserve existing
-configuration validation and resolved-setting immutability.
+configuration validation and resolved-setting immutability. Resolve the key only in in-memory
+construction of the API client and in the provider process environment. Native MCP forwards its
+host environment name, never a literal `env` value in tool settings. Keep the host key available
+in workers, recovery and experience-analysis providers while preserving their existing credential
+exclusions. With no key, omit the JEv server and usage guidance and supply preparation's
+`missing-credential` fallback capability; do not fail general component construction.
+
+Use package defaults (`jev-1.13.0`, 10000 ms) for automatic applicability requests. Native launch
+also uses these defaults by forwarding only `JEV_API_KEY`, without inheriting `JEV_MODEL` or
+`JEV_TIMEOUT_MS`. This gives API and MCP one supported configuration. Provider-native JEv startup
+is optional; an unavailable server must not abort an otherwise usable agent invocation. Disabled
+composition explicitly disables the reserved `jev` MCP server even when base/profile settings
+would otherwise enable it; enabled composition owns that server's settings. Other native settings
+retain their current ownership.
 
 Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
 effects; disabling a configured integration restores that same behavior. With host credentials and

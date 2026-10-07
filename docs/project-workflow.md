@@ -180,9 +180,9 @@ Rules:
 2. At preparation's applicability decision boundary, use the TypeScript API with the current
    captured task, relevant repository context and accepted upstream inputs available at that point.
    Decide applicability for the affected stage; Requirements does not become the default owner of
-   all later-stage decisions. Preparation's Architecture defines the minimal placement and
-   supported-skip criteria, including how uncertainty is recognized; these are not agent model
-   selection or provider policy.
+   all later-stage decisions. [Preparation's applicability design](task-engine/actions/preparation-stage.md#jev-applicability-advice)
+   owns placement, conservative skip-advice criteria and uncertainty handling. These decisions
+   are not agent model selection or provider policy.
 3. Apply deterministic requirements before acting on a judgment. A JEv recommendation cannot
    remove a stage obligation established by current task scope or an explicit pending correction,
    accept existing documents without evaluation, bypass applicable prototype observations or

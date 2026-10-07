@@ -58,8 +58,29 @@ publication tools are not supplied to stage roles.
 Use the delivered JEv package's `jev-mcp` executable through provider-native MCP settings when
 [JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` from the
 execution host. Keep its value out of repository configuration, prompts, command arguments,
-reports and other artifacts. Document the supported dependency installation and native launch
-configuration so the operator can reproduce API and tool access on Linux/WSL.
+reports and other artifacts. Install the [pinned runtime dependency](../tech-stack.md#jev-dependency)
+with Nexus's normal `npm ci`; a separate global package install is unnecessary. Nexus composition
+resolves the installed bin from its own installation rather than PATH or the target worktree.
+The effective native settings are equivalent to:
+
+```toml
+[mcp_servers.jev]
+command = "/absolute/nexus-installation/node_modules/.bin/jev-mcp"
+args = []
+enabled = true
+required = false
+enabled_tools = ["ask_jev"]
+env_vars = ["JEV_API_KEY"]
+```
+
+The absolute command is installation-specific and generated at composition, not committed to
+profile templates. Native provider configuration forwards the named host variable without writing
+its value to a configuration file or command argument. API composition imports `createJevClient`
+from the same installation and passes the resolved key in memory. Use the shared defaults described
+in [configuration](../configuration.md#jev-settings); ensure inherited model/timeout variables are
+excluded from the server environment. Omitted/disabled integration, or missing host credentials,
+sets this reserved server's effective `enabled` setting to false and supplies no JEv guidance.
+An optional startup failure leaves the provider session usable with its other tools.
 
 Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
 [AgentRuntime](architecture.md#optional-jev-judgments), including preparation evaluators, recovery

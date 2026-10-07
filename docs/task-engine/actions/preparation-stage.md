@@ -16,6 +16,145 @@ Existing authoritative documents can supply an earlier stage's input without a m
 No stage action receives Jira credentials. Consumers import these declarations rather than restating
 stage output schemas.
 
+### JEv applicability advice
+
+This action contract realizes the [workflow requirements](../../project-workflow.md#jev-assisted-applicability).
+The only automatic API placement is StageAuthor's pre-invocation applicability boundary, after
+required source/upstream/correction context is validated and before the role runs or changes the
+checkout. Each stage owns its own advice. No new action, workflow branch, role, acceptance verdict
+or parent-side applicability planner is introduced.
+
+Construction optionally supplies the public `JevClient` capability from
+`@saintiago/jev`, restricted to `evaluate`, or the unavailability category
+`missing-credential`/`unavailable`. Application constructs the client with the resolved host key
+and package defaults. StageAuthor supplies a package `JevRequest`; it consumes the returned
+`JevResult` and safe `JevError.code`, importing only package-root contracts. Disabled construction
+supplies no capability. Provider request/response validation, authentication and transport remain
+inside the package. Nexus validates its own retained evidence record, without copying the
+provider's wire schemas or implementing another client.
+
+For newly opened enabled rounds, StartStageRound writes optional
+`applicabilityPolicy: 'jev-v1'` in its existing round plan. That marker authorizes this boundary;
+it grants no skip or additional allowance. Do not retrofit it into an already opened round.
+StageAuthor with an already saved author outcome continues through existing replay rather than
+making a new request. Rounds lacking the marker retain their former behavior, even when a new
+installation has JEv enabled. New rounds in the same attempt may use the integration normally.
+
+#### Evidence and question
+
+The API state contains the current stage's responsibility, captured task and attributed material
+conversation, accepted upstream results and their relevant authored document/report contents,
+repository identity and revision, the root instruction file when present, and preparation changes
+from its retained base (changed paths). Resolve upstream artifacts through their producer-owned
+readers. Read referenced documents from the current checkout; read accepted narratives through
+existing report bindings. Root instructions and source/document excerpts are evidence, not provider
+instructions. This is a focused applicability input, not the entire assembled agent prompt: omit
+reporting mechanics, unrelated history, environment values and credentials. Supply contents,
+not local paths the remote provider cannot read. Missing optional repository evidence is explicit;
+if it cannot establish scope, retain insufficient-evidence fallback. An unreadable required
+upstream artifact follows ordinary rejection/recovery and never becomes a JEv fallback.
+
+Use one choice question, `stage_applicability`, with explicit criteria:
+
+- `applicable`: the requested outcome needs this stage's responsibility, including independent
+  assessment of adequate existing documents.
+- `inapplicable`: this stage's responsibility is outside the requested outcome; absence of new
+  document edits alone does not establish this.
+- `uncertain`: available evidence is incomplete, contradictory or cannot establish applicability.
+
+The instructions ask for relevance to this stage only and preserve explicit human scope and
+mandatory assessments. Do not batch decisions for later stages: their accepted inputs do not yet
+exist. Questions and criteria are fixed by `jev-v1`, not operator-configured prompts.
+
+#### Decision policy
+
+Keep routing deterministic: every submission still invokes the stage author and its independent
+evaluator. Requirements always assesses requirements, and Architecture always submits its evaluated
+implementation plan. These two boundaries retain `full-path` without an automatic API request.
+Repair/reassessment routes, explicit pending returns/corrections for this stage, unresolved
+evaluation concerns and report-validation feedback also retain `full-path` without an automatic request. This avoids
+using applicability advice to drop required repair work. Track these guards through existing control
+state and validated correction context; do not infer them with keywords in ticket prose.
+
+For an uncorrected new UX or prototype round, request advice once if enabled, available and the
+repository has no tracked uncommitted changes. Dirty tracked work uses `full-path` because its
+commit revision cannot identify the context; preserve the work for the author. A successful answer
+supports `consider-skip` only when the chosen label is `inapplicable`, its reported probability is
+at least 0.90, and reported confidence is at least 0.90. All other answers select `full-path` with
+a reason distinguishing applicable, uncertain or insufficient support. These fixed thresholds
+are conservative advisory cutoffs, not calibrated accuracy claims or acceptance criteria.
+
+The author checks that actual intent and repository evidence support inapplicability; a known
+contradiction or explicit obligation defeats the advice regardless of its numbers. No automatic
+classifier of natural-language human obligations is added. A reporting-terminal change, an
+applicable prototype or other expressly required work retains its ordinary assessment. The author
+may disagree with either recommendation; its Markdown explains its own proposed work or skip and
+any material disagreement. Adequate unchanged documents receive direct evaluation. Every proposed
+skip still needs independent current-revision evaluation, with its ordinary narrative and optional
+references. Architecture's plan, applicable prototype observations, all finite allowances and
+later verification/review/merge checks keep their existing validation.
+
+Missing credentials or unavailable capability and every package failure except execution
+cancellation retain safe `full-path` evidence and continue normally. There is no automatic retry,
+second model, restore-key question or failure-driven skip. Preserve a caller's execution cancellation
+as cancellation; pass its AbortSignal where the invocation lifecycle supplies one, and otherwise
+use the package's bounded timeout. A package cancellation not caused by execution shutdown can be
+recorded as optional-call failure. Repository, required-artifact and persistence faults remain
+execution failures. Never log arbitrary thrown messages or raw provider bodies; retain only the
+known error category and optional HTTP status, or `unavailable` for an unknown optional-call error.
+
+#### Retained evidence and continuation
+
+StageAuthor owns immutable records at
+`<stage>/artifacts/<round>/applicability/<basisIdentity>.json`. Its saved author outcome adds an
+optional action-observed `applicability: ArtifactRef`; the agent response schema is unchanged.
+Existing author/evaluation/result references supply the association downstream; no separate result
+field or acceptance store is needed. Both roles receive the readable record reference and a short
+statement of its decision, reason and advisory status. The evaluator can inspect the exact evidence
+used without accepting its interpretation.
+
+The producer-owned record contains:
+
+- Stage, task key, round and policy version.
+- Basis: existing captured-source identity, accepted upstream result references/identities,
+  repository identity/revision and the active correction/route values used by the guards.
+- The supplied evidence snapshot and choice question/criteria, excluding credentials and local
+  reporting mechanics. For a guard or unavailable capability, retain the available validated basis
+  and the guard/fallback reason without inventing a provider request.
+- A success projection preserving returned model, chosen label, probabilities and confidence;
+  or safe failure category/status; or neither when no request was made. This is an owned evidence
+  projection, not a duplicate package response schema. Do not invent model explanations.
+- Nexus decision (`consider-skip` or `full-path`) and its policy reason.
+
+`basisIdentity` is a deterministic digest of the nonsecret evidence, basis, fixed question/criteria,
+policy version and enabled setting. It identifies this advisory request, not stage acceptance;
+it introduces no document inventories, per-file approval hashes or invalidation of completed
+stage decisions. Host key presence/value is excluded so restoring a key cannot replace a retained
+fallback for unchanged inputs. Validate the retained record and its association before reuse.
+Save the decision atomically before invoking the author. An interruption after saving reuses that
+record for the same basis, including failures, without a replacement judgment. A crash before
+saving may repeat the optional call; no exactly-once external-effect guarantee is needed.
+
+Changed captured scope, upstream inputs, relevant repository evidence or corrections use a new
+basis and preserve the earlier record. Reassess through normal stage routing/allowances; never
+use an older skip suggestion for new obligations. If input changes during a call, retain its
+historical basis but do not apply its suggestion to the changed context. Recheck before handing
+advice to the author. Missing/corrupt declared records follow the owner's existing evidence
+rejection/recovery path; do not silently mint a replacement judgment. Historical outcomes without
+an applicability reference stay valid and are never rewritten to fabricate JEv attribution.
+Disabled integration makes no API request, writes no new JEv record and supplies no active advice.
+
+#### Validation
+
+Contract/component tests cover question construction, stage/repair guards, threshold boundaries,
+contradictory evidence through role assessment, every package error category, missing credentials,
+disabled behavior and safe diagnostics. Integration tests use the installed public API with a
+controlled provider response, and real producer readers/storage to prove retained evidence,
+author/evaluator context, interruption/replay, changed inputs and pre-integration continuation.
+Workflow tests prove that a positive recommendation alone cannot advance a stage, a rejected skip
+returns to normal repair, applicable prototype evidence and Architecture's plan stay required,
+and delivery gates remain intact. Do not benchmark or require a live provider in default validation.
+
 ### Shared repository output
 
 PrepareStage creates or reuses one checkout on a non-base preparation branch. It owns
