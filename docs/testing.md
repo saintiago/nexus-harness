@@ -181,6 +181,8 @@ or assertions that merely reproduce the implementation.
 Use the real XState workflow with controlled role outputs to verify the initial parallel
 Researcher/Project guide join, editor/Challenger exchanges, selective focused contributions,
 approval and the three distinct returns: unsuitable, author decision needed and attempts exhausted.
+Exercise that join with a contributor completion order opposite to the announced start order,
+comparing completed invocation identities without imposing completion order.
 Cover revision, answers and rebuttals, including a resolved objection without changing the idea text.
 Suggestions may accompany approval. A changed revision or editor response requires a fresh
 Challenger assessment; stale approval cannot publish it. Check exact cycle-limit behavior, including

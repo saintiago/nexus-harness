@@ -471,6 +471,14 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
     },
     async run(respond: RoleAnswer): Promise<number> {
       const turns = new Map<IdeaRole, number>();
+      // The Researcher and the Project guide answer concurrently, and either may finish first.
+      // This journey holds the first initial contributor to arrive until the other has answered, so
+      // the two contributors always finish in the order opposite to their announced start order.
+      let heldContributor: IdeaRole | null = null;
+      let releaseHeldContributor: () => void = () => undefined;
+      const otherContributorAnswered = new Promise<void>((resolve) => {
+        releaseHeldContributor = resolve;
+      });
       journeyRuntime = {
         async execute(request, onActivity): Promise<CodingRuntimeResult> {
           prompts.push(request.prompt);
@@ -486,14 +494,29 @@ async function ideaJourney(options: IdeaJourneySetup = {}): Promise<IdeaJourney>
           expect(strictSchemaProblems(request.outputSchema)).toEqual([]);
           const turn = (turns.get(role) ?? 0) + 1;
           turns.set(role, turn);
-          const answer = respond(turn, request);
-          // The role writes its narrative to the assigned Markdown report before returning; only
-          // the machine outcome crosses the provider boundary.
-          await writeAssignedReport(
-            request.prompt,
-            reports[role] ?? reportFor(role, request, answer),
-          );
-          return ok({ output: JSON.stringify(answer) });
+          const initialContribution =
+            turn === 1 && (role === 'researcher' || role === 'project-guide');
+          const holdsContributor = initialContribution && heldContributor === null;
+          if (holdsContributor) {
+            heldContributor = role;
+          }
+          if (holdsContributor) {
+            await otherContributorAnswered;
+          }
+          try {
+            const answer = respond(turn, request);
+            // The role writes its narrative to the assigned Markdown report before returning;
+            // only the machine outcome crosses the provider boundary.
+            await writeAssignedReport(
+              request.prompt,
+              reports[role] ?? reportFor(role, request, answer),
+            );
+            return ok({ output: JSON.stringify(answer) });
+          } finally {
+            if (initialContribution && !holdsContributor) {
+              releaseHeldContributor();
+            }
+          }
         },
       };
       return runOperatorCommand({
@@ -777,20 +800,55 @@ describe('idea refinement journeys', () => {
     for (const event of started) {
       expect(event.data).toMatchObject({ idea: 'NEX-1', summary: 'Add a lint gate' });
     }
-    const identities = started.map(
-      (event) => (event.data as { readonly invocationId: string }).invocationId,
+    const boundaries = new Map(
+      started.map((event) => {
+        const data = event.data as {
+          readonly invocationId: string;
+          readonly agentName: string;
+          readonly log: { readonly path: string };
+        };
+        return [data.invocationId, data] as const;
+      }),
     );
-    expect(new Set(identities).size).toBe(5);
-    expect(
-      started.map((event) => (event.data as { readonly log: { readonly path: string } }).log.path),
-    ).toEqual(identities.map((id) => expect.stringContaining(id)));
+    expect(boundaries.size).toBe(5);
+    expect([...boundaries.values()].map((boundary) => boundary.log.path)).toEqual(
+      [...boundaries.keys()].map((id) => expect.stringContaining(id)),
+    );
     expect(journey.activity).toHaveLength(5);
     expect(new Set(journey.activity.map((packet) => packet.invocationId)).size).toBe(5);
-    expect(
-      journey.events
-        .filter((event) => event.type === 'agent-finished')
-        .map((event) => (event.data as { readonly invocationId: string }).invocationId),
-    ).toEqual(identities);
+    // The completion announcements name the same invocations without imposing completion order:
+    // the Researcher and the Project guide answer concurrently, and this journey reverses that
+    // completion order. Each announced invocation still finishes exactly once with its own
+    // boundary, and no completion is unattributed.
+    const finished = journey.events.filter((event) => event.type === 'agent-finished');
+    expect(finished).toHaveLength(5);
+    const completed = new Map(
+      finished.map((event) => {
+        const data = event.data as {
+          readonly invocationId: string;
+          readonly agentName: string;
+          readonly log: { readonly path: string };
+        };
+        return [data.invocationId, data] as const;
+      }),
+    );
+    expect([...completed.keys()].sort()).toEqual([...boundaries.keys()].sort());
+    for (const [invocationId, boundary] of boundaries) {
+      expect(completed.get(invocationId)).toMatchObject({
+        agentName: boundary.agentName,
+        log: boundary.log,
+      });
+    }
+    const agentNameOf = (event: ExecutionEvent): string =>
+      (event.data as { readonly agentName: string }).agentName;
+    const startedContributors = started
+      .map(agentNameOf)
+      .filter((agentName) => agentName === 'researcher' || agentName === 'project-guide');
+    const finishedContributors = finished
+      .map(agentNameOf)
+      .filter((agentName) => agentName === 'researcher' || agentName === 'project-guide');
+    expect(startedContributors).toHaveLength(2);
+    expect(finishedContributors).toEqual([...startedContributors].reverse());
 
     // Every role ran in the prepared refinement worktree with the captured idea and AGENTS.md.
     expect(journey.prompts).toHaveLength(5);
