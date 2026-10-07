@@ -8,7 +8,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,8 +32,10 @@ import { controlledJevProvider, type ControlledJevProvider } from './support/jev
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const preload = fileURLToPath(new URL('./fixtures/jev-provider-preload.mjs', import.meta.url));
 const syntheticKey = 'synthetic-jev-host-key';
-const syntheticState =
-  'Synthetic stage note: the requested change has no reporting-terminal scope.';
+const syntheticState = 'Synthetic support note: payouts have been failing for three days.';
+
+/** The named host settings the composed reserved server forwards to the delivered package. */
+const forwardedEnvironment = ['JEV_API_KEY', 'JEV_USAGE_LOG_PATH', 'JEV_USAGE_LOG_CALLER'];
 
 /** The installation directory the composition checks resolve relative configuration paths from. */
 const installationDirectory = '/etc/nexus/installation';
@@ -81,11 +84,11 @@ const nativeProviderInstalled = spawnSync('codex', ['--version'], { stdio: 'igno
 const syntheticJudgment = {
   model: 'jev-1.13.0',
   answers: {
-    stage_applicability: {
+    reply_choice: {
       type: 'choice',
-      choice: 'inapplicable',
-      probabilities: { applicable: 0.02, inapplicable: 0.96, uncertain: 0.02 },
-      confidence: 0.94,
+      choice: 'revise',
+      probabilities: { keep: 0.04, revise: 0.94, uncertain: 0.02 },
+      confidence: 0.92,
     },
   },
   usage: { input_tokens: 128, output_tokens: 6 },
@@ -95,12 +98,12 @@ const syntheticJudgment = {
 const syntheticRequest = {
   state: syntheticState,
   questions: {
-    stage_applicability: {
+    reply_choice: {
       type: 'choice',
-      instructions: 'Is this stage applicable to the requested outcome?',
+      instructions: 'Should the draft reply be kept or revised?',
       criteria: {
-        applicable: 'The outcome needs this stage',
-        inapplicable: 'The stage is outside the outcome',
+        keep: 'Send the draft as written',
+        revise: 'Revise the draft before sending',
         uncertain: 'The evidence cannot establish it',
       },
     },
@@ -110,6 +113,7 @@ const syntheticRequest = {
 const providers: ControlledJevProvider[] = [];
 const servers: CodexAppServer[] = [];
 const homes: string[] = [];
+const directories: string[] = [];
 
 async function provider(): Promise<ControlledJevProvider> {
   const controlled = await controlledJevProvider();
@@ -162,6 +166,9 @@ afterEach(async () => {
   await Promise.all(providers.splice(0).map((controlled) => controlled.close()));
   await Promise.all(
     homes.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+  await Promise.all(
+    directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -233,7 +240,7 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
                 transport: {
                   type: 'stdio',
                   command: jevExecutablePath(),
-                  env_vars: ['JEV_API_KEY'],
+                  env_vars: forwardedEnvironment,
                 },
               });
             expect(listed.find((server) => server.name === 'jev')?.enabled ?? false).toBe(false);
@@ -302,7 +309,7 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
                 const outputs = (model.requests[1]?.['input'] as { type: string }[]).filter(
                   (item) => item.type === 'function_call_output',
                 );
-                expect(JSON.stringify(outputs)).toContain('0.96');
+                expect(JSON.stringify(outputs)).toContain('0.94');
                 expect(JSON.stringify(outputs)).toContain('jev-1.13.0');
                 expect(controlled.requests[0]?.authorization).toBe(`Bearer ${syntheticKey}`);
                 expect(JSON.parse(controlled.requests[0]!.body).model).toBe('jev-1.13.0');
@@ -338,7 +345,7 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
         type: 'stdio',
         command: jevExecutablePath(),
         args: [],
-        env_vars: ['JEV_API_KEY'],
+        env_vars: forwardedEnvironment,
       },
     });
     // The effective settings forward the host variable by name; no literal value is configured.
@@ -360,7 +367,7 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
     const inherited = disabled.find((server) => server.name === 'jev');
     expect(inherited).toMatchObject({
       enabled: false,
-      transport: { command: jevExecutablePath(), env_vars: ['JEV_API_KEY'] },
+      transport: { command: jevExecutablePath(), env_vars: forwardedEnvironment },
     });
 
     const disabledBase = [
@@ -407,7 +414,7 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
         type: 'stdio',
         command: jevExecutablePath(),
         args: [],
-        env_vars: ['JEV_API_KEY'],
+        env_vars: forwardedEnvironment,
       },
     });
     expect(jev?.transport.env ?? null).toBeNull();
@@ -527,8 +534,8 @@ describe.skipIf(!nativeProviderInstalled)('effective native provider access', ()
       'disabled_tools = ["ask_jev"]',
       '',
     ].join('\n');
-    // The composed arguments name the forwarded variable; the key itself stays in the host
-    // environment and never enters a provider argument.
+    // The composed arguments name the forwarded variables; their values stay in the host
+    // environment and never enter a provider argument.
     expect(overrides.some((argument) => argument.includes(syntheticKey))).toBe(false);
     const server = await startCodexAppServer({
       codexHomeDirectory: await home(excludingBase),
@@ -560,7 +567,7 @@ describe.skipIf(!nativeProviderInstalled)('effective native provider access', ()
     expect(controlled.requests).toHaveLength(1);
     expect(controlled.requests[0]!.path).toBe('/v1/systemone');
     expect(controlled.requests[0]!.authorization).toBe(`Bearer ${syntheticKey}`);
-    // Only the key is forwarded, so the packaged model/timeout defaults apply.
+    // Only the named host settings are forwarded, so the packaged model/timeout defaults apply.
     expect(JSON.parse(controlled.requests[0]!.body)).toMatchObject({
       model: 'jev-1.13.0',
       state: syntheticState,
@@ -672,5 +679,58 @@ describe.skipIf(!nativeProviderInstalled)('effective native provider access', ()
       cwd: repositoryRoot,
     });
     expect(executed).toMatchObject({ exitCode: 0, stdout: 'session-usable\n' });
+  });
+
+  it('forwards the host logging settings and appends delivered usage records', async () => {
+    const controlled = await provider();
+    controlled.succeed(syntheticJudgment);
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-jev-native-usage-'));
+    directories.push(directory);
+    const logPath = path.join(directory, 'usage.jsonl');
+
+    const server = await startCodexAppServer({
+      codexHomeDirectory: await home(),
+      overrides: configArguments({
+        ...jevAgentSettings(true),
+        'mcp_servers.jev.env': {
+          NODE_OPTIONS: `--import=${preload}`,
+          JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        },
+      }),
+      // The host enables logging; the composed settings forward these variables by name only.
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_USAGE_LOG_PATH: logPath,
+        JEV_USAGE_LOG_CALLER: 'nexus-native-check',
+      },
+    });
+    servers.push(server);
+
+    const status = await reservedServerStatus(server);
+    expect(status.toolsError).toBeNull();
+    expect(Object.keys(status.tools)).toEqual(['ask_jev']);
+    const result = await server.request('mcpServer/tool/call', {
+      server: 'jev',
+      threadId: status.threadId,
+      tool: 'ask_jev',
+      arguments: syntheticRequest,
+    });
+    expect((result as { readonly structuredContent?: unknown }).structuredContent).toEqual(
+      syntheticJudgment,
+    );
+
+    const lines = (await readFile(logPath, 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      model: 'jev-1.13.0',
+      caller: 'nexus-native-check',
+      answers: syntheticJudgment.answers,
+      usage: syntheticJudgment.usage,
+    });
+    expect(record['durationMs']).toBeGreaterThanOrEqual(0);
+    // The forwarding carries only named host settings: the log never contains the state or key.
+    expect(JSON.stringify(record)).not.toContain(syntheticState);
+    expect(JSON.stringify(record)).not.toContain(syntheticKey);
   });
 });

@@ -28,7 +28,7 @@ import {
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
 import {
-  createJevCapability,
+  jevAccessAvailable,
   jevIsolatedServers,
   jevAgentSettings,
   withoutInheritedJevSettings,
@@ -304,8 +304,7 @@ export function createAgentRuntimeSettings(
   // JEv access is composed for every selectable role/profile, including recovery and analysis;
   // a reused profile carries only the invoked role's instructions. An enabled integration whose
   // host value is missing composes the reserved server disabled and supplies no guidance.
-  const jev = createJevCapability(nexus, environment);
-  const jevAvailable = jev?.kind === 'available';
+  const jevAvailable = jevAccessAvailable(nexus, environment);
   const tools = {
     ...memoryTools,
     ...jevAgentSettings(jevAvailable),
