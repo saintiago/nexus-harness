@@ -115,20 +115,38 @@ function pullRequestIdentity(entry: Readonly<Record<string, unknown>>, kind: str
   const created = textOf(entry.created_at) ?? textOf(entry.submitted_at);
   const updated = textOf(entry.updated_at);
   const chronology =
-    created === null
-      ? ''
-      : ` at ${created}${updated === null || updated === created ? '' : ` (edited at ${updated})`}`;
+    `${created === null ? '' : ` at ${created}`}` +
+    `${updated === null || updated === created ? '' : ` (edited at ${updated})`}`;
   const parts = [`${kind} ${id} — ${author}${chronology}`];
   const state = textOf(entry.state);
   if (state !== null) {
     parts.push(`state ${state}`);
   }
   // An inline review comment's target stays attached to the instruction: its captured file and
-  // line, the revision it reviewed and the review it belongs to.
+  // current and original ranges/sides, the revision it reviewed and the review it belongs to.
   const file = textOf(entry.path);
+  const line = identityValue(entry.line);
   if (file !== null) {
-    const line = identityValue(entry.line) ?? identityValue(entry.original_line);
     parts.push(line === null ? `file ${file}` : `file ${file} line ${line}`);
+  } else if (line !== null) {
+    parts.push(`line ${line}`);
+  }
+  // Keep provider labels distinct rather than substituting an original location for the current
+  // one. Outdated comments may have only the original range; file-level comments may have no line.
+  for (const field of [
+    'start_line',
+    'side',
+    'start_side',
+    'original_line',
+    'original_start_line',
+    'position',
+    'original_position',
+    'subject_type',
+  ]) {
+    const value = identityValue(entry[field]);
+    if (value !== null) {
+      parts.push(`${field} ${value}`);
+    }
   }
   const revision = textOf(entry.commit_id);
   if (revision !== null) {
@@ -187,9 +205,13 @@ function pullRequestEntryText(settings: {
   } else if (body === '') {
     lines.push('   (this entry has an empty body)');
   } else if (entry.body === undefined || entry.body === null) {
+    const original = capturedValueJson(entry);
     lines.push(
-      `   [This rendering does not display this entry's body; inspect the captured conversation ` +
-        `at "${settings.sourcePath}" before relying on it.]`,
+      original === null
+        ? `   [This rendering does not display this entry; inspect the captured conversation ` +
+            `at "${settings.sourcePath}" before relying on it.]`
+        : `   [This rendering does not display this entry as readable text; original captured ` +
+            `value: ${original}]`,
     );
   } else {
     const original = capturedValueJson(entry.body);

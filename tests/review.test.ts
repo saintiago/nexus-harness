@@ -1964,6 +1964,206 @@ describe('Review', () => {
     );
   });
 
+  it('preserves unsupported text marks in requirements and human bodies at the provider boundary', async () => {
+    const marked = { type: 'text', text: '3', marks: [{ type: 'subsup', attrs: { type: 'sup' } }] };
+    const invalidLink = {
+      type: 'text',
+      text: 'the limit',
+      marks: [{ type: 'link', attrs: { target: 'captured-target' } }],
+    };
+    // Specialized readable projections also discard unfamiliar children and nested content.
+    // Review's stronger guarantee applies to the complete structured value, not just marks.
+    const unfamiliar = {
+      type: 'paragraph',
+      content: { instruction: 'Keep nested shutdown guidance available.' },
+    };
+    const description = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'Limit records to 10' },
+            marked,
+            { type: 'text', text: ' per batch; consult ' },
+            invalidLink,
+          ],
+        },
+        { type: 'codeBlock', content: [marked] },
+        unfamiliar,
+        'Retained rich-text child that may be direction.',
+      ],
+    };
+    const task = { ...taskIssue, fields: { summary: 'Implement the retry guard', description } };
+    const conversation = [
+      {
+        id: 'c-mark',
+        author: { accountType: 'atlassian', displayName: 'Jane' },
+        body: description,
+      },
+    ];
+    const { workspaceRoot, selectionFile, round } = await workspace({ task, conversation });
+    await writeDeliveredRound(workspaceRoot);
+    const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
+    const { runner, requests } = composedRunner(configuration, 'reviewer', async (request) => {
+      await writeAssignedReport(request.prompt, 'The captured obligations are available.');
+      return JSON.stringify({ verdict: 'approved' });
+    });
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(reviewAction({ selectionFile, runner, git, github })()).resolves.toBe('approved');
+    const prompt = requests[0]!.prompt;
+    expect.soft(prompt).not.toContain('Limit records to 103 per batch');
+    expect.soft(occurrences(prompt, JSON.stringify(marked))).toBe(4);
+    expect.soft(occurrences(prompt, JSON.stringify(invalidLink))).toBe(2);
+    expect(prompt).toContain(JSON.stringify(description));
+    expect(prompt).toContain(JSON.stringify(unfamiliar));
+    expect(prompt).toContain('Retained rich-text child that may be direction.');
+    const recorded = await readReview(workspaceRoot, round);
+    expect(await readEvidence(recorded.output, 'captured-source.json')).toEqual({
+      issue: task,
+      conversation,
+    });
+  });
+
+  it('preserves unfamiliar retained object entries inline with uncertainty at the provider boundary', async () => {
+    const conversation = [
+      { id: 'retained-object', instruction: 'Keep retry cancellation available during shutdown.' },
+      {
+        id: 'retained-null-body',
+        body: null,
+        instruction: 'Keep the shutdown deadline.',
+        source: 'retained-conversation',
+      },
+      {
+        id: 'retained-extra-fields',
+        body: 'A recognizable body does not prove the rest is administration.',
+        instruction: 'Retain the cancellation control.',
+      },
+      {
+        id: 'automated-object',
+        author: { accountType: 'app' },
+        instruction: 'Automated instruction stays referenced.',
+      },
+    ];
+    const { workspaceRoot, selectionFile, round } = await workspace({ conversation });
+    await writeDeliveredRound(workspaceRoot);
+    const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
+    const { runner, requests } = composedRunner(configuration, 'reviewer', async (request) => {
+      await writeAssignedReport(request.prompt, 'The retained direction is available.');
+      return JSON.stringify({ verdict: 'approved' });
+    });
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(reviewAction({ selectionFile, runner, git, github })()).resolves.toBe('approved');
+    const prompt = requests[0]!.prompt;
+    expect.soft(prompt).toContain(JSON.stringify(conversation[0]));
+    expect.soft(prompt).toContain(JSON.stringify(conversation[1]));
+    expect.soft(prompt).toContain(JSON.stringify(conversation[2]));
+    expect(prompt).not.toContain('Automated instruction stays referenced.');
+    expect(occurrences(prompt, 'Origin uncertain')).toBe(3);
+    const recorded = await readReview(workspaceRoot, round);
+    const evidence = await readEvidence(recorded.output, 'captured-source.json');
+    expect(evidence).toMatchObject({ conversation });
+    expect(prompt).toContain(
+      path.join(path.dirname(recorded.output.report.path), 'captured-source.json'),
+    );
+  });
+
+  it('preserves inline comment sides and current/original ranges at the provider boundary', async () => {
+    const pullRequestConversation = {
+      comments: [],
+      reviews: [],
+      reviewComments: [
+        {
+          id: 41,
+          body: 'Remove this obsolete branch.',
+          user: { login: 'jane', type: 'User' },
+          path: 'src/queue.ts',
+          line: 12,
+          start_line: 6,
+          side: 'LEFT',
+          start_side: 'LEFT',
+          original_line: 20,
+          original_start_line: 15,
+          position: 9,
+          original_position: 17,
+          subject_type: 'line',
+          commit_id: headRevision,
+          original_commit_id: otherRevision,
+          updated_at: '2026-10-07T10:30:00Z',
+          pull_request_review_id: 77,
+        },
+        {
+          id: 42,
+          body: 'The earlier range still needs inspection.',
+          user: { login: 'jane', type: 'User' },
+          path: 'src/queue.ts',
+          line: null,
+          start_line: null,
+          side: 'RIGHT',
+          start_side: 'RIGHT',
+          original_line: 28,
+          original_start_line: 25,
+          original_commit_id: otherRevision,
+        },
+      ],
+    };
+    const { workspaceRoot, selectionFile, round } = await workspace();
+    await writeDeliveredRound(workspaceRoot);
+    const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
+    const { runner, requests } = composedRunner(configuration, 'reviewer', async (request) => {
+      await writeAssignedReport(request.prompt, 'The captured locations are available.');
+      return JSON.stringify({ verdict: 'approved' });
+    });
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () => ok(pullRequestConversation),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+    await expect(reviewAction({ selectionFile, runner, git, github })()).resolves.toBe('approved');
+    const prompt = requests[0]!.prompt;
+    expect(prompt).toContain('file src/queue.ts line 12');
+    for (const location of [
+      'start_line 6',
+      'side LEFT',
+      'start_side LEFT',
+      'original_line 20',
+      'original_start_line 15',
+      'position 9',
+      'original_position 17',
+      'subject_type line',
+      'side RIGHT',
+      'original_line 28',
+      'original_start_line 25',
+    ]) {
+      expect.soft(prompt).toContain(location);
+    }
+    expect(prompt).toContain(`original revision ${otherRevision}`);
+    expect(prompt).toContain('(edited at 2026-10-07T10:30:00Z)');
+    expect(prompt).not.toContain('file src/queue.ts line 28');
+    expect(prompt).toContain('review 77');
+    const recorded = await readReview(workspaceRoot, round);
+    expect(await readEvidence(recorded.output, 'pr-conversation.json')).toEqual(
+      pullRequestConversation,
+    );
+    expect(prompt).toContain(
+      path.join(path.dirname(recorded.output.report.path), 'pr-conversation.json'),
+    );
+  });
+
   it.each(['review', 'development'] as const)(
     'validates consumed earlier-round %s history before invoking the reviewer',
     async (damage) => {

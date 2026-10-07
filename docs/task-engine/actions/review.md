@@ -157,6 +157,10 @@ metadata. This includes all potentially governing human entries regardless of ag
 judges relevance and conflicts against current requirements. Native JSON is an adequate lossless
 rendering, including rich-text bodies and unusual retained structures. A readable rendering must
 preserve the same meaning and fall back to the original value for unsupported content.
+Review uses native JSON inline for structured requirement values and complete Jira entries: the
+preparation renderer's partial rich-text projection cannot establish this stronger guarantee.
+Keep inline PR comment locations explicit, distinguishing current and original lines/ranges,
+diff sides and positions when captured; do not substitute an original line for a current one.
 
 Identify automation only through captured provider account/bot metadata, the configured publication
 identity or an available source-owned publication acknowledgement. Do not classify a human account

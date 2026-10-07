@@ -495,6 +495,12 @@ function hasContent(value: unknown): boolean {
 
 /** One captured value's readable lines; unsupported structures stay explicit. */
 function renderValue(value: unknown, rendering: Rendering, indent: string): string[] {
+  // Review uses native JSON for structured values, including rich-text documents. The readable
+  // projection supports only part of the provider format (marks, attributes and nested shapes),
+  // so it cannot establish the stronger guarantee that every possible obligation stays inline.
+  if (rendering.unsupported === 'original-value' && (isObject(value) || Array.isArray(value))) {
+    return [`${indent}${unsupportedNote(rendering, 'one structured captured value', value)}`];
+  }
   const document = renderDocument(value, rendering);
   if (document !== null) {
     return document.split('\n').map((line) => `${indent}${line}`);
@@ -574,6 +580,9 @@ function relationshipLines(
 
 /** One non-description captured field's readable lines. */
 function renderField(name: string, value: unknown, rendering: Rendering): string[] {
+  if (rendering.unsupported === 'original-value' && (isObject(value) || Array.isArray(value))) {
+    return [`- ${name}:`, ...renderValue(value, rendering, '  ')];
+  }
   if (name === 'attachment') {
     // Attachments are captured evidence rather than provider administration: identify them
     // explicitly and point at the retained source instead of silently dropping their content.
@@ -633,6 +642,13 @@ function renderIssue(issue: unknown, rendering: Rendering): string[] {
   if (fields === null) {
     lines.push(unsupportedNote(rendering, 'the captured issue fields', issue));
     return lines;
+  }
+  if (
+    rendering.unsupported === 'original-value' &&
+    summary === null &&
+    hasContent(fields.summary)
+  ) {
+    lines.push(...renderValue(fields.summary, rendering, '  '));
   }
   if (hasContent(fields.description)) {
     lines.push('Description:');
@@ -717,7 +733,11 @@ function renderComment(
     lines.push(`   (edited${editor === null ? '' : ` by ${editor}`} at ${updated})`);
   }
   lines.push(...notes.map((note) => `   ${note}`));
-  if (hasContent(comment.body)) {
+  if (rendering.unsupported === 'original-value') {
+    // Retained entries have no fixed shape. Even a recognizable body does not establish that
+    // other fields contain only administration; preserve the complete entry rather than guess.
+    lines.push(`   ${unsupportedNote(rendering, 'one captured conversation entry', comment)}`);
+  } else if (hasContent(comment.body)) {
     lines.push(...renderValue(comment.body, rendering, '   '));
   } else if (comment.body === undefined || comment.body === null || comment.body === '') {
     lines.push(`   ${inspectionNote('this comment body', rendering.sourcePath)}`);
