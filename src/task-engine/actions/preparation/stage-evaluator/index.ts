@@ -49,7 +49,7 @@ import {
   type StageEvaluationResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
-import { capturedSourcePathOf, retainCapturedSource } from '../readable-source.js';
+import { capturedSourcePathOf, retainCapturedSource } from '../../readable-source.js';
 import {
   preparationWorktree,
   readStageRoleArtifact,

@@ -19,7 +19,7 @@ import { upstreamReferences } from '../src/task-engine/actions/preparation/conte
 import {
   capturedSourcePathOf,
   capturedSourceText,
-} from '../src/task-engine/actions/preparation/readable-source.js';
+} from '../src/task-engine/actions/readable-source.js';
 import {
   isBoundStageEvaluationOutput,
   stageEvaluationArtifact,

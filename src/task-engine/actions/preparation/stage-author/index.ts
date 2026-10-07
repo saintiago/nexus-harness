@@ -33,7 +33,7 @@ import {
   type StageAuthorResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
-import { capturedSourcePathOf, retainCapturedSource } from '../readable-source.js';
+import { capturedSourcePathOf, retainCapturedSource } from '../../readable-source.js';
 import {
   checkoutRelative,
   resolveSkipReference,

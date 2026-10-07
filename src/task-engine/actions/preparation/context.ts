@@ -35,7 +35,7 @@ import {
 } from './storage.js';
 import { prototypeObservationContract } from './observation.js';
 import { validationErrorContextText, type PendingValidationError } from '../report-feedback.js';
-import { capturedSourceText } from './readable-source.js';
+import { capturedSourceText } from '../readable-source.js';
 
 /**
  * The context every evaluated preparation role receives. The selected profile supplies the role's

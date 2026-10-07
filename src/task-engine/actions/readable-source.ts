@@ -1,14 +1,18 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { messageOf } from '../../../result.js';
+import { messageOf } from '../../result.js';
 
 /**
- * The readable rendering of one invocation's captured preparation source: the issue's summary,
- * rich-text description and other meaningful fields plus the attributed conversation. The
- * preparation action renders the captured values directly, without another agent invocation or a
- * generated summary, so human intent, conflicts and evidence keep their meaning and attribution
- * while administrative provider envelopes stay out of the prompt. The exact captured
- * `{ issue, conversation }` is retained beside the invocation's report for later inspection.
+ * The readable rendering of one invocation's captured source: the issue's summary, rich-text
+ * description and other meaningful fields plus the attributed conversation, shared by the role
+ * contexts that present captured source. A role renders the captured values directly, without
+ * another agent invocation or a generated summary, so human intent, conflicts and evidence keep
+ * their meaning and attribution while administrative provider envelopes stay out of the prompt.
+ * Preparation's rendering explicitly points at the retained captured source for content it cannot
+ * translate; Review's directly visible sections additionally fall back to the complete original
+ * captured value, so an unsupported requirement or direction body is never replaced by a pointer.
+ * The exact captured `{ issue, conversation }` is retained beside the invocation's report for
+ * later inspection.
  */
 
 /** The invocation-local copy of the exact captured source values. */
@@ -73,6 +77,54 @@ function inspectionNote(description: string, sourcePath: string): string {
   );
 }
 
+/**
+ * How one rendering presents captured content it cannot translate into readable text. Preparation
+ * names the unrendered content and requires inspecting the retained captured source; Review's
+ * directly visible sections instead show the complete original captured value inline, so an
+ * unsupported requirement or direction body is never replaced by a pointer.
+ */
+type UnsupportedContent = 'inspection-reference' | 'original-value';
+
+/** One rendering's retained-source reference and unsupported-content policy. */
+type Rendering = {
+  readonly sourcePath: string;
+  readonly unsupported: UnsupportedContent;
+};
+
+/** The original captured value as compact JSON, or null when it cannot be serialized. */
+export function capturedValueJson(value: unknown): string | null {
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? null : json;
+  } catch {
+    return null;
+  }
+}
+
+/** The statement one piece of content the rendering cannot translate leaves in its place. */
+function unsupportedNote(rendering: Rendering, description: string, value: unknown): string {
+  if (rendering.unsupported === 'original-value') {
+    const json = capturedValueJson(value);
+    if (json !== null) {
+      return (
+        `[This rendering does not display ${description} as readable text; original captured ` +
+        `value: ${json}]`
+      );
+    }
+  }
+  return inspectionNote(description, rendering.sourcePath);
+}
+
+/** Review's lossless rendering context: unsupported content falls back to its original value. */
+function losslessRendering(sourcePath: string): Rendering {
+  return { sourcePath, unsupported: 'original-value' };
+}
+
+/** The default rendering context: unsupported content keeps an inspection reference. */
+function inspectionRendering(sourcePath: string): Rendering {
+  return { sourcePath, unsupported: 'inspection-reference' };
+}
+
 /** One text node with its supported marks rendered as Markdown, or its plain text. */
 function renderText(node: Readonly<Record<string, unknown>>): string {
   const text = typeof node.text === 'string' ? node.text : '';
@@ -108,10 +160,12 @@ function renderText(node: Readonly<Record<string, unknown>>): string {
 }
 
 /** One inline node's readable text; unsupported inline content is identified explicitly. */
-function renderInline(node: unknown, sourcePath: string): string {
+function renderInline(node: unknown, rendering: Rendering): string {
   const type = nodeType(node);
   if (type === null) {
-    return isObject(node) ? inspectionNote('captured content at this position', sourcePath) : '';
+    return isObject(node)
+      ? unsupportedNote(rendering, 'captured content at this position', node)
+      : '';
   }
   if (!isObject(node)) {
     return '';
@@ -128,32 +182,35 @@ function renderInline(node: unknown, sourcePath: string): string {
       return (
         textOf(attrs.text) ??
         textOf(attrs.shortName) ??
-        inspectionNote(`${type} content`, sourcePath)
+        unsupportedNote(rendering, `${type} content`, node)
       );
     case 'inlineCard': {
       const url = textOf(attrs.url);
-      return url ?? inspectionNote('an inline card', sourcePath);
+      return url ?? unsupportedNote(rendering, 'an inline card', node);
     }
     case 'date': {
       const timestamp = attrs.timestamp;
       return typeof timestamp === 'number'
         ? new Date(timestamp).toISOString()
-        : inspectionNote('a date', sourcePath);
+        : unsupportedNote(rendering, 'a date', node);
     }
     default:
-      return inspectionNote(`a Jira "${type}" node`, sourcePath);
+      return unsupportedNote(rendering, `a Jira "${type}" node`, node);
   }
 }
 
 /** The inline text of one block's content, joined without separators. */
-function renderInlineChildren(node: Readonly<Record<string, unknown>>, sourcePath: string): string {
+function renderInlineChildren(
+  node: Readonly<Record<string, unknown>>,
+  rendering: Rendering,
+): string {
   return nodesOf(node.content)
-    .map((child) => renderInline(child, sourcePath))
+    .map((child) => renderInline(child, rendering))
     .join('');
 }
 
 /** One node's block lines; unsupported block content is identified explicitly. */
-function renderBlock(node: unknown, sourcePath: string, depth: number): string[] {
+function renderBlock(node: unknown, rendering: Rendering, depth: number): string[] {
   const type = nodeType(node);
   if (!isObject(node)) {
     return [];
@@ -162,13 +219,13 @@ function renderBlock(node: unknown, sourcePath: string, depth: number): string[]
   const attrs = isObject(node.attrs) ? node.attrs : {};
   switch (type) {
     case 'paragraph': {
-      const text = renderInlineChildren(node, sourcePath);
+      const text = renderInlineChildren(node, rendering);
       return text === '' ? [] : text.split('\n').map((line) => `${indent}${line}`);
     }
     case 'heading': {
       const level =
         typeof attrs.level === 'number' && attrs.level >= 1 && attrs.level <= 6 ? attrs.level : 2;
-      return [`${indent}${'#'.repeat(level)} ${renderInlineChildren(node, sourcePath)}`];
+      return [`${indent}${'#'.repeat(level)} ${renderInlineChildren(node, rendering)}`];
     }
     case 'codeBlock': {
       const language = textOf(attrs.language);
@@ -182,51 +239,53 @@ function renderBlock(node: unknown, sourcePath: string, depth: number): string[]
       ];
     }
     case 'blockquote':
-      return renderChildren(node, sourcePath, depth).map((line) => `${indent}> ${line}`);
+      return renderChildren(node, rendering, depth).map((line) => `${indent}> ${line}`);
     case 'rule':
       return [`${indent}---`];
     case 'bulletList':
     case 'orderedList':
-      return renderList(node, sourcePath, depth);
+      return renderList(node, rendering, depth);
     case 'taskList':
-      return renderTaskList(node, sourcePath, depth);
+      return renderTaskList(node, rendering, depth);
     case 'decisionList':
       return nodesOf(node.content).flatMap((item) =>
-        isObject(item) ? [`${indent}- ${renderInlineChildren(item, sourcePath)}`] : [],
+        isObject(item) ? [`${indent}- ${renderInlineChildren(item, rendering)}`] : [],
       );
     case 'table':
-      return renderTable(node, sourcePath, depth);
+      return renderTable(node, rendering, depth);
     case 'panel':
-      return renderChildren(node, sourcePath, depth).map((line) => `${indent}> ${line}`);
+      return renderChildren(node, rendering, depth).map((line) => `${indent}> ${line}`);
     case 'expand':
     case 'nestedExpand': {
       const title = textOf(attrs.title);
       return [
         `${indent}${title === null ? '[collapsed section]' : `[collapsed section: ${title}]`}`,
-        ...renderChildren(node, sourcePath, depth + 1),
+        ...renderChildren(node, rendering, depth + 1),
       ];
     }
     case 'media':
     case 'mediaSingle':
     case 'mediaGroup':
     case 'mediaInline':
-      return [`${indent}${inspectionNote('embedded media (an image or attachment)', sourcePath)}`];
+      return [
+        `${indent}${unsupportedNote(rendering, 'embedded media (an image or attachment)', node)}`,
+      ];
     case 'layout':
     case 'layoutSection':
     case 'layoutColumn':
     case 'doc':
-      return renderChildren(node, sourcePath, depth);
+      return renderChildren(node, rendering, depth);
     default:
-      return [`${indent}${inspectionNote(`a Jira "${type}" node`, sourcePath)}`];
+      return [`${indent}${unsupportedNote(rendering, `a Jira "${type}" node`, node)}`];
   }
 }
 
 function renderChildren(
   node: Readonly<Record<string, unknown>>,
-  sourcePath: string,
+  rendering: Rendering,
   depth: number,
 ): string[] {
-  return nodesOf(node.content).flatMap((child) => renderBlock(child, sourcePath, depth));
+  return nodesOf(node.content).flatMap((child) => renderBlock(child, rendering, depth));
 }
 
 /** True for one node that renders as its own list, nested under a parent item. */
@@ -247,7 +306,7 @@ function orderedStart(node: Readonly<Record<string, unknown>>): number {
  */
 function renderList(
   node: Readonly<Record<string, unknown>>,
-  sourcePath: string,
+  rendering: Rendering,
   depth: number,
 ): string[] {
   const ordered = nodeType(node) === 'orderedList';
@@ -258,7 +317,7 @@ function renderList(
       return [];
     }
     const marker = ordered ? `${String(start + index)}. ` : '- ';
-    return renderListItem(item, marker, sourcePath, depth, indent);
+    return renderListItem(item, marker, rendering, depth, indent);
   });
 }
 
@@ -266,7 +325,7 @@ function renderList(
 function renderListItem(
   item: Readonly<Record<string, unknown>>,
   marker: string,
-  sourcePath: string,
+  rendering: Rendering,
   depth: number,
   indent: string,
 ): string[] {
@@ -274,9 +333,9 @@ function renderListItem(
   for (const child of nodesOf(item.content)) {
     if (isListNode(child)) {
       if (lines.length === 0) lines.push(`${indent}${marker.trimEnd()}`);
-      lines.push(...renderBlock(child, sourcePath, depth + 1));
+      lines.push(...renderBlock(child, rendering, depth + 1));
     } else {
-      for (const line of renderBlock(child, sourcePath, 0)) {
+      for (const line of renderBlock(child, rendering, 0)) {
         lines.push(
           lines.length === 0 ? `${indent}${marker}${line.trimStart()}` : `${indent}  ${line}`,
         );
@@ -289,7 +348,7 @@ function renderListItem(
 /** One checklist's items: task-item content is inline, with nested lists rendered under it. */
 function renderTaskList(
   node: Readonly<Record<string, unknown>>,
-  sourcePath: string,
+  rendering: Rendering,
   depth: number,
 ): string[] {
   const indent = '  '.repeat(depth);
@@ -316,9 +375,9 @@ function renderTaskList(
     for (const child of nodesOf(item.content)) {
       if (isListNode(child)) {
         flushInline();
-        lines.push(...renderBlock(child, sourcePath, depth + 1));
+        lines.push(...renderBlock(child, rendering, depth + 1));
       } else {
-        inline += renderInline(child, sourcePath);
+        inline += renderInline(child, rendering);
       }
     }
     flushInline();
@@ -327,8 +386,8 @@ function renderTaskList(
 }
 
 /** One table cell's readable single-line text; a cell's children are blocks, not inline nodes. */
-function tableCellText(cell: Readonly<Record<string, unknown>>, sourcePath: string): string {
-  return renderChildren(cell, sourcePath, 0)
+function tableCellText(cell: Readonly<Record<string, unknown>>, rendering: Rendering): string {
+  return renderChildren(cell, rendering, 0)
     .map((line) => line.trim())
     .filter((line) => line !== '')
     .join(' ')
@@ -337,14 +396,14 @@ function tableCellText(cell: Readonly<Record<string, unknown>>, sourcePath: stri
 
 function renderTable(
   node: Readonly<Record<string, unknown>>,
-  sourcePath: string,
+  rendering: Rendering,
   depth: number,
 ): string[] {
   const indent = '  '.repeat(depth);
   const rows = nodesOf(node.content).filter(isObject);
   const lines = rows.map((row) => {
     const cells = nodesOf(row.content).filter(isObject);
-    const values = cells.map((cell) => tableCellText(cell, sourcePath));
+    const values = cells.map((cell) => tableCellText(cell, rendering));
     return `${indent}| ${values.join(' | ')} |`;
   });
   const header = rows[0];
@@ -358,12 +417,18 @@ function renderTable(
   return lines;
 }
 
-/** The document's complete readable rendering, or null when the value is not a rich-text doc. */
-function renderDocument(value: unknown, sourcePath: string): string | null {
+/**
+ * The document's complete readable rendering, or null when the value is not a rich-text doc the
+ * renderer preserves with its captured structure.
+ */
+function renderDocument(value: unknown, rendering: Rendering): string | null {
   if (!isObject(value) || value.type !== 'doc') {
     return null;
   }
-  return renderChildren(value, sourcePath, 0).join('\n');
+  if (value.content !== undefined && !Array.isArray(value.content)) {
+    return null;
+  }
+  return renderChildren(value, rendering, 0).join('\n');
 }
 
 /**
@@ -429,8 +494,14 @@ function hasContent(value: unknown): boolean {
 }
 
 /** One captured value's readable lines; unsupported structures stay explicit. */
-function renderValue(value: unknown, sourcePath: string, indent: string): string[] {
-  const document = renderDocument(value, sourcePath);
+function renderValue(value: unknown, rendering: Rendering, indent: string): string[] {
+  // Review uses native JSON for structured values, including rich-text documents. The readable
+  // projection supports only part of the provider format (marks, attributes and nested shapes),
+  // so it cannot establish the stronger guarantee that every possible obligation stays inline.
+  if (rendering.unsupported === 'original-value' && (isObject(value) || Array.isArray(value))) {
+    return [`${indent}${unsupportedNote(rendering, 'one structured captured value', value)}`];
+  }
+  const document = renderDocument(value, rendering);
   if (document !== null) {
     return document.split('\n').map((line) => `${indent}${line}`);
   }
@@ -441,9 +512,9 @@ function renderValue(value: unknown, sourcePath: string, indent: string): string
     return [`${indent}${String(value)}`];
   }
   if (Array.isArray(value)) {
-    return value.flatMap((entry) => renderValue(entry, sourcePath, indent));
+    return value.flatMap((entry) => renderValue(entry, rendering, indent));
   }
-  return [`${indent}${inspectionNote('one structured captured value', sourcePath)}`];
+  return [`${indent}${unsupportedNote(rendering, 'one structured captured value', value)}`];
 }
 
 /** One related issue's readable identity: link relation, key, summary, captured type and status. */
@@ -494,27 +565,34 @@ function relationshipLines(
   name: string,
   entries: readonly unknown[],
   textOfEntry: (entry: Readonly<Record<string, unknown>>) => string | null,
-  sourcePath: string,
+  rendering: Rendering,
 ): string[] {
   return [
     `- ${name}:`,
     ...entries.map((entry) => {
       const text = isObject(entry) ? textOfEntry(entry) : null;
       return text === null
-        ? `  ${inspectionNote(`one captured ${name} entry`, sourcePath)}`
+        ? `  ${unsupportedNote(rendering, `one captured ${name} entry`, entry)}`
         : `  - ${text}`;
     }),
   ];
 }
 
 /** One non-description captured field's readable lines. */
-function renderField(name: string, value: unknown, sourcePath: string): string[] {
+function renderField(name: string, value: unknown, rendering: Rendering): string[] {
+  if (rendering.unsupported === 'original-value' && (isObject(value) || Array.isArray(value))) {
+    return [`- ${name}:`, ...renderValue(value, rendering, '  ')];
+  }
   if (name === 'attachment') {
     // Attachments are captured evidence rather than provider administration: identify them
     // explicitly and point at the retained source instead of silently dropping their content.
     return [
       '- attachment:',
-      `  ${inspectionNote('the captured attachments (files or other non-text evidence)', sourcePath)}`,
+      `  ${unsupportedNote(
+        rendering,
+        'the captured attachments (files or other non-text evidence)',
+        value,
+      )}`,
     ];
   }
   if (name === 'parent') {
@@ -522,7 +600,7 @@ function renderField(name: string, value: unknown, sourcePath: string): string[]
       'parent',
       [value],
       (entry) => relatedIssueText(entry, null),
-      sourcePath,
+      rendering,
     );
   }
   if (name === 'subtasks') {
@@ -530,7 +608,7 @@ function renderField(name: string, value: unknown, sourcePath: string): string[]
       'subtasks',
       Array.isArray(value) ? value : [value],
       (entry) => relatedIssueText(entry, null),
-      sourcePath,
+      rendering,
     );
   }
   if (name === 'issuelinks') {
@@ -538,7 +616,7 @@ function renderField(name: string, value: unknown, sourcePath: string): string[]
       'issuelinks',
       Array.isArray(value) ? value : [value],
       issueLinkText,
-      sourcePath,
+      rendering,
     );
   }
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -548,29 +626,36 @@ function renderField(name: string, value: unknown, sourcePath: string): string[]
     const joined = value.join(', ');
     return joined.trim() === '' ? [] : [`- ${name}: ${joined}`];
   }
-  const rendered = renderValue(value, sourcePath, '  ');
+  const rendered = renderValue(value, rendering, '  ');
   return [`- ${name}:`, ...rendered];
 }
 
 /** The issue's summary, description and other meaningful captured fields as readable lines. */
-function renderIssue(issue: unknown, sourcePath: string): string[] {
+function renderIssue(issue: unknown, rendering: Rendering): string[] {
   if (!isObject(issue)) {
-    return [inspectionNote('the captured issue value', sourcePath)];
+    return [unsupportedNote(rendering, 'the captured issue value', issue)];
   }
   const fields = isObject(issue.fields) ? issue.fields : null;
   const lines: string[] = [];
   const summary = fields === null ? null : textOf(fields.summary);
   lines.push(`Summary: ${summary ?? '[no summary captured]'}`);
   if (fields === null) {
-    lines.push(inspectionNote('the captured issue fields', sourcePath));
+    lines.push(unsupportedNote(rendering, 'the captured issue fields', issue));
     return lines;
+  }
+  if (
+    rendering.unsupported === 'original-value' &&
+    summary === null &&
+    hasContent(fields.summary)
+  ) {
+    lines.push(...renderValue(fields.summary, rendering, '  '));
   }
   if (hasContent(fields.description)) {
     lines.push('Description:');
-    lines.push(...renderValue(fields.description, sourcePath, '  '));
+    lines.push(...renderValue(fields.description, rendering, '  '));
   } else if (fields.description !== undefined && fields.description !== null) {
     lines.push('Description:');
-    lines.push(`  ${inspectionNote('the captured description', sourcePath)}`);
+    lines.push(`  ${unsupportedNote(rendering, 'the captured description', fields.description)}`);
   }
   const other = Object.entries(fields).filter(
     ([name, value]) => name !== 'summary' && name !== 'description' && hasContent(value),
@@ -582,7 +667,7 @@ function renderIssue(issue: unknown, sourcePath: string): string[] {
   if (meaningful.length > 0) {
     lines.push('Other captured issue fields:');
     for (const [name, value] of meaningful) {
-      lines.push(...renderField(name, value, sourcePath));
+      lines.push(...renderField(name, value, rendering));
     }
   }
   if (omitted.length > 0) {
@@ -600,24 +685,32 @@ function commentIdentity(comment: Readonly<Record<string, unknown>>): string {
   const accountId = author === null ? null : textOf(author.accountId);
   const accountType = author === null ? null : textOf(author.accountType);
   const created = textOf(comment.created);
+  const source = textOf(comment.self);
   const attribution =
     name === null
       ? 'author not captured (origin uncertain)'
       : `${name}${accountId === null ? '' : ` <${accountId}>`}` +
         `${accountType === null ? '' : ` [${accountType} account]`}`;
-  return `Comment ${id} — ${attribution}${created === null ? '' : ` at ${created}`}`;
+  const identity = `Comment ${id} — ${attribution}${created === null ? '' : ` at ${created}`}`;
+  return source === null ? identity : `${identity} (source: ${source})`;
 }
 
-/** One comment's readable attribution, acknowledgement mark and body. */
+/** One comment's readable attribution, acknowledgement mark, notes and body. */
 function renderComment(
   comment: unknown,
   position: number,
   publications: readonly { readonly kind: string; readonly id: string }[],
-  sourcePath: string,
+  rendering: Rendering,
+  notes: readonly string[] = [],
 ): string[] {
   if (!isObject(comment)) {
     return [
-      `${String(position)}. ${inspectionNote('one captured conversation entry', sourcePath)}`,
+      `${String(position)}. ${unsupportedNote(
+        rendering,
+        'one captured conversation entry',
+        comment,
+      )}`,
+      ...notes.map((note) => `   ${note}`),
     ];
   }
   const id = textOf(comment.id);
@@ -632,16 +725,58 @@ function renderComment(
   const updateAuthor = isObject(comment.updateAuthor) ? comment.updateAuthor : null;
   const updated = textOf(comment.updated);
   const created = textOf(comment.created);
-  if (updated !== null && updated !== created && updateAuthor !== null) {
-    const editor = textOf(updateAuthor.displayName) ?? textOf(updateAuthor.name);
+  if (updated !== null && updated !== created) {
+    const editor =
+      updateAuthor === null
+        ? null
+        : (textOf(updateAuthor.displayName) ?? textOf(updateAuthor.name));
     lines.push(`   (edited${editor === null ? '' : ` by ${editor}`} at ${updated})`);
   }
-  if (hasContent(comment.body)) {
-    lines.push(...renderValue(comment.body, sourcePath, '   '));
+  lines.push(...notes.map((note) => `   ${note}`));
+  if (rendering.unsupported === 'original-value') {
+    // Retained entries have no fixed shape. Even a recognizable body does not establish that
+    // other fields contain only administration; preserve the complete entry rather than guess.
+    lines.push(`   ${unsupportedNote(rendering, 'one captured conversation entry', comment)}`);
+  } else if (hasContent(comment.body)) {
+    lines.push(...renderValue(comment.body, rendering, '   '));
+  } else if (comment.body === undefined || comment.body === null || comment.body === '') {
+    lines.push(`   ${inspectionNote('this comment body', rendering.sourcePath)}`);
   } else {
-    lines.push(`   ${inspectionNote('this comment body', sourcePath)}`);
+    lines.push(`   ${unsupportedNote(rendering, 'this comment body', comment.body)}`);
   }
   return lines;
+}
+
+/**
+ * One captured issue's readable requirements rendering for Review: requirements stay directly
+ * visible, and content the readable conversion cannot preserve falls back to its complete
+ * original captured value instead of an inspection pointer.
+ */
+export function capturedIssueText(issue: unknown, sourcePath: string): string {
+  return renderIssue(issue, losslessRendering(sourcePath)).join('\n');
+}
+
+/**
+ * One captured Jira conversation entry's readable attribution and complete body for Review: the
+ * captured source location and chronology stay attributed, and content the readable conversion
+ * cannot preserve falls back to its complete original captured value. Notes are provenance
+ * statements the presenting context adds after the entry's identity, such as an uncertain-origin
+ * label; they never replace or summarize the captured body.
+ */
+export function capturedCommentText(settings: {
+  readonly comment: unknown;
+  readonly position: number;
+  readonly sourcePath: string;
+  readonly publications: readonly { readonly kind: string; readonly id: string }[];
+  readonly notes?: readonly string[];
+}): string {
+  return renderComment(
+    settings.comment,
+    settings.position,
+    settings.publications,
+    losslessRendering(settings.sourcePath),
+    settings.notes ?? [],
+  ).join('\n');
 }
 
 /** The complete readable rendering of one captured `{ issue, conversation }` source. */
@@ -652,14 +787,21 @@ export function capturedSourceText(settings: {
   readonly publications: readonly { readonly kind: string; readonly id: string }[];
 }): string {
   const lines = [
-    ...renderIssue(settings.task, settings.sourcePath),
+    ...renderIssue(settings.task, inspectionRendering(settings.sourcePath)),
     '',
     settings.conversation.length === 0
       ? 'Conversation: none captured.'
       : 'Conversation (captured order, attributed):',
   ];
   settings.conversation.forEach((comment, index) => {
-    lines.push(...renderComment(comment, index + 1, settings.publications, settings.sourcePath));
+    lines.push(
+      ...renderComment(
+        comment,
+        index + 1,
+        settings.publications,
+        inspectionRendering(settings.sourcePath),
+      ),
+    );
   });
   return lines.join('\n');
 }
