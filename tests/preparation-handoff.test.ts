@@ -364,9 +364,9 @@ describe('preparation repair rounds', () => {
       basis: {
         authorIdentity: expect.any(String),
         repositoryRevision: '2'.repeat(40),
-        content: [],
       },
     });
+    expect(saved.basis).not.toHaveProperty('content');
     expect(saved).not.toHaveProperty('findings');
     expect(saved).not.toHaveProperty('priorFindings');
   });

@@ -3,13 +3,14 @@ import path from 'node:path';
 import type { GitAdapter } from '../../../adapters/git.js';
 import { recordIdentity } from '../report-feedback.js';
 import type { Selection } from '../select-task/artifacts.js';
-import type { AssessedContent, RetainedStageAuthorOutput } from './artifacts.js';
+import type { RetainedStageAuthorOutput } from './artifacts.js';
 
 /**
- * The observation and validation of the repository content and input identities one preparation
- * evaluation binds: the authored report, the captured source input and the exact repository paths
- * the assessment relied on. The stage actions own the decisions; these helpers observe what they
- * bind and reject content that no longer matches its evaluated revision.
+ * The observation and validation of the input identities and committed authored work one
+ * preparation evaluation binds: the authored report, the captured source input and the exact
+ * repository revision the declared work was committed at. The stage actions own the decisions;
+ * these helpers commit only declared work and reject a checkout whose declared paths no longer
+ * hold the committed bytes.
  */
 
 export { recordIdentity };
@@ -144,10 +145,9 @@ export function skipReferenceProblem(resolution: SkipReferenceResolution): strin
   return null;
 }
 
-/** The content observed before one evaluation, with the revision it was observed at. */
-export type RetainedEvaluationContent = {
+/** The revision one evaluation observes after committing the authored work it assesses. */
+export type CommittedAuthoredWork = {
   readonly revision: string;
-  readonly content: AssessedContent[];
 };
 
 /**
@@ -156,14 +156,14 @@ export type RetainedEvaluationContent = {
  * readable evidence. A path-scoped commit never absorbs unrelated staged work. A named deletion is
  * committed while the checkout still tracks the path; an interrupted evaluation that already
  * committed it is observed instead of re-staged, so a replay neither fails on the absent path nor
- * commits anything else. Only an applicable prototype retains assessed content - its inspected
- * sources, bound to the observed revision; a document stage writes no per-document binding.
+ * commits anything else. The action records no per-file content: the committed revision and the
+ * declared paths are the whole commit-integrity basis.
  */
-export async function retainEvaluationContent(settings: {
+export async function commitAuthoredWork(settings: {
   readonly git: GitAdapter;
   readonly worktree: string;
   readonly author: RetainedStageAuthorOutput;
-}): Promise<RetainedEvaluationContent> {
+}): Promise<CommittedAuthoredWork> {
   const { git, worktree, author } = settings;
   const declared = [...author.documents.map(({ path: value }) => value), ...author.sourcePaths];
   const paths: string[] = [];
@@ -210,16 +210,6 @@ export async function retainEvaluationContent(settings: {
       revision = saved.value.headRevision;
     }
   }
-  const content: AssessedContent[] = [];
-  if (author.outcome === 'authored' && author.stage === 'prototype') {
-    for (const relative of paths) {
-      content.push({
-        path: relative,
-        revision,
-        exists: await isFile(path.join(worktree, relative)),
-      });
-    }
-  }
   if (author.outcome === 'skip-proposed') {
     // Supplied references are readable evidence the evaluator may use; an unreadable reference is
     // invalid and an empty list is valid. They create no binding.
@@ -231,7 +221,7 @@ export async function retainEvaluationContent(settings: {
       }
     }
   }
-  return { revision, content };
+  return { revision };
 }
 
 /** The error every stale evaluated content reports: a current decision must be obtained. */
@@ -248,7 +238,8 @@ function changed(): Error {
  * the evaluator assessed as present and that was later deleted needs a current decision, while a
  * deletion the evaluator assessed as absent stays valid until the path is recreated. An
  * uncommitted edit after the observation needs a current decision, while a submission that
- * declares no changed work has nothing to check.
+ * declares no changed work has nothing to check. This transient commit-integrity check creates no
+ * persisted file binding, never reads browser evidence and never limits assessment scope.
  */
 export async function requireDeclaredWork(settings: {
   readonly git: GitAdapter;
@@ -260,7 +251,7 @@ export async function requireDeclaredWork(settings: {
   if (author.outcome !== 'authored') {
     return;
   }
-  const content: AssessedContent[] = [];
+  const checked = new Set<string>();
   for (const value of [...author.documents.map(({ path: file }) => file), ...author.sourcePaths]) {
     const relative = checkoutRelative(worktree, value);
     if (relative === null) {
@@ -269,42 +260,14 @@ export async function requireDeclaredWork(settings: {
           'decision is required.',
       );
     }
-    if (content.some((entry) => entry.path === relative)) {
-      continue;
-    }
-    const evaluated = await git.readFileAtRevision(worktree, settings.revision, relative);
-    content.push({
-      path: relative,
-      revision: settings.revision,
-      exists: evaluated.ok,
-    });
-  }
-  await requireEvaluationContent({ git, worktree, content });
-}
-
-/**
- * Reject repository content that no longer matches the evaluated revision. Comparing the file
- * content at the observed revision, rather than the checkout's current head, preserves a valid
- * decision when an unrelated commit moves HEAD and invalidates it when the assessed path changed.
- */
-export async function requireEvaluationContent(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
-  readonly content: readonly AssessedContent[];
-}): Promise<void> {
-  const { git, worktree, content } = settings;
-  for (const entry of content) {
-    const relative = checkoutRelative(worktree, entry.path);
-    if (relative === null) {
-      throw changed();
-    }
+    if (checked.has(relative)) continue;
+    checked.add(relative);
     const file = path.join(worktree, relative);
-    if (!entry.exists) {
+    const evaluated = await git.readFileAtRevision(worktree, settings.revision, relative);
+    if (!evaluated.ok) {
       if (await exists(file)) throw changed();
       continue;
     }
-    const saved = await git.readFileAtRevision(worktree, entry.revision, relative);
-    if (!saved.ok) throw changed();
     let current: string;
     try {
       current = await readFile(file, 'utf8');
@@ -312,6 +275,6 @@ export async function requireEvaluationContent(settings: {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw changed();
       throw error;
     }
-    if (saved.value !== current) throw changed();
+    if (evaluated.value !== current) throw changed();
   }
 }

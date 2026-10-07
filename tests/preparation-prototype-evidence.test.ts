@@ -2,9 +2,10 @@
  * Focused integration tests: the Storybook Refinement stage's producer-owned observation contract
  * over real temporary Git repositories. Substituted agent responses stand in for the
  * browser-capable profile invocations: they establish that applicable prototype work needs
- * readable, current author and evaluator evidence, that changed content needs fresh observation
- * and that an evaluated applicability skip needs no preview. The separate host integration check
- * exercises the real prototype profiles, Playwright MCP and an isolated Storybook fixture.
+ * readable author and evaluator browser evidence, that assessment follows the current worktree and
+ * preview rather than a per-file inventory, and that an evaluated applicability skip needs no
+ * preview. The separate host integration check exercises the real prototype profiles, Playwright
+ * MCP and an isolated Storybook fixture.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -181,12 +182,15 @@ function runnerOf(report: unknown): {
   };
 }
 
-/** One authored prototype report naming a story the author committed and observed. */
-function authoredReport(observation: string): Record<string, unknown> {
+/** One authored prototype report naming the work it commits and its browser evidence. */
+function authoredReport(
+  observation: string,
+  sourcePaths: readonly string[] = ['stories/journey.stories.js'],
+): Record<string, unknown> {
   return {
     outcome: 'authored',
     documents: [],
-    sourcePaths: ['stories/journey.stories.js'],
+    sourcePaths: [...sourcePaths],
     plan: [],
     skip: null,
     question: null,
@@ -205,23 +209,19 @@ function evaluationReport(verdict: string, observation: string | null): Record<s
 }
 
 describe('prototype observation evidence', () => {
-  it.each(['malformed JSON', 'unreadable file', 'stale content', 'missing reference'])(
+  it.each(['malformed JSON', 'unreadable file', 'missing reference'])(
     'routes retained author observation failures to the author after repair: %s',
     async (failure) => {
       const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
       await mkdir(path.join(worktree, 'stories'), { recursive: true });
-      const previous = await commitFile(worktree, 'stories/journey.stories.js', 'old story\n');
-      const revision = await commitFile(worktree, 'stories/journey.stories.js', 'new story\n');
-      const content = [{ path: 'stories/journey.stories.js', revision }];
+      await commitFile(worktree, 'stories/journey.stories.js', 'new story\n');
       const authorObservation = await savePrototypeObservation({
         roundDirectory,
         role: 'author',
-        content,
       });
       const evaluatorObservation = await savePrototypeObservation({
         roundDirectory,
         role: 'evaluator',
-        content,
       });
       // Relative declarations must retain the resolved observation file, not a cwd-relative path.
       const authorReport = authoredReport(path.relative(roundDirectory, authorObservation));
@@ -250,15 +250,8 @@ describe('prototype observation evidence', () => {
         reason = 'author report carries no observation';
         await writeFile(source, output);
       } else {
-        output =
-          failure === 'malformed JSON'
-            ? '{broken author observation\n'
-            : JSON.stringify({
-                ...JSON.parse(originalObservation),
-                content: [{ path: 'stories/journey.stories.js', revision: previous, exists: true }],
-              });
-        reason =
-          failure === 'malformed JSON' ? 'not valid JSON' : 'differs from the evaluated revision';
+        output = '{broken author observation\n';
+        reason = 'not valid JSON';
         await writeFile(source, output);
       }
       const evaluation = runnerOf(evaluationReport('accepted', evaluatorObservation));
@@ -308,7 +301,6 @@ describe('prototype observation evidence', () => {
       const nextObservation = await savePrototypeObservation({
         roundDirectory: nextDirectory,
         role: 'author',
-        content,
       });
       await writeFile(
         path.join(stageRoot, 'state', 'current-round.json'),
@@ -341,17 +333,41 @@ describe('prototype observation evidence', () => {
     },
   );
 
-  it('requires the author to bind a committed observation for applicable prototype work', async () => {
+  it('tolerates former per-file observation content as retained history', async () => {
+    const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+    await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+    const authorObservation = await savePrototypeObservation({ roundDirectory, role: 'author' });
+    // The removed inventory may be present, malformed or no longer match the current worktree; the
+    // retained reader keeps it as opaque history and validates only the current fields.
+    const retained = {
+      ...(JSON.parse(await readFile(authorObservation, 'utf8')) as Record<string, unknown>),
+      content: [{ path: 'stories/journey.stories.js' }],
+    };
+    await writeFile(authorObservation, JSON.stringify(retained));
+    await expect(
+      createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf(authoredReport(authorObservation)).runner,
+      })({ task: 'propose' }),
+    ).resolves.toBe('authored');
+    const stageRoot = path.join(root, 'prototype');
+    await expect(readStageArtifact(stageRoot, 1, stageAuthorArtifact)).resolves.toMatchObject({
+      outcome: 'authored',
+      observation: { path: authorObservation },
+    });
+    // Reading a retained record never rewrites it: the former inventory stays byte-for-byte.
+    expect(JSON.parse(await readFile(authorObservation, 'utf8'))).toEqual(retained);
+    await expect(readReportFeedback(stageRoot)).resolves.toEqual([]);
+  });
+
+  it('requires the author to save a readable observation for applicable prototype work', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
     await writeFile(path.join(worktree, 'stories', 'journey.stories.js'), 'export const j = 1;\n');
-    const baseRevision = await headOf(worktree);
-    // The record names a revision that does not yet hold the story the author is submitting.
-    const staleRecord = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision: baseRevision, exists: true }],
-    });
     const author = (report: unknown) =>
       createStageAuthor({
         selectionFile,
@@ -360,31 +376,15 @@ describe('prototype observation evidence', () => {
         publish: () => undefined,
         runner: runnerOf(report).runner,
       })({ task: 'propose' });
-    await expect(author(authoredReport(staleRecord))).rejects.toThrow(
-      /does not retain "stories\/journey\.stories\.js"; commit the inspected content/,
-    );
-
-    // A committed story with a fresh record that names that commit is usable author work.
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
-    const record = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
-    });
-    const { runner } = runnerOf(authoredReport(record));
+    // A declared record that does not exist cannot authorize the submitted work.
     await expect(
-      createStageAuthor({
-        selectionFile,
-        stage: 'prototype',
-        git,
-        publish: () => undefined,
-        runner,
-      })({ task: 'propose' }),
-    ).resolves.toBe('authored');
+      author(authoredReport(path.join(roundDirectory, 'observations', 'missing.json'))),
+    ).rejects.toThrow(/does not exist/);
+
+    // A committed story with its own readable record is usable author work.
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+    const record = await savePrototypeObservation({ roundDirectory, role: 'author' });
+    await expect(author(authoredReport(record))).resolves.toBe('authored');
     const saved = await readStageArtifact(path.join(root, 'prototype'), 1, stageAuthorArtifact);
     expect(saved).toMatchObject({
       outcome: 'authored',
@@ -396,16 +396,8 @@ describe('prototype observation evidence', () => {
   it('requires an observation for applicable work and rejects evidence on other stages', async () => {
     const { worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
-    const record = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
-    });
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+    const record = await savePrototypeObservation({ roundDirectory, role: 'author' });
     const prototypeAuthor = (report: unknown) =>
       createStageAuthor({
         selectionFile,
@@ -466,11 +458,7 @@ describe('prototype observation evidence', () => {
   it('rejects a record whose screenshots are not readable rendered images', async () => {
     const { worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     const notAnImage = path.join(roundDirectory, 'observations', 'author-journey.png');
     await mkdir(path.dirname(notAnImage), { recursive: true });
     await writeFile(notAnImage, 'not an image\n');
@@ -479,7 +467,6 @@ describe('prototype observation evidence', () => {
       record,
       JSON.stringify({
         role: 'author',
-        content: [{ path: 'stories/journey.stories.js', revision, exists: true }],
         preview: { command: 'npm run storybook', url: 'http://localhost:6100' },
         journeys: [
           {
@@ -507,24 +494,8 @@ describe('prototype observation evidence', () => {
   it('accepts applicable prototype work only with both roles evidence and retains the references', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    // The story changed after this earlier revision; evidence bound to it is stale.
-    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 0;\n');
-    const previous = await headOf(worktree);
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
-    const authorObservation = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
-    });
-    const evaluatorObservation = await savePrototypeObservation({
-      roundDirectory,
-      role: 'evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision }],
-    });
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+    const authorObservation = await savePrototypeObservation({ roundDirectory, role: 'author' });
     await createStageAuthor({
       selectionFile,
       stage: 'prototype',
@@ -533,38 +504,34 @@ describe('prototype observation evidence', () => {
       runner: runnerOf(authoredReport(authorObservation)).runner,
     })({ task: 'propose' });
     const stageRoot = path.join(root, 'prototype');
+    const evaluator = (report: Record<string, unknown>) =>
+      createStageEvaluator({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf(report).runner,
+      })();
 
     // Acceptance without the evaluator's own browser evidence is unusable.
-    await expect(
-      createStageEvaluator({
-        selectionFile,
-        stage: 'prototype',
-        git,
-        publish: () => undefined,
-        runner: runnerOf(evaluationReport('accepted', null)).runner,
-      })(),
-    ).rejects.toThrow(/needs the evaluator.s own saved browser observation/);
+    await expect(evaluator(evaluationReport('accepted', null))).rejects.toThrow(
+      /needs the evaluator.s own saved browser observation/,
+    );
 
-    // Stale evidence: the record names a revision whose story content differs from the assessment.
-    const stale = await savePrototypeObservation({
+    // An unreadable evaluator record is unusable evidence: the exact response and reason are
+    // retained for the evaluator's next permitted invocation.
+    const evaluatorObservation = await savePrototypeObservation({
       roundDirectory,
       role: 'evaluator',
-      name: 'stale-evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision: previous }],
     });
-    const staleReport = evaluationReport('accepted', stale);
-    await expect(
-      createStageEvaluator({
-        selectionFile,
-        stage: 'prototype',
-        git,
-        publish: () => undefined,
-        runner: runnerOf(staleReport).runner,
-      })(),
-    ).rejects.toThrow(/differs from the evaluated revision/);
-
-    // The semantic violation retains the evaluator's exact response and reason for its next
-    // permitted invocation; the earlier missing-observation rejection stays outstanding too.
+    await writeFile(
+      path.join(roundDirectory, 'observations', 'evaluator-journey.png'),
+      'not an image\n',
+    );
+    const brokenReport = evaluationReport('accepted', evaluatorObservation);
+    await expect(evaluator(brokenReport)).rejects.toThrow(
+      /is not readable rendered image evidence/,
+    );
     const evaluatorScope = stageReportScope({
       project: path.basename(path.dirname(root)),
       workId: 'NEX-1',
@@ -572,21 +539,28 @@ describe('prototype observation evidence', () => {
       stage: 'prototype',
       role: 'evaluator',
     });
-    const staleRejection = (
-      await outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope })
-    ).find((entry) => entry.record.reason.includes('differs from the evaluated revision'));
-    expect(staleRejection?.record).toMatchObject({
+    expect(
+      (await outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope })).find(
+        (entry) => entry.record.reason.includes('is not readable rendered image evidence'),
+      )?.record,
+    ).toMatchObject({
       scope: evaluatorScope,
       operation: 'stage-evaluator',
-      output: JSON.stringify(staleReport),
+      output: JSON.stringify(brokenReport),
       source: null,
-      reason: expect.stringContaining('differs from the evaluated revision'),
+      reason: expect.stringContaining('is not readable rendered image evidence'),
     });
     await expect(
       outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
     ).resolves.toHaveLength(2);
 
+    // The repaired evidence saves the verdict and retires exactly the rejections it answered.
     const acceptedContexts: string[] = [];
+    const fresh = await savePrototypeObservation({
+      roundDirectory,
+      role: 'evaluator',
+      name: 'fresh-evaluator',
+    });
     await expect(
       createStageEvaluator({
         selectionFile,
@@ -597,22 +571,17 @@ describe('prototype observation evidence', () => {
           async run(request) {
             acceptedContexts.push(request.context);
             await writeAssignedReport(request.context, '# Accepted evaluator report\n');
-            return ok({
-              output: JSON.stringify(evaluationReport('accepted', evaluatorObservation)),
-            });
+            return ok({ output: JSON.stringify(evaluationReport('accepted', fresh)) });
           },
         },
       })(),
     ).resolves.toBe('accepted');
-    // The next permitted evaluator invocation received the rejected bytes and violated rule, and
-    // its validated saved replacement recorded the corrections that retired the feedback.
     const acceptedContext = acceptedContexts.join('\n');
     expect(acceptedContext).toContain(
       'Outstanding report rejections of this report responsibility',
     );
-    expect(acceptedContext).toContain('differs from the evaluated revision');
+    expect(acceptedContext).toContain('is not readable rendered image evidence');
     expect(acceptedContext).toContain('Rejected output (exact returned bytes):');
-    expect(acceptedContext).toContain(stale);
     await expect(
       outstandingReportFeedback({ areaRoot: stageRoot, scope: evaluatorScope }),
     ).resolves.toEqual([]);
@@ -621,7 +590,7 @@ describe('prototype observation evidence', () => {
     ).toHaveLength(2);
     await expect(readStageArtifact(stageRoot, 1, stageEvaluationArtifact)).resolves.toMatchObject({
       verdict: 'accepted',
-      observation: { path: evaluatorObservation },
+      observation: { path: fresh },
     });
 
     await createStageResult({
@@ -633,10 +602,10 @@ describe('prototype observation evidence', () => {
     const result = await readStageArtifact(stageRoot, 1, stageResultArtifact);
     expect(result).toMatchObject({
       outcome: 'accepted',
-      prototype: { branch: 'task/NEX-1', revision },
+      prototype: { branch: 'task/NEX-1' },
       prototypeObservations: [
         { role: 'author', path: authorObservation },
-        { role: 'evaluator', path: evaluatorObservation },
+        { role: 'evaluator', path: fresh },
       ],
       sourcePaths: ['stories/journey.stories.js'],
     });
@@ -702,41 +671,40 @@ describe('prototype observation evidence', () => {
     });
   });
 
-  it('requires fresh evidence after the prototype content changes', async () => {
+  it('assesses declared edits, broader browser evidence and empty declarations without inventory rejection', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    // Two edited files: the changed-path declarations commit this work and never bound the
+    // browser assessment, which can cover any additional current work in the worktree.
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     const revision = await commitFile(
       worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
+      'stories/summary.stories.js',
+      'export const s = 1;\n',
     );
-    const authorObservation = await savePrototypeObservation({
+    const authorObservation = await savePrototypeObservation({ roundDirectory, role: 'author' });
+    const evaluatorObservation = await savePrototypeObservation({
       roundDirectory,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
+      role: 'evaluator',
     });
     await createStageAuthor({
       selectionFile,
       stage: 'prototype',
       git,
       publish: () => undefined,
-      runner: runnerOf(authoredReport(authorObservation)).runner,
+      runner: runnerOf(
+        authoredReport(authorObservation, [
+          'stories/journey.stories.js',
+          'stories/summary.stories.js',
+        ]),
+      ).runner,
     })({ task: 'propose' });
     await createStageEvaluator({
       selectionFile,
       stage: 'prototype',
       git,
       publish: () => undefined,
-      runner: runnerOf(
-        evaluationReport(
-          'accepted',
-          await savePrototypeObservation({
-            roundDirectory,
-            role: 'evaluator',
-            content: [{ path: 'stories/journey.stories.js', revision }],
-          }),
-        ),
-      ).runner,
+      runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
     })();
     await createStageResult({
       selectionFile,
@@ -744,16 +712,42 @@ describe('prototype observation evidence', () => {
       git,
       publish: () => undefined,
     })({ outcome: 'accepted' });
-
-    // A response round changes the story but reuses the earlier observation: the stale reference
-    // cannot authorize the changed content.
-    const changed = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 2;\n',
-    );
     const stageRoot = path.join(root, 'prototype');
-    await mkdir(path.join(stageRoot, 'artifacts', '2'), { recursive: true });
+    const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
+    await expect(readStageArtifact(stageRoot, 1, stageResultArtifact)).resolves.toMatchObject({
+      outcome: 'accepted',
+      prototype: { branch: 'task/NEX-1', revision },
+      sourcePaths: ['stories/journey.stories.js', 'stories/summary.stories.js'],
+      prototypeObservations: [
+        { role: 'author', path: authorObservation },
+        { role: 'evaluator', path: evaluatorObservation },
+      ],
+    });
+    // Replay and downstream continuation revalidate the retained evidence without comparing a
+    // changed-path list to the observation.
+    await expect(
+      createStageResult({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+      })({ outcome: 'accepted' }),
+    ).resolves.toBe('saved');
+    await expect(
+      readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
+
+    // Adequate existing prototype work with empty changed-path declarations is still assessed
+    // against the current worktree and preview by both roles.
+    const roundTwo = roundArtifactDirectory(stageRoot, 2);
+    const roundTwoAuthor = await savePrototypeObservation({
+      roundDirectory: roundTwo,
+      role: 'author',
+    });
+    const roundTwoEvaluator = await savePrototypeObservation({
+      roundDirectory: roundTwo,
+      role: 'evaluator',
+    });
     await writeFile(
       path.join(stageRoot, 'state', 'current-round.json'),
       JSON.stringify({
@@ -763,30 +757,49 @@ describe('prototype observation evidence', () => {
         profiles: { author: 'nexus-sol', evaluator: 'nexus-sol' },
       }),
     );
-    const respond = (report: unknown) =>
-      createStageAuthor({
+    await createStageAuthor({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf({
+        outcome: 'authored',
+        documents: [],
+        sourcePaths: [],
+        plan: [],
+        skip: null,
+        question: null,
+        upstream: null,
+        observation: { path: roundTwoAuthor },
+      }).runner,
+    })({ task: 'respond' });
+    await createStageEvaluator({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf(evaluationReport('accepted', roundTwoEvaluator)).runner,
+    })();
+    await expect(
+      createStageResult({
         selectionFile,
         stage: 'prototype',
         git,
         publish: () => undefined,
-        runner: runnerOf(report).runner,
-      })({ task: 'respond' });
-    const roundTwo = roundArtifactDirectory(stageRoot, 2);
-    // A record saved for this round that still names the earlier revision is stale evidence.
-    const staleInRoundTwo = await savePrototypeObservation({
-      roundDirectory: roundTwo,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
+      })({ outcome: 'accepted' }),
+    ).resolves.toBe('saved');
+    await expect(readStageArtifact(stageRoot, 2, stageResultArtifact)).resolves.toMatchObject({
+      outcome: 'accepted',
+      documents: [],
+      sourcePaths: [],
+      prototypeObservations: [
+        { role: 'author', path: roundTwoAuthor },
+        { role: 'evaluator', path: roundTwoEvaluator },
+      ],
     });
-    await expect(respond(authoredReport(staleInRoundTwo))).rejects.toThrow(
-      /differs from the content being submitted/,
-    );
-    const fresh = await savePrototypeObservation({
-      roundDirectory: roundTwo,
-      role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision: changed }],
-    });
-    await expect(respond(authoredReport(fresh))).resolves.toBe('authored');
+    await expect(
+      readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
   });
 
   it('supplies the observation contract and round artifact area to the prototype roles only', async () => {
@@ -803,7 +816,7 @@ describe('prototype observation evidence', () => {
     ).rejects.toThrow(/does not exist/);
     expect(captured.contexts[0]).toContain('Prototype observation contract');
     expect(captured.contexts[0]).toContain(roundDirectory);
-    expect(captured.contexts[0]).toContain('Commit the stage-owned prototype paths');
+    expect(captured.contexts[0]).toContain('Assess the current worktree and running preview');
 
     await commitFile(worktree, 'readme.md', 'initial\nrequirements\n');
     const requirementsRoot = path.join(path.dirname(selectionFile), 'NEX-1', 'requirements');
@@ -840,23 +853,21 @@ describe('prototype observation evidence', () => {
     expect(requirements.contexts[0]).not.toContain('Prototype observation contract');
   });
 
-  it('retains a prototype deletion committed during the invocation through author replay', async () => {
-    const { worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+  it('retains a prototype deletion through the evaluated revision after the invocation', async () => {
+    const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
     await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 0;\n');
     let record = '';
-    let deletion = '';
     const runner: AgentRoleRunner = {
       async run(request) {
         await writeAssignedReport(request.context, '# Removed the adapted story\n');
         await rm(path.join(worktree, 'stories', 'journey.stories.js'));
         await gitCommand(['add', 'stories/journey.stories.js'], worktree);
         await gitCommand(['commit', '--quiet', '--message', 'remove the adapted story'], worktree);
-        deletion = await headOf(worktree);
         record = await savePrototypeObservation({
           roundDirectory,
           role: 'author',
-          content: [{ path: 'stories/journey.stories.js', revision: deletion, exists: false }],
+          name: 'deletion',
         });
         return ok({ output: JSON.stringify(authoredReport(record)) });
       },
@@ -870,55 +881,126 @@ describe('prototype observation evidence', () => {
         runner,
       })({ task: 'propose' }),
     ).resolves.toBe('authored');
-    const author = (report: unknown) =>
-      createStageAuthor({
-        selectionFile,
-        stage: 'prototype',
-        git,
-        publish: () => undefined,
-        runner: runnerOf(report).runner,
-      })({ task: 'propose' });
-
-    // The validated author record retains stage ownership even before evaluation is saved.
-    await expect(author(authoredReport(record))).resolves.toBe('authored');
-    // Ownership does not require the old screenshot to survive when a repair replaces it with
-    // fresh evidence for the same deletion.
-    await rm(path.join(roundDirectory, 'observations', 'author-journey.png'));
-    record = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      name: 'replay',
-      content: [{ path: 'stories/journey.stories.js', revision: deletion, exists: false }],
-    });
-    await expect(author(authoredReport(record))).resolves.toBe('authored');
-    const evaluatorObservation = await savePrototypeObservation({
-      roundDirectory,
-      role: 'evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision: deletion, exists: false }],
-    });
     await createStageEvaluator({
       selectionFile,
       stage: 'prototype',
       git,
       publish: () => undefined,
-      runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
+      runner: runnerOf(
+        evaluationReport(
+          'accepted',
+          await savePrototypeObservation({ roundDirectory, role: 'evaluator' }),
+        ),
+      ).runner,
     })();
     await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
       outcome: 'accepted',
     });
-    // Evaluation history retains ownership too, including after an unrelated commit.
     await commitFile(worktree, 'notes.md', 'later work\n');
-    await expect(author(authoredReport(record))).resolves.toBe('authored');
 
+    // The evaluated repository revision recorded the committed deletion, so a later authored
+    // round still owns the absent path without any per-file browser inventory.
+    const stageRoot = path.join(root, 'prototype');
+    const roundTwo = roundArtifactDirectory(stageRoot, 2);
+    const roundTwoRecord = await savePrototypeObservation({
+      roundDirectory: roundTwo,
+      role: 'author',
+    });
+    await writeFile(
+      path.join(stageRoot, 'state', 'current-round.json'),
+      JSON.stringify({
+        stage: 'prototype',
+        round: 2,
+        route: 'next',
+        profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
+      }),
+    );
+    await expect(
+      createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf(authoredReport(roundTwoRecord)).runner,
+      })({ task: 'respond' }),
+    ).resolves.toBe('authored');
+    await expect(readStageArtifact(stageRoot, 2, stageAuthorArtifact)).resolves.toMatchObject({
+      outcome: 'authored',
+      sourcePaths: ['stories/journey.stories.js'],
+    });
+
+    // A path no retained declaration ever committed stays unowned even when an observation names
+    // it: browser evidence supplies no path ownership.
     const untracked = await savePrototypeObservation({
-      roundDirectory,
+      roundDirectory: roundTwo,
       role: 'author',
       name: 'untracked',
-      content: [{ path: 'stories/never-committed.js', revision: deletion, exists: false }],
     });
     await expect(
-      author({ ...authoredReport(untracked), sourcePaths: ['stories/never-committed.js'] }),
-    ).rejects.toThrow(/was not tracked before revision/);
+      createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf({
+          ...authoredReport(untracked),
+          sourcePaths: ['stories/never-committed.js'],
+        }).runner,
+      })({ task: 'respond' }),
+    ).rejects.toThrow(/was not tracked before this edit/);
+  });
+
+  it('preserves an unfinished committed deletion and asks for attention instead of inferring ownership', async () => {
+    const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+    await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 0;\n');
+    let record = '';
+    const runner: AgentRoleRunner = {
+      async run(request) {
+        await writeAssignedReport(request.context, '# Removed the adapted story\n');
+        await rm(path.join(worktree, 'stories', 'journey.stories.js'));
+        await gitCommand(['add', 'stories/journey.stories.js'], worktree);
+        await gitCommand(['commit', '--quiet', '--message', 'remove the adapted story'], worktree);
+        record = await savePrototypeObservation({
+          roundDirectory,
+          role: 'author',
+          name: 'deletion',
+        });
+        return ok({ output: JSON.stringify(authoredReport(record)) });
+      },
+    };
+    await expect(
+      createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner,
+      })({ task: 'propose' }),
+    ).resolves.toBe('authored');
+
+    // No evaluation recorded the deletion yet, so re-declaring it receives the existing
+    // attention/rejection handling: the work is preserved and no ownership is inferred from the
+    // absent path.
+    await expect(
+      createStageAuthor({
+        selectionFile,
+        stage: 'prototype',
+        git,
+        publish: () => undefined,
+        runner: runnerOf(authoredReport(record)).runner,
+      })({ task: 'propose' }),
+    ).rejects.toThrow(/was not tracked before this edit/);
+    const authorScope = stageReportScope({
+      project: path.basename(path.dirname(root)),
+      workId: 'NEX-1',
+      area: path.join(root, 'prototype'),
+      stage: 'prototype',
+      role: 'author',
+    });
+    await expect(
+      outstandingReportFeedback({ areaRoot: path.join(root, 'prototype'), scope: authorScope }),
+    ).resolves.toHaveLength(1);
   });
 
   it('accepts a document the author deleted and committed during the invocation', async () => {
@@ -981,15 +1063,10 @@ describe('prototype observation evidence', () => {
       git,
       publish: () => undefined,
     })({ outcome: 'accepted' });
-    const deletion = await headOf(worktree);
     await commitFile(worktree, 'notes.md', 'unrelated later work\n');
-    const observation = await savePrototypeObservation({
-      roundDirectory,
-      role: 'author',
-      content: [{ path: 'docs/ux.md', revision: deletion, exists: false }],
-    });
-    // An ancestral deletion commit establishes absence, but does not transfer Requirements'
-    // ownership to a fresh prototype author. Both document and source declarations reject it.
+    const observation = await savePrototypeObservation({ roundDirectory, role: 'author' });
+    // An ancestral deletion commit established via another stage's evaluation does not transfer
+    // Requirements' ownership to a fresh prototype author. Both declaration forms reject it.
     for (const declaration of [
       { documents: [{ path: 'docs/ux.md' }], sourcePaths: [] },
       { documents: [], sourcePaths: ['docs/ux.md'] },
@@ -1009,32 +1086,19 @@ describe('prototype observation evidence', () => {
   it('keeps the evaluator observation on a defect report and an upstream return', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 0;\n');
-    const previous = await headOf(worktree);
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     await createStageAuthor({
       selectionFile,
       stage: 'prototype',
       git,
       publish: () => undefined,
       runner: runnerOf(
-        authoredReport(
-          await savePrototypeObservation({
-            roundDirectory,
-            role: 'author',
-            content: [{ path: 'stories/journey.stories.js', revision }],
-          }),
-        ),
+        authoredReport(await savePrototypeObservation({ roundDirectory, role: 'author' })),
       ).runner,
     })({ task: 'propose' });
     const evaluatorObservation = await savePrototypeObservation({
       roundDirectory,
       role: 'evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision }],
     });
     const evaluator = (report: Record<string, unknown>) =>
       createStageEvaluator({
@@ -1058,21 +1122,6 @@ describe('prototype observation evidence', () => {
       observation: { path: evaluatorObservation },
     });
 
-    // A retained defect observation must still bind the assessed revision.
-    const stale = await savePrototypeObservation({
-      roundDirectory,
-      role: 'evaluator',
-      name: 'stale-defect',
-      content: [{ path: 'stories/journey.stories.js', revision: previous }],
-    });
-    await expect(
-      evaluator({
-        verdict: 'changes-requested',
-        observation: { path: stale },
-        upstream: null,
-      }),
-    ).rejects.toThrow(/differs from the evaluated revision/);
-
     // An upstream return that performed a preview keeps the observed evidence too.
     await expect(
       evaluator({
@@ -1090,15 +1139,10 @@ describe('prototype observation evidence', () => {
     // Finalizing acceptance refuses a record that disappeared after the evaluation.
     const first = await prototypeWorkspace();
     await mkdir(path.join(first.worktree, 'stories'), { recursive: true });
-    const firstRevision = await commitFile(
-      first.worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(first.worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     const firstAuthor = await savePrototypeObservation({
       roundDirectory: first.roundDirectory,
       role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision: firstRevision }],
     });
     await createStageAuthor({
       selectionFile: first.selectionFile,
@@ -1118,7 +1162,6 @@ describe('prototype observation evidence', () => {
           await savePrototypeObservation({
             roundDirectory: first.roundDirectory,
             role: 'evaluator',
-            content: [{ path: 'stories/journey.stories.js', revision: firstRevision }],
           }),
         ),
       ).runner,
@@ -1136,11 +1179,7 @@ describe('prototype observation evidence', () => {
     // A downstream current decision goes stale when the retained records are gone.
     const second = await prototypeWorkspace();
     await mkdir(path.join(second.worktree, 'stories'), { recursive: true });
-    const secondRevision = await commitFile(
-      second.worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(second.worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     await createStageAuthor({
       selectionFile: second.selectionFile,
       stage: 'prototype',
@@ -1151,7 +1190,6 @@ describe('prototype observation evidence', () => {
           await savePrototypeObservation({
             roundDirectory: second.roundDirectory,
             role: 'author',
-            content: [{ path: 'stories/journey.stories.js', revision: secondRevision }],
           }),
         ),
       ).runner,
@@ -1159,7 +1197,6 @@ describe('prototype observation evidence', () => {
     const secondEvaluator = await savePrototypeObservation({
       roundDirectory: second.roundDirectory,
       role: 'evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision: secondRevision }],
     });
     await createStageEvaluator({
       selectionFile: second.selectionFile,
@@ -1197,20 +1234,61 @@ describe('prototype observation evidence', () => {
     });
   });
 
-  it.each(['missing-record', 'empty', 'omitted'])(
+  it('resolves a retained result without saved references through the producing outcomes', async () => {
+    const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+    await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+    const authorObservation = await savePrototypeObservation({ roundDirectory, role: 'author' });
+    await createStageAuthor({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf(authoredReport(authorObservation)).runner,
+    })({ task: 'propose' });
+    const evaluatorObservation = await savePrototypeObservation({
+      roundDirectory,
+      role: 'evaluator',
+    });
+    await createStageEvaluator({
+      selectionFile,
+      stage: 'prototype',
+      git,
+      publish: () => undefined,
+      runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
+    })();
+    await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+      outcome: 'accepted',
+    });
+    const stageRoot = path.join(root, 'prototype');
+    const selection = JSON.parse(await readFile(selectionFile, 'utf8'));
+
+    // A former result may retain no observation references: each role's evidence resolves from
+    // the producing outcome of the same round, never from a searched or guessed file.
+    const resultFile = path.join(stageRoot, 'artifacts', '1', 'result.json');
+    const saved = JSON.parse(await readFile(resultFile, 'utf8')) as Record<string, unknown>;
+    delete saved.prototypeObservations;
+    await writeFile(resultFile, JSON.stringify(saved));
+    await writeFile(path.join(stageRoot, 'state', 'result.json'), JSON.stringify(saved));
+    await expect(
+      readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
+    await expect(
+      createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+        outcome: 'accepted',
+      }),
+    ).resolves.toBe('saved');
+  });
+
+  it.each(['conflicting', 'empty', 'omitted'])(
     'refuses a retained applicable prototype with %s observation evidence',
     async (mode) => {
       const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
       await mkdir(path.join(worktree, 'stories'), { recursive: true });
-      const revision = await commitFile(
-        worktree,
-        'stories/journey.stories.js',
-        'export const j = 1;\n',
-      );
+      await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
       const authorObservation = await savePrototypeObservation({
         roundDirectory,
         role: 'author',
-        content: [{ path: 'stories/journey.stories.js', revision }],
       });
       await createStageAuthor({
         selectionFile,
@@ -1222,7 +1300,6 @@ describe('prototype observation evidence', () => {
       const evaluatorObservation = await savePrototypeObservation({
         roundDirectory,
         role: 'evaluator',
-        content: [{ path: 'stories/journey.stories.js', revision }],
       });
       await createStageEvaluator({
         selectionFile,
@@ -1231,16 +1308,16 @@ describe('prototype observation evidence', () => {
         publish: () => undefined,
         runner: runnerOf(evaluationReport('accepted', evaluatorObservation)).runner,
       })();
-      await createStageResult({
-        selectionFile,
-        stage: 'prototype',
-        git,
-        publish: () => undefined,
-      })({ outcome: 'accepted' });
+      await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })(
+        {
+          outcome: 'accepted',
+        },
+      );
 
-      // A former reuse skip retained the applicable prototype bundle, possibly with empty or
-      // omitted observation references; the retained record must still prove both roles' current
-      // evidence before it can authorize the route.
+      // A former reuse skip retained the applicable prototype bundle, possibly without its own
+      // matching observation declarations. Continuation must resolve evidence only through the
+      // producing outcomes: conflicting references or a role without usable declared evidence
+      // receives normal recovery/reassessment instead of a searched or guessed record.
       const stageRoot = path.join(root, 'prototype');
       const accepted = JSON.parse(
         await readFile(path.join(stageRoot, 'artifacts', '1', 'result.json'), 'utf8'),
@@ -1275,7 +1352,7 @@ describe('prototype observation evidence', () => {
             authorIdentity: authoredIdentity(storedAuthor),
             sourceIdentity: sourceInputIdentity(selection as never),
             upstream: [],
-            content: [{ path: 'stories/journey.stories.js', revision, exists: true }],
+            content: [{ path: 'stories/journey.stories.js', revision: 'deadbeef', exists: true }],
           },
           assessedRevision: 2,
           verdict: 'accepted-skip',
@@ -1294,8 +1371,6 @@ describe('prototype observation evidence', () => {
           profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
         }),
       );
-      // The former reuse skip kept the preceding acceptance's prototype bundle, so the record
-      // still has to prove both roles' evidence before it can authorize the route.
       const legacyResult = {
         stage: 'prototype',
         outcome: 'skipped',
@@ -1311,15 +1386,20 @@ describe('prototype observation evidence', () => {
         prototype: accepted.prototype,
         prototypeObservations: accepted.prototypeObservations,
       } as Record<string, unknown>;
+      if (mode === 'conflicting') {
+        // The retained references belong to the earlier producing round, not this result's roles.
+        legacyResult.prototypeObservations = accepted.prototypeObservations;
+      }
       if (mode === 'empty') legacyResult.prototypeObservations = [];
       if (mode === 'omitted') delete legacyResult.prototypeObservations;
-      if (mode === 'missing-record') await rm(evaluatorObservation);
       const problem =
-        mode === 'missing-record'
-          ? /retained evaluator prototype observation is unusable/
-          : /missing one role.s saved observation record/;
-      const resultFile = path.join(stageRoot, 'artifacts', '2', 'result.json');
-      await writeFile(resultFile, JSON.stringify(legacyResult));
+        mode === 'conflicting'
+          ? /does not agree with the producing (author|evaluator) outcome/
+          : /missing one role.s saved observat/;
+      await writeFile(
+        path.join(stageRoot, 'artifacts', '2', 'result.json'),
+        JSON.stringify(legacyResult),
+      );
       await writeFile(path.join(stageRoot, 'state', 'result.json'), JSON.stringify(legacyResult));
       await expect(
         readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
@@ -1337,15 +1417,10 @@ describe('prototype observation evidence', () => {
   it('retains no prototype bundle for a new applicability skip', async () => {
     const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     const authorObservation = await savePrototypeObservation({
       roundDirectory,
       role: 'author',
-      content: [{ path: 'stories/journey.stories.js', revision }],
     });
     await createStageAuthor({
       selectionFile,
@@ -1357,7 +1432,6 @@ describe('prototype observation evidence', () => {
     const evaluatorObservation = await savePrototypeObservation({
       roundDirectory,
       role: 'evaluator',
-      content: [{ path: 'stories/journey.stories.js', revision }],
     });
     await createStageEvaluator({
       selectionFile,
@@ -1436,11 +1510,7 @@ describe('prototype observation evidence', () => {
   it('rejects truncated or corrupt screenshots instead of trusting their signature', async () => {
     const { worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
     await mkdir(path.join(worktree, 'stories'), { recursive: true });
-    const revision = await commitFile(
-      worktree,
-      'stories/journey.stories.js',
-      'export const j = 1;\n',
-    );
+    await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
@@ -1455,7 +1525,6 @@ describe('prototype observation evidence', () => {
         record,
         JSON.stringify({
           role: 'author',
-          content: [{ path: 'stories/journey.stories.js', revision, exists: true }],
           preview: { command: 'npm run storybook', url: 'http://localhost:6100' },
           journeys: [
             {

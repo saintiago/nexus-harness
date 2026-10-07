@@ -5,8 +5,8 @@ import type { GitAdapter } from '../../../../adapters/git.js';
 import { messageOf } from '../../../../result.js';
 import {
   authoredIdentity,
-  retainEvaluationContent,
-  requireEvaluationContent,
+  commitAuthoredWork,
+  requireDeclaredWork,
   sourceInputIdentity,
 } from '../evaluation-content.js';
 import {
@@ -42,7 +42,6 @@ import {
   stagePlanArtifact,
   stageResultArtifact,
   stageReportScope,
-  type AssessedContent,
   type PreparationStage,
   type RetainedStageAuthorOutput,
   type RetainedStageEvaluationOutput,
@@ -65,7 +64,6 @@ import {
 } from '../storage.js';
 import {
   evidenceFilePath,
-  observationContentProblem,
   readPrototypeObservation,
   type PrototypeObservationRole,
 } from '../observation.js';
@@ -128,19 +126,16 @@ function reportProblem(
 
 /**
  * Validate the author's and the evaluator's saved observations against the exact revision an
- * accepted applicable prototype assesses: both records must be readable evidence covering the
- * stage-owned prototype paths, and their observed content must still match the evaluated revision.
- * Missing or stale evidence cannot produce acceptance.
+ * accepted applicable prototype assesses: both records must be readable evidence with decodable
+ * screenshots from the round artifact area. Neither record inventories assessed files nor bounds
+ * the evaluator's inspection; missing or unusable evidence cannot produce acceptance.
  */
 async function requirePrototypeEvidence(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
   readonly roundDirectory: string;
   readonly author: RetainedStageAuthorOutput;
   readonly evaluator: { readonly path: string } | null;
   /** True when the assessed verdict relies on the evaluator's own applicable observation. */
   readonly requireEvaluator: boolean;
-  readonly assessed: readonly AssessedContent[];
   /** Retain a violation under the producer whose evidence failed, then raise the failure. */
   readonly reject: (
     role: PrototypeObservationRole,
@@ -175,19 +170,11 @@ async function requirePrototypeEvidence(settings: {
   }
   for (const [role, observationPath] of declared) {
     try {
-      const observation = await readPrototypeObservation({
+      await readPrototypeObservation({
         declared: observationPath,
         roundDirectory: settings.roundDirectory,
         role,
       });
-      const problem = await observationContentProblem({
-        git: settings.git,
-        worktree: settings.worktree,
-        observation,
-        assessed: settings.assessed,
-        observedPaths: settings.author.sourcePaths,
-      });
-      if (problem !== null) throw new Error(`${problem}.`);
     } catch (error) {
       await settings.reject(
         role,
@@ -336,7 +323,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         }
       }
     }
-    const retained = await retainEvaluationContent({
+    const committed = await commitAuthoredWork({
       git: settings.git,
       worktree,
       author,
@@ -350,8 +337,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         result: { path: reference.resultFile },
         identity: reference.identity,
       })),
-      repositoryRevision: retained.revision,
-      content: retained.content,
+      repositoryRevision: committed.revision,
     };
     const retainedDecision =
       plan.route === 'reassess'
@@ -402,12 +388,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
             'record and the round artifact area.'
           : 'The observation field is null; only the Storybook Refinement stage retains an ' +
             'observation record.',
-        ...(basis.content.length === 0
-          ? []
-          : [
-              'The applicable prototype content retained for this evaluation (path at revision, ' +
-                `or a retained deletion): ${JSON.stringify(basis.content)}`,
-            ]),
         'The relied-on upstream results this decision binds: ' + JSON.stringify(basis.upstream),
         'Previous reports are context: judge whether their concerns were addressed and report ' +
           'the findings present in the assessed revision. The outcome carries only the verdict, ' +
@@ -502,13 +482,10 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
     if (settings.stage === 'prototype') {
       const roundDirectory = roundArtifactDirectory(root, plan.round);
       await requirePrototypeEvidence({
-        git: settings.git,
-        worktree,
         roundDirectory,
         author,
         evaluator: report.observation,
         requireEvaluator: report.verdict === 'accepted',
-        assessed: retained.content,
         reject: async (role, observationPath, error) => {
           if (role === 'author') {
             // Retained author evidence belongs to the author, not the current respondent. If
@@ -545,10 +522,14 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       });
     }
 
-    await requireEvaluationContent({
+    // Commit integrity: the declared authored work must still hold the committed bytes this
+    // evaluation observed. This transient check creates no persisted file binding and neither
+    // reads browser evidence nor limits the assessment scope.
+    await requireDeclaredWork({
       git: settings.git,
       worktree,
-      content: retained.content,
+      author,
+      revision: committed.revision,
     });
     const currentAuthor = await readAuthor(plan.round);
     // An invalid binding must retain author rejection evidence before an identity change can

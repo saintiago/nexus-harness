@@ -354,28 +354,16 @@ export function acceptanceVerdictProblem(
   return null;
 }
 
-/** One repository path the evaluator assessed or relied on: its observed revision and existence. */
-export const assessedContentSchema = z.strictObject({
-  /** The canonical checkout-relative path of the assessed repository content. */
-  path: z.string().min(1).describe('The canonical checkout-relative path of the assessed content.'),
-  /** The revision at which the content was observed; it must stay readable while retained. */
-  revision: z.string().min(1).describe('The revision the content was observed at.'),
-  /** False when the assessed revision deletes the path; a deletion is retained, not replaced. */
-  exists: z.boolean().describe('False when the assessed revision deletes the path.'),
-});
-
-export type AssessedContent = z.infer<typeof assessedContentSchema>;
-
 /**
  * The evaluation's acceptance basis, observed by the stage action rather than trusted from an
- * agent: the complete authored report, the captured source input, the relied-on upstream results,
- * the repository revision the evaluation observed and the applicable prototype content it
- * assessed. A changed author report or captured input needs a current evaluator decision; later
- * document edits below the same finalization do not bind it. Document stages keep `content`
- * empty: they write no per-document bindings, and completed verdicts are not compared with
+ * agent: the complete authored report, the captured source input, the relied-on upstream results
+ * and the repository revision the evaluation observed. A changed author report or captured input
+ * needs a current evaluator decision; later document edits below the same finalization do not
+ * bind it. No per-file assessed content is recorded: declared stage work is committed and checked
+ * by the transient commit-integrity check, and completed verdicts are not compared with
  * historical file revisions.
  */
-export const acceptanceBasisSchema = z.object({
+export const acceptanceBasisSchema = z.strictObject({
   author: z.object({ path: z.string().min(1) }),
   authorIdentity: z.string().min(1),
   sourceIdentity: z.string().min(1),
@@ -387,10 +375,19 @@ export const acceptanceBasisSchema = z.object({
   ),
   /** The commit revision the action observed for the evaluation; absent on former saved records. */
   repositoryRevision: z.string().min(1).optional(),
-  content: z.array(assessedContentSchema),
 });
 
 export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
+
+/**
+ * The retained acceptance basis: the current basis plus a former record's per-file `content`,
+ * kept as opaque historical data in its recorded position. Retained readers permit it whether it
+ * is present, absent or no longer valid under its removed schema; nothing reads, compares or
+ * rewrites it.
+ */
+const retainedAcceptanceBasisSchema = acceptanceBasisSchema.extend({
+  content: z.unknown().optional(),
+});
 
 /**
  * The saved evaluation artifact: the observed acceptance basis, the assessed authored revision,
@@ -399,7 +396,7 @@ export type AcceptanceBasis = z.infer<typeof acceptanceBasisSchema>;
  * bytes; none of it is agent output.
  */
 export const stageEvaluationOutputSchema = z.strictObject({
-  /** The exact authored report, captured input and assessed content this decision is bound to. */
+  /** The exact authored report, captured input and repository revision this decision is bound to. */
   basis: acceptanceBasisSchema,
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
@@ -416,13 +413,35 @@ export const stageEvaluationOutputSchema = z.strictObject({
 export type StageEvaluationOutput = z.infer<typeof stageEvaluationOutputSchema>;
 
 /**
+ * A retained evaluation written before the acceptance basis dropped per-file content: the same
+ * current fields with the former `content` still readable as opaque history. A record carrying
+ * any binding field must satisfy this shape; its removed content neither validates nor gates it.
+ */
+export const formerContentStageEvaluationOutputSchema = z.strictObject({
+  basis: retainedAcceptanceBasisSchema,
+  assessedRevision: z.number().int().positive(),
+  verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
+  observation: artifactReferenceSchema.nullable(),
+  upstream: upstreamRequestSchema.nullable(),
+  stage: z.enum(preparationStages),
+  taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
+  profile: z.string().trim().min(1).describe('The evaluator profile that produced this verdict.'),
+  role: z.literal('evaluator'),
+  ...reportBindingFields,
+});
+
+export type FormerContentStageEvaluationOutput = z.infer<
+  typeof formerContentStageEvaluationOutputSchema
+>;
+
+/**
  * One retained combined evaluation from before the narrative/outcome separation: its former
  * reason, finding list and prior-finding dispositions stay readable as history without their
  * removed matching or consistency rules. The current binding fields are declared absent so a
  * damaged current record never falls back to legacy parsing.
  */
 export const legacyStageEvaluationOutputSchema = z.object({
-  basis: acceptanceBasisSchema,
+  basis: retainedAcceptanceBasisSchema,
   assessedRevision: z.number().int().positive(),
   verdict: z.enum(['accepted', 'accepted-skip', 'changes-requested', 'return-upstream']),
   reason: z.string().describe('The former combined assessment this report used to carry.'),
@@ -447,7 +466,11 @@ export type LegacyStageEvaluationOutput = z.infer<typeof legacyStageEvaluationOu
  * the current schema; a damaged new record never falls back to legacy parsing.
  */
 export const retainedStageEvaluationOutputSchema = z
-  .union([stageEvaluationOutputSchema, legacyStageEvaluationOutputSchema])
+  .union([
+    stageEvaluationOutputSchema,
+    formerContentStageEvaluationOutputSchema,
+    legacyStageEvaluationOutputSchema,
+  ])
   .superRefine((evaluation, context) => {
     const problem = evaluationVerdictProblem(evaluation.verdict, evaluation.upstream);
     if (problem !== null) {

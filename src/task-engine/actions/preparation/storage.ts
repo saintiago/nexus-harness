@@ -39,7 +39,6 @@ import {
   authoredIdentity,
   recordIdentity,
   requireDeclaredWork,
-  requireEvaluationContent,
   sourceInputIdentity,
 } from './evaluation-content.js';
 import { requireRetainedPrototypeEvidence } from './observation.js';
@@ -353,7 +352,8 @@ export type CurrentDecisionState =
 /**
  * Read the current stage decision for the captured ticket. Later stages assess the current shared
  * checkout and return concrete input defects upstream; their document edits do not invalidate an
- * earlier verdict mechanically. Applicable prototype inspection remains specific to its sources.
+ * earlier verdict mechanically. An applicable prototype decision still requires both roles'
+ * readable retained evidence, resolved through the producing outcomes.
  */
 export async function readCurrentDecision(settings: {
   readonly issueRoot: string;
@@ -401,7 +401,6 @@ export async function readCurrentDecision(settings: {
         reason: `the ${stage} stage's current round retains no evaluated authored revision`,
       };
     }
-    const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
     await requireRetainedDecision({
       issueRoot,
@@ -418,14 +417,14 @@ export async function readCurrentDecision(settings: {
     }
     // An applicable prototype decision also relies on the retained observation records; a record
     // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
+    // Missing references are resolved from the producing outcomes, never searched or guessed.
     if (stage === 'prototype' && (result.outcome === 'accepted' || result.prototype !== null)) {
       await requireRetainedPrototypeEvidence({
-        git,
-        worktree: preparationWorktree(issueRoot),
         artifactsRoot: path.join(root, 'artifacts'),
+        roundDirectory: roundArtifactDirectory(root, plan.round),
         observations: result.prototypeObservations,
-        assessed: basis.content,
-        observedPaths: result.sourcePaths,
+        author,
+        evaluation,
       });
     }
     return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
@@ -555,11 +554,6 @@ export async function requireCurrentAcceptance(settings: AcceptanceSettings): Pr
   // The declared stage work must still be the committed bytes the evaluator assessed: an
   // uncommitted edit after the observation is not covered by the saved decision.
   await requireDeclaredWork({ git, worktree, author, revision: basis.repositoryRevision });
-  await requireEvaluationContent({
-    git,
-    worktree,
-    content: basis.content,
-  });
 }
 
 /** One published upstream return's report association: the returning stage, role and binding. */
