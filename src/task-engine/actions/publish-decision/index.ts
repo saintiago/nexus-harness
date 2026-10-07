@@ -430,6 +430,178 @@ async function handoffReferences(
   return { editorResponses, contributions, challengerResults };
 }
 
+/** Validate the current cycle's functional decision and all evidence it consumes. */
+async function requireDecisionEvidence(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly decision: IdeaDecision;
+}) {
+  const { root, workId, plan, decision } = settings;
+  const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
+  const revision = await readRetainedRefinedIdea({
+    root,
+    workId,
+    plan,
+    submission: plan.submission,
+    cycle: plan.cycle,
+    context:
+      `Validating the idea decision: reading the refined idea revision in force for submission ` +
+      `${String(plan.submission)} cycle ${String(plan.cycle)} of idea ${workId}.`,
+  });
+  const turn = await readRetainedIdeaReport({
+    root,
+    workId,
+    plan,
+    cycleRoot,
+    declaration: editorResponseArtifact,
+    contract: ideaReportContracts.editorTurn,
+    context:
+      `Validating the idea decision: reading the editor outcome of submission ` +
+      `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+  });
+  const turnFile = turn === null ? null : turn.file;
+  const editorBinding =
+    turn === null ? null : { file: turn.file, identity: recordIdentity(turn.value) };
+  const challenger = await readRetainedIdeaReport({
+    root,
+    workId,
+    plan,
+    cycleRoot,
+    declaration: challengerArtifact,
+    contract: ideaReportContracts.challenge,
+    context:
+      `Validating the idea decision: reading the Challenger result of submission ` +
+      `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${workId}.`,
+  });
+  const framing = await readRetainedIdeaReport({
+    root,
+    workId,
+    plan,
+    cycleRoot: ideaCycleDirectory(root, plan.submission, 1),
+    declaration: framingArtifact,
+    contract: ideaReportContracts.framing,
+    context:
+      `Validating the idea decision: reading the framing of submission ` +
+      `${String(plan.submission)} for idea ${workId}.`,
+  });
+
+  let reason: string | null = null;
+  if (decision === 'approved') {
+    if (revision === null) {
+      throw new Error('Approval needs the refined idea revision the Challenger approved.');
+    }
+    if (
+      challenger === null ||
+      !isBoundChallengerReport(challenger.value) ||
+      challenger.value.verdict !== 'approve' ||
+      !binds(challenger.value, revision, editorBinding)
+    ) {
+      throw new Error(
+        'Approval requires the current cycle\u2019s Challenger result to approve the exact ' +
+          'refined idea revision and editor outcome it reviewed.',
+      );
+    }
+  }
+  if (decision === 'unsuitable') {
+    if (turn === null || turn.value.disposition !== 'unsuitable' || turn.value.reason === null) {
+      throw new Error(
+        'Returning an unsuitable idea requires the editor to have explained why in its ' +
+          'response for this cycle.',
+      );
+    }
+    reason = turn.value.reason;
+  }
+  if (decision === 'author-decision-needed') {
+    const fromTurn =
+      turn?.value.disposition === 'author-decision-needed' ? turn.value.reason : null;
+    const fromFraming = framing?.value.authorDecision?.question ?? null;
+    const question = fromTurn ?? fromFraming;
+    if (question === null) {
+      throw new Error(
+        'An author-decision return requires the editor to have asked the essential question.',
+      );
+    }
+    reason = question;
+  }
+  if (decision === 'attempts-exhausted') {
+    if (
+      revision === null ||
+      challenger === null ||
+      !isBoundChallengerReport(challenger.value) ||
+      challenger.value.verdict !== 'discuss' ||
+      !binds(challenger.value, revision, editorBinding)
+    ) {
+      throw new Error(
+        'An exhausted return requires the current cycle\u2019s Challenger result to discuss ' +
+          'the exact refined idea revision and editor outcome it reviewed.',
+      );
+    }
+    if (challenger.value.obstacle === null) {
+      throw new Error(
+        'An exhausted return needs the Challenger\u2019s plain statement of the remaining ' +
+          'obstacle.',
+      );
+    }
+    reason = challenger.value.obstacle;
+  }
+
+  const editorFile = turnFile ?? (framing === null ? null : framing.file);
+  if (editorFile === null) {
+    throw new Error(
+      `Submission ${String(plan.submission)} has no editor framing or response to decide on.`,
+    );
+  }
+  if (decision !== 'approved' && reason === null) {
+    throw new Error(`The "${decision}" return needs the plain reason it states.`);
+  }
+  return { revision, turn, challenger, framing, editorFile, reason };
+}
+
+/** Validate a saved return's current producers and associations before completing their clears. */
+async function requireRecordedReturn(settings: {
+  readonly root: string;
+  readonly workId: string;
+  readonly plan: IdeaRoundPlan;
+  readonly record: IdeaDecisionRecord;
+}): Promise<void> {
+  const { root, workId, record } = settings;
+  const { revision, turn, challenger, framing, editorFile, reason } = await requireDecisionEvidence(
+    { ...settings, decision: record.decision },
+  );
+  if (
+    record.refinedIdea !== (revision?.path ?? null) ||
+    record.revision !== (revision?.value.revision ?? null) ||
+    record.editor !== editorFile ||
+    record.challenger !== (challenger?.file ?? null) ||
+    record.reason !== reason
+  ) {
+    throw new Error(
+      'The retained return must keep its producing decision and evidence association.',
+    );
+  }
+  for (const [contract, read] of [
+    [ideaReportContracts.editorTurn, turn],
+    [ideaReportContracts.framing, framing],
+    [ideaReportContracts.challenge, record.decision === 'attempts-exhausted' ? challenger : null],
+  ] as const) {
+    if (read !== null) {
+      await clearRetainedIdeaValidationError<AnyIdeaReportDeclaration>({
+        root,
+        workId,
+        contract,
+        read,
+      });
+    }
+  }
+  if (record.decision === 'attempts-exhausted') {
+    await clearPendingValidationError({
+      areaRoot: root,
+      scope: ideaReportScope({ root, workId, ...ideaReportContracts.editorTurn }),
+    });
+  }
+}
+
 /** Create RecordIdeaDecision over the parent selection and the refinement area it records. */
 export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): BoundAction {
   return async (input?: unknown) => {
@@ -447,7 +619,6 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       conversation: [...selection.conversation],
     };
     const plan = await readIdeaPlan(root);
-    const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
 
     const existing = await readSubmissionArtifact(root, plan.submission, decisionArtifact);
@@ -469,126 +640,18 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
             `${String(plan.submission)} for idea ${selection.taskKey}.`,
         });
         await writeHandoff(selection, root, plan, approval.path, decisionFile);
+      } else {
+        await requireRecordedReturn({ root, workId: selection.taskKey, plan, record: existing });
       }
       return reported(settings, existing, selection.taskKey, plan.cycle, decisionFile);
     }
 
-    const revision = await readRetainedRefinedIdea({
+    const { revision, challenger, framing, editorFile, reason } = await requireDecisionEvidence({
       root,
       workId: selection.taskKey,
       plan,
-      submission: plan.submission,
-      cycle: plan.cycle,
-      context:
-        `RecordIdeaDecision reading the refined idea revision in force for submission ` +
-        `${String(plan.submission)} cycle ${String(plan.cycle)} of idea ${selection.taskKey}.`,
+      decision,
     });
-    const turn = await readRetainedIdeaReport({
-      root,
-      workId: selection.taskKey,
-      plan,
-      cycleRoot,
-      declaration: editorResponseArtifact,
-      contract: ideaReportContracts.editorTurn,
-      context:
-        `RecordIdeaDecision reading the editor outcome of submission ` +
-        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${selection.taskKey}.`,
-    });
-    const turnFile = turn === null ? null : turn.file;
-    const editorBinding =
-      turn === null ? null : { file: turn.file, identity: recordIdentity(turn.value) };
-    const challenger = await readRetainedIdeaReport({
-      root,
-      workId: selection.taskKey,
-      plan,
-      cycleRoot,
-      declaration: challengerArtifact,
-      contract: ideaReportContracts.challenge,
-      context:
-        `RecordIdeaDecision reading the Challenger result of submission ` +
-        `${String(plan.submission)} cycle ${String(plan.cycle)} for idea ${selection.taskKey}.`,
-    });
-    const framing = await readRetainedIdeaReport({
-      root,
-      workId: selection.taskKey,
-      plan,
-      cycleRoot: ideaCycleDirectory(root, plan.submission, 1),
-      declaration: framingArtifact,
-      contract: ideaReportContracts.framing,
-      context:
-        `RecordIdeaDecision reading the framing of submission ` +
-        `${String(plan.submission)} for idea ${selection.taskKey}.`,
-    });
-
-    let reason: string | null = null;
-    if (decision === 'approved') {
-      if (revision === null) {
-        throw new Error('Approval needs the refined idea revision the Challenger approved.');
-      }
-      if (
-        challenger === null ||
-        !isBoundChallengerReport(challenger.value) ||
-        challenger.value.verdict !== 'approve' ||
-        !binds(challenger.value, revision, editorBinding)
-      ) {
-        throw new Error(
-          'Approval requires the current cycle\u2019s Challenger result to approve the exact ' +
-            'refined idea revision and editor outcome it reviewed.',
-        );
-      }
-    }
-    if (decision === 'unsuitable') {
-      if (turn === null || turn.value.disposition !== 'unsuitable' || turn.value.reason === null) {
-        throw new Error(
-          'Returning an unsuitable idea requires the editor to have explained why in its ' +
-            'response for this cycle.',
-        );
-      }
-      reason = turn.value.reason;
-    }
-    if (decision === 'author-decision-needed') {
-      const fromTurn =
-        turn?.value.disposition === 'author-decision-needed' ? turn.value.reason : null;
-      const fromFraming = framing?.value.authorDecision?.question ?? null;
-      const question = fromTurn ?? fromFraming;
-      if (question === null) {
-        throw new Error(
-          'An author-decision return requires the editor to have asked the essential question.',
-        );
-      }
-      reason = question;
-    }
-    if (decision === 'attempts-exhausted') {
-      if (
-        revision === null ||
-        challenger === null ||
-        !isBoundChallengerReport(challenger.value) ||
-        challenger.value.verdict !== 'discuss' ||
-        !binds(challenger.value, revision, editorBinding)
-      ) {
-        throw new Error(
-          'An exhausted return requires the current cycle\u2019s Challenger result to discuss ' +
-            'the exact refined idea revision and editor outcome it reviewed.',
-        );
-      }
-      if (challenger.value.obstacle === null) {
-        throw new Error(
-          'An exhausted return needs the Challenger\u2019s plain statement of the remaining ' +
-            'obstacle.',
-        );
-      }
-      reason = challenger.value.obstacle;
-    }
-
-    const editorFile = turnFile ?? (framing === null ? null : framing.file);
-    if (editorFile === null) {
-      throw new Error(
-        `Submission ${String(plan.submission)} has no editor framing or response to decide on.`,
-      );
-    }
-    if (decision !== 'approved' && reason === null) {
-      throw new Error(`The "${decision}" return needs the plain reason it states.`);
-    }
 
     const text =
       decision === 'approved'
@@ -624,32 +687,7 @@ export function createRecordIdeaDecision(settings: RecordIdeaDecisionSettings): 
       });
       await writeHandoff(selection, root, plan, revision.path, decisionFile);
     } else {
-      // Fresh negative decisions also consume the current usable producer outcomes. Saved
-      // negative-envelope replay does not reread those producers and cannot complete their clear.
-      for (const [contract, read] of [
-        [ideaReportContracts.editorTurn, turn],
-        [ideaReportContracts.framing, framing],
-        [ideaReportContracts.challenge, decision === 'attempts-exhausted' ? challenger : null],
-      ] as const) {
-        if (read !== null) {
-          await clearRetainedIdeaValidationError<AnyIdeaReportDeclaration>({
-            root,
-            workId: selection.taskKey,
-            contract,
-            read,
-          });
-        }
-      }
-      if (decision === 'attempts-exhausted') {
-        await clearPendingValidationError({
-          areaRoot: root,
-          scope: ideaReportScope({
-            root,
-            workId: selection.taskKey,
-            ...ideaReportContracts.editorTurn,
-          }),
-        });
-      }
+      await requireRecordedReturn({ root, workId: selection.taskKey, plan, record });
     }
     return reported(settings, record, selection.taskKey, plan.cycle, file);
   };
@@ -763,6 +801,9 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
           `PublishDecision reusing the recorded approval of submission ` +
           `${String(plan.submission)} for idea ${settings.selection.taskKey}.`,
       });
+    }
+    if (record.decision !== 'approved') {
+      await requireRecordedReturn({ root, workId: settings.selection.taskKey, plan, record });
     }
     let transitionId: string | null = null;
     if (status !== target) {

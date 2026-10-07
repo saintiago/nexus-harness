@@ -170,6 +170,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           round: plan.round,
           workId: selection.taskKey,
           authoredRevision: completed.authoredRevision,
+          question: completed.reason,
         });
         validated.add('author');
       }
@@ -259,6 +260,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         round: plan.round,
         workId: selection.taskKey,
         authoredRevision: author.revision,
+        question: author.question,
       });
       validated.add('author');
     }

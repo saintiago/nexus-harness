@@ -821,6 +821,7 @@ export async function requireNeedsInputReport(settings: {
   readonly round: number;
   readonly workId: string;
   readonly authoredRevision: number;
+  readonly question: string | null;
 }): Promise<void> {
   const { issueRoot, stage, round, workId } = settings;
   const root = stageRoot(issueRoot, stage);
@@ -831,6 +832,7 @@ export async function requireNeedsInputReport(settings: {
     workId,
     round,
     role: 'author',
+    required: true,
     profile: plan?.profiles.author ?? null,
     context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
   });
@@ -851,5 +853,37 @@ export async function requireNeedsInputReport(settings: {
   }
   if (author.revision !== settings.authoredRevision) {
     throw new Error('A retained question must keep its exact producing author.');
+  }
+  try {
+    if (
+      author.stage !== stage ||
+      (isBoundStageAuthorOutput(author) && author.taskKey !== workId) ||
+      author.outcome !== 'needs-input' ||
+      author.question === null ||
+      author.question.trim() === '' ||
+      author.question !== settings.question
+    ) {
+      throw new Error(
+        'A retained question must keep its producing author, needs-input outcome and question.',
+      );
+    }
+  } catch (error) {
+    await rejectUnusableRecord({
+      areaRoot: root,
+      scope: stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId,
+        area: root,
+        stage,
+        role: 'author',
+      }),
+      invocationId: author.invocationId ?? null,
+      operation: 'stage-author',
+      profile: author.profile ?? plan?.profiles.author ?? null,
+      context: `Validating the ${stage} author question of round ${String(round)} for task ${workId}.`,
+      file: roundArtifactFile(root, round, stageAuthorArtifact.pathFromArtifactsRoot),
+      error,
+      assignedReport: author.report,
+    });
   }
 }

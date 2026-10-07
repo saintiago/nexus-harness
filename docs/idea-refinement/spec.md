@@ -283,8 +283,10 @@ replay and parent publication clear the validated editor and Challenger responsi
 the complete approved idea/editor/Challenger association and required reports are usable. This includes
 the editor-turn responsibility of the separate refined idea and any required framing; unrelated
 contributions remain non-clearing history. Fresh negative decision recording likewise clears its
-validated current producers after saving the decision. Negative-envelope replay does not validate
-those producers again and therefore does not clear their pending context.
+validated current producers after saving the decision. Negative-decision replay and parent publication
+validate the applicable current producers, the saved reason and idea/editor/Challenger references
+before completing interrupted clears. Unusable or unrelated replacements keep context pending;
+no additional role invocation or cycle is granted.
 
 ## Artifacts and revision binding
 

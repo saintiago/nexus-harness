@@ -1946,6 +1946,102 @@ describe('preparation retained outcome usability', () => {
     },
   );
 
+  it.each(
+    (['fresh', 'replay', 'publication'] as const).flatMap((consumer) =>
+      (['current', 'legacy'] as const).map((kind) => ({ consumer, kind })),
+    ),
+  )(
+    'validates the $kind question producer before $consumer clearing',
+    async ({ consumer, kind }) => {
+      const { issueRoot, root, author, finalize, selectionFile, git } =
+        await boundRound('needs-input');
+      const file = path.join(root, 'artifacts/2/author.json');
+      const valid: Record<string, unknown> = { ...author };
+      if (kind === 'legacy') {
+        for (const key of ['taskKey', 'role', 'profile', 'invocationId', 'report'])
+          delete valid[key];
+        valid['summary'] = 'The retained author question.';
+      }
+      const original = JSON.stringify(valid);
+      await writeFile(file, original);
+      if (consumer !== 'fresh')
+        await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
+      const transitions: string[] = [];
+      const { jira } = scriptedJira({
+        readIssue: () => ok({ id: '1', key: 'NEX-1', fields: { status: { name: 'UX Proposal' } } }),
+        readComments: () => ok([]),
+        readTransitions: () =>
+          ok([
+            {
+              id: 'wait',
+              name: 'Waiting for Feedback',
+              to: { id: 'wait', name: 'Waiting for Feedback' },
+            },
+          ]),
+        transitionIssue: (_id, transition) => {
+          transitions.push(transition);
+          return ok(undefined);
+        },
+        addComment: () => ok({ id: 'comment', body: {} }),
+      });
+      const publish = createPublishPreparation({
+        selectionFile,
+        statuses: {
+          requirements: 'Draft',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+        waitingForFeedback: 'Waiting for Feedback',
+        ideaActive: 'Idea Refinement',
+        jira,
+        git,
+        publish: () => undefined,
+      });
+      const consume = () =>
+        consumer === 'publication' ? publish({ stage: 'ux' }) : finalize({ outcome: 'needsInput' });
+      const fails = async () => {
+        if (consumer === 'publication') await expect(consume()).resolves.toBe('failed');
+        else await expect(consume()).rejects.toThrow();
+      };
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role: 'author',
+      });
+      if (kind === 'current') await rm(author.report.path);
+      else await writeFile(file, '{invalid');
+      await fails();
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      await writeFile(author.report.path, controlledMarkdown);
+      const replacements = [
+        ...(kind === 'current' ? [{ ...valid, taskKey: 'OTHER-1' }] : []),
+        { ...valid, stage: 'requirements' },
+        { ...valid, outcome: 'authored', question: null },
+        { ...valid, question: null },
+        { ...valid, question: ' ' },
+        ...(consumer === 'fresh'
+          ? []
+          : [
+              { ...valid, question: 'An unrelated question?' },
+              { ...valid, revision: 99 },
+            ]),
+      ];
+      for (const replacement of replacements) {
+        await writeFile(file, JSON.stringify(replacement));
+        await fails();
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+        expect(transitions).toEqual([]);
+      }
+      await writeFile(file, original);
+      await expect(consume()).resolves.toBe(consumer === 'publication' ? 'waiting' : 'saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      await expect(readFile(file, 'utf8')).resolves.toBe(original);
+    },
+  );
+
   it('finalizes a needs-input return after its report was reworded readably', async () => {
     const { root, author, finalize } = await boundRound('needs-input');
     await writeFile(author.report.path, 'Reworded readable report.\n');

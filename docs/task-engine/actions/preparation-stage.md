@@ -438,7 +438,10 @@ retained-decision reader. Every retained evaluation read enforces verdict/upstre
 return and repair context reads, rather than checking acceptance alone. New outcomes require their Markdown binding;
 legacy combined records stay readable without a retroactive Markdown requirement or finding-list
 checks. Acceptance and author questions validate their producing reports at finalization, completed
-replay and publication. Validate bound reports before author/evaluation, revision or input association
+replay and publication. Questions require the producing author to belong to the selected stage and,
+when bound, work item, retain the authored revision and needs-input outcome, and supply a nonempty
+question matching the retained decision's reason. Legacy combined authors retain their stage and
+functional question checks without requiring absent work or Markdown metadata. Validate bound reports before author/evaluation, revision or input association
 checks can short-circuit rejection retention, including the author reread after evaluator invocation;
 valid changed inputs still follow ordinary stale routing or reevaluation.
 Report failures retain the available outcome/report and producer-attributed

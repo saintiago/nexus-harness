@@ -1841,9 +1841,13 @@ describe('decision publication', () => {
     expect(jira.comments).toHaveLength(0);
   });
 
-  it.each(['unsuitable', 'author-decision-needed', 'attempts-exhausted'] as const)(
-    'publishes the %s return as Waiting for Feedback',
-    async (decision) => {
+  it.each(
+    (['unsuitable', 'author-decision-needed', 'attempts-exhausted'] as const).flatMap((decision) =>
+      (['fresh', 'replay', 'publication'] as const).map((consumer) => ({ decision, consumer })),
+    ),
+  )(
+    'completes the $decision pending clear at $consumer consumption',
+    async ({ decision, consumer }) => {
       const area = await refinementArea();
       const selectionFile = path.join(path.dirname(area.root), 'selection.json');
       await writeFile(
@@ -1931,7 +1935,56 @@ describe('decision publication', () => {
       };
       expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
       await writeFile(producer.report.path, markdown);
-      await expect(decide({ decision })).resolves.toBe('waiting-for-feedback');
+      if (consumer !== 'fresh') {
+        // Fail clearing after decision persistence, then resume independently at either consumer.
+        const pending = await readPendingValidationError({ areaRoot: area.root, scope });
+        const historyFile = pending!.entries[0]!.evidence.path;
+        const historyBytes = await readFile(historyFile, 'utf8');
+        await rm(historyFile);
+        await mkdir(historyFile);
+        const actions = decisionActions(area, jira, selectionFile);
+        await expect(actions.record({ decision })).rejects.toThrow();
+        const decisionFile = path.join(area.root, 'artifacts/submissions/1/decision.json');
+        const decisionBytes = await readFile(decisionFile, 'utf8');
+        expect(JSON.parse(decisionBytes)).toMatchObject({ decision, source: null });
+        expect(jira.transitions).toEqual([]);
+        expect(jira.comments).toEqual([]);
+        await rm(historyFile, { recursive: true });
+        await writeFile(historyFile, historyBytes);
+        const resume = () =>
+          consumer === 'replay' ? actions.record({ decision }) : actions.publishDecision();
+        // The saved envelope cannot clear a still-unusable or unrelated producer.
+        await rm(producer.report.path);
+        await expect(resume()).rejects.toThrow(/does not exist/);
+        expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+        await writeFile(producer.report.path, markdown);
+        const producerBytes = await readFile(producerFile, 'utf8');
+        const replacement = JSON.parse(producerBytes) as Record<string, unknown>;
+        if (decision === 'author-decision-needed') {
+          replacement['authorDecision'] = { question: 'An unrelated question?' };
+        } else if (decision === 'unsuitable') {
+          replacement['reason'] = 'An unrelated reason.';
+        } else {
+          replacement['obstacle'] = 'An unrelated obstacle.';
+        }
+        await writeFile(producerFile, JSON.stringify(replacement));
+        await expect(resume()).rejects.toThrow(/association/);
+        expect(await readPendingValidationError({ areaRoot: area.root, scope })).not.toBeNull();
+        expect(jira.transitions).toEqual([]);
+        await expect(readFile(decisionFile, 'utf8')).resolves.toBe(decisionBytes);
+        await writeFile(producerFile, producerBytes);
+        await expect(resume()).resolves.toBe(
+          consumer === 'replay' ? 'recorded' : 'waiting-for-feedback',
+        );
+        await expect(
+          readPendingValidationError({ areaRoot: area.root, scope }),
+        ).resolves.toBeNull();
+        if (consumer === 'replay')
+          await expect(actions.publishDecision()).resolves.toBe('waiting-for-feedback');
+        await expect(readFile(historyFile, 'utf8')).resolves.toBe(historyBytes);
+      } else {
+        await expect(decide({ decision })).resolves.toBe('waiting-for-feedback');
+      }
       await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
       expect(jira.transitions).toEqual(['22']);
       expect(jira.comments).toHaveLength(1);

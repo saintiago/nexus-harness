@@ -483,6 +483,7 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           round: plan.round,
           workId: selection.taskKey,
           authoredRevision: result.authoredRevision,
+          question: result.reason,
         });
         await clearStageReportValidationError({
           issueRoot: selection.workspace.root,
