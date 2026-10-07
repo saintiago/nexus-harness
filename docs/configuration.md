@@ -161,8 +161,9 @@ also uses these defaults by forwarding only `JEV_API_KEY`, without inheriting `J
 `JEV_TIMEOUT_MS`. This gives API and MCP one supported configuration. Provider-native JEv startup
 is optional; an unavailable server must not abort an otherwise usable agent invocation. Disabled
 composition explicitly disables the reserved `jev` MCP server even when base/profile settings
-would otherwise enable it; enabled composition owns that server's settings. Other native settings
-retain their current ownership.
+would otherwise enable it; enabled composition owns that server's settings, replacing any that a
+profile's own native configuration supplies under the reserved name. Other native settings retain
+their current ownership.
 
 Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
 effects; disabling a configured integration restores that same behavior. With host credentials and

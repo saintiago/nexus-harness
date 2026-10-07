@@ -12,6 +12,8 @@ import { rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { jevAgentSettings, jevExecutablePath } from '../src/application/jev.js';
+import { createAgentRuntimeSettings } from '../src/application/composition.js';
+import { parseNexusConfiguration } from '../src/configuration/index.js';
 import {
   codexHome,
   configArguments,
@@ -19,6 +21,7 @@ import {
   startCodexAppServer,
   type CodexAppServer,
 } from './support/codex-provider.js';
+import { nexusConfiguration } from './support/configuration.js';
 import { controlledJevProvider, type ControlledJevProvider } from './support/jev-provider.js';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -26,6 +29,46 @@ const preload = fileURLToPath(new URL('./fixtures/jev-provider-preload.mjs', imp
 const syntheticKey = 'synthetic-jev-host-key';
 const syntheticState =
   'Synthetic stage note: the requested change has no reporting-terminal scope.';
+
+/** The installation directory the composition checks resolve relative configuration paths from. */
+const installationDirectory = '/etc/nexus/installation';
+
+/**
+ * Reserved-server settings a profile's own configuration supplies: an inherited environment,
+ * tool exclusion, HTTP transport and stale command that Nexus's composition must replace.
+ */
+const inheritedJevSettings = {
+  'mcp_servers.jev.command': '/inherited/nexus/node_modules/.bin/jev-mcp',
+  'mcp_servers.jev.args': ['--inherited'],
+  'mcp_servers.jev.enabled': true,
+  'mcp_servers.jev.required': true,
+  'mcp_servers.jev.enabled_tools': ['other_tool'],
+  'mcp_servers.jev.disabled_tools': ['ask_jev'],
+  'mcp_servers.jev.env_vars': ['JEV_MODEL'],
+  'mcp_servers.jev.env': {
+    JEV_MODEL: 'inherited-model',
+    JEV_TIMEOUT_MS: '13',
+    JEV_API_KEY: 'inherited-key',
+  },
+  'mcp_servers.jev.url': 'https://example.invalid/mcp',
+};
+
+/** The composed tool settings of the developer ladder's first profile. */
+function composedToolSettings(
+  configure: (configuration: ReturnType<typeof nexusConfiguration>) => void,
+  environment: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, unknown>> {
+  const configured = nexusConfiguration();
+  configure(configured);
+  const settings = createAgentRuntimeSettings(
+    parseNexusConfiguration(configured, installationDirectory),
+    'developer',
+    // The composed settings are what this check supplies; the capability is never invoked.
+    { execute: () => Promise.resolve({ ok: false, fault: { message: 'unused' } }) },
+    environment,
+  );
+  return settings.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings;
+}
 
 /** Whether the documented native provider is installed for this run. */
 const nativeProviderInstalled = spawnSync('codex', ['--version'], { stdio: 'ignore' }).status === 0;
@@ -169,10 +212,136 @@ describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => 
       transport: { command: jevExecutablePath() },
     });
   });
+
+  it('owns the reserved server over conflicting settings a selected profile supplies', async () => {
+    const conflict = {
+      profile: 'nexus-flash',
+      config: { ...inheritedJevSettings },
+    };
+    const composed = composedToolSettings(
+      (configured) => {
+        configured.jev = { enabled: true, credential: 'jevApiKey' };
+        configured.agentRuntime.profiles[0]!.toolSettings = conflict;
+      },
+      {
+        JEV_API_KEY: syntheticKey,
+        JEV_MODEL: 'not-the-default',
+        JEV_TIMEOUT_MS: '13',
+      },
+    );
+    const config = composed['config'] as Readonly<Record<string, unknown>>;
+
+    // The effective provider configuration carries only the composed reserved-server settings:
+    // no inherited literal environment, HTTP transport or tool exclusion survives.
+    const listed = await providerMcpServers(await home(), configArguments(config));
+    const jev = listed.find((server) => server.name === 'jev');
+    expect(jev).toMatchObject({
+      enabled: true,
+      transport: {
+        type: 'stdio',
+        command: jevExecutablePath(),
+        args: [],
+        env_vars: ['JEV_API_KEY'],
+      },
+    });
+    expect(jev?.transport.env ?? null).toBeNull();
+
+    const controlled = await provider();
+    controlled.succeed(syntheticJudgment);
+    const server = await startCodexAppServer({
+      codexHomeDirectory: await home(),
+      overrides: configArguments({
+        ...config,
+        // Test-supplied literals route the delivered server to the controlled provider.
+        'mcp_servers.jev.env': {
+          NODE_OPTIONS: `--import=${preload}`,
+          JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+        },
+      }),
+      environment: {
+        JEV_API_KEY: syntheticKey,
+        JEV_MODEL: 'not-the-default',
+        JEV_TIMEOUT_MS: '13',
+      },
+    });
+    servers.push(server);
+
+    const status = await reservedServerStatus(server);
+    expect(status.toolsError).toBeNull();
+    expect(Object.keys(status.tools)).toEqual(['ask_jev']);
+    const result = await server.request('mcpServer/tool/call', {
+      server: 'jev',
+      threadId: status.threadId,
+      tool: 'ask_jev',
+      arguments: syntheticRequest,
+    });
+    expect((result as { readonly structuredContent?: unknown }).structuredContent).toEqual(
+      syntheticJudgment,
+    );
+    // The host key is the only credential the server applied and the package defaults applied:
+    // the inherited literal key and model never reached the provider.
+    expect(controlled.requests).toHaveLength(1);
+    expect(controlled.requests[0]!.authorization).toBe(`Bearer ${syntheticKey}`);
+    expect(JSON.parse(controlled.requests[0]!.body)).toMatchObject({
+      model: 'jev-1.13.0',
+      state: syntheticState,
+    });
+    expect(server.stderr()).not.toContain('inherited-key');
+    expect(server.stderr()).not.toContain('inherited-model');
+  });
+
+  it('disables the reserved server over conflicting profile settings without breaking startup', async () => {
+    const composed = composedToolSettings(
+      (configured) => {
+        configured.agentRuntime.profiles[0]!.toolSettings = {
+          profile: 'nexus-flash',
+          config: { ...inheritedJevSettings },
+        };
+      },
+      { JEV_API_KEY: syntheticKey },
+    );
+    const config = composed['config'] as Readonly<Record<string, unknown>>;
+
+    expect(config['mcp_servers.jev.url']).toBeUndefined();
+    expect(config['mcp_servers.jev.enabled']).toBe(false);
+    const listed = await providerMcpServers(await home(), configArguments(config));
+    expect(listed.find((server) => server.name === 'jev')).toMatchObject({
+      enabled: false,
+      transport: { type: 'stdio', command: jevExecutablePath(), args: [] },
+    });
+
+    const server = await startCodexAppServer({
+      codexHomeDirectory: await home(),
+      overrides: configArguments(config),
+      environment: { JEV_API_KEY: syntheticKey },
+    });
+    servers.push(server);
+
+    const started = (await server.request('thread/start', { cwd: repositoryRoot })) as {
+      readonly thread: { readonly id: string };
+    };
+    const status = (await server.request('mcpServerStatus/list', {
+      serverName: 'jev',
+      detail: 'full',
+      threadId: started.thread.id,
+    })) as {
+      readonly data: readonly {
+        readonly name: string;
+        readonly tools: Readonly<Record<string, unknown>>;
+      }[];
+    };
+    expect(Object.keys(status.data.find((entry) => entry.name === 'jev')?.tools ?? {})).toEqual([]);
+
+    const executed = await server.request('command/exec', {
+      command: ['/bin/echo', 'without-jev'],
+      cwd: repositoryRoot,
+    });
+    expect(executed).toMatchObject({ exitCode: 0, stdout: 'without-jev\n' });
+  });
 });
 
 describe.skipIf(!nativeProviderInstalled)('effective native provider access', () => {
-  it('discovers and calls ask_jev for the synthetic judgment through the installed server', async () => {
+  it('discovers and calls ask_jev over a base configuration that excludes the tool', async () => {
     const controlled = await provider();
     controlled.succeed(syntheticJudgment);
     const overrides = configArguments({
@@ -183,11 +352,20 @@ describe.skipIf(!nativeProviderInstalled)('effective native provider access', ()
         JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
       },
     });
+    // The base configuration excludes the tool and points at a stale installation; the composed
+    // settings own the reserved server, so the effective catalogue still exposes ask_jev.
+    const excludingBase = [
+      '[mcp_servers.jev]',
+      'command = "/old/nexus/node_modules/.bin/jev-mcp"',
+      'enabled = true',
+      'disabled_tools = ["ask_jev"]',
+      '',
+    ].join('\n');
     // The composed arguments name the forwarded variable; the key itself stays in the host
     // environment and never enters a provider argument.
     expect(overrides.some((argument) => argument.includes(syntheticKey))).toBe(false);
     const server = await startCodexAppServer({
-      codexHomeDirectory: await home(),
+      codexHomeDirectory: await home(excludingBase),
       overrides,
       // The host model/timeout values must not reach the server's environment.
       environment: {

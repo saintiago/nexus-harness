@@ -160,6 +160,8 @@ describe('recovery runtime', () => {
       '-c',
       'mcp_servers.jev.enabled_tools=["ask_jev"]',
       '-c',
+      'mcp_servers.jev.disabled_tools=[]',
+      '-c',
       'mcp_servers.jev.env_vars=["JEV_API_KEY"]',
       '--output-schema',
       schemaPath,

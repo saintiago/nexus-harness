@@ -27,7 +27,7 @@ import {
   type ProjectConfiguration,
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
-import { createJevCapability, jevAgentSettings } from './jev.js';
+import { createJevCapability, isReservedJevSetting, jevAgentSettings } from './jev.js';
 
 /**
  * Composition turns resolved project and Nexus configuration into the construction settings of
@@ -131,20 +131,39 @@ function memoryAnalysisToolSettings(
   return { ...memoryAgentSettings(memory), 'mcp_servers.amem.enabled_tools': ['memory_search'] };
 }
 
-/** One configured profile's tool settings with the supplied tools added to its native overrides. */
+/** The native tool setting holding one profile's configuration overrides. */
+const nativeConfigSetting = 'config';
+
+/** Whether a supplied native override value is an object composition can merge into. */
+function isNativeOverrideObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * One configured profile's tool settings with the supplied tools added to its native overrides.
+ * A malformed override value is preserved for the coding adapter to reject, because substituting
+ * an empty object would silently drop the operator's settings. Inherited settings of the reserved
+ * JEv server are dropped before the composed ones are added: Nexus owns that server, and the
+ * provider's layered merge overrides the leaf settings it receives but cannot remove an inherited
+ * table entry.
+ */
 function withNativeTools(
   profile: AgentProfile,
   tools: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  if (Object.keys(tools).length === 0) {
+  const configured = profile.toolSettings[nativeConfigSetting];
+  if (configured !== undefined && !isNativeOverrideObject(configured)) {
     return profile.toolSettings;
   }
-  const configured = profile.toolSettings['config'];
-  const config =
-    typeof configured === 'object' && configured !== null && !Array.isArray(configured)
-      ? (configured as Readonly<Record<string, unknown>>)
-      : {};
-  return { ...profile.toolSettings, config: { ...config, ...tools } };
+  if (configured === undefined) {
+    return Object.keys(tools).length === 0
+      ? profile.toolSettings
+      : { ...profile.toolSettings, [nativeConfigSetting]: { ...tools } };
+  }
+  const inherited = Object.fromEntries(
+    Object.entries(configured).filter(([key]) => !isReservedJevSetting(key)),
+  );
+  return { ...profile.toolSettings, [nativeConfigSetting]: { ...inherited, ...tools } };
 }
 
 /**
@@ -274,24 +293,32 @@ export function createAgentRuntimeSettings(
     ...memoryTools,
     ...jevAgentSettings(jevAvailable),
   };
-  // Composed guidance is supplied once: a configured instruction repeating it is dropped so the
-  // invocation carries the same constant one time.
+  // Composed guidance is supplied once: a configured instruction repeating a Nexus-owned constant
+  // is dropped so the invocation carries it at most once. The ownership is availability-gated, so
+  // a configured copy of any of these constants is removed and only the applicable one is
+  // appended: a missing capability never leaves its guidance (or a false availability statement)
+  // in the assembled prompt.
   const guidance = [
     ...(memoryGuidance === null ? [] : [memoryGuidance]),
     ...(jevAvailable ? [jevUseGuidance] : []),
   ];
+  const ownedGuidance: ReadonlySet<string> = new Set([
+    memoryUseGuidance,
+    memoryAnalysisGuidance,
+    jevUseGuidance,
+  ]);
   return {
     codingRuntime,
     baseInstructions: [
       ...nexus.agentRuntime.baseInstructions.filter(
-        (instruction) => !guidance.includes(instruction),
+        (instruction) => !ownedGuidance.has(instruction),
       ),
       ...guidance,
     ],
     profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => {
       const constants = selected.has(profile.id) ? roleInstructions[role] : undefined;
       const configured = profile.instructions.filter(
-        (instruction) => !guidance.includes(instruction),
+        (instruction) => !ownedGuidance.has(instruction),
       );
       return {
         id: profile.id,

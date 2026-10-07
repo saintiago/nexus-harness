@@ -70,12 +70,16 @@ args = []
 enabled = true
 required = false
 enabled_tools = ["ask_jev"]
+disabled_tools = []
 env_vars = ["JEV_API_KEY"]
 ```
 
 The absolute command is installation-specific and generated at composition, not committed to
-profile templates. Native provider configuration forwards the named host variable without writing
-its value to a configuration file or command argument. API composition imports `createJevClient`
+profile templates. Composition supplies the reserved server's settings whole: settings a profile's
+own native configuration places under this reserved name are replaced, so they cannot supply a
+different command, environment, tool exclusion or transport. Native provider configuration
+forwards the named host variable without writing its value to a configuration file or command
+argument. API composition imports `createJevClient`
 from the same installation and passes the resolved key in memory. Use the shared defaults described
 in [configuration](../configuration.md#jev-settings); ensure inherited model/timeout variables are
 excluded from the server environment. Omitted/disabled integration, or missing host credentials,

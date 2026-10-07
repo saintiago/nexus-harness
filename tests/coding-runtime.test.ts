@@ -15,6 +15,9 @@ import {
   type CodingRuntimeRequest,
   type CodingRuntimeResult,
 } from '../src/adapters/coding-runtime.js';
+import { createAgentRuntimeSettings } from '../src/application/composition.js';
+import { parseNexusConfiguration } from '../src/configuration/index.js';
+import { nexusConfiguration } from './support/configuration.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -637,6 +640,33 @@ process.stdout.write(${literal(
       'mcp_servers.amem.enabled=true',
       '-',
     ]);
+  });
+
+  it('rejects a malformed profile configuration that Nexus composition preserved', async () => {
+    const configured = nexusConfiguration();
+    configured.agentRuntime.profiles[0]!.toolSettings = {
+      profile: 'nexus-flash',
+      config: ['invalid-native-setting'],
+    };
+    const settings = createAgentRuntimeSettings(
+      parseNexusConfiguration(configured, '/etc/nexus/installation'),
+      'developer',
+      // The composed settings are what this check supplies; the capability is never invoked.
+      { execute: () => Promise.resolve({ ok: false, fault: { message: 'unused' } }) },
+      {},
+    );
+    const toolSettings = settings.profiles.find(
+      (candidate) => candidate.id === 'nexus-flash',
+    )!.toolSettings;
+    const fixture = await providerFixture(`${recordInvocation}\n`, { install: false });
+
+    const { result } = await execute(fixture, { toolSettings });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('must be an object of native values') },
+    });
+    expect(await fixture.invocation()).toBeNull();
   });
 
   it('reports a fault for an override that is not a dotted path or holds an unsupported value', async () => {

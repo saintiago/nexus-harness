@@ -15,6 +15,19 @@ import { jevCredentialEnvironment, type NexusConfiguration } from '../configurat
 /** The host environment credential references resolve their values from. */
 type HostEnvironment = Readonly<Record<string, string | undefined>>;
 
+/** The provider-native configuration path of the reserved JEv MCP server. */
+const reservedJevServer = 'mcp_servers.jev';
+
+/**
+ * Whether one native configuration path names the reserved JEv server or a setting under it.
+ * Nexus supplies this server's settings whole, so composition drops an inherited path before it
+ * adds the composed ones: the provider's layered merge overrides the leaf settings it is given
+ * but cannot remove an inherited table entry such as a literal environment or an HTTP transport.
+ */
+export function isReservedJevSetting(key: string): boolean {
+  return key === reservedJevServer || key.startsWith(`${reservedJevServer}.`);
+}
+
 /** Why an enabled JEv integration has no usable client: no host key, or a rejected key. */
 export type JevUnavailability = 'missing-credential' | 'unavailable';
 
@@ -77,18 +90,21 @@ export function jevExecutablePath(): string {
 
 /**
  * The reserved `jev` MCP server's provider-native settings for one invocation. Nexus owns this
- * server's composition: its installed command, the single `ask_jev` tool restriction, forwarding
- * of the host key by name only, and optional startup. When the capability is unavailable the same
- * settings are composed disabled, so an inherited server can never outlive Nexus's enablement
- * decision. The package's model and timeout defaults apply because no other value is forwarded.
+ * server's composition: its installed command, the single `ask_jev` tool with no inherited
+ * exclusions, forwarding of the host key by name only, and optional startup. When the capability
+ * is unavailable the same settings are composed disabled, so an inherited server can never
+ * outlive Nexus's enablement decision. The package's model and timeout defaults apply because no
+ * other value is forwarded; the empty tool exclusion list replaces an inherited exclusion that
+ * would otherwise hide `ask_jev`.
  */
 export function jevAgentSettings(available: boolean): Readonly<Record<string, unknown>> {
   return {
-    'mcp_servers.jev.command': jevExecutablePath(),
-    'mcp_servers.jev.args': [],
-    'mcp_servers.jev.enabled': available,
-    'mcp_servers.jev.required': false,
-    'mcp_servers.jev.enabled_tools': ['ask_jev'],
-    'mcp_servers.jev.env_vars': [jevCredentialEnvironment],
+    [`${reservedJevServer}.command`]: jevExecutablePath(),
+    [`${reservedJevServer}.args`]: [],
+    [`${reservedJevServer}.enabled`]: available,
+    [`${reservedJevServer}.required`]: false,
+    [`${reservedJevServer}.enabled_tools`]: ['ask_jev'],
+    [`${reservedJevServer}.disabled_tools`]: [],
+    [`${reservedJevServer}.env_vars`]: [jevCredentialEnvironment],
   };
 }
