@@ -1048,7 +1048,14 @@ async function publishPreparation(options: {
       profiles: { author: 'a', evaluator: 'e' },
     }),
   );
-  await writeFile(path.join(stage, 'artifacts/1/result.json'), JSON.stringify(options.result));
+  // The retained result names this round's evaluated decision, exactly as the producer records it.
+  await writeFile(
+    path.join(stage, 'artifacts/1/result.json'),
+    JSON.stringify({
+      ...options.result,
+      evaluation: { path: path.join(stage, 'artifacts/1/evaluation.json') },
+    }),
+  );
   const selectionFile = path.join(directory, 'selection.json');
   const selection = {
     taskKey: 'NEX-1',
@@ -2055,7 +2062,8 @@ async function handoff(options: {
           authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
           sourceIdentity: sourceInputIdentity(fixtureSelection as never),
           upstream: [...upstream],
-          repositoryRevision: '1'.repeat(40),
+          // An applicable prototype's evaluation observes the revision the result retains.
+          repositoryRevision: settings.prototype?.revision ?? '1'.repeat(40),
           content: [
             ...settings.documents
               .filter((document) => document.revision !== null)

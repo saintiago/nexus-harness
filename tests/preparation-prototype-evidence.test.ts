@@ -26,6 +26,7 @@ import { createPrepareStage } from '../src/task-engine/actions/preparation/prepa
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
+import type { Selection } from '../src/task-engine/actions/select-task/artifacts.js';
 import {
   authoredIdentity,
   sourceInputIdentity,
@@ -205,6 +206,57 @@ function evaluationReport(verdict: string, observation: string | null): Record<s
     verdict,
     observation: observation === null ? null : { path: observation },
     upstream: null,
+  };
+}
+
+/**
+ * One accepted prototype round over a new fixture workspace: the real author, evaluator and
+ * result actions save the decision and both roles' evidence, and the helper returns the files a
+ * later reader consumes.
+ */
+async function acceptedPrototypeRound(): Promise<{
+  readonly root: string;
+  readonly selectionFile: string;
+  readonly stageRoot: string;
+  readonly selection: Selection;
+  readonly resultFile: string;
+  readonly stateFile: string;
+}> {
+  const { root, worktree, selectionFile, roundDirectory } = await prototypeWorkspace();
+  await mkdir(path.join(worktree, 'stories'), { recursive: true });
+  await commitFile(worktree, 'stories/journey.stories.js', 'export const j = 1;\n');
+  await createStageAuthor({
+    selectionFile,
+    stage: 'prototype',
+    git,
+    publish: () => undefined,
+    runner: runnerOf(
+      authoredReport(await savePrototypeObservation({ roundDirectory, role: 'author' })),
+    ).runner,
+  })({ task: 'propose' });
+  await createStageEvaluator({
+    selectionFile,
+    stage: 'prototype',
+    git,
+    publish: () => undefined,
+    runner: runnerOf(
+      evaluationReport(
+        'accepted',
+        await savePrototypeObservation({ roundDirectory, role: 'evaluator' }),
+      ),
+    ).runner,
+  })();
+  await createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+    outcome: 'accepted',
+  });
+  const stageRoot = path.join(root, 'prototype');
+  return {
+    root,
+    selectionFile,
+    stageRoot,
+    selection: JSON.parse(await readFile(selectionFile, 'utf8')) as Selection,
+    resultFile: path.join(stageRoot, 'artifacts', '1', 'result.json'),
+    stateFile: path.join(stageRoot, 'state', 'result.json'),
   };
 }
 
@@ -1270,6 +1322,70 @@ describe('prototype observation evidence', () => {
     delete saved.prototypeObservations;
     await writeFile(resultFile, JSON.stringify(saved));
     await writeFile(path.join(stageRoot, 'state', 'result.json'), JSON.stringify(saved));
+    await expect(
+      readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+    ).resolves.toMatchObject({ kind: 'current' });
+    await expect(
+      createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+        outcome: 'accepted',
+      }),
+    ).resolves.toBe('saved');
+  });
+
+  it.each(['evaluation reference', 'prototype revision', 'authored revision'] as const)(
+    'refuses a retained result whose %s does not identify its producing assessment',
+    async (mismatch) => {
+      const { root, selectionFile, stageRoot, selection, resultFile, stateFile } =
+        await acceptedPrototypeRound();
+      const saved = JSON.parse(await readFile(resultFile, 'utf8')) as Record<string, unknown>;
+      // The evidence records stay readable; only the result's recorded attribution conflicts with
+      // the producing assessment its round retained.
+      delete saved.prototypeObservations;
+      if (mismatch === 'evaluation reference') {
+        saved.evaluation = { path: path.join(stageRoot, 'artifacts', '99', 'evaluation.json') };
+      } else if (mismatch === 'prototype revision') {
+        saved.prototype = {
+          ...(saved.prototype as Record<string, unknown>),
+          revision: 'f'.repeat(40),
+        };
+      } else {
+        saved.authoredRevision = 99;
+      }
+      await writeFile(resultFile, JSON.stringify(saved));
+      await writeFile(stateFile, JSON.stringify(saved));
+      const problem =
+        mismatch === 'evaluation reference'
+          ? /names another evaluation/
+          : mismatch === 'prototype revision'
+            ? /prototype revision does not match/
+            : /another authored revision/;
+      await expect(
+        readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
+      ).resolves.toMatchObject({ kind: 'stale', reason: expect.stringMatching(problem) });
+      await expect(
+        createStageResult({ selectionFile, stage: 'prototype', git, publish: () => undefined })({
+          outcome: 'accepted',
+        }),
+      ).rejects.toThrow(problem);
+    },
+  );
+
+  it('keeps a legacy evaluation without a repository observation readable for its prototype', async () => {
+    const { root, selectionFile, stageRoot, selection, resultFile, stateFile } =
+      await acceptedPrototypeRound();
+    const evaluationFile = path.join(stageRoot, 'artifacts', '1', 'evaluation.json');
+    const legacy = JSON.parse(await readFile(evaluationFile, 'utf8')) as {
+      basis: { repositoryRevision?: string };
+    };
+    // A former evaluation saved no repository observation: the retained prototype revision cannot
+    // be compared against it and keeps its documented compatibility instead of failing.
+    delete legacy.basis.repositoryRevision;
+    await writeFile(evaluationFile, JSON.stringify(legacy));
+    const saved = JSON.parse(await readFile(resultFile, 'utf8')) as Record<string, unknown>;
+    saved.prototype = { ...(saved.prototype as Record<string, unknown>), revision: 'f'.repeat(40) };
+    delete saved.prototypeObservations;
+    await writeFile(resultFile, JSON.stringify(saved));
+    await writeFile(stateFile, JSON.stringify(saved));
     await expect(
       readCurrentDecision({ issueRoot: root, stage: 'prototype', selection, git }),
     ).resolves.toMatchObject({ kind: 'current' });

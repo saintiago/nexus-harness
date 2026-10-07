@@ -25,6 +25,7 @@ import {
   readStagePlan,
   requireCurrentAcceptance,
   requireRetainedDecision,
+  requireRetainedResultAssociation,
   requireReturnReport,
   requireNeedsInputReport,
   roundArtifactDirectory,
@@ -134,7 +135,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        await requireRetainedDecision({
+        const evaluation = await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
@@ -143,6 +144,15 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           author,
           evaluation: await readEvaluation(),
           git: settings.git,
+        });
+        // The replay adopts a retained result only while its recorded attribution identifies the
+        // round's producing assessment, before any evidence resolves through it.
+        requireRetainedResultAssociation({
+          root,
+          round: plan.round,
+          result: completed,
+          author,
+          evaluation,
         });
       }
       if (outcome === 'needsInput') {

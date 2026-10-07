@@ -504,10 +504,16 @@ Attribution is reached through the saved role outcome that declares the observat
 and StageEvaluator retain the existing observed task, role/profile, invocation and Markdown binding;
 the evaluation also retains the assessed author revision and action-observed acceptance basis.
 StageResult's evaluation reference and prototype branch/revision connect that evidence to the
-completed decision. Do not add agent-supplied revision claims, per-image/file hashes or a separate
-observation-binding store. These associations identify the producing assessment; neither they nor
-successful decoding prove usability. The evaluator judges evidence adequacy and current preview
-behavior, including relevant unchanged work, and reports material defects through existing routes.
+completed decision. A replay or downstream read adopts a retained result only while its recorded
+attribution identifies that producing assessment: the evaluation reference names the round's
+evaluated decision, the result's authored revision is the revision that decision assessed and a
+retained prototype revision matches the repository revision the evaluation observed. A former
+evaluation that saved no repository observation keeps its documented compatibility, and conflicting
+or unresolvable attribution follows normal recovery or reassessment. Do not add agent-supplied
+revision claims, per-image/file hashes or a separate observation-binding store. These associations
+identify the producing assessment; neither they nor successful decoding prove usability. The
+evaluator judges evidence adequacy and current preview behavior, including relevant unchanged work,
+and reports material defects through existing routes.
 
 Authors finish authored changes before browser assessment and repeat inspection if subsequent
 changes make their observations inadequate. Evaluators independently inspect the current preview
