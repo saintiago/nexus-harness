@@ -886,17 +886,22 @@ export function createAnalyzeExperience(
     }
     const identity = experienceIdentity(handoff);
     const file = requestFile(identity);
-    if ((await readDocumentText(file, 'Experience request')) === null) {
-      return null;
-    }
     let recorded: ExperienceRequest;
     try {
+      if ((await readDocumentText(file, 'Experience request')) === null) {
+        return null;
+      }
       recorded = await readRequest(file, identity);
     } catch (error) {
       return { outcome: 'unavailable', evidence: null, detail: messageOf(error) };
     }
     const evidence = experienceCaptureFile(settings.directory, identity);
-    const text = await readDocumentText(evidence, 'Experience capture');
+    let text: string | null;
+    try {
+      text = await readDocumentText(evidence, 'Experience capture');
+    } catch (error) {
+      return { outcome: 'unavailable', evidence: null, detail: messageOf(error) };
+    }
     const captured = text === null ? null : parseDocument(text, experienceCaptureSchema);
     if (
       captured === null ||

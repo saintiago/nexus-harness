@@ -586,6 +586,46 @@ describe('recorded capture replay', () => {
     expect(service.requests).toEqual([]);
   });
 
+  it('reports an unreadable recorded request as unavailable without replacing it', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const identity = experienceIdentity({
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:architecture:round-2',
+      terminalId: 'preparation-handoff',
+    });
+    // The record exists but its path is a directory, so reading it fails like permission or I/O
+    // trouble rather than reporting a miss that would permit replacement.
+    const requestFile = experienceRequestFile(directory, identity);
+    await mkdir(requestFile, { recursive: true });
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+
+    const replayed = await owner.replayCapture({
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:architecture:round-2',
+      terminalId: 'preparation-handoff',
+    });
+
+    expect(replayed?.outcome).toBe('unavailable');
+    expect(replayed?.evidence).toBeNull();
+    expect(replayed?.detail).toContain('could not be read');
+    // The unreadable record stays untouched and no replacement capture is written.
+    expect((await stat(requestFile)).isDirectory()).toBe(true);
+    await expect(stat(experienceCaptureFile(directory, identity))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(service.requests).toEqual([]);
+  });
+
   it('reports a request whose capture evidence is unusable as unavailable without replacing it', async () => {
     const root = await temporaryDirectory();
     const directory = path.join(root, 'memory');
@@ -625,6 +665,52 @@ describe('recorded capture replay', () => {
     expect(replayed?.detail).toContain('is missing or unusable');
     // Neither the unreadable capture evidence nor the request it belongs to is replaced.
     expect(await readFile(captureFile, 'utf8')).toBe('{"identity":\n');
+    expect(await readFile(requestFile, 'utf8')).toBe(recorded);
+    expect(service.requests).toEqual([]);
+  });
+
+  it('reports an unreadable capture record as unavailable without replacing it', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'project',
+      attemptId,
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    };
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+    await expect(owner.capture(handoff)).resolves.toMatchObject({ outcome: 'recorded' });
+    const identity = experienceIdentity(handoff);
+    const requestFile = experienceRequestFile(directory, identity);
+    const recorded = await readFile(requestFile, 'utf8');
+    // The capture record exists but its path is a directory, so reading it fails like permission
+    // or I/O trouble rather than reporting a miss that would permit replacement.
+    const captureFile = experienceCaptureFile(directory, identity);
+    await rm(captureFile);
+    await mkdir(captureFile, { recursive: true });
+
+    const replayed = await owner.replayCapture(handoff);
+
+    expect(replayed?.outcome).toBe('unavailable');
+    expect(replayed?.evidence).toBeNull();
+    expect(replayed?.detail).toContain('could not be read');
+    // Neither the unreadable capture evidence nor the request it belongs to is replaced.
+    expect((await stat(captureFile)).isDirectory()).toBe(true);
     expect(await readFile(requestFile, 'utf8')).toBe(recorded);
     expect(service.requests).toEqual([]);
   });
