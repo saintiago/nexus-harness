@@ -39,8 +39,8 @@ catalogue path is included in the templates.
 
 Profiles layer over the base Codex configuration. They do not replace it or exclude arbitrary
 inherited MCP servers and plugins. Before use, inspect the selected profile's effective tool
-catalogue and disable inherited tools outside shell, files, the three research services and the
-browser/image capabilities below where needed.
+catalogue and disable inherited tools outside shell, files, the three research services, enabled
+memory/JEv tools and the browser/image capabilities below where needed.
 Repeat that check when changing the base configuration. Explicit per-app settings can override
 the default app exclusion. Nexus adds the AMEM memory MCP server to memory-enabled invocations
 through the provider's native settings ([Memory integration](../memory/integration.md#agent-use));
@@ -52,6 +52,20 @@ Keep credentials and machine-specific settings out of the repository.
 Preparation and delivery assignments follow the [project workflow](../project-workflow.md#profiles).
 Both prototype roles require browser and image-inspection tools. Jira credentials and source
 publication tools are not supplied to stage roles.
+
+## JEv access
+
+Use the delivered JEv package's `jev-mcp` executable through provider-native MCP settings when
+[JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` from the
+execution host. Keep its value out of repository configuration, prompts, command arguments,
+reports and other artifacts. Document the supported dependency installation and native launch
+configuration so the operator can reproduce API and tool access on Linux/WSL.
+
+Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
+[AgentRuntime](architecture.md#optional-jev-judgments), including preparation evaluators, recovery
+and experience analysis. Check composition with existing tools, rather than treating a template
+entry as evidence of working access. Disabled access and unavailable-tool continuation must also
+be demonstrated. Nexus adds no MCP client or shared HTTP service for this integration.
 
 ## Prototype browser and image setup
 

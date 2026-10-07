@@ -43,6 +43,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Idea refinement | Four role profile references and the maximum conversation cycles per selection |
 | Memory | Optional enablement, service URL, MCP access and experience-analysis profile |
+| JEv | Optional judgment integration, native MCP access and host credential reference |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -118,6 +119,27 @@ submits its output. Other enabled agent profiles retain explicit AMEM search/sav
 AMEM owns collection, encoder, model and durable ingestion settings. Nexus does not configure direct
 Qdrant access, encoder caches, memory-generation credentials or writer locks. Invalid settings fail
 configuration; service unavailability degrades only learning. Disabled configurations remain valid.
+
+## JEv settings
+
+JEv integration is optional and Nexus-owned. An installation without JEv configuration remains
+valid. Omitted or disabled integration supplies no JEv tools or applicability requests and retains
+the existing full preparation path. Enabled integration supports both native agent access and the
+preparation API use described in [project workflow](project-workflow.md#jev-assisted-applicability).
+Document the supported enable/disable configuration and host setup; exact setting names and
+dependency installation belong to Architecture.
+
+Resolve `JEV_API_KEY` from the execution host for API use and native MCP launch; configuration
+contains only its reference, never its value. The package owns provider endpoint, schemas and
+transport. Missing credentials or an unavailable JEv capability cannot prevent ordinary Nexus work:
+use the documented [applicability fallback](project-workflow.md#jev-assisted-applicability) and
+[agent continuation](agent-runtime/architecture.md#optional-jev-judgments). Preserve existing
+configuration validation and resolved-setting immutability.
+
+Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
+effects; disabling a configured integration restores that same behavior. With host credentials and
+JEv enabled, API and native MCP access work without placing the secret in saved configuration or
+artifacts. With the credential missing, ordinary preparation and agent work remain possible.
 
 ## Project workflow settings
 

@@ -136,6 +136,14 @@ current responsibilities.
 
 ## Round storage and acceptance
 
+Preparation owns the applicability boundary under the
+[JEv-assisted applicability requirements](../../project-workflow.md#jev-assisted-applicability).
+Its TypeScript API judgment, Nexus decision and fallback remain attributable to the affected stage
+and input basis across resume. The package supplies judgments, not preparation acceptance. Minimal
+API placement and supporting contract/storage changes belong to preparation Architecture. Preserve
+the existing role response and evaluated-skip obligations. Requirements does not acquire ownership
+of later-stage decisions.
+
 Each stage area owns `state/current-round.json`, `state/result.json` and numbered
 `artifacts/<round>/` containing author.json, evaluation.json and result.json. The plan records selected
 profiles and why the round opened. Cumulative round and return allowances survive re-entry/restart.

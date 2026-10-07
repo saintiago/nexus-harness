@@ -149,6 +149,40 @@ search/save MCP tools through native provider settings.
 Profiles define model, effort and available tools. Invocation instructions do not change these
 settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
 
+### Optional JEv judgments
+
+Agents can consult the standalone [JEv package](https://github.com/saintiago/jev-mcp/blob/main/docs/contracts.md)
+for bounded judgments. When the integration is enabled, every Nexus role receives optional
+`ask_jev` access through provider-native MCP configuration: all preparation authors/evaluators,
+all four idea-refinement roles, development, review, recovery and experience analysis. This applies
+to every selectable profile, including repair/escalation entries and profiles reused across roles.
+No invocation requires a call merely because the tool is available.
+
+The package owns provider requests, schemas, response validation and MCP transport. Nexus consumes
+its delivered dependency and owns decisions made from its answers. Tool composition preserves the
+role's existing capabilities and restrictions, including experience analysis's search-only memory
+access. Enablement and host credentials follow [configuration](../configuration.md#jev-settings);
+installation and effective tool checks follow [profiles](profiles.md#jev-access).
+
+Supply this concise guidance once with enabled access: ask narrow questions with explicit
+alternatives and only relevant evidence; batch questions sharing the same state. JEv returns
+judgments, not code or prose answers. Use deterministic tools for arithmetic, counting and executable
+checks. Answers and confidence are evidence for the responsible role, never permission to bypass
+required stages, independent evaluation, verification or merge checks. If the tool cannot answer,
+continue the role's existing reasoning and checks; do not make JEv availability a completion gate.
+
+Acceptance examples:
+
+- With JEv enabled, the effective tool catalogue for each role/profile combination exposes
+  `ask_jev`, and the assembled invocation includes the usage guidance once. A reused profile
+  retains only the invoked role's instructions; an invocation making no JEv call can complete.
+- A native MCP call with synthetic state and explicit alternatives returns the package's
+  structured judgment. A tool failure leaves the role able to complete through its existing
+  reasoning; a positive judgment alone cannot approve a revision or satisfy a failing check.
+- With both integrations enabled, a developer retains memory search/save and existing tools;
+  the experience analyst retains memory search without memory save and also receives `ask_jev`.
+- With JEv disabled, Nexus supplies neither its tool nor its usage guidance and makes no JEv call.
+
 Developer and reviewer profiles expose the same tools:
 
 - Shell execution and file reading, creation and editing.
@@ -156,6 +190,7 @@ Developer and reviewer profiles expose the same tools:
 - Context7 library documentation.
 - OpenAI documentation MCP.
 - AMEM memory MCP when enabled, with use governed by [Memory integration](../memory/integration.md#agent-use).
+- Optional `ask_jev` when enabled, under the judgment guidance above.
 
 Disable personal connectors and unrelated integrations, including the GitHub connector, for both
 profiles. Harness publication remains outside the agent tool set. Use the provider's native settings
