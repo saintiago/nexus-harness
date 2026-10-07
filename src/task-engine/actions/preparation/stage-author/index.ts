@@ -593,9 +593,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         });
       }
     })();
-    const reportFile = await (async () => {
+    await (async () => {
       try {
-        return await readAssignedReport(assignedReport.path, 'Assigned author report');
+        await readAssignedReport(assignedReport.path, 'Assigned author report');
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -652,7 +652,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       profile: authorProfile,
       role: 'author',
       report: assignedReport,
-      reportIdentity: reportFile.identity,
       invocationId,
     };
     await writeStageArtifact(root, plan.round, stageAuthorArtifact, output);

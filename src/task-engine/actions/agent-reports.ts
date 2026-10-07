@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -20,7 +19,6 @@ export const artifactRefSchema = z.strictObject({
 /** The report association one saved outcome carries: its Markdown and its invocation. */
 export const reportBindingSchema = z.strictObject({
   report: artifactRefSchema.describe('The assigned Markdown report this outcome describes.'),
-  reportIdentity: z.string().trim().min(1).describe("SHA-256 of the report's exact UTF-8 bytes."),
   invocationId: z.string().trim().min(1).describe('The agent invocation that produced the report.'),
 });
 
@@ -28,6 +26,23 @@ export type ReportBinding = z.infer<typeof reportBindingSchema>;
 
 /** The report fields each owner spreads into its saved-outcome schema. */
 export const reportBindingFields = reportBindingSchema.shape;
+
+/**
+ * The former Markdown-byte hash a retained separated record may still carry in its saved position.
+ * It is opaque historical data: never computed, required, compared or rewritten, so its absence,
+ * value or mismatch with the referenced Markdown is no gate. Declaring it keeps retained records
+ * readable and reproduces the complete-record identities their owners already recorded.
+ */
+export const formerReportIdentityField = {
+  reportIdentity: z.unknown().optional(),
+};
+
+/** The report fields retained records are read with, in the position they were saved in. */
+export const retainedReportBindingFields = {
+  report: reportBindingFields.report,
+  ...formerReportIdentityField,
+  invocationId: reportBindingFields.invocationId,
+};
 
 /**
  * The report binding one saved outcome carries, or null when the record has none. Extraction is
@@ -41,24 +56,17 @@ export function reportBindingOf(value: unknown): ReportBinding | null {
   }
   const parsed = reportBindingSchema.safeParse({
     report: (value as { readonly report?: unknown }).report,
-    reportIdentity: (value as { readonly reportIdentity?: unknown }).reportIdentity,
     invocationId: (value as { readonly invocationId?: unknown }).invocationId,
   });
   return parsed.success ? parsed.data : null;
 }
 
-/** One readable report file: its exact bytes, UTF-8 text and byte identity. */
+/** One readable report file: its exact bytes and UTF-8 text. */
 export type ReportFile = {
   readonly file: string;
   readonly text: string;
-  readonly identity: string;
   readonly bytes: Buffer;
 };
-
-/** The identity of one report's exact bytes. */
-export function reportIdentityOf(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
 
 /**
  * Assign one invocation's Markdown report path inside an owning artifact area and create its
@@ -98,22 +106,15 @@ export async function readAssignedReport(file: string, kind = 'Report'): Promise
       cause: error,
     });
   }
-  return { file, text: bytes.toString('utf8'), identity: reportIdentityOf(bytes), bytes };
+  return { file, text: bytes.toString('utf8'), bytes };
 }
 
-/** Read the report one saved binding names and require its recorded identity. */
+/** Read the readable report one saved binding names. */
 export async function readBoundReport(
   binding: ReportBinding,
   kind = 'Report',
 ): Promise<ReportFile> {
-  const report = await readAssignedReport(binding.report.path, kind);
-  if (report.identity !== binding.reportIdentity) {
-    throw new Error(
-      `${kind} at "${binding.report.path}" does not match the identity recorded for ` +
-        `invocation ${binding.invocationId}.`,
-    );
-  }
-  return report;
+  return await readAssignedReport(binding.report.path, kind);
 }
 
 /**

@@ -444,7 +444,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       questions: framing.questions,
       authorDecision: framing.authorDecision,
       report: outcome.assignedReport,
-      reportIdentity: outcome.reportFile.identity,
       invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, framingArtifact, stored);
@@ -734,7 +733,6 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       reason: returns ? turn.reason : null,
       help: turn.disposition === 'help-requested' ? turn.help : null,
       report: outcome.assignedReport,
-      reportIdentity: outcome.reportFile.identity,
       invocationId: outcome.invocationId,
     };
     if (turn.disposition === 'help-requested') {

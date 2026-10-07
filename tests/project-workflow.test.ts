@@ -37,7 +37,6 @@ import { implementationInputDeclaration } from '../src/task-engine/actions/proje
 import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { parentAreaDirectory } from '../src/task-engine/actions/select-work/artifacts.js';
 import {
   acceptedResultIdentity,
@@ -1270,7 +1269,6 @@ async function writeBoundRound(options: {
     profile: 'nexus-sol',
     role: 'author',
     report: { path: authorReportPath },
-    reportIdentity: reportIdentityOf(Buffer.from(authorMarkdown, 'utf8')),
     invocationId: 'author-1',
   };
   const authorFile = path.join(options.stageArea, 'artifacts', '1', 'author.json');
@@ -1293,7 +1291,6 @@ async function writeBoundRound(options: {
     profile: 'nexus-sol',
     role: 'evaluator',
     report: { path: evaluationReportPath },
-    reportIdentity: reportIdentityOf(Buffer.from(evaluationMarkdown, 'utf8')),
     invocationId: 'evaluator-1',
   };
   await writeFile(
@@ -1601,7 +1598,7 @@ describe('parent preparation publication', () => {
     },
   );
 
-  it.each(['missing', 'directory', 'changed', 'incomplete-binding'] as const)(
+  it.each(['missing', 'directory', 'incomplete-binding'] as const)(
     'refuses needs-input publication with a %s author report and retains the rejection',
     async (damage) => {
       let area = '';
@@ -1619,12 +1616,11 @@ describe('parent preparation publication', () => {
               ...author,
               outcome: 'needs-input',
               question: 'Which acceptance example governs?',
-              ...(damage === 'incomplete-binding' ? { reportIdentity: undefined } : {}),
+              ...(damage === 'incomplete-binding' ? { invocationId: undefined } : {}),
             }),
           );
           if (damage !== 'incomplete-binding') await rm(author.report.path);
           if (damage === 'directory') await mkdir(author.report.path);
-          if (damage === 'changed') await writeFile(author.report.path, 'Replacement bytes.');
         },
       });
       expect(published.outcome).toBe('failed');
@@ -1641,6 +1637,33 @@ describe('parent preparation publication', () => {
       ]);
     },
   );
+
+  it('publishes a needs-input request after its author report was reworded readably', async () => {
+    let area = '';
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'needsInput', reason: 'Which acceptance example governs?' },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stageArea) => {
+        area = stageArea;
+        await writeBoundRound({ stageArea, selectionFile });
+        const file = path.join(stageArea, 'artifacts/1/author.json');
+        const author = JSON.parse(await readFile(file, 'utf8')) as { report: { path: string } };
+        await writeFile(
+          file,
+          JSON.stringify({
+            ...author,
+            outcome: 'needs-input',
+            question: 'Which acceptance example governs?',
+          }),
+        );
+        // Readable replacement wording is not a Markdown-byte gate: the request is published.
+        await writeFile(author.report.path, 'Replacement readable wording.');
+      },
+    });
+    expect(published.outcome).toBe('waiting');
+    expect(published.status()).toBe('Waiting for Feedback');
+    expect(await readReportFeedback(area)).toEqual([]);
+  });
 
   it('rejects a damaged current return before publication writes source or handoff state', async () => {
     let area = '';
@@ -1760,7 +1783,7 @@ describe('parent preparation publication', () => {
         ).evaluationReportPath;
         const evaluation = JSON.parse(
           await readFile(path.join(stage, 'artifacts', '1', 'evaluation.json'), 'utf8'),
-        ) as { readonly reportIdentity: string; readonly invocationId: string };
+        ) as { readonly invocationId: string };
         returnFinding = {
           stage: 'requirements',
           role: 'evaluator',
@@ -1768,7 +1791,6 @@ describe('parent preparation publication', () => {
             report: { path: reportPath },
             outcome: { path: path.join(stage, 'artifacts/1/evaluation.json') },
             profile: 'nexus-sol',
-            reportIdentity: evaluation.reportIdentity,
             invocationId: evaluation.invocationId,
           },
           correction: 'Correct the acceptance example.',
@@ -1800,12 +1822,12 @@ describe('parent preparation publication', () => {
       from: 'ux',
       to: 'requirements',
       role: 'evaluator',
-      report: { report: { path: reportPath }, reportIdentity: expect.any(String) },
+      report: { report: { path: reportPath }, invocationId: 'evaluator-1' },
       correction: 'Correct the acceptance example.',
     });
   });
 
-  it.each(['changed-report', 'incomplete-binding'] as const)(
+  it.each(['missing-report', 'incomplete-binding'] as const)(
     'fails a return publication with a %s and retains rejection evidence',
     async (damage) => {
       let area = '';
@@ -1824,7 +1846,6 @@ describe('parent preparation publication', () => {
               evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
             })
           ).evaluationReportPath;
-          // The return binds bytes that no longer match what the returning role saved.
           producerFile = path.join(stage, 'artifacts/1/evaluation.json');
           const evaluation = JSON.parse(await readFile(producerFile, 'utf8')) as Record<
             string,
@@ -1832,10 +1853,12 @@ describe('parent preparation publication', () => {
           >;
           availableReport = reportPath;
           rejectedOutput = await readFile(producerFile, 'utf8');
-          if (damage === 'changed-report') {
-            await writeFile(reportPath, '# Replacement\n\nSubstituted evidence.\n', 'utf8');
+          if (damage === 'missing-report') {
+            // The returning role's bound report has disappeared since it was saved.
+            await rm(reportPath);
           } else {
-            rejectedOutput = JSON.stringify({ ...evaluation, reportIdentity: undefined });
+            // The producing record lost its invocation identity, so its binding is unusable.
+            rejectedOutput = JSON.stringify({ ...evaluation, invocationId: undefined });
             await writeFile(producerFile, rejectedOutput);
           }
           await writeFile(
@@ -1851,7 +1874,6 @@ describe('parent preparation publication', () => {
                   report: { path: reportPath },
                   outcome: { path: producerFile },
                   profile: evaluation['profile'],
-                  reportIdentity: evaluation['reportIdentity'],
                   invocationId: evaluation['invocationId'],
                 },
                 correction: 'Correct the acceptance example.',
@@ -1864,7 +1886,7 @@ describe('parent preparation publication', () => {
 
       expect(published.outcome).toBe('failed');
       expect(published.failures.join('\n')).toContain(
-        damage === 'changed-report' ? 'does not match the identity recorded' : 'reportIdentity',
+        damage === 'missing-report' ? 'does not exist' : 'invocationId',
       );
       const feedback = await readReportFeedback(area);
       expect(feedback).toHaveLength(1);
@@ -1880,6 +1902,57 @@ describe('parent preparation publication', () => {
       expect(published.returnFinding()).toBeNull();
     },
   );
+
+  it('publishes a return whose readable report was reworded after it was saved', async () => {
+    let reportPath = '';
+    const published = await publishPreparation({
+      result: { ...accepted, outcome: 'returnUpstream', returnStage: 'requirements' },
+      status: 'UX Proposal',
+      beforePublish: async (selectionFile, stage) => {
+        reportPath = (
+          await writeBoundRound({
+            stageArea: stage,
+            selectionFile,
+            evaluationMarkdown: '# Assessment\n\nThe recorded assessment.\n',
+          })
+        ).evaluationReportPath;
+        // Readable replacement wording is not a Markdown-byte gate: the retained return
+        // advances and the current readable report supplies the published narrative.
+        await writeFile(reportPath, '# Reworded assessment\n\nThe clarified narrative.\n', 'utf8');
+        const evaluation = JSON.parse(
+          await readFile(path.join(stage, 'artifacts/1/evaluation.json'), 'utf8'),
+        ) as { readonly invocationId: string };
+        await writeFile(
+          path.join(stage, 'artifacts', '1', 'result.json'),
+          JSON.stringify({
+            ...accepted,
+            outcome: 'returnUpstream',
+            returnStage: 'requirements',
+            returnFinding: {
+              stage: 'requirements',
+              role: 'evaluator',
+              report: {
+                report: { path: reportPath },
+                outcome: { path: path.join(stage, 'artifacts/1/evaluation.json') },
+                profile: 'nexus-sol',
+                invocationId: evaluation.invocationId,
+              },
+              correction: 'Correct the acceptance example.',
+            },
+            reason: null,
+          }),
+        );
+      },
+    });
+
+    expect(published.outcome).toBe('advanced');
+    expect(published.failures).toEqual([]);
+    expect(JSON.stringify(published.comments[0]?.body)).toContain('The clarified narrative.');
+    expect(published.returnFinding()).toMatchObject({
+      role: 'evaluator',
+      report: { report: { path: reportPath }, invocationId: 'evaluator-1' },
+    });
+  });
 
   it('preserves an unexpected human status change instead of overwriting it', async () => {
     const published = await publishPreparation({

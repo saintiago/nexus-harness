@@ -256,8 +256,8 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
 
     const helpers = createArtifactHelpers({ root });
     // Planning consumes the current development result only while it describes this task and, when
-    // bound, carries its readable report with the recorded identity; an unusable record is
-    // retained as the developer's rejection evidence instead of deciding a round.
+    // bound, carries its readable report; an unusable record is retained as the developer's
+    // rejection evidence instead of deciding a round.
     const development = await readUsableDevelopmentOutcome({
       areaRoot: root,
       taskKey: settings.taskKey,

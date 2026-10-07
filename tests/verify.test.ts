@@ -12,7 +12,6 @@ import type { GitAdapter } from '../src/adapters/git.js';
 import type { ProcessCommand } from '../src/adapters/processes.js';
 import type { Command } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
@@ -414,7 +413,7 @@ describe('Verify', () => {
     ).rejects.toThrow(/ENOENT/);
   });
 
-  it.each(['missing', 'changed', 'damaged'] as const)(
+  it.each(['missing', 'damaged'] as const)(
     'does not run checks from an unusable development result: %s',
     async (kind) => {
       const { workspaceRoot } = await workspace({});
@@ -440,7 +439,6 @@ describe('Verify', () => {
             headRevision,
             role: 'developer',
             report: { path: reportFile },
-            reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
             invocationId: 'dev-1',
             readinessFailure: null,
           },
@@ -451,13 +449,11 @@ describe('Verify', () => {
       );
       if (kind === 'missing') {
         await rm(reportFile);
-      } else if (kind === 'changed') {
-        await writeFile(reportFile, 'Changed report bytes.\n', 'utf8');
       } else {
         const record = JSON.parse(
           await readFile(path.join(workspaceRoot, 'artifacts', '1', 'development.json'), 'utf8'),
         ) as Record<string, unknown>;
-        delete record.reportIdentity;
+        delete record.invocationId;
         await writeFile(
           path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
           `${JSON.stringify(record, null, 2)}\n`,
@@ -470,11 +466,7 @@ describe('Verify', () => {
       await expect(
         verifyOver({ workspaceRoot, checks: [validateCheck], git, runCommand })(),
       ).rejects.toThrow(
-        kind === 'missing'
-          ? /does not exist/
-          : kind === 'changed'
-            ? /does not match the identity/
-            : /does not match its declared content type/,
+        kind === 'missing' ? /does not exist/ : /does not match its declared content type/,
       );
       // No configured check runs and no verdict is written from an unusable outcome.
       expect(calls).toEqual([]);

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { messageOf } from '../../../result.js';
-import { reportBindingFields } from '../agent-reports.js';
+import { retainedReportBindingFields } from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
 import type { IdeaReportDeclaration } from '../idea-context.js';
@@ -127,7 +127,7 @@ export const framingRecordSchema = z.strictObject({
   framing: framingResponseSchema.shape.framing,
   questions: framingResponseSchema.shape.questions,
   authorDecision: framingResponseSchema.shape.authorDecision,
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type FramingRecord = z.infer<typeof framingRecordSchema>;
@@ -263,7 +263,7 @@ export const editorTurnRecordSchema = z.strictObject({
     .describe(
       'The named focused questions for the contributors, or null unless the disposition is help-requested.',
     ),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type EditorTurnRecord = z.infer<typeof editorTurnRecordSchema>;

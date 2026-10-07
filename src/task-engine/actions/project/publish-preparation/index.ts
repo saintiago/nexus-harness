@@ -389,9 +389,9 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       }
       const finding = result.returnFinding;
       const returningRole = finding?.role ?? null;
-      // The returning role's saved Markdown must stay readable with the identity its producer
-      // recorded: an unusable report is preserved as that role's rejection evidence, and the
-      // correction cannot advance without the assessment that explains it.
+      // The returning role's saved Markdown must stay readable: an unusable report is preserved
+      // as that role's rejection evidence, and the correction cannot advance without the
+      // assessment that explains it.
       let returning: { readonly narrative: string | null; readonly profile: string | null };
       try {
         const text = await requireReturnReport({

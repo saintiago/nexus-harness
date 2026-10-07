@@ -11,7 +11,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CheckObservation, PullRequest } from '../src/adapters/github.js';
 import { ok } from '../src/result.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import {
   completionArtifact,
@@ -107,7 +106,6 @@ async function workspace(
     verdict: 'approved',
     role: 'reviewer',
     report: { path: reviewReport },
-    reportIdentity: reportIdentityOf(Buffer.from(reviewMarkdown, 'utf8')),
     invocationId: 'rev-1',
   };
   await helpers.writeOutputArtifact(reviewArtifact, review);
@@ -320,19 +318,12 @@ describe('CompleteTask', () => {
       expected: /does not match its declared content type/,
       damage: async (workspaceRoot: string, review: ReviewOutput) => {
         const damaged: Record<string, unknown> = { ...review };
-        delete damaged.reportIdentity;
+        delete damaged.invocationId;
         await writeFile(
           path.join(workspaceRoot, 'artifacts', '1', 'review.json'),
           `${JSON.stringify(damaged, null, 2)}\n`,
           'utf8',
         );
-      },
-    },
-    {
-      label: 'changed review bytes',
-      expected: /does not match the identity recorded for invocation/,
-      damage: async (_workspaceRoot: string, review: ReviewOutput) => {
-        await writeFile(review.report.path, 'Rewritten review bytes.\n', 'utf8');
       },
     },
     {
@@ -370,6 +361,39 @@ describe('CompleteTask', () => {
       operation: 'review',
       assignedReport: { path: review.report.path },
     });
+  });
+
+  it('completes from an approval whose readable report was reworded', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'reworded-report' });
+    const review = (await readRoundArtifact(workspaceRoot, 'review.json')) as ReviewOutput;
+    await writeFile(
+      review.report.path,
+      'The change matches the task, restated after the review.\n',
+      'utf8',
+    );
+    const { github } = scriptedGitHub({
+      readPullRequest: () => ok(pullRequest({ state: 'closed', merged: true, mergeRevision })),
+      readChecks: () => ok([reviewCheckObservation]),
+      readWorkflowRuns: () => ok([workflowRun()]),
+    });
+    const { jira } = scriptedJira({
+      readIssue: () => ok(inReviewIssue),
+      readTransitions: () => ok([{ id: '41', name: 'Done', to: { id: '5', name: 'Done' } }]),
+      transitionIssue: () => ok(undefined),
+    });
+    const completeTask = completeTaskAction({
+      selectionFile,
+      github,
+      jira,
+      wait: scriptedWait().wait,
+    });
+
+    // No Markdown-byte gate rejects the approval: its readable report and current revision bind it.
+    await expect(completeTask()).resolves.toBe('completed');
+    expect(await readReportFeedback(workspaceRoot)).toEqual([]);
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).resolves.toBeTruthy();
   });
 
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {

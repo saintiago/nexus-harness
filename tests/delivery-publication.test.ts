@@ -10,7 +10,6 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createCompleteDelivery } from '../src/task-engine/actions/project/complete-delivery/index.js';
 import { createPublishDeliveryReport } from '../src/task-engine/actions/project/source-boundaries/index.js';
 import { scriptedJira } from './support/jira.js';
@@ -82,7 +81,6 @@ async function deliveryAttempt(
         headRevision: '2'.repeat(40),
         role: 'developer',
         report: { path: reportFile },
-        reportIdentity: reportIdentityOf(Buffer.from(options.developmentMarkdown, 'utf8')),
         invocationId: 'dev-1',
         readinessFailure: null,
       }),

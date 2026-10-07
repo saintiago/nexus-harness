@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { readBoundReport, reportBindingFields } from '../agent-reports.js';
+import { readBoundReport, retainedReportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
 import {
@@ -34,7 +34,7 @@ const developmentFields = {
 export const developmentOutputSchema = z.strictObject({
   ...developmentFields,
   role: z.literal('developer'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
   readinessFailure: z
     .string()
     .nullable()
@@ -97,9 +97,9 @@ export function developmentReportScope(areaRoot: string, taskKey: string): Repor
 /**
  * Require one retained development outcome to be usable for a workflow decision: it must describe
  * the expected task and, when it carries the current report binding, its assigned Markdown must be
- * readable with the recorded identity. An unusable outcome is preserved under the developer's
- * report responsibility as attributable rejection evidence before the read fails. A retained
- * combined report stays readable history, and the check never makes a damaged outcome usable.
+ * readable. An unusable outcome is preserved under the developer's report responsibility as
+ * attributable rejection evidence before the read fails. A retained combined report stays readable
+ * history, and the check never makes a damaged outcome usable.
  * After validation, finish any interrupted correction attributed to this saved invocation, so
  * retained continuation also reconciles it when Develop itself is skipped.
  */

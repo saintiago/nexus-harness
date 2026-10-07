@@ -181,7 +181,6 @@ export function createProjectGuide(settings: ProjectGuideSettings): BoundAction 
       profile: outcome.profile,
       question,
       report: outcome.assignedReport,
-      reportIdentity: outcome.reportFile.identity,
       invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, artifact, stored);

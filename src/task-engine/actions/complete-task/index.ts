@@ -84,8 +84,8 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       'Current round',
     );
     // The approval authorizes completion only while its saved outcome is usable: it must describe
-    // this task and carry its readable report with the recorded identity. An unusable record is
-    // retained as the reviewer's rejection evidence instead of authorizing the merge.
+    // this task and carry its readable report. An unusable record is retained as the reviewer's
+    // rejection evidence instead of authorizing the merge.
     const review = await readUsableReviewOutcome({
       areaRoot: root,
       taskKey,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { reportBindingFields } from '../agent-reports.js';
+import { retainedReportBindingFields } from '../agent-reports.js';
 import type { IdeaReportDeclaration } from '../idea-context.js';
 
 /**
@@ -22,7 +22,7 @@ export const projectGuideContributionSchema = z.strictObject({
   profile: z.string().trim().min(1).describe('The guide profile that produced this report.'),
   /** The focused question this contribution answers, or null for the cycle's initial guidance. */
   question: z.string().trim().min(1).nullable(),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type ProjectGuideContribution = z.infer<typeof projectGuideContributionSchema>;

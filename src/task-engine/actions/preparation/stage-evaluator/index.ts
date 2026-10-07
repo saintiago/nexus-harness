@@ -442,9 +442,9 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
         });
       }
     })();
-    const reportFile = await (async () => {
+    await (async () => {
       try {
-        return await readAssignedReport(assignedReport.path, 'Assigned evaluation report');
+        await readAssignedReport(assignedReport.path, 'Assigned evaluation report');
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -559,7 +559,6 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       profile: evaluatorProfile,
       role: 'evaluator',
       report: assignedReport,
-      reportIdentity: reportFile.identity,
       invocationId,
     };
     await writeStageArtifact(root, plan.round, stageEvaluationArtifact, output);

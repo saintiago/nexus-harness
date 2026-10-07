@@ -9,7 +9,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import { challengerArtifact } from '../src/task-engine/actions/challenger/artifacts.js';
 import {
@@ -321,7 +320,6 @@ describe('StartIdeaRound', () => {
         profile: 'historical-challenger',
         invocationId: 'historical-challenge',
         report: { path: report },
-        reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
         verdict: 'discuss',
         obstacle: 'A remaining concern',
         revision: 1,
@@ -332,7 +330,7 @@ describe('StartIdeaRound', () => {
       };
       const damaged: Record<string, unknown> = { ...result };
       if (damage === 'malformed') {
-        delete damaged.reportIdentity;
+        delete damaged.taskKey;
       } else {
         await rm(report);
       }

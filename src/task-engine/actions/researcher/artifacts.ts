@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { reportBindingFields } from '../agent-reports.js';
+import { retainedReportBindingFields } from '../agent-reports.js';
 import type { IdeaReportDeclaration } from '../idea-context.js';
 
 /**
@@ -29,7 +29,7 @@ export const researchContributionSchema = z.strictObject({
   profile: z.string().trim().min(1).describe('The researcher profile that produced this report.'),
   /** The focused question this contribution answers, or null for the cycle's initial enrichment. */
   question: z.string().trim().min(1).nullable(),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type ResearchContribution = z.infer<typeof researchContributionSchema>;

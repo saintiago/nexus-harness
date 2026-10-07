@@ -15,7 +15,6 @@ import { createGitAdapter } from '../src/adapters/git.js';
 import { run, type ProcessOutput } from '../src/adapters/processes.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import type { DevelopmentOutput } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
@@ -288,7 +287,6 @@ describe('development cycle', () => {
       verdict: 'changesRequested',
       role: 'reviewer',
       report: { path: reviewReportFile },
-      reportIdentity: reportIdentityOf(Buffer.from(reviewMarkdown, 'utf8')),
       invocationId: 'rev-1',
     };
     await helpers.writeOutputArtifact(reviewArtifact, firstReview);

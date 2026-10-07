@@ -158,6 +158,7 @@ describe('terminal handoffs', () => {
       taskKey: workId,
       status: 'completed',
       report: { path: report },
+      // A retained record's former Markdown-byte hash is obsolete data; the report path binds it.
       reportIdentity: 'a'.repeat(64),
       invocationId: 'invocation-1',
     });

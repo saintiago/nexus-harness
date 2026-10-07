@@ -218,7 +218,6 @@ export function createChallenger(settings: ChallengerSettings): BoundAction {
       editorIdentity,
       revision: revision.value.revision,
       report: outcome.assignedReport,
-      reportIdentity: outcome.reportFile.identity,
       invocationId: outcome.invocationId,
     };
     if (existing !== null && !isBoundChallengerReport(existing.value)) {

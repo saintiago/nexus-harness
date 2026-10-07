@@ -294,8 +294,8 @@ it('recovers the report reference of a damaged saved outcome for rejection evide
   await mkdir(path.dirname(reportFile), { recursive: true });
   await writeFile(reportFile, 'Implemented the retry guard.\n', 'utf8');
   const record = path.join(areaRoot, 'artifacts', '1', 'development.json');
-  // The saved outcome is damaged: its reportIdentity is missing, so it must not be parsed as a
-  // legacy combined report. Its readable report still reaches the rejection evidence.
+  // The saved outcome is damaged: its invocation identity is missing, so it must not be parsed as
+  // a legacy combined report. Its readable report still reaches the rejection evidence.
   await writeFile(
     record,
     `${JSON.stringify(
@@ -307,7 +307,6 @@ it('recovers the report reference of a damaged saved outcome for rejection evide
         headRevision: 'b'.repeat(40),
         role: 'developer',
         report: { path: reportFile },
-        invocationId: 'inv-1',
       },
       null,
       2,
@@ -315,7 +314,7 @@ it('recovers the report reference of a damaged saved outcome for rejection evide
     'utf8',
   );
   const readError = new Error(
-    `Artifact at "${record}" does not match its declared content type: reportIdentity: Required`,
+    `Artifact at "${record}" does not match its declared content type: invocationId: Required`,
   );
 
   await expect(
@@ -329,14 +328,14 @@ it('recovers the report reference of a damaged saved outcome for rejection evide
       file: record,
       error: readError,
     }),
-  ).rejects.toThrow('reportIdentity: Required');
+  ).rejects.toThrow('invocationId: Required');
 
   const [entry] = await readReportFeedback(areaRoot);
   expect(entry?.record).toMatchObject({
     kind: 'rejection',
     assignedReport: { path: reportFile },
     output: await readFile(record, 'utf8'),
-    reason: expect.stringContaining('reportIdentity: Required'),
+    reason: expect.stringContaining('invocationId: Required'),
   });
   const rejection = entry?.record as ReportRejection;
   expect(rejection.report).not.toBeNull();

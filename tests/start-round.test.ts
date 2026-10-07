@@ -10,7 +10,6 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
@@ -72,11 +71,11 @@ async function writeBoundReport(
   invocationId: string,
   role: 'developer' | 'reviewer',
   markdown: string,
-): Promise<{ readonly path: string; readonly identity: string }> {
+): Promise<{ readonly path: string }> {
   const file = path.join(root, 'artifacts', String(round), 'reports', invocationId, `${role}.md`);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, markdown, 'utf8');
-  return { path: file, identity: reportIdentityOf(Buffer.from(markdown, 'utf8')) };
+  return { path: file };
 }
 
 /** The path one round's bound report was written to. */
@@ -112,7 +111,6 @@ async function writeDevelopment(
     headRevision: revision,
     role: 'developer',
     report: { path: report.path },
-    reportIdentity: report.identity,
     invocationId: `dev-${String(round)}`,
     readinessFailure: null,
   });
@@ -157,7 +155,6 @@ async function writeReview(
     verdict,
     role: 'reviewer',
     report: { path: report.path },
-    reportIdentity: report.identity,
     invocationId: `rev-${String(round)}`,
   });
 }
@@ -241,7 +238,6 @@ describe('StartRound', () => {
       headRevision: headOf(1),
       role: 'developer',
       report: { path: report.path },
-      reportIdentity: report.identity,
       invocationId: 'dev-1',
       readinessFailure: null,
     });
@@ -307,7 +303,7 @@ describe('StartRound', () => {
         const record = JSON.parse(
           await readFile(path.join(root, 'artifacts', '1', 'development.json'), 'utf8'),
         ) as Record<string, unknown>;
-        delete record.reportIdentity;
+        delete record.invocationId;
         await writeFile(
           path.join(root, 'artifacts', '1', 'development.json'),
           `${JSON.stringify(record, null, 2)}\n`,

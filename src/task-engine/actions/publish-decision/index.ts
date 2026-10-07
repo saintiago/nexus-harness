@@ -270,7 +270,7 @@ function binds(
 /**
  * Require the exact evidence one recorded approval rests on: the refined idea revision it names,
  * the editor outcome and bound Markdown the Challenger assessed, the Challenger result with its
- * bound Markdown, and the framing the cycle falls back to. A missing or changed artifact is an
+ * bound Markdown, and the framing the cycle falls back to. A missing or unreadable artifact is an
  * unusable approval preserved as its producer's rejection evidence, so neither retained replay
  * nor parent publication can reuse an approval of content that is no longer readable. The
  * framing is the editor outcome itself when the revision stood alone and otherwise its fallback,
@@ -690,7 +690,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     }
     if (record.decision === 'approved') {
       // Publication revalidates the approval it reuses before any source write: a bound report
-      // removed or changed after the decision was recorded must fail here instead of authorizing
+      // removed or unreadable after the decision was recorded must fail here instead of authorizing
       // the approved transition or reusing the retained comment.
       await requireRecordedApproval({
         root,

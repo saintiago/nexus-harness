@@ -470,9 +470,9 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       }
     })();
 
-    const reportFile = await (async () => {
+    await (async () => {
       try {
-        return await readAssignedReport(assignedReport.path, 'Assigned development report');
+        await readAssignedReport(assignedReport.path, 'Assigned development report');
       } catch (error) {
         return await rejectReport({
           areaRoot: root,
@@ -535,7 +535,6 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       headRevision: after.headRevision,
       role: 'developer',
       report: assignedReport,
-      reportIdentity: reportFile.identity,
       invocationId,
       readinessFailure,
     };

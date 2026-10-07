@@ -15,7 +15,6 @@ import type { RepositoryState } from '../src/adapters/git.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   devArtifact,
   developmentResponseSchema,
@@ -243,7 +242,6 @@ async function writeBoundReview(
     verdict: 'changesRequested',
     role: 'reviewer',
     report: { path: reportFile },
-    reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
     invocationId: `rev-${String(round)}`,
   });
   return reportFile;
@@ -338,7 +336,7 @@ describe('Develop', () => {
     });
     expect(output.report.path).toContain(path.join('artifacts', '1', 'reports'));
     expect(output.report.path).not.toContain(path.join('worktree', ''));
-    expect(output.reportIdentity).toMatch(/^[0-9a-f]{64}$/);
+    expect(output).not.toHaveProperty('reportIdentity');
     expect(output.invocationId).toBeTruthy();
     expect(report).toBe('Implemented the retry guard.');
     expect(context).toContain(`Assigned Markdown report: ${output.report.path}`);
@@ -789,7 +787,6 @@ describe('Develop', () => {
       headRevision,
       role: 'developer',
       report: { path: reportFile },
-      reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
       invocationId: 'dev-1',
       readinessFailure: null,
     };
@@ -1216,7 +1213,6 @@ describe('Develop', () => {
       headRevision,
       role: 'developer',
       report: { path: reportFile },
-      reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
       invocationId: 'repair-1',
       readinessFailure: null,
     };

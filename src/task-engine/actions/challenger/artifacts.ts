@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { reportBindingFields } from '../agent-reports.js';
+import { retainedReportBindingFields } from '../agent-reports.js';
 import type { IdeaReportDeclaration } from '../idea-context.js';
 
 /**
@@ -72,7 +72,7 @@ export const challengerReportSchema = z.strictObject({
   /** The identity of the assessed editor outcome's complete saved content, or null. */
   editorIdentity: z.string().trim().min(1).nullable(),
   revision: z.number().int().positive(),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type ChallengerReport = z.infer<typeof challengerReportSchema>;
