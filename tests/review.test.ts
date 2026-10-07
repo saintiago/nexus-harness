@@ -24,6 +24,7 @@ import {
   projectOfWorkspace,
   readPendingValidationError,
   readValidationErrorHistory,
+  rejectReport,
 } from '../src/task-engine/actions/report-feedback.js';
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import {
@@ -1124,6 +1125,62 @@ describe('Review', () => {
     ).resolves.toBeNull();
     expect(await readValidationErrorHistory(workspaceRoot)).toHaveLength(1);
   });
+
+  it.each(['moved head', 'tracked changes'])(
+    'keeps developer context when fresh Review rejects %s',
+    async (damage) => {
+      const prepared = await workspace({ name: 'fresh-review-pending' });
+      await writeDeliveredRound(prepared.workspaceRoot);
+      const scope = developmentReportScope(prepared.workspaceRoot, 'NEX-1');
+      await expect(
+        rejectReport({
+          areaRoot: prepared.workspaceRoot,
+          scope,
+          invocationId: 'rejected-dev',
+          operation: 'develop',
+          profile: 'dev-a',
+          context: 'Development round 1.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable developer error.',
+        }),
+      ).rejects.toThrow('Actionable developer error.');
+      const pending = await readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope });
+      await expect(
+        reviewAction({
+          selectionFile: prepared.selectionFile,
+          runner: runnerOf(unusedRuntime()),
+          git: scriptedGit([
+            repositoryState({
+              headRevision: damage === 'moved head' ? otherRevision : headRevision,
+              trackedChanges: damage === 'tracked changes',
+            }),
+          ]).git,
+          github: scriptedGitHub({}).github,
+        })(),
+      ).rejects.toThrow(damage === 'moved head' ? /not the delivered/ : /tracked changes/);
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope }),
+      ).resolves.toEqual(pending);
+      // Publication replay retains its saved-review rules and needs no fresh worktree assessment.
+      await saveReview(prepared.workspaceRoot, 1, 'Saved review.');
+      await expect(
+        reviewAction({
+          selectionFile: prepared.selectionFile,
+          runner: runnerOf(unusedRuntime()),
+          git: scriptedGit([]).git,
+          github: scriptedGitHub({
+            readConversation: () =>
+              ok({ comments: [], reviews: [submittedReview('Saved review.')], reviewComments: [] }),
+            readChecks: () => ok([lensCheck()]),
+          }).github,
+        })(),
+      ).resolves.toBe('approved');
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope }),
+      ).resolves.toBeNull();
+    },
+  );
 
   it('does not review a worktree or a turn that changed the delivered revision', async () => {
     const moved = await workspace({ name: 'moved' });

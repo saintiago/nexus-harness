@@ -345,12 +345,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       );
     }
 
-    // The development outcome is now the validated basis of this review: its saved report and
-    // revision are the delivered and verified head, so an owner-validated saved replacement —
-    // current bound or retained combined — completes its pending validation-error context. A
-    // mismatched head above keeps the actionable error for the next responsible invocation.
-    await clearPendingValidationError({ areaRoot: root, scope: developerScope });
-
     /**
      * The readable review body of one saved outcome: the bound Markdown or the former combined
      * summary. An unreadable bound report is preserved as the reviewer's rejection evidence.
@@ -481,6 +475,9 @@ export function createReview(settings: ReviewSettings): BoundAction {
         invocationId,
         context: attribution,
       });
+      // Publication replay uses the saved assessment for this delivered and verified head; it
+      // does not assess the current worktree again.
+      await clearPendingValidationError({ areaRoot: root, scope: developerScope });
       // The saved review for the delivered head is this revision's validated replacement — current
       // bound or retained combined; an interrupted save/clear replay completes here without
       // another invocation.
@@ -511,6 +508,10 @@ export function createReview(settings: ReviewSettings): BoundAction {
           `${reviewedHead}.`,
       );
     }
+
+    // Fresh assessment additionally requires the delivered worktree with no tracked changes.
+    // Keep developer context pending until those checks establish the usable saved replacement.
+    await clearPendingValidationError({ areaRoot: root, scope: developerScope });
 
     const conversation = await settings.github.readConversation(
       settings.repository,

@@ -14,9 +14,15 @@ import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
   readValidationErrorHistory,
+  readPendingValidationError,
+  rejectReport,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
-import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
+import {
+  reviewArtifact,
+  reviewReportScope,
+  type ReviewOutput,
+} from '../src/task-engine/actions/review/artifacts.js';
 import type { CurrentRound } from '../src/task-engine/actions/start-round/artifacts.js';
 import {
   createStartRound,
@@ -738,3 +744,52 @@ describe('StartRound', () => {
     expect(planned.profile).toBe('dev-a');
   });
 });
+
+it.each(['current', 'other head', 'historical'])(
+  'clears only the consumed same-revision review: %s',
+  async (source) => {
+    const round = source === 'historical' ? 2 : 1;
+    await writeCurrentRound({ number: round, profile: 'dev-a', reason: 'retained' });
+    await writeDevelopment(round, 'dev-a');
+    // An independent failed check permits planning even for unrelated review evidence.
+    await writeVerification(round, 'failed');
+    const reviewRound = source === 'historical' ? 1 : round;
+    await writeReview(
+      reviewRound,
+      'changesRequested',
+      source === 'other head' ? otherRevision : headOf(reviewRound),
+    );
+    const scope = reviewReportScope(root, 'NEX-1');
+    if (source === 'current') {
+      await rm(reportPathOf(round, 'reviewer'));
+      await expect(startRoundOver([{ profile: 'dev-a', repairAllowance: 3 }])()).rejects.toThrow(
+        /does not exist/,
+      );
+      await writeBoundReport(round, `rev-${round}`, 'reviewer', 'Restored current review.');
+    } else {
+      await expect(
+        rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId: 'rejected-review',
+          operation: 'review',
+          profile: 'reviewer',
+          context: 'Current reviewer error.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable review error.',
+        }),
+      ).rejects.toThrow('Actionable review error.');
+    }
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
+    expect(pending).not.toBeNull();
+    await expect(startRoundOver([{ profile: 'dev-a', repairAllowance: 3 }])()).resolves.toBe(
+      'started',
+    );
+    expect(await readCurrentRound()).toMatchObject({ number: round + 1 });
+    await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toEqual(
+      source === 'current' ? null : pending,
+    );
+    expect(await readValidationErrorHistory(root)).toHaveLength(1);
+  },
+);

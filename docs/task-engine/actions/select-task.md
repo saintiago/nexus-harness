@@ -78,9 +78,9 @@ evidence independently of refreshed task snapshots across repeated interruptions
 preparation succeeds. This exception admits only In Progress; In Review always requires matching
 prepared, development, verification and delivery evidence.
 Read retained development through its producer-owned usable-outcome reader: invalid task or report
-associations retain attributable validation-error evidence before admission fails. Owner validation
-of a saved replacement clears pending context during resumed consumption without another
-development turn or a correction protocol. A completed previous
+associations retain attributable validation-error evidence before admission fails. Admission leaves
+pending context for the consuming owner to clear after its applicable revision/readiness checks,
+without another development turn or a correction protocol. A completed previous
 task allows fresh selection. Unexpected source state is reported rather than overwritten.
 
 With no saved active selection, select from the current source order. There is no special blocker

@@ -938,6 +938,73 @@ describe('preparation repair rounds', () => {
     expect(saved.returnFinding).not.toHaveProperty('consequence');
   });
 
+  it.each(['author', 'evaluator'] as const)(
+    'clears the repaired legacy %s upstream return on finalization and replay',
+    async (role) => {
+      const fixture = await stageWithEvaluation({ verdict: 'return-upstream' });
+      const { issueRoot, root, selectionFile } = fixture;
+      const authorFile = path.join(root, 'artifacts/1/author.json');
+      const evaluationFile = path.join(root, 'artifacts/1/evaluation.json');
+      if (role === 'author') {
+        const author = JSON.parse(await readFile(authorFile, 'utf8')) as Record<string, unknown>;
+        const evaluation = JSON.parse(await readFile(evaluationFile, 'utf8')) as {
+          upstream: unknown;
+        };
+        await writeFile(
+          authorFile,
+          JSON.stringify({ ...author, outcome: 'return-upstream', upstream: evaluation.upstream }),
+        );
+        await rm(evaluationFile);
+      }
+      const file = role === 'author' ? authorFile : evaluationFile;
+      const original = await readFile(file, 'utf8');
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      const finalize = createStageResult({
+        selectionFile,
+        stage: 'ux',
+        git: scriptedGit([]).git,
+        publish: () => undefined,
+      });
+      // Both new finalization and completed replay validate the producing record.
+      for (const replay of [false, true]) {
+        await writeFile(file, '{invalid');
+        await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/not valid JSON/);
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+        await writeFile(file, original);
+        if (replay) {
+          // A different valid return is unrelated to the saved terminal decision and cannot clear.
+          const producer = JSON.parse(original) as { upstream: { correction: string } };
+          await writeFile(
+            file,
+            JSON.stringify({
+              ...producer,
+              upstream: { ...producer.upstream, correction: 'Different correction.' },
+            }),
+          );
+          await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
+            /producing upstream outcome/,
+          );
+          expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+          await writeFile(file, original);
+        }
+        await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+        await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      }
+      expect(await readFile(file, 'utf8')).toBe(original);
+      expect(await readValidationErrorHistory(root)).toHaveLength(2);
+      await expect(artifact(root, 1, 'result.json')).resolves.toMatchObject({
+        outcome: 'returnUpstream',
+        returnFinding: { report: null, role: null },
+      });
+    },
+  );
+
   it('keeps a retained combined return problem and consequence as history', async () => {
     const { selectionFile, root } = await stageWithEvaluation({ verdict: 'return-upstream' });
     const { git } = scriptedGit([repositoryState()], {

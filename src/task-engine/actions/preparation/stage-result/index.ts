@@ -28,6 +28,7 @@ import {
   requireRetainedDecision,
   requireRetainedResultAssociation,
   requireReturnReport,
+  requireStageReport,
   requireNeedsInputReport,
   roundArtifactDirectory,
   roundArtifactFile,
@@ -191,6 +192,48 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         if (completed.returnFinding.role !== null) {
           validated.add(completed.returnFinding.role);
         }
+      } else if (outcome === 'returnUpstream') {
+        // Combined returns have no Markdown binding. Validate the current round's producing
+        // functional outcome before completing its pending clear, rather than relying on the
+        // terminal envelope or merely opening history.
+        const author = await readAuthor();
+        if (author === null || author.revision !== completed.authoredRevision) {
+          throw new Error('A retained return must keep its producing authored revision.');
+        }
+        const evaluation = await readEvaluation();
+        const evaluatorReturn = evaluation !== null && evaluation.upstream !== null;
+        const upstream = evaluatorReturn ? evaluation.upstream : author.upstream;
+        if (
+          (evaluatorReturn
+            ? evaluation.verdict !== 'return-upstream' ||
+              evaluation.assessedRevision !== author.revision
+            : author.outcome !== 'return-upstream') ||
+          upstream === null ||
+          upstream.stage !== completed.returnStage ||
+          upstream.correction !== completed.returnFinding?.correction
+        ) {
+          throw new Error('A retained combined return must keep its producing upstream outcome.');
+        }
+        const producer = evaluatorReturn ? evaluation : author;
+        if (producer.report !== undefined) {
+          await requireStageReport({
+            issueRoot,
+            workId: selection.taskKey,
+            stage: settings.stage,
+            role: evaluatorReturn ? 'evaluator' : 'author',
+            binding: producer,
+            profile: producer.profile ?? null,
+            file: roundArtifactFile(
+              root,
+              plan.round,
+              evaluatorReturn
+                ? stageEvaluationArtifact.pathFromArtifactsRoot
+                : stageAuthorArtifact.pathFromArtifactsRoot,
+            ),
+            context: roleContext.context,
+          });
+        }
+        validated.add(evaluatorReturn ? 'evaluator' : 'author');
       }
       if (
         outcome !== 'exhausted' &&
@@ -288,12 +331,12 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     /**
      * The returning role's saved Markdown report binding: the evaluator's when its verdict carried
      * the upstream request, otherwise the author's. A retained combined record has no report
-     * binding and returns null; its former problem and consequence travel through the return
-     * finding instead.
+     * binding, but still identifies the responsible role; its former problem and consequence
+     * travel through the return finding instead.
      */
     const returningReport = (): {
       readonly role: 'author' | 'evaluator';
-      readonly binding: ReturnReport;
+      readonly binding: ReturnReport | null;
     } | null => {
       if (upstream === null) {
         return null;
@@ -315,7 +358,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
                 invocationId: evaluation.invocationId,
               },
             }
-          : null;
+          : { role: 'evaluator', binding: null };
       }
       return isBoundStageAuthorOutput(author)
         ? {
@@ -333,7 +376,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               invocationId: author.invocationId,
             },
           }
-        : null;
+        : { role: 'author', binding: null };
     };
 
     const returning = outcome === 'returnUpstream' ? returningReport() : null;
@@ -342,14 +385,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       // returning role's Markdown through its saved binding, preserving an unusable report as that
       // role's rejection evidence instead of saving a return whose evidence is missing or
       // unreadable.
-      await requireReturnReport({
-        issueRoot,
-        workId: selection.taskKey,
-        returned: { stage: settings.stage, role: returning.role, report: returning.binding },
-        context:
-          `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
-          `${selection.taskKey}.`,
-      });
+      if (returning.binding !== null) {
+        await requireReturnReport({
+          issueRoot,
+          workId: selection.taskKey,
+          returned: { stage: settings.stage, role: returning.role, report: returning.binding },
+          context:
+            `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
+            `${selection.taskKey}.`,
+        });
+      }
       validated.add(returning.role);
     }
 
@@ -535,7 +580,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           ? {
               stage: upstream.stage,
               correction: upstream.correction,
-              role: returning?.role ?? null,
+              role: returning?.binding == null ? null : returning.role,
               report: returning?.binding ?? null,
               ...(returningHistory() ?? {}),
             }

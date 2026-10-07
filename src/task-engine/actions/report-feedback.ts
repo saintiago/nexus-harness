@@ -588,9 +588,9 @@ async function completeRetainedEvidence(
 /**
  * Retain one rejected report's pending context and readable history, then fail with its reason.
  * The context is written first: an interruption between the two writes still reaches the next
- * responsible invocation with the actionable rule, and a clear completes the readable record the
- * context promised. An unusable area reports the original problem together with the storage
- * failure and grants no acceptance.
+ * responsible invocation with the actionable rule. Before replacing that context or clearing it,
+ * complete any readable records it alone retains. An unusable area reports the original problem
+ * together with the storage failure and grants no acceptance.
  */
 export async function rejectReport(settings: {
   readonly areaRoot: string;
@@ -643,6 +643,12 @@ export async function rejectReport(settings: {
     ],
   };
   try {
+    const previous = await readPendingValidationError(settings);
+    if (previous !== null) {
+      for (const entry of previous.entries) {
+        await completeRetainedEvidence(previous.scope, entry);
+      }
+    }
     await writeComplete(pendingFile, `${JSON.stringify(pending, null, 2)}\n`);
   } catch (error) {
     throw new Error(

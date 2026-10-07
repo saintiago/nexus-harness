@@ -142,6 +142,10 @@ role/response variant within that area. It contains the actionable reason and at
 available output/report or their readable references. A later invalid attempt updates this context
 with its useful diagnosis while retaining earlier evidence. No rejection IDs, correction records,
 resolved-reference lists, supplied-feedback proofs or saved-outcome identity matches are created.
+Write pending context before its history record so an interrupted retention still supplies the
+diagnosis. Before replacing or clearing that context, complete any history records that it alone
+retains; another invalid attempt must not erase an interrupted diagnosis. Cleared history stays
+inactive.
 
 Preparation owns feedback in its stage area, idea refinement in its refinement area, finite delivery
 in the selected implementation issue root, analysis in its durable request area, and Application
@@ -364,3 +368,5 @@ first unfinished phase: round planning for missing/failed development or failed 
 verification for completed development, delivery for matching passed verification, or retained
 publication/review for an already-delivered revision. It validates task and revision identity and
 writes no artifact. Restoring an active child uses its saved checkpoint instead of this entry route.
+Routing leaves validation-error context pending for the consuming owner to clear after its
+applicable revision and readiness checks.

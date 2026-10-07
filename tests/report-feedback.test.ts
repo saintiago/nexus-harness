@@ -965,50 +965,88 @@ it('retires resolved rejections before their corrections so an interruption cann
   ).resolves.toBeDefined();
 });
 
-it('recovers a new error whose readable record write was interrupted after its pending context', async () => {
-  const areaRoot = await temporaryDirectory();
-  const scope = scopeIn(areaRoot);
-  // The readable history area is obstructed: the pending context lands, its record cannot.
-  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
-  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'history'), 'not a directory');
-  const failure = await rejectReport({
-    areaRoot,
-    scope,
-    invocationId: 'invocation-1',
-    operation: 'Develop',
-    profile: 'dev-a',
-    context: 'Development round 1, task NEX-7.',
-    source: null,
-    output: 'rejected bytes',
-    reason: 'The rule was violated.',
-  }).then(
-    () => null,
-    (error: Error) => error,
-  );
-  expect(failure?.message).toContain('The rule was violated.');
-  expect(failure?.message).toContain('its pending context is retained');
+it.each(['clear', 'reject again'])(
+  'recovers interrupted readable history before %s',
+  async (continuation) => {
+    const areaRoot = await temporaryDirectory();
+    const scope = scopeIn(areaRoot);
+    // The readable history area is obstructed: the pending context lands, its record cannot.
+    await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+    await writeFile(path.join(reportFeedbackRoot(areaRoot), 'history'), 'not a directory');
+    const failure = await rejectReport({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    }).then(
+      () => null,
+      (error: Error) => error,
+    );
+    expect(failure?.message).toContain('The rule was violated.');
+    expect(failure?.message).toContain('its pending context is retained');
 
-  // The interrupted retention still reaches the next responsible invocation with the whole
-  // diagnosis and the record path it promises.
-  const pending = await pendingOf(areaRoot, scope);
-  expect(pending.entries).toHaveLength(1);
-  expect(pending.entries[0]).toMatchObject({
-    output: 'rejected bytes',
-    reason: 'The rule was violated.',
-  });
-  expect(path.dirname(pending.entries[0]!.evidence.path)).toBe(
-    path.join(reportFeedbackRoot(areaRoot), 'history'),
-  );
+    // The interrupted retention still reaches the next responsible invocation with the whole
+    // diagnosis and the record path it promises.
+    const pending = await pendingOf(areaRoot, scope);
+    expect(pending.entries).toHaveLength(1);
+    expect(pending.entries[0]).toMatchObject({
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    });
+    expect(path.dirname(pending.entries[0]!.evidence.path)).toBe(
+      path.join(reportFeedbackRoot(areaRoot), 'history'),
+    );
 
-  // Once the obstruction clears, the owner-validated clear completes the readable record the
-  // context promised instead of discarding it.
-  await rm(path.join(reportFeedbackRoot(areaRoot), 'history'), { force: true });
-  await clearPendingValidationError({ areaRoot, scope });
-  const history = await readValidationErrorHistory(areaRoot);
-  expect(history).toHaveLength(1);
-  expect(history[0]?.path).toBe(pending.entries[0]!.evidence.path);
-  expect(history[0]?.record).toMatchObject({
-    output: 'rejected bytes',
-    reason: 'The rule was violated.',
-  });
-});
+    if (continuation === 'reject again') {
+      // An obstruction that still prevents history retention cannot overwrite the only durable
+      // copy of the first diagnosis. The current error also reports that storage failure.
+      await expect(
+        rejectReport({
+          areaRoot,
+          scope,
+          invocationId: 'blocked-attempt',
+          operation: 'Develop',
+          profile: 'dev-a',
+          context: 'Second attempt while history is obstructed.',
+          source: null,
+          output: 'blocked bytes',
+          reason: 'Blocked replacement error.',
+        }),
+      ).rejects.toThrow(/Blocked replacement error.*could not be saved/);
+      await expect(readPendingValidationError({ areaRoot, scope })).resolves.toEqual(pending);
+    }
+
+    // Once the obstruction clears, the owner-validated clear completes the readable record the
+    // context promised instead of discarding it.
+    await rm(path.join(reportFeedbackRoot(areaRoot), 'history'), { force: true });
+    if (continuation === 'reject again') {
+      await expect(
+        rejectReport({
+          areaRoot,
+          scope,
+          invocationId: 'invocation-2',
+          operation: 'Develop',
+          profile: 'dev-a',
+          context: 'Development round 1, second attempt.',
+          source: null,
+          output: 'second rejected bytes',
+          reason: 'Another rule was violated.',
+        }),
+      ).rejects.toThrow('Another rule was violated.');
+      expect((await pendingOf(areaRoot, scope)).entries[0]?.invocationId).toBe('invocation-2');
+    }
+    await clearPendingValidationError({ areaRoot, scope });
+    const history = await readValidationErrorHistory(areaRoot);
+    expect(history).toHaveLength(continuation === 'clear' ? 1 : 2);
+    expect(history[0]?.path).toBe(pending.entries[0]!.evidence.path);
+    expect(history[0]?.record).toMatchObject({
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    });
+  },
+);

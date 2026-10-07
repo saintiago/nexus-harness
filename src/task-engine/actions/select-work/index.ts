@@ -9,8 +9,7 @@ import {
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
-import { developmentReportScope, readUsableDevelopmentOutcome } from '../develop/artifacts.js';
-import { clearPendingValidationError } from '../report-feedback.js';
+import { readUsableDevelopmentOutcome } from '../develop/artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { roundArtifactPath } from '../artifacts.js';
@@ -319,14 +318,8 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       ) {
         return `Issue ${issue.key} is In Review without retained delivery and matching successful verification evidence.`;
       }
-      // The retained delivery evidence matches this round's saved outcome, so the owner-validated
-      // replacement is this selection's basis and completes its pending validation-error context.
-      // Mismatching or missing evidence above keeps the actionable error for the next responsible
-      // invocation.
-      await clearPendingValidationError({
-        areaRoot: recorded,
-        scope: developmentReportScope(recorded, issue.key),
-      });
+      // Admission checks saved evidence only. Leave developer context for the consuming owner,
+      // whose applicable checks establish readiness for fresh review or saved-review replay.
     }
     return null;
   }

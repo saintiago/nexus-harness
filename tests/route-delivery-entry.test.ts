@@ -11,6 +11,8 @@ import {
   readValidationErrorHistory,
   rejectReport,
 } from '../src/task-engine/actions/report-feedback.js';
+import { createVerify } from '../src/task-engine/actions/verify/index.js';
+import { repositoryState, scriptedGit } from './support/git.js';
 import { finiteDelivery } from '../workflows/finite-delivery.js';
 
 const directories: string[] = [];
@@ -204,8 +206,69 @@ describe('retained finite delivery entry', () => {
     await expect(readValidationErrorHistory(prepared.root)).resolves.toEqual([]);
   });
 
+  it.each(['moved head', 'tracked changes'])(
+    'keeps developer context through routing and Verify rejecting %s',
+    async (damage) => {
+      const prepared = await entry({ development: 'completed' });
+      await saveBoundDevelopment(prepared.root, 'completed');
+      await writeFile(
+        path.join(prepared.root, 'state/prepared-workspace.json'),
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          repository: '/origin/repository.git',
+          branch: 'task/NEX-1',
+          baseRevision: 'base',
+        }),
+      );
+      const scope = developmentReportScope(prepared.root, 'NEX-1');
+      await expect(
+        rejectReport({
+          areaRoot: prepared.root,
+          scope,
+          invocationId: 'rejected-dev',
+          operation: 'develop',
+          profile: 'nexus-sol',
+          context: 'Current round development.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable developer error.',
+        }),
+      ).rejects.toThrow('Actionable developer error.');
+      const pending = await readPendingValidationError({ areaRoot: prepared.root, scope });
+      await expect(prepared.route()).resolves.toBe('verify');
+      const state = repositoryState({
+        headRevision: damage === 'moved head' ? 'other-head' : 'head',
+        trackedChanges: damage === 'tracked changes',
+      });
+      const verify = (git: ReturnType<typeof scriptedGit>['git']) =>
+        createVerify({
+          workspace: { root: prepared.root },
+          checks: [],
+          environment: {},
+          git,
+          runCommand: async () => {
+            throw new Error('No commands expected.');
+          },
+          publish: () => undefined,
+        });
+      await expect(verify(scriptedGit([state]).git)()).rejects.toThrow(
+        damage === 'moved head' ? /not the development/ : /tracked changes/,
+      );
+      await expect(readPendingValidationError({ areaRoot: prepared.root, scope })).resolves.toEqual(
+        pending,
+      );
+      // Once the consumer's own checks pass, continuation completes the clear.
+      await expect(
+        verify(scriptedGit([repositoryState({ headRevision: 'head' })]).git)(),
+      ).resolves.toBe('passed');
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.root, scope }),
+      ).resolves.toBeNull();
+    },
+  );
+
   it.each(['completed', 'failed'] as const)(
-    'clears the pending context from the current bound %s outcome before retained routing',
+    'leaves the bound %s outcome pending for the routed consumer to validate',
     async (status) => {
       const prepared = await entry({ development: status });
       await saveBoundDevelopment(prepared.root, status);
@@ -229,11 +292,10 @@ describe('retained finite delivery entry', () => {
       const expectedPhase = status === 'completed' ? 'verify' : 'round';
       expect(await prepared.route()).toBe(expectedPhase);
       expect(await prepared.route()).toBe(expectedPhase);
-      // The routed current bound outcome is the owner's validated saved replacement: it clears
-      // the pending context while both rejected invocations stay readable history.
-      await expect(
-        readPendingValidationError({ areaRoot: prepared.root, scope }),
-      ).resolves.toBeNull();
+      // Routing does not establish worktree readiness; the consuming owner must validate it.
+      await expect(readPendingValidationError({ areaRoot: prepared.root, scope })).resolves.toEqual(
+        before,
+      );
       const records = await readValidationErrorHistory(prepared.root);
       expect(records.map((entry) => entry.record.reason)).toEqual([
         'Unusable output from earlier.',
