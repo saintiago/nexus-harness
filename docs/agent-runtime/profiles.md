@@ -64,7 +64,7 @@ resolves the installed bin from its own installation rather than PATH or the tar
 The effective native settings are equivalent to:
 
 ```toml
-[mcp_servers.jev]
+[mcp_servers.nexus-jev-INVOCATION_ID]
 command = "/absolute/nexus-installation/node_modules/.bin/jev-mcp"
 args = []
 enabled = true
@@ -75,15 +75,21 @@ env_vars = ["JEV_API_KEY"]
 ```
 
 The absolute command is installation-specific and generated at composition, not committed to
-profile templates. Composition supplies the reserved server's settings whole: settings a profile's
-own native configuration places under this reserved name are replaced, so they cannot supply a
-different command, environment, tool exclusion or transport. Native provider configuration
+profile templates. `INVOCATION_ID` is a fresh generated identifier; `ask_jev` remains the tool name.
+Codex merges native tables recursively, so replacing individual fields under a fixed server name
+cannot clear an inherited transport or literal environment. The coding adapter first lists the
+effective MCP configuration with the selected profile and invocation directory, without starting
+servers. It disables any inherited `jev` entry in place and supplies the composed settings under a
+fresh native name, checked against that catalogue. This covers base, profile and trusted project
+layers without rewriting any configuration file or changing the Codex home, authentication or
+unrelated tools. Composition removes Nexus override settings under the reserved `jev` name,
+including nested values under `mcp_servers`, before supplying its owned settings. Native provider configuration
 forwards the named host variable without writing its value to a configuration file or command
 argument. API composition imports `createJevClient`
 from the same installation and passes the resolved key in memory. Use the shared defaults described
 in [configuration](../configuration.md#jev-settings); ensure inherited model/timeout variables are
 excluded from the server environment. Omitted/disabled integration, or missing host credentials,
-sets this reserved server's effective `enabled` setting to false and supplies no JEv guidance.
+disables inherited `jev` entries, creates no new JEv server and supplies no JEv guidance.
 An optional startup failure leaves the provider session usable with its other tools.
 
 Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in

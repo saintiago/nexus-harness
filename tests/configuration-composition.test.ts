@@ -733,6 +733,7 @@ describe('AgentRuntime construction', () => {
         await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
         const tools = settings.profiles.find((candidate) => candidate.id === profile)!.toolSettings;
         expect(tools, `${role}: ${profile}`).toMatchObject({
+          isolatedMcpServers: ['jev'],
           config: {
             'mcp_servers.jev.command': jevExecutablePath(),
             'mcp_servers.jev.args': [],

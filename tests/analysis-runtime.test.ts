@@ -63,6 +63,7 @@ async function providerFixture(agentOutput: string): Promise<{
     `#!${process.execPath}
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+if (process.argv.includes('mcp')) { process.stdout.write('[]'); process.exit(0); }
 // Enforce the real provider's working-directory prerequisite before accepting the invocation.
 execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd() });
 const prompt = readFileSync(0, 'utf8');

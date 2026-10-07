@@ -2,13 +2,14 @@
  * Focused integration checks for the composed JEv access through the installed coding provider:
  * the provider's own configuration merge reports the reserved server's effective settings, and
  * its app server discovers and calls the installed `ask_jev` tool against a controlled provider
- * response, including safe failures and continuation. No model turn, login, paid call or live
- * TypeSafe request is involved. The checks need the native provider the repository's profiles
+ * response, including safe failures and continuation. Model responses use loopback fixtures;
+ * no login, paid call or live TypeSafe request is involved. The checks need the native provider the repository's profiles
  * document, so they run where it is installed and are skipped elsewhere, such as routine CI.
  */
 
 import { spawnSync } from 'node:child_process';
-import { rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { jevAgentSettings, jevExecutablePath } from '../src/application/jev.js';
@@ -19,9 +20,12 @@ import {
   configArguments,
   providerMcpServers,
   startCodexAppServer,
+  withNativeConfiguration,
   type CodexAppServer,
 } from './support/codex-provider.js';
 import { nexusConfiguration } from './support/configuration.js';
+import { createCodingRuntime } from '../src/adapters/coding-runtime.js';
+import { controlledCodexModel } from './support/codex-model.js';
 import { controlledJevProvider, type ControlledJevProvider } from './support/jev-provider.js';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -162,6 +166,168 @@ afterEach(async () => {
 });
 
 describe.skipIf(!nativeProviderInstalled)('composed native JEv settings', () => {
+  it.each(['base', 'profile', 'project', 'ancestor-override'] as const)(
+    'replaces %s inheritance through the coding adapter for enabled calls and disabled startup',
+    async (source) => {
+      const conflictingHttp =
+        '[mcp_servers.jev]\nurl = "https://example.invalid/mcp"\nenabled = true\n';
+      const conflictingStdio = `[mcp_servers.jev]\ncommand = "/inherited/jev-mcp"\nrequired = true\ndisabled_tools = ["ask_jev"]\n[mcp_servers.jev.env]\nJEV_API_KEY = "inherited-key"\nJEV_MODEL = "inherited-model"\nJEV_TIMEOUT_MS = "13"\n`;
+      // An unrelated server and personal setting must retain their native ownership.
+      const unrelated =
+        'model = "kept-model"\n[mcp_servers.other]\nurl = "https://example.invalid/other"\nenabled = false\n';
+      for (const availability of ['enabled', 'omitted', 'disabled', 'missing-key'] as const) {
+        const conflict = availability === 'enabled' ? conflictingStdio : conflictingHttp;
+        const directory = await home(unrelated + (source === 'base' ? conflict : ''));
+        let worktree = repositoryRoot;
+        if (source === 'project') {
+          worktree = path.join(directory, 'project');
+          await mkdir(path.join(worktree, '.codex'), { recursive: true });
+          expect(spawnSync('git', ['init', '-q', worktree]).status).toBe(0);
+          await writeFile(path.join(worktree, '.codex', 'config.toml'), conflict);
+          await writeFile(
+            path.join(directory, 'config.toml'),
+            `${unrelated}\n[projects.${JSON.stringify(worktree)}]\ntrust_level = "trusted"\n`,
+          );
+        }
+        const profileText = source === 'profile' ? conflict : '# installed profile\n';
+        await writeFile(path.join(directory, 'nexus-flash.config.toml'), profileText);
+        const baseText = await readFile(path.join(directory, 'config.toml'), 'utf8');
+        const enabled = availability === 'enabled';
+        const tools = composedToolSettings(
+          (configured) => {
+            if (availability !== 'omitted')
+              configured.jev = { enabled: availability !== 'disabled', credential: 'jevApiKey' };
+            if (source === 'ancestor-override')
+              configured.agentRuntime.profiles[0]!.toolSettings = {
+                profile: 'nexus-flash',
+                config: {
+                  mcp_servers: {
+                    jev: {
+                      url: 'https://example.invalid/mcp',
+                      enabled: true,
+                      env: { JEV_API_KEY: 'inherited-key', JEV_MODEL: 'inherited-model' },
+                    },
+                    kept: { url: 'https://example.invalid/kept', enabled: false },
+                  },
+                },
+              };
+          },
+          availability === 'missing-key' ? {} : { JEV_API_KEY: syntheticKey },
+        );
+
+        await withNativeConfiguration(
+          directory,
+          tools,
+          async (selected) => {
+            expect(selected.overrides.join('\n')).not.toContain(syntheticKey);
+            expect(selected.overrides.join('\n')).not.toContain('inherited-key');
+            const listed = await providerMcpServers(
+              directory,
+              selected.overrides,
+              selected.profile,
+              worktree,
+            );
+            if (enabled)
+              expect(listed.find((server) => server.name.startsWith('nexus-jev-'))).toMatchObject({
+                enabled,
+                transport: {
+                  type: 'stdio',
+                  command: jevExecutablePath(),
+                  env_vars: ['JEV_API_KEY'],
+                },
+              });
+            expect(listed.find((server) => server.name === 'jev')?.enabled ?? false).toBe(false);
+            if (enabled) {
+              expect(
+                listed.find((server) => server.name.startsWith('nexus-jev-'))?.transport.env ??
+                  null,
+              ).toBeNull();
+            } else {
+              expect(listed.some((server) => server.name.startsWith('nexus-jev-'))).toBe(false);
+            }
+            expect(listed.find((server) => server.name === 'other')).toMatchObject({
+              enabled: false,
+              transport: { url: 'https://example.invalid/other' },
+            });
+            if (source === 'ancestor-override')
+              expect(listed.find((server) => server.name === 'kept')?.enabled).toBe(false);
+            const controlled = await provider();
+            controlled.succeed(syntheticJudgment);
+            const model = await controlledCodexModel(enabled ? syntheticRequest : null);
+            try {
+              const result = await createCodingRuntime({
+                executable: 'codex',
+                environment: {
+                  PATH: process.env['PATH']!,
+                  HOME: process.env['HOME']!,
+                  CODEX_HOME: directory,
+                  JEV_API_KEY: syntheticKey,
+                  JEV_MODEL: 'not-the-default',
+                  JEV_TIMEOUT_MS: '13',
+                },
+              }).execute(
+                {
+                  prompt: 'Run the synthetic check.',
+                  model: 'synthetic-model',
+                  effort: null,
+                  toolSettings: {
+                    ...tools,
+                    profile: selected.profile,
+                    config: {
+                      ...(tools['config'] as Record<string, unknown>),
+                      model_provider: 'fixture',
+                      'model_providers.fixture': {
+                        name: 'Synthetic local model',
+                        base_url: model.origin,
+                        wire_api: 'responses',
+                        requires_openai_auth: false,
+                      },
+                      'features.code_mode': false,
+                      'features.tool_search': false,
+                      'mcp_servers.jev.env': {
+                        NODE_OPTIONS: `--import=${preload}`,
+                        JEV_TEST_PROVIDER_ORIGIN: controlled.origin,
+                      },
+                    },
+                  },
+                  directory: worktree,
+                  timeLimitMs: 15_000,
+                },
+                () => undefined,
+              );
+              expect(result).toEqual({ ok: true, value: { output: 'synthetic completed' } });
+              if (enabled) {
+                expect(JSON.stringify(model.requests[0]?.['tools'])).toContain('ask_jev');
+                expect(model.requests).toHaveLength(2);
+                const outputs = (model.requests[1]?.['input'] as { type: string }[]).filter(
+                  (item) => item.type === 'function_call_output',
+                );
+                expect(JSON.stringify(outputs)).toContain('0.96');
+                expect(JSON.stringify(outputs)).toContain('jev-1.13.0');
+                expect(controlled.requests[0]?.authorization).toBe(`Bearer ${syntheticKey}`);
+                expect(JSON.parse(controlled.requests[0]!.body).model).toBe('jev-1.13.0');
+              } else {
+                expect(JSON.stringify(model.requests[0]?.['tools'])).not.toContain('ask_jev');
+                expect(controlled.requests).toHaveLength(0);
+              }
+            } finally {
+              await model.close();
+            }
+          },
+          worktree,
+        );
+        expect(await readFile(path.join(directory, 'nexus-flash.config.toml'), 'utf8')).toBe(
+          profileText,
+        );
+        expect(await readFile(path.join(directory, 'config.toml'), 'utf8')).toBe(baseText);
+        if (source === 'project')
+          expect(await readFile(path.join(worktree, '.codex', 'config.toml'), 'utf8')).toBe(
+            conflict,
+          );
+      }
+    },
+    30_000,
+  );
   it('reports the reserved server enabled with the installed executable and key forwarding', async () => {
     const listed = await providerMcpServers(await home(), configArguments(jevAgentSettings(true)));
     const jev = listed.find((server) => server.name === 'jev');

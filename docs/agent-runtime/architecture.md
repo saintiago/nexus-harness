@@ -78,7 +78,8 @@ its run interface and complete-context preservation remain unchanged.
 
 Application also composes optional JEv access under
 [configuration](../configuration.md#jev-settings) and the
-[installed-package launch](profiles.md#jev-access). Merge its reserved native MCP settings with
+[installed-package launch](profiles.md#jev-access). Compose its reserved native MCP settings and
+request native server isolation, preventing inherited files from changing the capability. Merge with
 existing tool settings for every selectable role profile, including recovery and analysis.
 Do not replace the entire native configuration or share a mutable settings object across roles.
 The runtime's `run` contract is unchanged; provider-native MCP owns discovery, launch and calls.

@@ -160,10 +160,12 @@ Use package defaults (`jev-1.13.0`, 10000 ms) for automatic applicability reques
 also uses these defaults by forwarding only `JEV_API_KEY`, without inheriting `JEV_MODEL` or
 `JEV_TIMEOUT_MS`. This gives API and MCP one supported configuration. Provider-native JEv startup
 is optional; an unavailable server must not abort an otherwise usable agent invocation. Disabled
-composition explicitly disables the reserved `jev` MCP server even when base/profile settings
-would otherwise enable it; enabled composition owns that server's settings, replacing any that a
-profile's own native configuration supplies under the reserved name. Other native settings retain
-their current ownership.
+composition disables any inherited server under the reserved `jev` name, including base, selected
+profile and trusted project settings. Available access binds the composed server to a fresh native
+name for each invocation, so inherited transport, literal environment and tool exclusions cannot
+merge into it. Nexus overrides under `jev`, including ancestor-object forms, are replaced by the
+composed settings. Unavailable access creates no new server. Other native settings retain their
+current ownership; original configuration files and personal defaults are not rewritten.
 
 Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
 effects; disabling a configured integration restores that same behavior. With host credentials and

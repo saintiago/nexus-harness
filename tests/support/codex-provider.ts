@@ -1,7 +1,73 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createCodingRuntime } from '../../src/adapters/coding-runtime.js';
+
+/** Exercise native discovery/calls while the real adapter's isolated native settings are selected. */
+export async function withNativeConfiguration<T>(
+  home: string,
+  toolSettings: Readonly<Record<string, unknown>>,
+  inspect: (selected: {
+    readonly profile: string;
+    readonly overrides: readonly string[];
+  }) => Promise<T>,
+  directory = home,
+): Promise<T> {
+  const executable = path.join(home, 'configuration-fixture.mjs');
+  const release = path.join(home, 'configuration-fixture.done');
+  await writeFile(
+    executable,
+    `#!${process.execPath}
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+if (process.argv.includes('mcp')) {
+  const listed = spawnSync('codex', process.argv.slice(2), { env: process.env, encoding: 'utf8' });
+  process.stdout.write(listed.stdout ?? ''); process.stderr.write(listed.stderr ?? ''); process.exit(listed.status ?? 1);
+}
+readFileSync(0);
+process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(process.argv.slice(2))}})+'\\n');
+while (!existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 10));
+process.stdout.write(JSON.stringify({type:'turn.completed'})+'\\n');
+`,
+  );
+  await chmod(executable, 0o755);
+  let announce!: (args: readonly string[]) => void;
+  let reject!: (error: Error) => void;
+  const ready = new Promise<readonly string[]>((resolve, fail) => {
+    announce = resolve;
+    reject = fail;
+  });
+  const execution = createCodingRuntime({
+    executable,
+    environment: { CODEX_HOME: home, PATH: process.env['PATH']!, HOME: process.env['HOME']! },
+  }).execute(
+    {
+      prompt: 'Configuration check.',
+      model: 'unused',
+      effort: null,
+      toolSettings,
+      directory,
+      timeLimitMs: 30_000,
+    },
+    (activity) => {
+      if (activity.type === 'message') announce(JSON.parse(activity.text) as readonly string[]);
+    },
+  );
+  void execution.then((result) => {
+    if (!result.ok) reject(new Error(result.fault.message));
+  });
+  try {
+    const args = await ready;
+    const profile = args[args.indexOf('--profile') + 1]!;
+    const overrides = args.flatMap((arg, index) => (arg === '-c' ? [args[index + 1]!] : []));
+    return await inspect({ profile, overrides });
+  } finally {
+    await writeFile(release, 'release');
+    await execution;
+    await Promise.all([rm(executable, { force: true }), rm(release, { force: true })]);
+  }
+}
 
 /**
  * The installed native coding provider for the JEv access checks. These helpers start the real
@@ -59,11 +125,24 @@ export type ProviderMcpServer = {
 export async function providerMcpServers(
   codexHomeDirectory: string,
   overrides: readonly string[],
+  profile?: string,
+  directory?: string,
 ): Promise<readonly ProviderMcpServer[]> {
-  const child = spawn('codex', ['mcp', 'list', '--json', ...configFlags(overrides)], {
-    env: { ...process.env, CODEX_HOME: codexHomeDirectory },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    'codex',
+    [
+      ...(profile === undefined ? [] : ['--profile', profile]),
+      'mcp',
+      'list',
+      '--json',
+      ...configFlags(overrides),
+    ],
+    {
+      env: { ...process.env, CODEX_HOME: codexHomeDirectory },
+      cwd: directory,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   let stdout = '';

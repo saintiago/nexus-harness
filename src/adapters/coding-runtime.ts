@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,6 +88,7 @@ export type CodingRuntimeSettings = {
  */
 const profileSetting = 'profile';
 const configSetting = 'config';
+const isolatedMcpSetting = 'isolatedMcpServers';
 
 /** One TOML key: a bare key where the grammar allows it, a quoted key otherwise. */
 function tomlKey(key: string): string {
@@ -137,6 +139,7 @@ type SelectedToolSettings = {
   readonly profile: string;
   /** The `--config` arguments in supply order. */
   readonly overrides: readonly string[];
+  readonly isolatedServers: readonly string[];
 };
 
 /**
@@ -149,7 +152,7 @@ function selectedToolSettings(
   toolSettings: Readonly<Record<string, unknown>>,
 ): Result<SelectedToolSettings> {
   const unsupported = Object.keys(toolSettings).filter(
-    (key) => key !== profileSetting && key !== configSetting,
+    (key) => key !== profileSetting && key !== configSetting && key !== isolatedMcpSetting,
   );
   if (unsupported.length > 0) {
     return fault(`Unsupported Codex tool setting "${unsupported.join('", "')}".`);
@@ -159,6 +162,18 @@ function selectedToolSettings(
     return fault('The Codex tool settings must name the installed profile to select.');
   }
   const configured = toolSettings[configSetting];
+  const isolatedServers =
+    toolSettings[isolatedMcpSetting] === undefined ? [] : toolSettings[isolatedMcpSetting];
+  if (
+    !Array.isArray(isolatedServers) ||
+    !isolatedServers.every(
+      (key: unknown) => typeof key === 'string' && /^[A-Za-z0-9_-]+$/.test(key),
+    )
+  ) {
+    return fault(
+      'The Codex tool setting "isolatedMcpServers" must be an array of native server names.',
+    );
+  }
   const overrides: string[] = [];
   if (configured !== undefined) {
     if (typeof configured !== 'object' || configured === null || Array.isArray(configured)) {
@@ -175,7 +190,80 @@ function selectedToolSettings(
       overrides.push(`${key}=${text}`);
     }
   }
-  return ok({ profile, overrides });
+  return ok({ profile, overrides, isolatedServers });
+}
+
+/**
+ * Native tables merge recursively across user, profile and project layers. Give each composed
+ * server a fresh invocation name instead of merging it with an inherited transport/environment.
+ * Inspect the provider's effective catalogue without starting servers, then disable any inherited
+ * entry under the reserved name in place. Its valid transport remains intact. Catalogue data,
+ * including literal environment values, stays in memory and is never emitted as agent activity.
+ */
+async function isolateMcpServers(
+  selected: SelectedToolSettings,
+  settings: CodingRuntimeSettings,
+  request: CodingRuntimeRequest,
+): Promise<Result<SelectedToolSettings>> {
+  const inheritedOverrides = selected.overrides.filter(
+    (override) =>
+      !selected.isolatedServers.some(
+        (name) =>
+          override.startsWith(`mcp_servers.${name}=`) ||
+          override.startsWith(`mcp_servers.${name}.`),
+      ),
+  );
+  const catalogue: Buffer[] = [];
+  const inspected = await run(
+    {
+      executable: settings.executable,
+      args: [
+        '--profile',
+        selected.profile,
+        'mcp',
+        'list',
+        '--json',
+        ...inheritedOverrides.flatMap((override) => ['-c', override]),
+      ],
+      directory: request.directory,
+      environment: settings.environment,
+      timeLimitMs: request.timeLimitMs,
+    },
+    (chunk) => {
+      if (chunk.stream === 'stdout') catalogue.push(Buffer.from(chunk.chunk));
+    },
+  );
+  if (!inspected.ok || inspected.value.exitCode !== 0) {
+    return fault('The Codex provider could not inspect inherited MCP settings.');
+  }
+  let names: Set<string>;
+  try {
+    const servers: unknown = JSON.parse(Buffer.concat(catalogue).toString('utf8'));
+    if (!Array.isArray(servers) || !servers.every((server) => typeof server?.name === 'string'))
+      throw new Error('Invalid catalogue');
+    names = new Set(servers.map((server) => server.name as string));
+  } catch {
+    return fault('The Codex provider returned an invalid MCP catalogue.');
+  }
+  const overrides = [...inheritedOverrides];
+  for (const name of new Set(selected.isolatedServers)) {
+    const reserved = `mcp_servers.${name}`;
+    if (names.has(name)) overrides.push(`${reserved}.enabled=false`);
+    // Disabled composition needs only to disable an existing entry. It creates no empty server
+    // whose missing transport could itself invalidate otherwise ordinary work.
+    if (selected.overrides.includes(`${reserved}.enabled=false`)) continue;
+    let isolated: string;
+    do {
+      isolated = `nexus-${name}-${randomUUID()}`;
+    } while (names.has(isolated));
+    const owned = selected.overrides.filter(
+      (override) => override.startsWith(`${reserved}=`) || override.startsWith(`${reserved}.`),
+    );
+    overrides.push(
+      ...owned.map((override) => `mcp_servers.${isolated}${override.slice(reserved.length)}`),
+    );
+  }
+  return ok({ ...selected, overrides });
 }
 
 /**
@@ -442,8 +530,9 @@ function failureText(event: ProviderEvent): string | null {
 }
 
 /**
- * Create the coding runtime over the supplied executable and environment. Each invocation starts
- * one provider process, streams its activity and resolves with the final output or a fault.
+ * Create the coding runtime over the supplied executable and environment. Native MCP isolation
+ * first inspects effective configuration without starting servers. Then the invocation starts one
+ * execution process, streams its activity and resolves with final output or a fault.
  */
 export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRuntime {
   return {
@@ -482,6 +571,18 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
       }
 
       try {
+        const startedAt = Date.now();
+        let invocationSettings = selected.value;
+        if (selected.value.isolatedServers.length > 0) {
+          const isolated = await isolateMcpServers(selected.value, settings, request);
+          if (!isolated.ok) return isolated;
+          invocationSettings = isolated.value;
+        }
+        const timeLimitMs = request.timeLimitMs - (Date.now() - startedAt);
+        if (timeLimitMs <= 0)
+          return fault(
+            'The Codex invocation exceeded its time limit while inspecting MCP settings.',
+          );
         const emit = (activity: CodingRuntimeActivity): void => {
           try {
             onActivity(activity);
@@ -565,10 +666,10 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
         const result = await run(
           {
             executable: settings.executable,
-            args: invocationArguments(selected.value, request, outputSchemaFile),
+            args: invocationArguments(invocationSettings, request, outputSchemaFile),
             directory: request.directory,
             environment: settings.environment,
-            timeLimitMs: request.timeLimitMs,
+            timeLimitMs,
             input: request.prompt,
           },
           (chunk: ProcessOutput) => {

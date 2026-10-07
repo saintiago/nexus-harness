@@ -27,7 +27,12 @@ import {
   type ProjectConfiguration,
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
-import { createJevCapability, isReservedJevSetting, jevAgentSettings } from './jev.js';
+import {
+  createJevCapability,
+  jevIsolatedServers,
+  jevAgentSettings,
+  withoutInheritedJevSettings,
+} from './jev.js';
 
 /**
  * Composition turns resolved project and Nexus configuration into the construction settings of
@@ -143,9 +148,8 @@ function isNativeOverrideObject(value: unknown): value is Readonly<Record<string
  * One configured profile's tool settings with the supplied tools added to its native overrides.
  * A malformed override value is preserved for the coding adapter to reject, because substituting
  * an empty object would silently drop the operator's settings. Inherited settings of the reserved
- * JEv server are dropped before the composed ones are added: Nexus owns that server, and the
- * provider's layered merge overrides the leaf settings it receives but cannot remove an inherited
- * table entry.
+ * JEv server are dropped before the composed ones are added. Native isolation asks the adapter to
+ * bind them to a fresh server name, preventing inherited file settings from merging into them.
  */
 function withNativeTools(
   profile: AgentProfile,
@@ -155,15 +159,28 @@ function withNativeTools(
   if (configured !== undefined && !isNativeOverrideObject(configured)) {
     return profile.toolSettings;
   }
+  const configuredIsolation = profile.toolSettings['isolatedMcpServers'];
+  const isolatedMcpServers =
+    configuredIsolation === undefined
+      ? jevIsolatedServers
+      : Array.isArray(configuredIsolation)
+        ? [...new Set([...configuredIsolation, ...jevIsolatedServers])]
+        : configuredIsolation;
   if (configured === undefined) {
     return Object.keys(tools).length === 0
       ? profile.toolSettings
-      : { ...profile.toolSettings, [nativeConfigSetting]: { ...tools } };
+      : {
+          ...profile.toolSettings,
+          isolatedMcpServers,
+          [nativeConfigSetting]: { ...tools },
+        };
   }
-  const inherited = Object.fromEntries(
-    Object.entries(configured).filter(([key]) => !isReservedJevSetting(key)),
-  );
-  return { ...profile.toolSettings, [nativeConfigSetting]: { ...inherited, ...tools } };
+  const inherited = withoutInheritedJevSettings(configured);
+  return {
+    ...profile.toolSettings,
+    isolatedMcpServers,
+    [nativeConfigSetting]: { ...inherited, ...tools },
+  };
 }
 
 /**
