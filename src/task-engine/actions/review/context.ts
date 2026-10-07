@@ -1,5 +1,5 @@
 import type { PullRequestConversation } from '../../../adapters/github.js';
-import { capturedCommentText } from '../readable-source.js';
+import { capturedCommentText, capturedValueJson } from '../readable-source.js';
 
 /**
  * Review's directly visible human direction: the captured task and pull-request conversation
@@ -97,6 +97,11 @@ const directDirectionGuidance = [
   'earlier concern, conflict or obligation depends on entries this section does not reproduce.',
 ].join('\n');
 
+/** One captured provider identity value as text, or null when it is not a scalar. */
+function identityValue(value: unknown): string | null {
+  return typeof value === 'number' || typeof value === 'string' ? String(value) : null;
+}
+
 /** One pull-request entry's readable attribution line. */
 function pullRequestIdentity(entry: Readonly<Record<string, unknown>>, kind: string): string {
   const id = textOf(String(entry.id ?? '')) ?? 'id not captured';
@@ -118,9 +123,24 @@ function pullRequestIdentity(entry: Readonly<Record<string, unknown>>, kind: str
   if (state !== null) {
     parts.push(`state ${state}`);
   }
+  // An inline review comment's target stays attached to the instruction: its captured file and
+  // line, the revision it reviewed and the review it belongs to.
+  const file = textOf(entry.path);
+  if (file !== null) {
+    const line = identityValue(entry.line) ?? identityValue(entry.original_line);
+    parts.push(line === null ? `file ${file}` : `file ${file} line ${line}`);
+  }
   const revision = textOf(entry.commit_id);
   if (revision !== null) {
     parts.push(`reviewed revision ${revision}`);
+  }
+  const originalRevision = textOf(entry.original_commit_id);
+  if (originalRevision !== null && originalRevision !== revision) {
+    parts.push(`original revision ${originalRevision}`);
+  }
+  const review = identityValue(entry.pull_request_review_id);
+  if (review !== null) {
+    parts.push(`review ${review}`);
   }
   const thread = entry.in_reply_to_id;
   if (typeof thread === 'number' || typeof thread === 'string') {
@@ -143,10 +163,19 @@ function pullRequestEntryText(settings: {
 }): string {
   const { entry } = settings;
   if (!isObject(entry)) {
-    return (
-      `${String(settings.position)}. [This rendering does not display one captured pull-request ` +
-      `entry; inspect the captured conversation at "${settings.sourcePath}" before relying on it.]`
-    );
+    const original = capturedValueJson(entry);
+    const lines = [
+      original === null
+        ? `${String(settings.position)}. [This rendering does not display one captured ` +
+          `pull-request entry; inspect the captured conversation at "${settings.sourcePath}" ` +
+          'before relying on it.]'
+        : `${String(settings.position)}. [This rendering does not display one captured ` +
+          `pull-request entry as readable text; original captured value: ${original}]`,
+    ];
+    if (settings.origin === 'uncertain') {
+      lines.push(`   ${uncertainOriginNote}`);
+    }
+    return lines.join('\n');
   }
   const lines = [`${String(settings.position)}. ${pullRequestIdentity(entry, settings.kind)}`];
   if (settings.origin === 'uncertain') {
@@ -157,10 +186,19 @@ function pullRequestEntryText(settings: {
     lines.push(...body.split('\n').map((line) => (line === '' ? '' : `   ${line}`)));
   } else if (body === '') {
     lines.push('   (this entry has an empty body)');
-  } else {
+  } else if (entry.body === undefined || entry.body === null) {
     lines.push(
       `   [This rendering does not display this entry's body; inspect the captured conversation ` +
         `at "${settings.sourcePath}" before relying on it.]`,
+    );
+  } else {
+    const original = capturedValueJson(entry.body);
+    lines.push(
+      original === null
+        ? `   [This rendering does not display this entry's body; inspect the captured ` +
+            `conversation at "${settings.sourcePath}" before relying on it.]`
+        : `   [This rendering does not display this entry's body as readable text; original ` +
+            `captured value: ${original}]`,
     );
   }
   return lines.join('\n');

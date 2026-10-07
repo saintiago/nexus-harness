@@ -1838,6 +1838,260 @@ describe('Review', () => {
     expect(context).not.toContain('+retry once');
   });
 
+  it('keeps unsupported requirements, direction bodies and attribution complete in the prompt', async () => {
+    const requirement = 'Retry exactly once before failing the queue item.';
+    const direction = 'Pause retries while the feature flag is off.';
+    const note = 'The retry budget is two attempts in production.';
+    const description = {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Implement the retry guard.' }] },
+        {
+          type: 'extension',
+          attrs: { extensionKey: 'com.example.requirement', extensionType: 'com.example.runtime' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: requirement }] }],
+        },
+      ],
+    };
+    const task = {
+      id: '1',
+      key: 'NEX-1',
+      fields: { summary: 'Implement the retry guard', description },
+    };
+    const jane = { displayName: 'Jane Doe', accountId: 'acc-jane', accountType: 'atlassian' };
+    const conversation = [
+      {
+        id: 'c7',
+        self: 'https://example.atlassian.net/rest/api/3/issue/1/comment/c7',
+        author: jane,
+        created: '2026-10-07T09:00:00.000+0000',
+        updated: '2026-10-07T09:30:00.000+0000',
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'extension',
+              attrs: { extensionKey: 'com.example.direction' },
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: direction }] }],
+            },
+          ],
+        },
+      },
+      {
+        id: 'c8',
+        author: jane,
+        created: '2026-10-07T09:40:00.000+0000',
+        body: { kind: 'structured-note', instruction: note },
+      },
+      'Retained string entry that may be direction.',
+    ];
+    const { workspaceRoot, selectionFile, round } = await workspace({
+      name: 'lossless',
+      task,
+      conversation,
+    });
+    await writeDeliveredRound(workspaceRoot);
+    const { runtime, requests } = scriptedRuntime(
+      () => JSON.stringify({ verdict: 'approved' }),
+      'Approved.',
+    );
+    const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+    const { github } = scriptedGitHub({
+      readConversation: () =>
+        ok({
+          comments: [
+            {
+              id: 51,
+              body: 'Automated bot body that must stay out.',
+              user: { login: 'ci-bot', type: 'Bot' },
+            },
+          ],
+          reviews: [],
+          reviewComments: [
+            {
+              id: 41,
+              body: 'Please apply the fix here.',
+              user: { login: 'jane', type: 'User' },
+              path: 'src/queue.ts',
+              line: 12,
+              original_line: 9,
+              created_at: '2026-10-07T10:00:00Z',
+              commit_id: headRevision,
+              original_commit_id: otherRevision,
+              pull_request_review_id: 77,
+              html_url: 'https://github.com/owner/repository/pull/7#discussion_r41',
+            },
+          ],
+        }),
+      readChecks: () => ok([]),
+      publishReview: () => ok({ id: 11, url: `https://github.com/${repository}/reviews/11` }),
+      publishReviewCheck: () => ok({ id: 12 }),
+    });
+
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+    ).resolves.toBe('approved');
+
+    const recorded = await readReview(workspaceRoot, round);
+    const context = requests[0]?.context ?? '';
+    // Unsupported rich-text nodes, structured bodies and non-object entries keep their complete
+    // original values inline; no requirement or possible direction becomes only an inspection
+    // pointer.
+    expect(context).toContain(requirement);
+    expect(context).toContain(direction);
+    expect(context).toContain(note);
+    expect(context).toContain('Retained string entry that may be direction.');
+    // A retained entry without captured authorship stays explicitly labeled uncertain.
+    expect(occurrences(context, 'Origin uncertain')).toBe(1);
+    // Captured attribution survives: the comment's own source URL and its edit chronology even
+    // without an updateAuthor, and the inline comment's file, line, original revision and review.
+    expect(context).toContain(
+      'source: https://example.atlassian.net/rest/api/3/issue/1/comment/c7',
+    );
+    expect(context).toContain('(edited at 2026-10-07T09:30:00.000+0000)');
+    expect(context).toContain('file src/queue.ts line 12');
+    expect(context).toContain(`original revision ${otherRevision}`);
+    expect(context).toContain('review 77');
+    // Automation filtering and the complete invocation-local evidence references still hold.
+    expect(context).not.toContain('Automated bot body that must stay out.');
+    expect(context).toContain(
+      path.join(path.dirname(recorded.output.report.path), 'captured-source.json'),
+    );
+    expect(context).toContain(
+      path.join(path.dirname(recorded.output.report.path), 'comparison.diff'),
+    );
+  });
+
+  it.each(['review', 'development'] as const)(
+    'validates consumed earlier-round %s history before invoking the reviewer',
+    async (damage) => {
+      const { workspaceRoot, selectionFile } = await workspace({
+        round: 3,
+        name: `unusable-history-${damage}`,
+      });
+      await writeDeliveredRound(workspaceRoot);
+      const savedReview = await saveReview(workspaceRoot, 1, 'The earlier revision looked right.');
+      const developmentReport = path.join(
+        workspaceRoot,
+        'artifacts',
+        '1',
+        'reports',
+        'dev-round-1',
+        'developer.md',
+      );
+      await mkdir(path.dirname(developmentReport), { recursive: true });
+      await writeFile(developmentReport, 'Built the first revision.', 'utf8');
+      await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
+        taskSubject: 'Implement the retry guard',
+        taskKey: 'NEX-1',
+        profile: 'dev-a',
+        status: 'completed',
+        baseRevision,
+        headRevision,
+        role: 'developer',
+        report: { path: developmentReport },
+        invocationId: 'dev-round-1',
+        readinessFailure: null,
+      });
+      // Round two is the readable preceding assessment; round one is supporting history only, so
+      // only the producer-owned history checks can catch its broken bound Markdown.
+      await saveReview(workspaceRoot, 2, 'The guard is present.');
+      const precedingDevelopment = path.join(
+        workspaceRoot,
+        'artifacts',
+        '2',
+        'reports',
+        'dev-round-2',
+        'developer.md',
+      );
+      await mkdir(path.dirname(precedingDevelopment), { recursive: true });
+      await writeFile(precedingDevelopment, 'Repaired the guard.', 'utf8');
+      await writeRoundArtifact(workspaceRoot, 2, 'development.json', {
+        taskSubject: 'Implement the retry guard',
+        taskKey: 'NEX-1',
+        profile: 'dev-a',
+        status: 'completed',
+        baseRevision,
+        headRevision,
+        role: 'developer',
+        report: { path: precedingDevelopment },
+        invocationId: 'dev-round-2',
+        readinessFailure: null,
+      });
+      if (damage === 'review') await rm(savedReview.reportFile);
+      else await rm(developmentReport);
+
+      const { runtime, requests } = scriptedRuntime(() => JSON.stringify({ verdict: 'approved' }));
+      const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+      const { github, calls } = scriptedGitHub({
+        readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      });
+
+      await expect(
+        reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+      ).rejects.toThrow(/does not exist|could not be read/);
+      // The reviewer is never invoked and no verdict is published; the unusable history is
+      // retained under the responsibility of the role that produced it.
+      expect(requests).toEqual([]);
+      expect(calls).toEqual(['conversation:7']);
+      await expect(stat(path.join(workspaceRoot, 'artifacts', '3', 'review.json'))).rejects.toThrow(
+        /ENOENT/,
+      );
+      const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) => entry.record.kind === 'validation-error',
+      );
+      expect(rejection?.record).toMatchObject(
+        damage === 'review'
+          ? {
+              scope: reviewReportScope(workspaceRoot, 'NEX-1'),
+              operation: 'review',
+              assignedReport: { path: savedReview.reportFile },
+            }
+          : {
+              scope: developmentReportScope(workspaceRoot, 'NEX-1'),
+              operation: 'develop',
+              assignedReport: { path: developmentReport },
+            },
+      );
+    },
+  );
+
+  it.each(['earlier round', 'same round'] as const)(
+    'rejects a preceding review of another task (%s) before invoking the reviewer',
+    async (position) => {
+      const { workspaceRoot, selectionFile } = await workspace({
+        round: position === 'earlier round' ? 2 : 1,
+        name: `foreign-preceding-${position === 'earlier round' ? 'earlier' : 'same'}`,
+      });
+      await writeDeliveredRound(workspaceRoot);
+      const saved = await saveReview(workspaceRoot, 1, 'The change matches another task.', {
+        taskKey: 'OTHER-42',
+        ...(position === 'same round' ? { headRevision: otherRevision } : {}),
+      });
+      const { runtime, requests } = scriptedRuntime(() => JSON.stringify({ verdict: 'approved' }));
+      const { git } = scriptedGit([repositoryState({ headRevision })], { readDiff: () => ok('') });
+      const { github, calls } = scriptedGitHub({
+        readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
+      });
+
+      await expect(
+        reviewAction({ selectionFile, runner: runnerOf(runtime), git, github })(),
+      ).rejects.toThrow('is for task "OTHER-42", not "NEX-1"');
+      expect(requests).toEqual([]);
+      expect(calls).toEqual(['conversation:7']);
+      const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) => entry.record.kind === 'validation-error',
+      );
+      expect(rejection?.record).toMatchObject({
+        scope: reviewReportScope(workspaceRoot, 'NEX-1'),
+        operation: 'review',
+        assignedReport: { path: saved.reportFile },
+      });
+    },
+  );
+
   it('keeps an earlier invocation snapshot readable after the selection source is refreshed', async () => {
     const refreshedConversation = [
       {

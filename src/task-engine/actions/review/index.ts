@@ -36,6 +36,7 @@ import {
   developmentReportScope,
   isBoundDevelopmentOutput,
   readUsableDevelopmentOutcome,
+  requireUsableDevelopmentOutcome,
   type RetainedDevelopmentOutput,
 } from '../develop/artifacts.js';
 import {
@@ -585,11 +586,44 @@ export function createReview(settings: ReviewSettings): BoundAction {
         error,
       }),
     );
+    // Every consumed historical outcome passes its producer-owned usability check before the
+    // reviewer is invoked: task ownership and, for current bound records, a readable Markdown
+    // report. A failure is retained under the producing role and fails this assessment.
+    for (const value of developments) {
+      await requireUsableDevelopmentOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: roundArtifact(root, value.number, devArtifact.pathFromArtifactsRoot),
+        outcome: value.value,
+        invocationId,
+        context: `${attribution} Reading the round ${String(value.number)} development report.`,
+      });
+    }
+    for (const value of reviews) {
+      await requireUsableReviewOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: roundArtifact(root, value.number, reviewArtifact.pathFromArtifactsRoot),
+        outcome: value.value,
+        invocationId,
+        context: `${attribution} Reading the round ${String(value.number)} review report.`,
+      });
+    }
     // A fresh assessment at a different head consults the current round's own saved assessment
     // when one exists; otherwise the latest earlier-round review is the preceding assessment.
     // Approval does not retire it: the reviewer judges recurrence against the current revision.
     const priorReview: ArtifactHistoryValue<RetainedReviewOutput> | null =
       recorded === null ? latest(reviews) : { number: round.number, value: recorded };
+    if (priorReview !== null) {
+      await requireUsableReviewOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: roundArtifact(root, priorReview.number, reviewArtifact.pathFromArtifactsRoot),
+        outcome: priorReview.value,
+        invocationId,
+        context: `${attribution} Reading the preceding review report.`,
+      });
+    }
 
     /** The previous review report as context: its Markdown text or retained combined record. */
     async function priorReviewSection(
