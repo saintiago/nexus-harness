@@ -5,6 +5,7 @@ export {
   type ProjectConfiguration,
 } from './project.js';
 export {
+  jevCredentialEnvironment,
   loadNexusConfiguration,
   parseNexusConfiguration,
   preparationStages,

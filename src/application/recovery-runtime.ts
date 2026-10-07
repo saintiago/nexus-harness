@@ -22,16 +22,17 @@ import {
  */
 export function createRecoveryRuntime(settings: RecoveryRuntimeConstruction): RecoveryRuntime {
   const { nexus, environment } = settings;
+  const recoveryHostEnvironment = recoveryEnvironment(nexus, environment);
   const codingRuntime = createCodingRuntime({
     executable: nexus.agentRuntime.provider.executable,
-    environment: recoveryEnvironment(nexus, environment),
+    environment: recoveryHostEnvironment,
   });
   return {
     async invoke(request) {
       // AgentRuntime keeps no state between invocations; each invocation supplies its own
       // activity observer, so recovery activity stays attributable to its invocation.
       const runtime = createAgentRuntime(
-        createAgentRuntimeSettings(nexus, 'recovery', codingRuntime),
+        createAgentRuntimeSettings(nexus, 'recovery', codingRuntime, recoveryHostEnvironment),
       );
       return runtime.run(
         nexus.executionPolicy.recoveryProfile,

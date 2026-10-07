@@ -61,6 +61,13 @@ use explicitly, including every preparation author/evaluator. AnalyzeExperience 
 consumer after selected-work terminal handoffs.
 Workflow routing, direct hand-offs and authoritative artifacts remain unchanged.
 
+[JEv](tech-stack.md#jev-dependency) is an optional external judgment dependency, not another Nexus
+component. Application constructs its TypeScript client from the host credential and supplies that
+public capability to preparation; it also composes provider-native `ask_jev` access for every
+agent role. Preparation owns [applicability policy and records](task-engine/actions/preparation-stage.md#jev-applicability-advice).
+AgentRuntime transports native tool settings and guidance without making applicability decisions.
+The package owns provider communication. Existing stage routing and acceptance remain authoritative.
+
 ## Application and configuration
 
 [Application](application.md) owns the command entry point, configuration loading, component wiring,

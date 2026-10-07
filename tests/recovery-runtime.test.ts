@@ -68,6 +68,7 @@ async function providerFixture(agentOutput: string): Promise<{
     executable,
     `#!${process.execPath}
 import { readFileSync, writeFileSync } from 'node:fs';
+if (process.argv.includes('mcp')) { process.stdout.write('[]'); process.exit(0); }
 const prompt = readFileSync(0, 'utf8');
 const schemaFlag = process.argv.indexOf('--output-schema');
 const schemaPath = schemaFlag === -1 ? null : (process.argv[schemaFlag + 1] ?? null);

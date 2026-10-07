@@ -83,6 +83,23 @@ export const memoryAnalysisGuidance = [
   '  without other text.',
 ].join('\n');
 
+/**
+ * The shared JEv judgment guidance every invocation with composed `ask_jev` access carries. The
+ * AgentRuntime contract owns this policy; composition supplies it once with the enabled tool, and
+ * a configured instruction that repeats it is deduplicated.
+ */
+export const jevUseGuidance = [
+  'JEv judgment guidance (the ask_jev tool is available to this invocation):',
+  '- Ask narrow questions with explicit alternatives and only the relevant evidence; batch',
+  '  questions that share one state.',
+  '- JEv returns judgments, not code or prose answers. Use deterministic tools for arithmetic,',
+  '  counting and executable checks.',
+  '- Answers and confidence are evidence for the responsible role, never permission to bypass',
+  '  required stages, independent evaluation, verification or merge checks.',
+  '- If the tool cannot answer, continue the existing reasoning and checks; do not make JEv',
+  '  availability a completion gate.',
+].join('\n');
+
 /** One activity entry the invocation reported while it ran. */
 export type AgentEvent = {
   readonly type: AgentEventKind;

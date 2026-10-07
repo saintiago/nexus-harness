@@ -173,6 +173,19 @@ const memorySchema = z
   .discriminatedUnion('enabled', [memoryDisabledSchema, memoryEnabledSchema])
   .optional();
 
+/** The host environment setting the JEv integration forwards its key from. */
+export const jevCredentialEnvironment = 'JEV_API_KEY';
+
+/**
+ * The optional JEv judgment integration. Omitting the section or setting `enabled: false` composes
+ * no JEv capability, tool or guidance. Enabling it requires the credential reference that names
+ * the fixed host environment setting; a disabled integration may retain a valid unused reference.
+ */
+const jevSchema = z.strictObject({
+  enabled: z.boolean(),
+  credential: credentialReference.optional(),
+});
+
 const nexusConfigurationSchema = z
   .strictObject({
     workflow: z.strictObject({
@@ -210,6 +223,7 @@ const nexusConfigurationSchema = z
     preparation: preparationSchema,
     ideaRefinement: ideaRefinementSchema,
     memory: memorySchema,
+    jev: jevSchema.optional(),
     notifications: z.strictObject({
       provider: z.literal('sns'),
       // The AWS Region that owns the destination topic.
@@ -319,6 +333,36 @@ const nexusConfigurationSchema = z
         path: ['memory', 'analysisProfile'],
         message: `Unknown profile "${configuration.memory.analysisProfile}"`,
       });
+    }
+
+    // Enabled JEv names the credential that supplies JEV_API_KEY from the host; a disabled
+    // integration may retain a valid unused reference. An unset host value is capability
+    // unavailability, not invalid configuration, so it is not rejected here.
+    const jev = configuration.jev;
+    if (jev !== undefined && jev.enabled && jev.credential === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['jev', 'credential'],
+        message: `Enabled JEv requires the credential reference naming ${jevCredentialEnvironment}`,
+      });
+    }
+    if (jev?.credential !== undefined) {
+      const resolution = Object.hasOwn(configuration.credentials, jev.credential)
+        ? configuration.credentials[jev.credential]
+        : undefined;
+      if (resolution === undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['jev', 'credential'],
+          message: `Unknown credential reference "${jev.credential}"`,
+        });
+      } else if (resolution.environment !== jevCredentialEnvironment) {
+        context.addIssue({
+          code: 'custom',
+          path: ['jev', 'credential'],
+          message: `The JEv credential must name the ${jevCredentialEnvironment} environment setting`,
+        });
+      }
     }
 
     const credentialReferences: [string, (string | number)[]][] = [

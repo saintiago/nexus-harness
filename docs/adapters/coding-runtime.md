@@ -42,6 +42,18 @@ Tool settings may also carry native configuration overrides: each names one dott
 path and the value the caller resolved, and the adapter passes it through the provider's own config
 setting. The provider, not the adapter, owns the meaning and validation of those settings.
 
+Native tool settings may additionally name `isolatedMcpServers`, an array of server names whose
+composed dotted overrides must be isolated from native-file inheritance. Before execution, list
+the provider's effective MCP configuration with the same profile, overrides for unrelated settings
+and working directory. This inspection starts no MCP server and emits no agent activity; catalogue
+values, which may contain literal environment settings, remain in memory. Disable an inherited
+entry under each named server in place, preserving its valid transport. Bind enabled composed
+overrides to a fresh `nexus-<name>-<id>` server name, checked against the effective catalogue;
+disabled composition creates no new server. Configuration files, authentication and unrelated
+native settings stay unchanged. Inspection and execution share the invocation time limit.
+Invalid isolation settings, failed inspection and invalid catalogue output are launch errors;
+do not expose catalogue contents or its diagnostics in the returned fault.
+
 For a supplied outputSchema, write it to an invocation-local temporary file and pass that file through
 `codex exec --output-schema`. Keep the file available for the invocation and clean it up on success or
 failure. Concurrent invocations must not share this file. Return the complete final response without

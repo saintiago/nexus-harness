@@ -683,7 +683,12 @@ function agentRunnerFor(
   role: ProfileRole,
 ): AgentRoleRunner {
   const runtime = createAgentRuntime(
-    createAgentRuntimeSettings(settings.nexus, role, settings.codingRuntime),
+    createAgentRuntimeSettings(
+      settings.nexus,
+      role,
+      settings.codingRuntime,
+      settings.commandEnvironment,
+    ),
   );
   return {
     async run(request): Promise<AgentResult> {

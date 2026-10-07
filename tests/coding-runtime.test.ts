@@ -15,6 +15,9 @@ import {
   type CodingRuntimeRequest,
   type CodingRuntimeResult,
 } from '../src/adapters/coding-runtime.js';
+import { createAgentRuntimeSettings } from '../src/application/composition.js';
+import { parseNexusConfiguration } from '../src/configuration/index.js';
+import { nexusConfiguration } from './support/configuration.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -42,6 +45,8 @@ type RecordedInvocation = {
   readonly schemaPath: string | null;
   /** The complete text of that schema file, read before the adapter removes it. */
   readonly schema: string | null;
+  readonly codexHome: string | null;
+  readonly profileText: string | null;
 };
 
 /** The native profile name the test fixtures install and select. */
@@ -50,8 +55,10 @@ const profile = 'nexus-fixture';
 /** The recording prelude every controlled provider runs before it reports anything. */
 const recordInvocation = `
 import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 const schemaFlag = process.argv.indexOf('--output-schema');
 const schemaPath = schemaFlag === -1 ? null : (process.argv[schemaFlag + 1] ?? null);
+const selectedProfile = process.argv[process.argv.indexOf('--profile') + 1];
 writeFileSync(
   process.env.NEXUS_FIXTURE_RECORD,
   JSON.stringify({
@@ -61,6 +68,8 @@ writeFileSync(
     marker: process.env.NEXUS_FIXTURE_MARKER ?? null,
     schemaPath,
     schema: schemaPath === null ? null : readFileSync(schemaPath, 'utf8'),
+    codexHome: process.env.CODEX_HOME ?? null,
+    profileText: process.env.CODEX_HOME ? readFileSync(path.join(process.env.CODEX_HOME, selectedProfile + '.config.toml'), 'utf8') : null,
   }),
 );
 `;
@@ -78,7 +87,15 @@ function literal(text: string): string {
 /** Install a controlled provider and the native profile file the adapter requires. */
 async function providerFixture(
   source: string,
-  options: { readonly install?: boolean } = {},
+  options: {
+    readonly install?: boolean;
+    readonly inheritedServers?: readonly string[];
+    readonly mcpList?: {
+      readonly stdout: string;
+      readonly stderr: string;
+      readonly exitCode: number;
+    };
+  } = {},
 ): Promise<{
   readonly executable: string;
   readonly environment: Record<string, string>;
@@ -86,7 +103,10 @@ async function providerFixture(
 }> {
   const directory = await temporaryDirectory();
   const executable = path.join(directory, 'codex-fixture');
-  await writeFile(executable, `#!${process.execPath}\n${source}\n`);
+  await writeFile(
+    executable,
+    `#!${process.execPath}\nif (process.argv.includes('mcp') && process.argv.includes('list')) { process.stdout.write(${JSON.stringify(options.mcpList?.stdout ?? JSON.stringify((options.inheritedServers ?? []).map((name) => ({ name }))))}); process.stderr.write(${JSON.stringify(options.mcpList?.stderr ?? '')}); process.exit(${String(options.mcpList?.exitCode ?? 0)}); }\n${source}\n`,
+  );
   await chmod(executable, 0o755);
   const codexHome = path.join(directory, 'codex-home');
   await mkdir(codexHome);
@@ -637,6 +657,103 @@ process.stdout.write(${literal(
       'mcp_servers.amem.enabled=true',
       '-',
     ]);
+  });
+
+  it('isolates composed MCP settings without changing native host files or resources', async () => {
+    const fixture = await providerFixture(
+      `${recordInvocation}
+process.stdout.write(${literal(
+        protocol([
+          { type: 'item.completed', item: { type: 'agent_message', text: 'completed' } },
+          { type: 'turn.completed' },
+        ]),
+      )});`,
+      { inheritedServers: ['jev'] },
+    );
+    const codexHome = fixture.environment['CODEX_HOME']!;
+    const original =
+      'model = "kept-model"\n[mcp_servers.jev]\nurl = "https://example.invalid/mcp"\n';
+    await writeFile(path.join(codexHome, `${profile}.config.toml`), original);
+    const { result } = await execute(fixture, {
+      toolSettings: {
+        profile,
+        isolatedMcpServers: ['jev'],
+        config: { 'mcp_servers.jev.command': 'jev-mcp', 'mcp_servers.jev.enabled': true },
+      },
+    });
+    expect(result).toEqual({ ok: true, value: { output: 'completed' } });
+    const invocation = (await fixture.invocation())!;
+    expect(invocation.codexHome).toBe(codexHome);
+    expect(invocation.profileText).toBe(original);
+    expect(invocation.args).toContain('mcp_servers.jev.enabled=false');
+    expect(invocation.args).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^mcp_servers\.nexus-jev-[a-f0-9-]+\.command="jev-mcp"$/),
+        expect.stringMatching(/^mcp_servers\.nexus-jev-[a-f0-9-]+\.enabled=true$/),
+      ]),
+    );
+    expect(invocation.args).not.toContain('mcp_servers.jev.command="jev-mcp"');
+    expect(await readFile(path.join(codexHome, `${profile}.config.toml`), 'utf8')).toBe(original);
+  });
+
+  it.each([null, 'jev', ['mcp servers.jev']])(
+    'rejects malformed MCP isolation settings: %j',
+    async (isolatedMcpServers) => {
+      const fixture = await providerFixture(recordInvocation);
+      const invalid = await execute(fixture, { toolSettings: { profile, isolatedMcpServers } });
+      expect(invalid.result).toMatchObject({
+        ok: false,
+        fault: { message: expect.stringContaining('isolatedMcpServers') },
+      });
+      expect(await fixture.invocation()).toBeNull();
+    },
+  );
+
+  it.each([0, 1])(
+    'keeps failed or invalid native inspection data out of faults and activity: exit %i',
+    async (exitCode) => {
+      const sensitive = 'synthetic-sensitive-catalogue-value';
+      const fixture = await providerFixture(recordInvocation, {
+        mcpList: { stdout: sensitive, stderr: sensitive, exitCode },
+      });
+      const { result, activities } = await execute(fixture, {
+        toolSettings: { profile, isolatedMcpServers: ['jev'] },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        fault: { message: expect.stringContaining('Codex provider') },
+      });
+      expect(JSON.stringify(result)).not.toContain(sensitive);
+      expect(activities).toEqual([]);
+      expect(await fixture.invocation()).toBeNull();
+    },
+  );
+
+  it('rejects a malformed profile configuration that Nexus composition preserved', async () => {
+    const configured = nexusConfiguration();
+    configured.agentRuntime.profiles[0]!.toolSettings = {
+      profile: 'nexus-flash',
+      config: ['invalid-native-setting'],
+    };
+    const settings = createAgentRuntimeSettings(
+      parseNexusConfiguration(configured, '/etc/nexus/installation'),
+      'developer',
+      // The composed settings are what this check supplies; the capability is never invoked.
+      { execute: () => Promise.resolve({ ok: false, fault: { message: 'unused' } }) },
+      {},
+    );
+    const toolSettings = settings.profiles.find(
+      (candidate) => candidate.id === 'nexus-flash',
+    )!.toolSettings;
+    const fixture = await providerFixture(`${recordInvocation}\n`, { install: false });
+
+    const { result } = await execute(fixture, { toolSettings });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('must be an object of native values') },
+    });
+    expect(await fixture.invocation()).toBeNull();
   });
 
   it('reports a fault for an override that is not a dotted path or holds an unsupported value', async () => {

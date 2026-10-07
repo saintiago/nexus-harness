@@ -4,6 +4,7 @@ import {
   developmentRoleInstructions,
   type IdeaRole,
   ideaEditorRoleInstructions,
+  jevUseGuidance,
   memoryAnalysisGuidance,
   memoryUseGuidance,
   preparationRoleInstructions,
@@ -26,6 +27,12 @@ import {
   type ProjectConfiguration,
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
+import {
+  createJevCapability,
+  jevIsolatedServers,
+  jevAgentSettings,
+  withoutInheritedJevSettings,
+} from './jev.js';
 
 /**
  * Composition turns resolved project and Nexus configuration into the construction settings of
@@ -129,20 +136,51 @@ function memoryAnalysisToolSettings(
   return { ...memoryAgentSettings(memory), 'mcp_servers.amem.enabled_tools': ['memory_search'] };
 }
 
-/** One configured profile's tool settings with the memory tools added to its native overrides. */
-function withMemoryTools(
+/** The native tool setting holding one profile's configuration overrides. */
+const nativeConfigSetting = 'config';
+
+/** Whether a supplied native override value is an object composition can merge into. */
+function isNativeOverrideObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * One configured profile's tool settings with the supplied tools added to its native overrides.
+ * A malformed override value is preserved for the coding adapter to reject, because substituting
+ * an empty object would silently drop the operator's settings. Inherited settings of the reserved
+ * JEv server are dropped before the composed ones are added. Native isolation asks the adapter to
+ * bind them to a fresh server name, preventing inherited file settings from merging into them.
+ */
+function withNativeTools(
   profile: AgentProfile,
-  memoryTools: Readonly<Record<string, unknown>>,
+  tools: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  if (Object.keys(memoryTools).length === 0) {
+  const configured = profile.toolSettings[nativeConfigSetting];
+  if (configured !== undefined && !isNativeOverrideObject(configured)) {
     return profile.toolSettings;
   }
-  const configured = profile.toolSettings['config'];
-  const config =
-    typeof configured === 'object' && configured !== null && !Array.isArray(configured)
-      ? (configured as Readonly<Record<string, unknown>>)
-      : {};
-  return { ...profile.toolSettings, config: { ...config, ...memoryTools } };
+  const configuredIsolation = profile.toolSettings['isolatedMcpServers'];
+  const isolatedMcpServers =
+    configuredIsolation === undefined
+      ? jevIsolatedServers
+      : Array.isArray(configuredIsolation)
+        ? [...new Set([...configuredIsolation, ...jevIsolatedServers])]
+        : configuredIsolation;
+  if (configured === undefined) {
+    return Object.keys(tools).length === 0
+      ? profile.toolSettings
+      : {
+          ...profile.toolSettings,
+          isolatedMcpServers,
+          [nativeConfigSetting]: { ...tools },
+        };
+  }
+  const inherited = withoutInheritedJevSettings(configured);
+  return {
+    ...profile.toolSettings,
+    isolatedMcpServers,
+    [nativeConfigSetting]: { ...inherited, ...tools },
+  };
 }
 
 /**
@@ -232,7 +270,8 @@ export function createNotificationSettings(
 /**
  * The AgentRuntime construction settings for one role: the supplied coding-provider capability and
  * the configured base instructions and invocation limit, and the configured profiles as
- * AgentProfile values. Each invocation supplies its own activity observer. The profiles this role
+ * AgentProfile values. The host environment resolves the composed memory and JEv capabilities.
+ * Each invocation supplies its own activity observer. The profiles this role
  * selects carry that role's constant
  * instructions followed by their configured instructions and their native tool settings. A
  * configured instruction that exactly repeats a selected role constant is dropped, so the constant
@@ -244,6 +283,7 @@ export function createAgentRuntimeSettings(
   nexus: NexusConfiguration,
   role: ProfileRole,
   codingRuntime: CodingRuntime,
+  environment: HostEnvironment = process.env,
 ): AgentRuntimeSettings {
   const selected = profilesForRole(nexus, role);
   // The memory guidance and tools accompany each other: a role without the tools does not carry
@@ -261,27 +301,55 @@ export function createAgentRuntimeSettings(
       : role === 'analysis'
         ? memoryAnalysisGuidance
         : memoryUseGuidance;
+  // JEv access is composed for every selectable role/profile, including recovery and analysis;
+  // a reused profile carries only the invoked role's instructions. An enabled integration whose
+  // host value is missing composes the reserved server disabled and supplies no guidance.
+  const jev = createJevCapability(nexus, environment);
+  const jevAvailable = jev?.kind === 'available';
+  const tools = {
+    ...memoryTools,
+    ...jevAgentSettings(jevAvailable),
+  };
+  // Composed guidance is supplied once: a configured instruction repeating a Nexus-owned constant
+  // is dropped so the invocation carries it at most once. The ownership is availability-gated, so
+  // a configured copy of any of these constants is removed and only the applicable one is
+  // appended: a missing capability never leaves its guidance (or a false availability statement)
+  // in the assembled prompt.
+  const guidance = [
+    ...(memoryGuidance === null ? [] : [memoryGuidance]),
+    ...(jevAvailable ? [jevUseGuidance] : []),
+  ];
+  const ownedGuidance: ReadonlySet<string> = new Set([
+    memoryUseGuidance,
+    memoryAnalysisGuidance,
+    jevUseGuidance,
+  ]);
   return {
     codingRuntime,
-    baseInstructions:
-      memoryGuidance !== null
-        ? [...nexus.agentRuntime.baseInstructions, memoryGuidance]
-        : nexus.agentRuntime.baseInstructions,
+    baseInstructions: [
+      ...nexus.agentRuntime.baseInstructions.filter(
+        (instruction) => !ownedGuidance.has(instruction),
+      ),
+      ...guidance,
+    ],
     profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => {
       const constants = selected.has(profile.id) ? roleInstructions[role] : undefined;
+      const configured = profile.instructions.filter(
+        (instruction) => !ownedGuidance.has(instruction),
+      );
       return {
         id: profile.id,
         model: profile.model,
         effort: profile.effort,
         instructions:
           constants === undefined
-            ? profile.instructions
+            ? configured
             : [
                 ...constants,
-                ...profile.instructions.filter((instruction) => !constants.includes(instruction)),
+                ...configured.filter((instruction) => !constants.includes(instruction)),
               ],
         toolSettings: selected.has(profile.id)
-          ? withMemoryTools(profile, memoryTools)
+          ? withNativeTools(profile, tools)
           : profile.toolSettings,
       };
     }),

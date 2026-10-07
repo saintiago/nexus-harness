@@ -39,8 +39,8 @@ catalogue path is included in the templates.
 
 Profiles layer over the base Codex configuration. They do not replace it or exclude arbitrary
 inherited MCP servers and plugins. Before use, inspect the selected profile's effective tool
-catalogue and disable inherited tools outside shell, files, the three research services and the
-browser/image capabilities below where needed.
+catalogue and disable inherited tools outside shell, files, the three research services, enabled
+memory/JEv tools and the browser/image capabilities below where needed.
 Repeat that check when changing the base configuration. Explicit per-app settings can override
 the default app exclusion. Nexus adds the AMEM memory MCP server to memory-enabled invocations
 through the provider's native settings ([Memory integration](../memory/integration.md#agent-use));
@@ -52,6 +52,51 @@ Keep credentials and machine-specific settings out of the repository.
 Preparation and delivery assignments follow the [project workflow](../project-workflow.md#profiles).
 Both prototype roles require browser and image-inspection tools. Jira credentials and source
 publication tools are not supplied to stage roles.
+
+## JEv access
+
+Use the delivered JEv package's `jev-mcp` executable through provider-native MCP settings when
+[JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` from the
+execution host. Keep its value out of repository configuration, prompts, command arguments,
+reports and other artifacts. Install the [pinned runtime dependency](../tech-stack.md#jev-dependency)
+with Nexus's normal `npm ci`; a separate global package install is unnecessary. Nexus composition
+resolves the installed bin from its own installation rather than PATH or the target worktree.
+The effective native settings are equivalent to:
+
+```toml
+[mcp_servers.nexus-jev-INVOCATION_ID]
+command = "/absolute/nexus-installation/node_modules/.bin/jev-mcp"
+args = []
+enabled = true
+required = false
+enabled_tools = ["ask_jev"]
+disabled_tools = []
+env_vars = ["JEV_API_KEY"]
+```
+
+The absolute command is installation-specific and generated at composition, not committed to
+profile templates. `INVOCATION_ID` is a fresh generated identifier; `ask_jev` remains the tool name.
+Codex merges native tables recursively, so replacing individual fields under a fixed server name
+cannot clear an inherited transport or literal environment. The coding adapter first lists the
+effective MCP configuration with the selected profile and invocation directory, without starting
+servers. It disables any inherited `jev` entry in place and supplies the composed settings under a
+fresh native name, checked against that catalogue. This covers base, profile and trusted project
+layers without rewriting any configuration file or changing the Codex home, authentication or
+unrelated tools. Composition removes Nexus override settings under the reserved `jev` name,
+including nested values under `mcp_servers`, before supplying its owned settings. Native provider configuration
+forwards the named host variable without writing its value to a configuration file or command
+argument. API composition imports `createJevClient`
+from the same installation and passes the resolved key in memory. Use the shared defaults described
+in [configuration](../configuration.md#jev-settings); ensure inherited model/timeout variables are
+excluded from the server environment. Omitted/disabled integration, or missing host credentials,
+disables inherited `jev` entries, creates no new JEv server and supplies no JEv guidance.
+An optional startup failure leaves the provider session usable with its other tools.
+
+Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
+[AgentRuntime](architecture.md#optional-jev-judgments), including preparation evaluators, recovery
+and experience analysis. Check composition with existing tools, rather than treating a template
+entry as evidence of working access. Disabled access and unavailable-tool continuation must also
+be demonstrated. Nexus adds no MCP client or shared HTTP service for this integration.
 
 ## Prototype browser and image setup
 
