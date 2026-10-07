@@ -21,10 +21,10 @@ import {
   developmentReportScope,
 } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  outstandingReportFeedback,
   projectOfWorkspace,
-  readReportFeedback,
-  retainSuppliedFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
+  rejectReport,
 } from '../src/task-engine/actions/report-feedback.js';
 import { createReview } from '../src/task-engine/actions/review/index.js';
 import {
@@ -726,8 +726,9 @@ describe('Review', () => {
           github,
         })(),
       ).rejects.toThrow(reason);
-      const retainedReview = (await readReportFeedback(workspaceRoot)).find(
-        (entry) => entry.record.kind === 'rejection' && entry.record.scope.role === 'reviewer',
+      const retainedReview = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) =>
+          entry.record.kind === 'validation-error' && entry.record.scope.role === 'reviewer',
       );
       expect(retainedReview?.record).toMatchObject({
         scope: reviewerScope,
@@ -756,8 +757,9 @@ describe('Review', () => {
           github,
         })(),
       ).rejects.toThrow(reason);
-      const retainedDevelopment = (await readReportFeedback(workspaceRoot)).find(
-        (entry) => entry.record.kind === 'rejection' && entry.record.scope.role === 'developer',
+      const retainedDevelopment = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) =>
+          entry.record.kind === 'validation-error' && entry.record.scope.role === 'developer',
       );
       expect(retainedDevelopment?.record).toMatchObject({
         scope: developerScope,
@@ -795,7 +797,7 @@ describe('Review', () => {
         })(),
       ).resolves.toBe('approved');
       const context = requests[0]?.context ?? '';
-      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain('Pending validation error');
       expect(context).toContain(
         kind === 'malformed' ? malformedReview : 'The rejected output itself is unavailable',
       );
@@ -804,14 +806,15 @@ describe('Review', () => {
       // never inherits it, and its validated verdict retires only the reviewer's rejection.
       expect(context).not.toContain(malformedDevelopment);
       await expect(
-        outstandingReportFeedback({ areaRoot: workspaceRoot, scope: reviewerScope }),
-      ).resolves.toEqual([]);
-      const developerOutstanding = await outstandingReportFeedback({
-        areaRoot: workspaceRoot,
-        scope: developerScope,
-      });
-      expect(developerOutstanding).toHaveLength(1);
-      expect(developerOutstanding[0]?.record).toMatchObject({
+        readPendingValidationError({ areaRoot: workspaceRoot, scope: reviewerScope }),
+      ).resolves.toBeNull();
+      // Validating the current bound development outcome as this review's input is the same
+      // owner check Develop replays: it completes that responsibility's interrupted validation
+      // too, while the original error stays readable history under its scope.
+      await expect(
+        readPendingValidationError({ areaRoot: workspaceRoot, scope: developerScope }),
+      ).resolves.toBeNull();
+      expect(retainedDevelopment?.record).toMatchObject({
         source: { path: developmentFile },
         output: kind === 'malformed' ? malformedDevelopment : null,
         reason: expect.stringContaining(reason),
@@ -953,8 +956,8 @@ describe('Review', () => {
         testCase.label,
       ).rejects.toThrow(/ENOENT/);
       // The rejected output and the Markdown the agent wrote remain attributable evidence.
-      const rejection = (await readReportFeedback(workspaceRoot)).find(
-        (entry) => entry.record.kind === 'rejection',
+      const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+        (entry) => entry.record.kind === 'validation-error',
       );
       expect(rejection?.record, testCase.label).toMatchObject({
         operation: 'review',
@@ -984,8 +987,8 @@ describe('Review', () => {
     // The verdict is not published and no review record is saved before its report is validated;
     // the rejection keeps the attempted path and records the unavailable Markdown explicitly.
     expect(calls).toEqual(['conversation:7']);
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(rejection?.record).toMatchObject({
       operation: 'review',
@@ -1014,8 +1017,8 @@ describe('Review', () => {
     // The foreign review is neither published nor reused as this task's assessment; it is
     // preserved as the reviewer's rejection evidence under this task's responsibility.
     expect(calls).toEqual([]);
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
+    const rejection = (await readValidationErrorHistory(workspaceRoot)).find(
+      (entry) => entry.record.kind === 'validation-error',
     );
     expect(rejection?.record).toMatchObject({
       scope: reviewReportScope(workspaceRoot, 'NEX-1'),
@@ -1055,17 +1058,16 @@ describe('Review', () => {
         ).rejects.toThrow();
         expect(calls).toEqual([]);
         expect(gitCalls).toEqual([]);
-        const records = await readReportFeedback(workspaceRoot);
+        const records = await readValidationErrorHistory(workspaceRoot);
         expect(records).toHaveLength(1);
         const rejection = records[0]!.record;
         expect(rejection).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: developmentReportScope(workspaceRoot, 'NEX-1'),
           operation: 'develop',
           output: rejectedOutput,
           assignedReport: { path: reportFile },
         });
-        if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
         if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
         else
           expect(await readFile(rejection.report!.path, 'utf8')).toBe(
@@ -1075,7 +1077,7 @@ describe('Review', () => {
     },
   );
 
-  it('finishes the correction its saved review owes when a repetition reuses it', async () => {
+  it('completes an interrupted save/clear when a repetition reuses the saved review', async () => {
     const { workspaceRoot, selectionFile } = await workspace({ name: 'correction-replay' });
     await writeDeliveredRound(workspaceRoot);
     // A rejected invocation leaves an outstanding rejection for the reviewer responsibility.
@@ -1092,19 +1094,14 @@ describe('Review', () => {
       })(),
     ).rejects.toThrow(/unusable output/);
     const scope = reviewReportScope(workspaceRoot, 'NEX-1');
-    const rejections = await outstandingReportFeedback({ areaRoot: workspaceRoot, scope });
-    expect(rejections).toHaveLength(1);
+    expect(
+      (await readPendingValidationError({ areaRoot: workspaceRoot, scope }))?.entries,
+    ).toHaveLength(1);
 
-    // A later invocation saved its validated review and was interrupted before recording the
-    // correction: the saved outcome names its invocation and the supplied evidence names the
-    // rejection it answered.
+    // A later invocation saved its validated review and was interrupted before clearing the
+    // pending context: its current bound saved record is the replacement the replay validates.
     const markdown = 'The retry guard is present now.';
     await saveReview(workspaceRoot, 1, markdown, { invocationId: 'rev-repair' });
-    await retainSuppliedFeedback({
-      areaRoot: workspaceRoot,
-      invocationId: 'rev-repair',
-      rejections: rejections.map((entry) => ({ path: entry.path })),
-    });
 
     events = [];
     const { github: replayHub, calls } = scriptedGitHub({
@@ -1123,15 +1120,67 @@ describe('Review', () => {
     // The published review and check already match: only the replay's reads happened, no
     // invocation and no duplicate publication.
     expect(calls).toEqual(['conversation:7', `readChecks:${headRevision}`]);
-    await expect(outstandingReportFeedback({ areaRoot: workspaceRoot, scope })).resolves.toEqual(
-      [],
-    );
-    expect(
-      (await readReportFeedback(workspaceRoot)).filter(
-        (entry) => entry.record.kind === 'correction',
-      ),
-    ).toHaveLength(1);
+    await expect(
+      readPendingValidationError({ areaRoot: workspaceRoot, scope }),
+    ).resolves.toBeNull();
+    expect(await readValidationErrorHistory(workspaceRoot)).toHaveLength(1);
   });
+
+  it.each(['moved head', 'tracked changes'])(
+    'keeps developer context when fresh Review rejects %s',
+    async (damage) => {
+      const prepared = await workspace({ name: 'fresh-review-pending' });
+      await writeDeliveredRound(prepared.workspaceRoot);
+      const scope = developmentReportScope(prepared.workspaceRoot, 'NEX-1');
+      await expect(
+        rejectReport({
+          areaRoot: prepared.workspaceRoot,
+          scope,
+          invocationId: 'rejected-dev',
+          operation: 'develop',
+          profile: 'dev-a',
+          context: 'Development round 1.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable developer error.',
+        }),
+      ).rejects.toThrow('Actionable developer error.');
+      const pending = await readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope });
+      await expect(
+        reviewAction({
+          selectionFile: prepared.selectionFile,
+          runner: runnerOf(unusedRuntime()),
+          git: scriptedGit([
+            repositoryState({
+              headRevision: damage === 'moved head' ? otherRevision : headRevision,
+              trackedChanges: damage === 'tracked changes',
+            }),
+          ]).git,
+          github: scriptedGitHub({}).github,
+        })(),
+      ).rejects.toThrow(damage === 'moved head' ? /not the delivered/ : /tracked changes/);
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope }),
+      ).resolves.toEqual(pending);
+      // Publication replay retains its saved-review rules and needs no fresh worktree assessment.
+      await saveReview(prepared.workspaceRoot, 1, 'Saved review.');
+      await expect(
+        reviewAction({
+          selectionFile: prepared.selectionFile,
+          runner: runnerOf(unusedRuntime()),
+          git: scriptedGit([]).git,
+          github: scriptedGitHub({
+            readConversation: () =>
+              ok({ comments: [], reviews: [submittedReview('Saved review.')], reviewComments: [] }),
+            readChecks: () => ok([lensCheck()]),
+          }).github,
+        })(),
+      ).resolves.toBe('approved');
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.workspaceRoot, scope }),
+      ).resolves.toBeNull();
+    },
+  );
 
   it('does not review a worktree or a turn that changed the delivered revision', async () => {
     const moved = await workspace({ name: 'moved' });
@@ -1199,8 +1248,8 @@ describe('Review', () => {
     // Both post-invocation binding failures retain the exact verdict and the Markdown the agent
     // wrote as reviewer rejection evidence for the next responsible invocation.
     for (const root of [edited.workspaceRoot, rewritten.workspaceRoot]) {
-      const rejection = (await readReportFeedback(root)).find(
-        (entry) => entry.record.kind === 'rejection',
+      const rejection = (await readValidationErrorHistory(root)).find(
+        (entry) => entry.record.kind === 'validation-error',
       );
       expect(rejection?.record).toMatchObject({
         operation: 'review',

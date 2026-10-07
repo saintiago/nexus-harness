@@ -102,6 +102,11 @@ execution error, not a new round or an exhausted policy.
 
 The action neither moves nor copies existing artifacts. Earlier directories remain available as
 history, and an existing next directory is retained.
+After validating a current-round failed development outcome and completing the policy decision,
+clear the developer's pending validation-error context, including when the policy is exhausted.
+After validating a current-round changes-requested review for the development revision and
+completing the policy decision, clear the reviewer's pending validation-error context. A historical
+review or a review for another head does not clear it. This does not grant another repair allowance.
 
 ## Restart
 

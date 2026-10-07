@@ -4,7 +4,8 @@ import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../..
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { readRequiredRecord } from '../records.js';
-import { readUsableReviewOutcome, reviewArtifact } from '../review/artifacts.js';
+import { clearPendingValidationError } from '../report-feedback.js';
+import { readUsableReviewOutcome, reviewArtifact, reviewReportScope } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { retainTerminalReason } from '../terminal-reason.js';
@@ -142,6 +143,12 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
           `${delivery.headRevision}; the approval is not transferred.`,
       );
     }
+
+    // The approved review of the delivered head is now the validated basis for completion: its
+    // saved report is readable and its revision is the delivered head, so an owner-validated saved
+    // replacement completes its pending validation-error context. A rejected verdict or a
+    // mismatched head above keeps the actionable error for the next responsible invocation.
+    await clearPendingValidationError({ areaRoot: root, scope: reviewReportScope(root, taskKey) });
 
     const startedAt = Date.now();
     const waitLimitMs = settings.completion.waitLimitSeconds * 1000;

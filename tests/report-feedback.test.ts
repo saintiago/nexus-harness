@@ -1,14 +1,15 @@
 /**
- * Focused integration tests: the shared report-feedback helpers preserve a rejected report's
- * exact bytes, violated rule and attribution, derive outstanding feedback from rejections no valid
- * correction resolves, report unusable evidence explicitly, and keep parallel roles and
- * responsibilities independently attributable. The KAN-76 restart regression replays a malformed
- * retained requirements report through recovery-style reconciliation, clear-and-reselect and the
- * next permitted author round, proving the feedback survives and is retired only by the
- * producer-validated saved replacement.
+ * Focused integration tests: the shared validation-error helpers preserve a rejected report's
+ * exact bytes, violated rule and attribution as readable history, keep one pending context per
+ * responsible work/role/response variant, report unusable evidence explicitly, clear the context
+ * only through owner validation of a saved replacement, convert a former rejection/correction
+ * ledger once, and keep parallel roles and responsibilities independently attributable. The
+ * KAN-76 restart regression replays a malformed retained requirements report through
+ * recovery-style reconciliation, clear-and-reselect and the next permitted author round, proving
+ * the pending context survives and is cleared by the producer-validated saved replacement.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -17,17 +18,15 @@ import type { AgentRoleRunner } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
-  readReportFeedback,
-  recordReportCorrection,
+  clearPendingValidationError,
+  pendingValidationErrorFile,
+  readPendingValidationError,
+  readValidationErrorHistory,
   rejectReport,
   rejectUnusableRecord,
-  reportFeedbackContextText,
   reportFeedbackRoot,
-  retainSuppliedFeedback,
-  writeReportFeedbackRecord,
-  type ReportRejection,
+  validationErrorContextText,
+  type PendingValidationError,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
 import { repositoryState, scriptedGit } from './support/git.js';
@@ -66,11 +65,11 @@ async function retainRejection(
   areaRoot: string,
   scope: ReportScope,
   settings: {
-    readonly invocationId: string;
+    readonly invocationId: string | null;
     readonly reason: string;
     readonly output: string | null;
   },
-): Promise<string> {
+): Promise<void> {
   const error = await rejectReport({
     areaRoot,
     scope,
@@ -86,25 +85,30 @@ async function retainRejection(
     (reason: Error) => reason,
   );
   expect(error?.message).toBe(settings.reason);
-  const entry = (await readReportFeedback(areaRoot)).at(-1);
-  expect(entry?.record.kind).toBe('rejection');
-  return entry!.path;
 }
 
-it('retains the exact rejected output, violated rule and attribution', async () => {
+/** The pending context of one responsibility; asserts that one exists. */
+async function pendingOf(areaRoot: string, scope: ReportScope): Promise<PendingValidationError> {
+  const pending = await readPendingValidationError({ areaRoot, scope });
+  expect(pending).not.toBeNull();
+  return pending!;
+}
+
+it('retains the exact rejected output, violated rule and attribution and makes it pending', async () => {
   const areaRoot = await temporaryDirectory();
   const scope = scopeIn(areaRoot);
   const output = '{"status":"completed",';
   const reason = 'Development agent returned unusable output: Unexpected end of JSON input.';
 
-  const record = await retainRejection(areaRoot, scope, {
+  await retainRejection(areaRoot, scope, {
     invocationId: 'invocation-1',
     reason,
     output,
   });
 
-  expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({
-    kind: 'rejection',
+  const [entry] = await readValidationErrorHistory(areaRoot);
+  expect(entry?.record).toEqual({
+    kind: 'validation-error',
     scope,
     invocationId: 'invocation-1',
     operation: 'Develop',
@@ -116,7 +120,23 @@ it('retains the exact rejected output, violated rule and attribution', async () 
     report: null,
     assignedReport: null,
   });
-  expect(path.dirname(record)).toBe(reportFeedbackRoot(areaRoot));
+  expect(entry!.path.startsWith(reportFeedbackRoot(areaRoot))).toBe(true);
+
+  const pending = await pendingOf(areaRoot, scope);
+  expect(pending.entries).toEqual([
+    {
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output,
+      reason,
+      report: null,
+      assignedReport: null,
+      evidence: { path: entry!.path },
+    },
+  ]);
 });
 
 it('copies available rejected Markdown byte-for-byte and retains the attempted path', async () => {
@@ -143,45 +163,34 @@ it('copies available rejected Markdown byte-for-byte and retains the attempted p
     }),
   ).rejects.toThrow(reason);
 
-  const [entry] = await readReportFeedback(areaRoot);
-  expect(entry?.record.kind).toBe('rejection');
-  const rejection = entry!.record as ReportRejection;
+  const [entry] = await readValidationErrorHistory(areaRoot);
+  const rejection = entry!.record;
   expect(rejection.assignedReport).toEqual({ path: assigned });
   expect(rejection.report).not.toBeNull();
   // The copy is byte-for-byte identical and lives outside the disposable artifacts directory.
   expect(await readFile(rejection.report!.path, 'utf8')).toBe(markdown);
-  expect(path.dirname(rejection.report!.path)).toBe(reportFeedbackRoot(areaRoot));
+  expect(path.dirname(rejection.report!.path)).toBe(
+    path.join(reportFeedbackRoot(areaRoot), 'history'),
+  );
 
   // The context names the readable rejected Markdown and its attempted path.
-  const text = reportFeedbackContextText(await outstandingReportFeedback({ areaRoot, scope })).join(
-    '\n',
-  );
+  const text = validationErrorContextText(await pendingOf(areaRoot, scope)).join('\n');
   expect(text).toContain(`Rejected Markdown report (exact copy): ${rejection.report!.path}`);
   expect(text).toContain(`Assigned report path as attempted: ${assigned}`);
 
   // A missing assigned report stays explicitly unavailable with its attempted path retained.
   await rm(assigned);
-  await expect(
-    rejectReport({
-      areaRoot,
-      scope,
-      invocationId: 'invocation-2',
-      operation: 'Develop',
-      profile: 'dev-a',
-      context: 'Development round 1, task NEX-7.',
-      source: null,
-      output: 'not json',
-      reason: 'The development agent returned unusable output.',
-      assignedReport: { path: assigned },
-    }),
-  ).rejects.toThrow('unusable output');
-  const records = await readReportFeedback(areaRoot);
-  const missing = records.at(-1)!.record as ReportRejection;
-  expect(missing.report).toBeNull();
-  expect(missing.assignedReport).toEqual({ path: assigned });
-  expect(
-    reportFeedbackContextText([{ record: missing, path: records.at(-1)!.path }]).join('\n'),
-  ).toContain('The rejected Markdown report itself is unavailable');
+  await retainRejection(areaRoot, scope, {
+    invocationId: 'invocation-2',
+    reason: 'The development agent returned unusable output.',
+    output: 'not json',
+  });
+  const missing = (await readValidationErrorHistory(areaRoot)).at(-1)!;
+  expect(missing.record.report).toBeNull();
+  expect(missing.record.assignedReport).toBeNull();
+  expect(validationErrorContextText(await pendingOf(areaRoot, scope)).join('\n')).toContain(
+    'The rejected Markdown report itself is unavailable',
+  );
 });
 
 it('reports the original rejection when its evidence cannot be persisted', async () => {
@@ -203,7 +212,7 @@ it('reports the original rejection when its evidence cannot be persisted', async
     (reason: Error) => reason,
   );
   expect(error?.message).toContain('The specific violated rule.');
-  expect(error?.message).toContain('The rejection evidence could not be saved:');
+  expect(error?.message).toContain('could not be saved');
 });
 
 it('preserves an unusable retained record and states when its bytes are unavailable', async () => {
@@ -228,9 +237,9 @@ it('preserves an unusable retained record and states when its bytes are unavaila
       error: readError,
     }),
   ).rejects.toThrow('does not match its declared content type');
-  const [readable] = await readReportFeedback(areaRoot);
+  const [readable] = await readValidationErrorHistory(areaRoot);
   expect(readable?.record).toMatchObject({
-    kind: 'rejection',
+    kind: 'validation-error',
     operation: 'review',
     source: { path: retained },
     output: '{"verdict":"approve"}',
@@ -250,44 +259,17 @@ it('preserves an unusable retained record and states when its bytes are unavaila
       error: new Error(`Record at "${missing}" is not valid JSON: Unexpected token.`),
     }),
   ).rejects.toThrow('The record has no readable bytes');
-  const records = await readReportFeedback(areaRoot);
+  const records = await readValidationErrorHistory(areaRoot);
   const unavailable = records.find((entry) => entry.path !== readable?.path);
   expect(unavailable?.record).toMatchObject({
-    kind: 'rejection',
+    kind: 'validation-error',
     source: { path: missing },
     output: null,
     reason: expect.stringContaining('The record has no readable bytes.'),
   });
 });
 
-it('reads a former rejection without Markdown references as retained evidence', async () => {
-  const areaRoot = await temporaryDirectory();
-  const scope = scopeIn(areaRoot);
-  // The shape written before report separation carried no report or assignedReport fields; the
-  // bytes stay untouched and both references read as explicitly unavailable.
-  const former = {
-    kind: 'rejection',
-    scope,
-    invocationId: 'invocation-1',
-    operation: 'Develop',
-    profile: 'dev-a',
-    context: 'Development round 1, task NEX-7.',
-    source: null,
-    output: '{"status":"completed",',
-    reason: 'Development agent returned unusable output: Unexpected end of JSON input.',
-  };
-  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
-  const file = path.join(reportFeedbackRoot(areaRoot), '000000001-legacy.json');
-  await writeFile(file, `${JSON.stringify(former, null, 2)}\n`, 'utf8');
-
-  const [readable] = await readReportFeedback(areaRoot);
-  expect(readable?.record).toEqual({ ...former, report: null, assignedReport: null });
-  const outstanding = await outstandingReportFeedback({ areaRoot, scope });
-  expect(outstanding).toHaveLength(1);
-  expect(await readFile(file, 'utf8')).toBe(`${JSON.stringify(former, null, 2)}\n`);
-});
-
-it('recovers the report reference of a damaged saved outcome for rejection evidence', async () => {
+it('recovers the report reference of a damaged saved outcome for validation-error evidence', async () => {
   const areaRoot = await temporaryDirectory();
   const scope = scopeIn(areaRoot);
   const reportFile = path.join(areaRoot, 'artifacts', '1', 'reports', 'inv-1', 'developer.md');
@@ -330,159 +312,83 @@ it('recovers the report reference of a damaged saved outcome for rejection evide
     }),
   ).rejects.toThrow('invocationId: Required');
 
-  const [entry] = await readReportFeedback(areaRoot);
+  const [entry] = await readValidationErrorHistory(areaRoot);
   expect(entry?.record).toMatchObject({
-    kind: 'rejection',
+    kind: 'validation-error',
     assignedReport: { path: reportFile },
     output: await readFile(record, 'utf8'),
     reason: expect.stringContaining('invocationId: Required'),
   });
-  const rejection = entry?.record as ReportRejection;
+  const rejection = entry!.record;
   expect(rejection.report).not.toBeNull();
   expect(await readFile(rejection.report!.path, 'utf8')).toBe('Implemented the retry guard.\n');
 });
 
-it('finishes only the supplied rejections a saved replacement answers', async () => {
+it('updates the pending reason on a later invalid attempt while earlier evidence stays readable', async () => {
   const areaRoot = await temporaryDirectory();
   const scope = scopeIn(areaRoot);
-  const artifact = path.join(areaRoot, 'artifacts', '2', 'development.json');
-  await mkdir(path.dirname(artifact), { recursive: true });
-  await writeFile(artifact, '{"status":"completed"}', 'utf8');
   await retainRejection(areaRoot, scope, {
     invocationId: 'invocation-1',
     reason: 'First violated rule.',
     output: 'first rejected bytes',
   });
-  await retainRejection(areaRoot, scope, {
-    invocationId: 'invocation-2',
-    reason: 'Second violated rule.',
-    output: 'second rejected bytes',
-  });
-  const retained = await readReportFeedback(areaRoot);
-  const first = retained.find(
-    (entry) => entry.record.kind === 'rejection' && entry.record.reason === 'First violated rule.',
-  )!.path;
-  const second = retained.find(
-    (entry) => entry.record.kind === 'rejection' && entry.record.reason === 'Second violated rule.',
-  )!.path;
-  // The invocation was supplied only the first rejection; the second was created later.
-  await retainSuppliedFeedback({
-    areaRoot,
-    invocationId: 'invocation-9',
-    rejections: [{ path: first }],
-  });
-
-  await expect(
-    finishSuppliedCorrection({
-      areaRoot,
-      scope,
-      invocationId: 'invocation-9',
-      artifact: { path: artifact },
-      content: { status: 'completed' },
-    }),
-  ).resolves.toBe(true);
-  const outstanding = await outstandingReportFeedback({ areaRoot, scope });
-  expect(outstanding.map((entry) => entry.path)).toEqual([second]);
-  // Replaying the same saved replacement does not name a rejection created later or record a
-  // duplicate correction.
-  await expect(
-    finishSuppliedCorrection({
-      areaRoot,
-      scope,
-      invocationId: 'invocation-9',
-      artifact: { path: artifact },
-      content: { status: 'completed' },
-    }),
-  ).resolves.toBe(false);
-  expect(
-    (await readReportFeedback(areaRoot)).filter((entry) => entry.record.kind === 'correction'),
-  ).toHaveLength(1);
-});
-
-it('retires only the rejections a valid matching correction names', async () => {
-  const areaRoot = await temporaryDirectory();
-  const scope = scopeIn(areaRoot);
-  const reporter = scopeIn(areaRoot, { role: 'reviewer', reportKind: 'review' });
-  const artifact = path.join(areaRoot, 'artifacts', '1', 'development.json');
-  await mkdir(path.dirname(artifact), { recursive: true });
-  await writeFile(artifact, '{"status":"completed"}');
-
-  await retainRejection(areaRoot, scope, {
-    invocationId: 'invocation-1',
-    reason: 'First violated rule.',
-    output: 'first rejected bytes',
-  });
-  const first = (await readReportFeedback(areaRoot))[0]!.path;
+  const first = (await readValidationErrorHistory(areaRoot))[0]!.path;
   await retainRejection(areaRoot, scope, {
     invocationId: 'invocation-2',
     reason: 'Second violated rule.',
     output: 'second rejected bytes',
   });
 
-  // Repairing the retained artifact is not a resolution: both rejections stay outstanding.
-  await writeFile(artifact, '{"status":"completed","repair":true}');
-  expect(await outstandingReportFeedback({ areaRoot, scope })).toHaveLength(2);
-
-  // A correction of another responsibility cannot retire this one.
-  await writeReportFeedbackRecord(areaRoot, {
-    kind: 'correction',
-    scope: reporter,
-    rejections: [{ path: first }],
-    artifact: { path: artifact },
-    artifactIdentity: 'foreign-identity',
-    invocationId: 'invocation-3',
+  const pending = await pendingOf(areaRoot, scope);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]).toMatchObject({
+    invocationId: 'invocation-2',
+    reason: 'Second violated rule.',
+    output: 'second rejected bytes',
   });
-  expect(await outstandingReportFeedback({ areaRoot, scope })).toHaveLength(2);
 
-  // A valid matching correction naming the exact record retires that rejection only.
-  await recordReportCorrection({
-    areaRoot,
-    scope,
-    rejections: [{ path: first }],
-    artifact: { path: artifact },
-    content: { status: 'completed', repair: true },
-    invocationId: 'invocation-4',
-  });
-  const outstanding = await outstandingReportFeedback({ areaRoot, scope });
-  expect(outstanding).toHaveLength(1);
-  expect(outstanding[0]?.path).not.toBe(first);
-
-  // The rejection history stays attributable; a correction cannot name foreign or missing records.
-  expect(
-    (await readReportFeedback(areaRoot)).filter((entry) => entry.record.kind === 'rejection'),
-  ).toHaveLength(2);
-  await expect(
-    recordReportCorrection({
-      areaRoot,
-      scope: reporter,
-      rejections: [{ path: outstanding[0]!.path }],
-      artifact: { path: artifact },
-      content: { status: 'completed' },
-      invocationId: 'invocation-5',
-    }),
-  ).rejects.toThrow('belongs to another report responsibility');
-  await expect(
-    recordReportCorrection({
-      areaRoot,
-      scope,
-      rejections: [{ path: path.join(reportFeedbackRoot(areaRoot), 'missing.json') }],
-      artifact: { path: artifact },
-      content: { status: 'completed' },
-      invocationId: 'invocation-5',
-    }),
-  ).rejects.toThrow('names no retained rejection record');
+  const history = await readValidationErrorHistory(areaRoot);
+  expect(history.map((entry) => entry.record.reason)).toEqual([
+    'First violated rule.',
+    'Second violated rule.',
+  ]);
+  expect(history[0]!.path).toBe(first);
 });
 
-it('treats an unusable feedback record as an explicit error, never an empty feedback set', async () => {
+it('clears pending context only through owner validation, keeping history readable', async () => {
   const areaRoot = await temporaryDirectory();
   const scope = scopeIn(areaRoot);
-  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
-  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'broken.json'), '{"kind":"rejection"}');
-  await expect(outstandingReportFeedback({ areaRoot, scope })).rejects.toThrow(
+  await retainRejection(areaRoot, scope, {
+    invocationId: 'invocation-1',
+    reason: 'The report omitted its required basis.',
+    output: 'rejected bytes',
+  });
+  expect(await pendingOf(areaRoot, scope)).toBeDefined();
+  const file = pendingValidationErrorFile(areaRoot, scope);
+  expect(await stat(file)).toBeDefined();
+
+  // The owner validated and saved a replacement: the pending context is cleared.
+  await expect(clearPendingValidationError({ areaRoot, scope })).resolves.toBe(true);
+  await expect(readPendingValidationError({ areaRoot, scope })).resolves.toBeNull();
+  await expect(clearPendingValidationError({ areaRoot, scope })).resolves.toBe(false);
+  await expect(stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  // The readable history is never removed.
+  expect(await readValidationErrorHistory(areaRoot)).toHaveLength(1);
+});
+
+it('treats an unreadable pending context as an explicit error, never an empty context', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const file = pendingValidationErrorFile(areaRoot, scope);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, '{"kind":"pending-validation-error"}');
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
     'does not match its declared content type',
   );
-  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'broken.json'), 'not json');
-  await expect(outstandingReportFeedback({ areaRoot, scope })).rejects.toThrow('is not valid JSON');
+  await writeFile(file, 'not json');
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
+    'is not valid JSON',
+  );
 });
 
 it('hands the reason, exact bytes and attribution back as rejected historical evidence', async () => {
@@ -493,8 +399,7 @@ it('hands the reason, exact bytes and attribution back as rejected historical ev
     reason: 'The report omitted its required basis.',
     output: 'line one\nline two',
   });
-  const entries = await outstandingReportFeedback({ areaRoot, scope });
-  const text = reportFeedbackContextText(entries).join('\n');
+  const text = validationErrorContextText(await pendingOf(areaRoot, scope)).join('\n');
   expect(text).toContain('rejected historical evidence');
   expect(text).toContain('Violated rule: The report omitted its required basis.');
   expect(text).toContain('invocation invocation-1');
@@ -502,7 +407,7 @@ it('hands the reason, exact bytes and attribution back as rejected historical ev
   expect(text).toContain(
     'the current input, response rules and finding obligations remain authoritative',
   );
-  expect(reportFeedbackContextText([])).toEqual([]);
+  expect(validationErrorContextText(null)).toEqual([]);
 });
 
 it('keeps parallel roles, work items and report kinds independently attributable', async () => {
@@ -523,14 +428,15 @@ it('keeps parallel roles, work items and report kinds independently attributable
     output: 'evaluator bytes',
   });
 
-  const authorFeedback = await outstandingReportFeedback({ areaRoot, scope: author });
-  const evaluatorFeedback = await outstandingReportFeedback({ areaRoot, scope: evaluator });
-  expect(authorFeedback).toHaveLength(1);
-  expect(authorFeedback[0]?.record.invocationId).toBe('invocation-author');
-  expect(evaluatorFeedback).toHaveLength(1);
-  expect(evaluatorFeedback[0]?.record.invocationId).toBe('invocation-evaluator');
+  const authorPending = await pendingOf(areaRoot, author);
+  const evaluatorPending = await pendingOf(areaRoot, evaluator);
+  expect(authorPending.entries[0]?.invocationId).toBe('invocation-author');
+  expect(evaluatorPending.entries[0]?.invocationId).toBe('invocation-evaluator');
   // The author never receives the evaluator's rejection or bytes.
-  expect(reportFeedbackContextText(authorFeedback).join('\n')).not.toContain('evaluator bytes');
+  expect(validationErrorContextText(authorPending).join('\n')).not.toContain('evaluator bytes');
+  expect(pendingValidationErrorFile(areaRoot, author)).not.toBe(
+    pendingValidationErrorFile(areaRoot, evaluator),
+  );
 
   for (const foreign of [
     scopeIn(areaRoot, { workId: 'NEX-8' }),
@@ -538,14 +444,14 @@ it('keeps parallel roles, work items and report kinds independently attributable
     scopeIn(areaRoot, { area: path.join(areaRoot, 'other-stage') }),
     scopeIn(areaRoot, { reportKind: 'other-contract' }),
   ]) {
-    await expect(outstandingReportFeedback({ areaRoot, scope: foreign })).resolves.toEqual([]);
+    await expect(readPendingValidationError({ areaRoot, scope: foreign })).resolves.toBeNull();
   }
 });
 
 it('keeps delivery feedback outside the disposable state and artifacts directories', async () => {
   const issueRoot = await temporaryDirectory();
   const scope = scopeIn(issueRoot, { role: 'reviewer', reportKind: 'review' });
-  const record = await retainRejection(issueRoot, scope, {
+  await retainRejection(issueRoot, scope, {
     invocationId: 'invocation-1',
     reason: 'The review report is unusable.',
     output: 'review bytes',
@@ -555,8 +461,7 @@ it('keeps delivery feedback outside the disposable state and artifacts directori
   await mkdir(path.join(issueRoot, 'artifacts', '1'), { recursive: true });
   await rm(path.join(issueRoot, 'state'), { recursive: true, force: true });
   await rm(path.join(issueRoot, 'artifacts'), { recursive: true, force: true });
-  await expect(outstandingReportFeedback({ areaRoot: issueRoot, scope })).resolves.toHaveLength(1);
-  expect(record.startsWith(reportFeedbackRoot(issueRoot))).toBe(true);
+  await expect(pendingOf(issueRoot, scope)).toBeDefined();
 });
 
 const stage = 'requirements' as const;
@@ -666,7 +571,118 @@ function authorRunner(response: unknown, contexts: string[]): AgentRoleRunner {
   };
 }
 
-it('resumes KAN-76-style retained work with the correction feedback supplied to the author', async () => {
+it('converts a former rejection/correction ledger into pending context and readable history', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const other = scopeIn(areaRoot, { role: 'reviewer', reportKind: 'review' });
+  const resolvedFile = path.join(reportFeedbackRoot(areaRoot), '000000001-resolved.json');
+  const unresolvedFile = path.join(reportFeedbackRoot(areaRoot), '000000002-unresolved.json');
+  const foreignFile = path.join(reportFeedbackRoot(areaRoot), '000000003-foreign.json');
+  const correctionFile = path.join(reportFeedbackRoot(areaRoot), '000000004-correction.json');
+  const suppliedFile = path.join(reportFeedbackRoot(areaRoot), 'supplied', 'invocation-1.json');
+  const rejection = {
+    kind: 'rejection',
+    scope,
+    invocationId: 'invocation-1',
+    operation: 'Develop',
+    profile: 'dev-a',
+    context: 'Development round 1, task NEX-7.',
+    source: null,
+    output: 'resolved bytes',
+    reason: 'The first rule was violated.',
+    report: null,
+    assignedReport: null,
+  };
+  await mkdir(path.dirname(suppliedFile), { recursive: true });
+  await writeFile(resolvedFile, `${JSON.stringify(rejection, null, 2)}\n`);
+  await writeFile(
+    unresolvedFile,
+    `${JSON.stringify(
+      {
+        ...rejection,
+        invocationId: null,
+        output: 'unresolved bytes',
+        reason: 'The second rule was violated.',
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    foreignFile,
+    `${JSON.stringify({ ...rejection, scope: other, reason: 'A foreign rule was violated.' })}\n`,
+  );
+  // A former rejection with no Markdown references stays readable history as well.
+  await writeFile(
+    correctionFile,
+    `${JSON.stringify({
+      kind: 'correction',
+      scope,
+      rejections: [{ path: resolvedFile }],
+      artifact: { path: path.join(areaRoot, 'artifacts', '1', 'development.json') },
+      artifactIdentity: 'former-identity',
+      invocationId: 'invocation-1',
+    })}\n`,
+  );
+  await writeFile(
+    suppliedFile,
+    `${JSON.stringify({ invocationId: 'invocation-1', rejections: [] })}\n`,
+  );
+
+  const pending = await pendingOf(areaRoot, scope);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]).toMatchObject({
+    invocationId: null,
+    reason: 'The second rule was violated.',
+    output: 'unresolved bytes',
+    evidence: {
+      path: path.join(reportFeedbackRoot(areaRoot), 'history', '000000002-unresolved.json'),
+    },
+  });
+  // The foreign responsibility keeps its own converted context.
+  expect((await pendingOf(areaRoot, other)).entries[0]?.reason).toBe(
+    'A foreign rule was violated.',
+  );
+  // The resolved diagnostic is not reopened and stays readable history with the ledger bytes.
+  const history = await readValidationErrorHistory(areaRoot);
+  expect(history.map((entry) => entry.record.reason).sort()).toEqual([
+    'A foreign rule was violated.',
+    'The first rule was violated.',
+    'The second rule was violated.',
+  ]);
+  const converted = await readFile(
+    path.join(reportFeedbackRoot(areaRoot), 'history', '000000001-resolved.json'),
+    'utf8',
+  );
+  expect(converted).toBe(`${JSON.stringify(rejection, null, 2)}\n`);
+  // The former active ledger and supplied-feedback state moved out of the active location, so a
+  // later clear cannot reimport them.
+  for (const file of [resolvedFile, unresolvedFile, foreignFile, correctionFile, suppliedFile]) {
+    await expect(stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+  // A retried conversion over the converted area changes nothing.
+  await clearPendingValidationError({ areaRoot, scope });
+  await expect(
+    readPendingValidationError({ areaRoot, scope: { ...scope, workId: 'NEX-7' } }),
+  ).resolves.toBeNull();
+  await expect(readValidationErrorHistory(areaRoot)).resolves.toHaveLength(3);
+});
+
+it('treats an unusable former ledger record as an explicit error, never an empty context', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'broken.json'), '{"kind":"rejection"}');
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
+    'does not match its declared content type',
+  );
+  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'broken.json'), 'not json');
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
+    'is not valid JSON',
+  );
+});
+
+it('resumes KAN-76-style retained work with the pending context supplied to the author', async () => {
   const { selectionFile, root, worktree } = await retainedKan76Area();
   const scope: ReportScope = {
     project: 'HARN',
@@ -678,30 +694,38 @@ it('resumes KAN-76-style retained work with the correction feedback supplied to 
   const malformedFile = path.join(root, 'artifacts', '2', 'author.json');
   const malformedBytes = await readFile(malformedFile, 'utf8');
 
-  // Recovery's reconciliation: before repairing the retained record, preserve its readable bytes,
-  // the violated rule and the attribution as an unattributed rejection of the author's report.
-  await writeReportFeedbackRecord(root, {
-    kind: 'rejection',
-    scope,
-    invocationId: null,
-    operation: 'stage-author',
-    profile: null,
-    context: 'Recovered KAN-76 retained requirements round 2, reconciled before the next round.',
-    source: { path: malformedFile },
-    output: malformedBytes,
-    reason:
-      `Record at "${malformedFile}" does not match its declared content type: ` +
-      'stage: Invalid input; revision: Invalid input.',
-    report: null,
-    assignedReport: null,
-  });
-  // The explicit repair returns the producer-owned metadata, without erasing the rejection history.
+  // The former ledger retained the malformed record's bytes, the violated rule and the
+  // attribution as an unattributed rejection of the author's report before this upgrade.
+  await mkdir(reportFeedbackRoot(root), { recursive: true });
+  await writeFile(
+    path.join(reportFeedbackRoot(root), '000000001-kan76.json'),
+    `${JSON.stringify(
+      {
+        kind: 'rejection',
+        scope,
+        invocationId: null,
+        operation: 'stage-author',
+        profile: null,
+        context:
+          'Recovered KAN-76 retained requirements round 2, reconciled before the next round.',
+        source: { path: malformedFile },
+        output: malformedBytes,
+        reason:
+          `Record at "${malformedFile}" does not match its declared content type: ` +
+          'stage: Invalid input; revision: Invalid input.',
+        report: null,
+        assignedReport: null,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  // The explicit repair returns the producer-owned metadata; the diagnostic stays actionable.
   await writeFile(
     malformedFile,
     JSON.stringify({ stage, revision: 2, ...capturedMalformedAuthor }),
   );
-  // Historical repair alone does not resolve the feedback.
-  expect(await outstandingReportFeedback({ areaRoot: root, scope })).toHaveLength(1);
+  await expect(pendingOf(root, scope)).resolves.toBeDefined();
 
   // Recovery cleared the selection; selection reselects the retained work before the next round.
   await rm(selectionFile);
@@ -736,7 +760,7 @@ it('resumes KAN-76-style retained work with the correction feedback supplied to 
   expect(context).toContain('The retained requirements already satisfy the stage.');
   expect(context).toContain('rejected historical evidence');
 
-  // The producer-validated saved replacement records the correction; the history stays readable.
+  // The producer-validated saved replacement clears the pending context; the history stays.
   expect(
     JSON.parse(await readFile(path.join(root, 'artifacts', '3', 'author.json'), 'utf8')),
   ).toMatchObject({
@@ -744,12 +768,10 @@ it('resumes KAN-76-style retained work with the correction feedback supplied to 
     revision: 3,
     outcome: 'skip-proposed',
   });
-  await expect(outstandingReportFeedback({ areaRoot: root, scope })).resolves.toEqual([]);
-  const records = await readReportFeedback(root);
-  expect(records.filter((entry) => entry.record.kind === 'rejection')).toHaveLength(1);
-  expect(records.filter((entry) => entry.record.kind === 'correction')).toHaveLength(1);
+  await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+  await expect(readValidationErrorHistory(root)).resolves.toHaveLength(1);
 
-  // A later rejection remains outstanding on its own while the corrected history stays retired.
+  // A later rejection is its own pending context while the earlier history stays readable.
   const malformed: string[] = [];
   const later = createStageAuthor({
     selectionFile,
@@ -764,10 +786,11 @@ it('resumes KAN-76-style retained work with the correction feedback supplied to 
     },
   });
   await expect(later({ task: 'propose' })).rejects.toThrow('returned unusable output');
-  const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-  expect(outstanding).toHaveLength(1);
-  expect(outstanding[0]?.record.reason).toContain('returned unusable output');
-  expect(outstanding[0]?.record.output).toBe('{"outcome":"skip-proposed"');
+  const pending = await pendingOf(root, scope);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]?.reason).toContain('returned unusable output');
+  expect(pending.entries[0]?.output).toBe('{"outcome":"skip-proposed"');
+  await expect(readValidationErrorHistory(root)).resolves.toHaveLength(2);
   expect(worktree).toContain('worktree');
 });
 
@@ -810,17 +833,16 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
   await expect(author({ task: 'propose' })).rejects.toThrow(
     'does not match its declared content type',
   );
-  const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
-  expect(outstanding).toHaveLength(1);
-  expect(outstanding[0]?.record).toMatchObject({
-    scope,
+  const pending = await pendingOf(root, scope);
+  expect(pending.scope).toEqual(scope);
+  expect(pending.entries[0]).toMatchObject({
     operation: 'stage-evaluator',
     source: { path: evaluationFile },
     output: '{"assessedRevision":2,"verdict":"accepted"}',
   });
 
   // The evaluator's next invocation fails on the same evidence. Neither consumer invocation
-  // produced this unattributed historical record.
+  // produced this unattributed historical record; the latest diagnosis is the pending context.
   await writeFile(
     path.join(root, 'artifacts', '3', 'author.json'),
     JSON.stringify({ stage, revision: 3, ...capturedMalformedAuthor }),
@@ -833,7 +855,198 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
     runner: authorRunner({}, []),
   });
   await expect(evaluator()).rejects.toThrow('does not match its declared content type');
-  const retained = await outstandingReportFeedback({ areaRoot: root, scope });
-  expect(retained).toHaveLength(2);
-  expect(retained.map((entry) => entry.record.invocationId)).toEqual([null, null]);
+  const retained = await pendingOf(root, scope);
+  expect(retained.entries).toHaveLength(1);
+  expect(retained.entries[0]?.invocationId).toBeNull();
+  await expect(readValidationErrorHistory(root)).resolves.toHaveLength(2);
 });
+
+it('keeps a rejection actionable when another responsibility’s correction references it', async () => {
+  const areaRoot = await temporaryDirectory();
+  const developer = scopeIn(areaRoot);
+  const reviewer = scopeIn(areaRoot, { role: 'reviewer', reportKind: 'review' });
+  const rejectionFile = path.join(reportFeedbackRoot(areaRoot), '000000001-rejection.json');
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(
+    rejectionFile,
+    `${JSON.stringify({
+      kind: 'rejection',
+      scope: developer,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'rejected bytes',
+      reason: 'The developer rule was violated.',
+    })}\n`,
+  );
+  // The correction belongs to the reviewer's responsibility; a former correction resolved only
+  // the rejections of its own scope, so the developer's diagnostic stays actionable.
+  await writeFile(
+    path.join(reportFeedbackRoot(areaRoot), '000000002-correction.json'),
+    `${JSON.stringify({
+      kind: 'correction',
+      scope: reviewer,
+      rejections: [{ path: rejectionFile }],
+      artifact: { path: path.join(areaRoot, 'artifacts', '1', 'review.json') },
+      artifactIdentity: 'former-identity',
+      invocationId: 'invocation-2',
+    })}\n`,
+  );
+
+  const pending = await pendingOf(areaRoot, developer);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]).toMatchObject({
+    output: 'rejected bytes',
+    reason: 'The developer rule was violated.',
+  });
+  await expect(readPendingValidationError({ areaRoot, scope: reviewer })).resolves.toBeNull();
+  expect((await readValidationErrorHistory(areaRoot)).map((entry) => entry.record.reason)).toEqual([
+    'The developer rule was violated.',
+  ]);
+});
+
+it('retires resolved rejections before their corrections so an interruption cannot reopen them', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const correctionFile = path.join(reportFeedbackRoot(areaRoot), 'a-correction.json');
+  const rejectionFile = path.join(reportFeedbackRoot(areaRoot), 'z-rejection.json');
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(
+    rejectionFile,
+    `${JSON.stringify({
+      kind: 'rejection',
+      scope,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'resolved bytes',
+      reason: 'The resolved rule was violated.',
+    })}\n`,
+  );
+  await writeFile(
+    correctionFile,
+    `${JSON.stringify({
+      kind: 'correction',
+      scope,
+      rejections: [{ path: rejectionFile }],
+      artifact: { path: path.join(areaRoot, 'artifacts', '1', 'development.json') },
+      artifactIdentity: 'former-identity',
+      invocationId: 'invocation-1',
+    })}\n`,
+  );
+
+  // The rejection's retirement is interrupted: its history target cannot be created while the
+  // resolution evidence is still in the active location, so a retry still reads both records.
+  await mkdir(path.join(reportFeedbackRoot(areaRoot), 'history', 'z-rejection.json'), {
+    recursive: true,
+  });
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
+    /could not be moved into readable history/,
+  );
+  await expect(stat(rejectionFile)).resolves.toBeDefined();
+  await expect(stat(correctionFile)).resolves.toBeDefined();
+
+  // With the interruption cleared, the retirement resolves the diagnostic instead of reopening
+  // it: the rejection is retired first, while the correction that resolves it is still active.
+  await rm(path.join(reportFeedbackRoot(areaRoot), 'history', 'z-rejection.json'), {
+    recursive: true,
+    force: true,
+  });
+  await expect(readPendingValidationError({ areaRoot, scope })).resolves.toBeNull();
+  const history = await readValidationErrorHistory(areaRoot);
+  expect(history).toHaveLength(1);
+  expect(history[0]?.record.reason).toBe('The resolved rule was violated.');
+  await expect(
+    stat(path.join(reportFeedbackRoot(areaRoot), 'history', 'legacy', 'a-correction.json')),
+  ).resolves.toBeDefined();
+});
+
+it.each(['clear', 'reject again'])(
+  'recovers interrupted readable history before %s',
+  async (continuation) => {
+    const areaRoot = await temporaryDirectory();
+    const scope = scopeIn(areaRoot);
+    // The readable history area is obstructed: the pending context lands, its record cannot.
+    await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+    await writeFile(path.join(reportFeedbackRoot(areaRoot), 'history'), 'not a directory');
+    const failure = await rejectReport({
+      areaRoot,
+      scope,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    }).then(
+      () => null,
+      (error: Error) => error,
+    );
+    expect(failure?.message).toContain('The rule was violated.');
+    expect(failure?.message).toContain('its pending context is retained');
+
+    // The interrupted retention still reaches the next responsible invocation with the whole
+    // diagnosis and the record path it promises.
+    const pending = await pendingOf(areaRoot, scope);
+    expect(pending.entries).toHaveLength(1);
+    expect(pending.entries[0]).toMatchObject({
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    });
+    expect(path.dirname(pending.entries[0]!.evidence.path)).toBe(
+      path.join(reportFeedbackRoot(areaRoot), 'history'),
+    );
+
+    if (continuation === 'reject again') {
+      // An obstruction that still prevents history retention cannot overwrite the only durable
+      // copy of the first diagnosis. The current error also reports that storage failure.
+      await expect(
+        rejectReport({
+          areaRoot,
+          scope,
+          invocationId: 'blocked-attempt',
+          operation: 'Develop',
+          profile: 'dev-a',
+          context: 'Second attempt while history is obstructed.',
+          source: null,
+          output: 'blocked bytes',
+          reason: 'Blocked replacement error.',
+        }),
+      ).rejects.toThrow(/Blocked replacement error.*could not be saved/);
+      await expect(readPendingValidationError({ areaRoot, scope })).resolves.toEqual(pending);
+    }
+
+    // Once the obstruction clears, the owner-validated clear completes the readable record the
+    // context promised instead of discarding it.
+    await rm(path.join(reportFeedbackRoot(areaRoot), 'history'), { force: true });
+    if (continuation === 'reject again') {
+      await expect(
+        rejectReport({
+          areaRoot,
+          scope,
+          invocationId: 'invocation-2',
+          operation: 'Develop',
+          profile: 'dev-a',
+          context: 'Development round 1, second attempt.',
+          source: null,
+          output: 'second rejected bytes',
+          reason: 'Another rule was violated.',
+        }),
+      ).rejects.toThrow('Another rule was violated.');
+      expect((await pendingOf(areaRoot, scope)).entries[0]?.invocationId).toBe('invocation-2');
+    }
+    await clearPendingValidationError({ areaRoot, scope });
+    const history = await readValidationErrorHistory(areaRoot);
+    expect(history).toHaveLength(continuation === 'clear' ? 1 : 2);
+    expect(history[0]?.path).toBe(pending.entries[0]!.evidence.path);
+    expect(history[0]?.record).toMatchObject({
+      output: 'rejected bytes',
+      reason: 'The rule was violated.',
+    });
+  },
+);

@@ -31,12 +31,11 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
+  clearPendingValidationError,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
-  retainSuppliedFeedback,
-  reportFeedbackContextText,
+  validationErrorContextText,
   type ReportScope,
 } from '../report-feedback.js';
 import {
@@ -306,7 +305,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
         profile: null,
       }),
     };
-    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
     let existing: RetainedDevelopmentOutput | null;
     try {
       existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
@@ -391,16 +390,18 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       existing.headRevision === before.headRevision &&
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
-      if (isBoundDevelopmentOutput(existing)) {
-        await requireUsableDevelopmentOutcome({
-          areaRoot: root,
-          taskKey: selection.taskKey,
-          file: artifactFile,
-          outcome: existing,
-          invocationId,
-          context: attribution,
-        });
-      }
+      await requireUsableDevelopmentOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: artifactFile,
+        outcome: existing,
+        invocationId,
+        context: attribution,
+      });
+      // The owner validated the current round's saved outcome — current bound or retained
+      // combined — as the replacement this turn reuses; finish an interrupted save/clear replay
+      // without another invocation.
+      await clearPendingValidationError({ areaRoot: root, scope });
       report(existing.status);
       return existing.status;
     }
@@ -416,21 +417,11 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       ...(latestReview === null
         ? ['No previous review report is retained for this round.']
         : [await latestReviewSection(latestReview)]),
-      ...reportFeedbackContextText(outstanding),
+      ...validationErrorContextText(pending),
       historySection(root, histories),
       ...(evidence === null ? [] : [evidence]),
       responseInstructions(assignedReport.path, artifactFile),
     ].join('\n\n');
-
-    if (outstanding.length > 0) {
-      // Retain which rejections this invocation answers before it runs, so an interrupted
-      // correction write can finish on replay without retiring a rejection created later.
-      await retainSuppliedFeedback({
-        areaRoot: root,
-        invocationId,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-      });
-    }
 
     const result: AgentResult = await settings.runner.run({
       operation: 'Develop',
@@ -539,15 +530,9 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       readinessFailure,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
-    // The owner validated and saved the usable replacement; recording its complete identity
-    // retires exactly the rejections this invocation was supplied, preserving their history.
-    await finishSuppliedCorrection({
-      areaRoot: root,
-      scope,
-      invocationId,
-      artifact: { path: artifactFile },
-      content: output,
-    });
+    // The owner validated and saved the usable replacement, whatever its business status; its
+    // pending validation-error context is cleared while the readable history stays.
+    await clearPendingValidationError({ areaRoot: root, scope });
     report(status);
     return status;
   };

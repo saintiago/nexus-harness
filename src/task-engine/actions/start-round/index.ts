@@ -12,7 +12,7 @@ import {
   requireUsableDevelopmentOutcome,
   type RetainedDevelopmentOutput,
 } from '../develop/artifacts.js';
-import { rejectUnusableRecord } from '../report-feedback.js';
+import { clearPendingValidationError, rejectUnusableRecord } from '../report-feedback.js';
 import {
   readUsableReviewOutcome,
   requireUsableReviewOutcome,
@@ -347,6 +347,22 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
       currentRound: current.number,
       reviewTrigger,
     });
+    if (development.status === 'failed') {
+      // A failed outcome is the current repair trigger; the completed policy decision consumes
+      // this validated replacement without rerunning Develop in the previous round.
+      await clearPendingValidationError({
+        areaRoot: root,
+        scope: developmentReportScope(root, settings.taskKey),
+      });
+    }
+    if (reviewTrigger) {
+      // The current task's readable changes-requested review has passed the same-revision
+      // decision checks. Historical or other-head reviews never complete this responsibility.
+      await clearPendingValidationError({
+        areaRoot: root,
+        scope: reviewReportScope(root, settings.taskKey),
+      });
+    }
     if (plan.kind === 'exhausted') {
       // The reason is retained before it is stated, so the terminal handoff reconstructs it after a
       // restart of the workflow binding.

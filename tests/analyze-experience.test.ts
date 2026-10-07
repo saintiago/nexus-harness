@@ -35,8 +35,8 @@ import {
   type ExperienceAnalystRequest,
 } from '../src/task-engine/actions/analyze-experience/index.js';
 import {
-  outstandingReportFeedback,
-  readReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import { controlledMemoryService, type ControlledMemoryService } from './support/memory.js';
@@ -1030,11 +1030,18 @@ describe('experience analysis', () => {
       expect(problems).toHaveLength(2);
       expect(problems.join('\n')).toContain('observation 1');
       expect(problems.join('\n')).toContain('observation 2');
-      expect(retained.contexts.at(-1)).toContain('Outstanding report rejection');
-      expect(retained.requests).toHaveLength(2);
       const corrected = await analysisOf(retained);
-      expect(corrected.invocationId).not.toBe(original.invocationId);
-      if (correction !== 'removed record') {
+      if (correction === 'removed record') {
+        // The record itself is gone: the next permitted invocation receives the pending context.
+        expect(retained.contexts.at(-1)).toContain('Pending validation error');
+        expect(retained.requests).toHaveLength(2);
+        expect(corrected.invocationId).not.toBe(original.invocationId);
+      } else {
+        // The restored readable report and its current binding are the owner's validated saved
+        // replacement: the interrupted clear completes without another analyst invocation.
+        expect(retained.requests).toHaveLength(1);
+        expect(retained.contexts.at(-1)).not.toContain('Pending validation error');
+        expect(corrected.invocationId).toBe(original.invocationId);
         expect(corrected.observations).toEqual(original.observations);
         expect(corrected.analyzedAt).toBe(original.analyzedAt);
         expect(corrected.profile).toBe(original.profile);
@@ -1330,9 +1337,7 @@ describe('experience analysis', () => {
         role: 'experience-analyst',
         reportKind: 'experience-analysis',
       };
-      const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
-        (entry) => entry.record.kind === 'rejection',
-      );
+      const rejection = (await readValidationErrorHistory(evidenceRootOf(first)))[0];
       expect(rejection?.record).toMatchObject({
         scope,
         operation: 'analyze-experience',
@@ -1342,27 +1347,23 @@ describe('experience analysis', () => {
       });
 
       // Replacing the unusable record does not resolve the feedback by itself; the next permitted
-      // attempt receives it and its validated saved analysis records the correction.
+      // attempt receives it and its validated saved analysis clears the pending context.
       await rm(savedAnalysis);
       await first.process({ analyze: (_context, workspace) => ok(observation(workspace)) });
       expect(first.contexts).toHaveLength(1);
       const context = first.contexts[0] ?? '';
-      expect(context).toContain('Outstanding report rejection');
+      expect(context).toContain('Pending validation error');
       expect(context).toContain(malformed);
       expect(context).toContain('is not valid JSON');
       await expect(
-        outstandingReportFeedback({ areaRoot: evidenceRootOf(first), scope }),
-      ).resolves.toEqual([]);
+        readPendingValidationError({ areaRoot: evidenceRootOf(first), scope }),
+      ).resolves.toBeNull();
       await expect(analysisOf(first)).resolves.toMatchObject({
         workId,
         project,
         attemptId: format === 'legacy' ? `completion-${mergeRevision}` : attemptId,
       });
-      expect(
-        (await readReportFeedback(evidenceRootOf(first))).filter(
-          (entry) => entry.record.kind === 'rejection',
-        ),
-      ).toHaveLength(1);
+      expect(await readValidationErrorHistory(evidenceRootOf(first))).toHaveLength(1);
     },
   );
 
@@ -1382,9 +1383,7 @@ describe('experience analysis', () => {
     const first = await harness(() => ok(rejectedOutput));
     const problems = await first.process();
     expect(problems.join('\n')).toContain('observation 1 has no supporting evidence');
-    const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(evidenceRootOf(first)))[0];
     expect(rejection?.record).toMatchObject({
       scope: { ...scope, area: evidenceRootOf(first) },
       operation: 'analyze-experience',
@@ -1404,7 +1403,7 @@ describe('experience analysis', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     // The next permitted attempt receives the rejected bytes and reason; the validated saved
-    // replacement records the correction under the same responsibility.
+    // replacement clears the pending context under the same responsibility.
     const contexts = first.contexts.length;
     await first.process({ analyze: (_context, workspace) => ok(observation(workspace)) });
     const context = first.contexts.at(-1) ?? '';
@@ -1413,11 +1412,11 @@ describe('experience analysis', () => {
     expect(context).toContain('A fact without evidence.');
     expect(await analysisOf(first)).toMatchObject({ workId, project, attemptId });
     await expect(
-      outstandingReportFeedback({
+      readPendingValidationError({
         areaRoot: evidenceRootOf(first),
         scope: { ...scope, area: evidenceRootOf(first) },
       }),
-    ).resolves.toEqual([]);
+    ).resolves.toBeNull();
   });
 
   it('retains a missing assigned Markdown and supplies it to the next permitted attempt', async () => {
@@ -1437,9 +1436,7 @@ describe('experience analysis', () => {
       role: 'experience-analyst',
       reportKind: 'experience-analysis',
     };
-    const rejection = (await readReportFeedback(evidenceRootOf(first))).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(evidenceRootOf(first)))[0];
     expect(rejection?.record).toMatchObject({
       scope,
       operation: 'analyze-experience',
@@ -1460,7 +1457,7 @@ describe('experience analysis', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     // The next permitted attempt receives the rejected bytes and reason, writes its Markdown and
-    // records the correction, so repairing the file alone never cleared the obligation.
+    // saves its replacement, clearing the pending context.
     await expect(
       first.process({
         analyze: (_context, workspace) => ok(observation(workspace)),
@@ -1468,79 +1465,78 @@ describe('experience analysis', () => {
       }),
     ).resolves.toHaveLength(1);
     const context = first.contexts.at(-1) ?? '';
-    expect(context).toContain('Outstanding report rejection');
+    expect(context).toContain('Pending validation error');
     expect(context).toContain('Violated rule:');
     expect(context).toContain('does not exist');
     await expect(
-      outstandingReportFeedback({ areaRoot: evidenceRootOf(first), scope }),
-    ).resolves.toEqual([]);
+      readPendingValidationError({ areaRoot: evidenceRootOf(first), scope }),
+    ).resolves.toBeNull();
     await expect(analysisOf(first)).resolves.toMatchObject({ workId, project, attemptId });
   });
 
-  it.each(['restored bound report', 'repaired legacy record'] as const)(
-    'keeps a rejection a %s cannot retire actionable by the next attempt',
-    async (variant) => {
-      const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
-      await expect(retained.process()).resolves.toEqual([]);
-      const saved = await analysisOf(retained);
-      const report = saved.report;
-      const markdown = await readFile(report.path, 'utf8');
+  it.each([
+    { variant: 'restored bound report' as const },
+    { variant: 'repaired record without a current binding' as const },
+  ])('continues an interrupted save/clear from a $variant', async ({ variant }) => {
+    const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
+    await expect(retained.process()).resolves.toEqual([]);
+    const saved = await analysisOf(retained);
+    const report = saved.report;
+    const markdown = await readFile(report.path, 'utf8');
 
-      // The bound Markdown disappears: the saved analysis is unusable, and its rejection is
-      // retained without an invocation in the same pass.
-      await rm(report.path);
-      expect((await retained.process()).join('\n')).toContain('does not exist');
+    // The bound Markdown disappears: the saved analysis is unusable, and its validation-error
+    // evidence is retained without an invocation in the same pass.
+    await rm(report.path);
+    expect((await retained.process()).join('\n')).toContain('does not exist');
 
-      if (variant === 'restored bound report') {
-        // The exact bytes return: the analysis is usable again, but its invocation was never
-        // supplied this rejection, so mere reuse must not present it as settled.
-        await writeFile(report.path, markdown, 'utf8');
-      } else {
-        // A readable former handoff-shaped record replaces the damaged one: it stays submittable,
-        // but carries no invocation identity a correction could be attributed to.
-        await writeFile(
-          experienceAnalysisFile(retained.directory, retained.identity),
-          `${JSON.stringify(
-            {
-              workId: saved.workId,
-              project: saved.project,
-              workflow: saved.workflow,
-              attemptId: saved.attemptId,
-              terminalId: saved.terminalId,
-              profile: saved.profile,
-              analyzedAt: saved.analyzedAt,
-              observations: saved.observations,
-            },
-            null,
-            2,
-          )}\n`,
-          'utf8',
-        );
-      }
-
-      // The next permitted attempt receives the rejection and records its correction.
-      const invocations = retained.requests.length;
-      await expect(
-        retained.process({ analyze: () => ok(JSON.stringify({ observations: [] })) }),
-      ).resolves.toEqual([]);
-      expect(retained.requests).toHaveLength(invocations + 1);
-      const context = retained.contexts.at(-1) ?? '';
-      expect(context).toContain('Outstanding report rejection');
-      expect(context).toContain('does not exist');
-      await expect(
-        outstandingReportFeedback({
-          areaRoot: evidenceRootOf(retained),
-          scope: {
-            project,
-            workId,
-            area: evidenceRootOf(retained),
-            role: 'experience-analyst',
-            reportKind: 'experience-analysis',
+    if (variant === 'restored bound report') {
+      // The current bound record and its readable Markdown are the owner's validated saved
+      // replacement: the replay completes the interrupted clear without another invocation.
+      await writeFile(report.path, markdown, 'utf8');
+    } else {
+      // A readable former handoff-shaped record replaces the damaged one: the producer-owned
+      // compatibility reader accepts it without retroactive Markdown, and its accepted
+      // observations stay submittable.
+      await writeFile(
+        experienceAnalysisFile(retained.directory, retained.identity),
+        `${JSON.stringify(
+          {
+            workId: saved.workId,
+            project: saved.project,
+            workflow: saved.workflow,
+            attemptId: saved.attemptId,
+            terminalId: saved.terminalId,
+            profile: saved.profile,
+            analyzedAt: saved.analyzedAt,
+            observations: saved.observations,
           },
-        }),
-      ).resolves.toEqual([]);
-    },
-  );
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+    }
+
+    const invocations = retained.requests.length;
+    await expect(
+      retained.process({ analyze: () => ok(JSON.stringify({ observations: [] })) }),
+    ).resolves.toEqual([]);
+    // The saved analysis the producer-owned reader accepted — current bound or retained former
+    // shape — completes the interrupted clear without another analyst invocation.
+    expect(retained.requests).toHaveLength(invocations);
+    await expect(
+      readPendingValidationError({
+        areaRoot: evidenceRootOf(retained),
+        scope: {
+          project,
+          workId,
+          area: evidenceRootOf(retained),
+          role: 'experience-analyst',
+          reportKind: 'experience-analysis',
+        },
+      }),
+    ).resolves.toBeNull();
+  });
 
   it.each(['experience', 'legacy'] as const)(
     'preserves pending %s evidence when an unusable saved analysis stays outstanding',

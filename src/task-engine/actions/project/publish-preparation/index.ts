@@ -16,11 +16,12 @@ import {
   type UpstreamStage,
 } from '../../preparation/artifacts.js';
 import {
+  clearStageReportValidationError,
   readCurrentDecision,
-  readStageRoleArtifact,
   readStageTerminal,
   readStagePlan,
   requireReturnReport,
+  requireRetainedReturn,
   requireNeedsInputReport,
   roundArtifactFile,
   stageRoot,
@@ -289,6 +290,15 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       if (decision.kind !== 'current') {
         return await failed(`The ${stage} result is not a current decision: ${decision.reason}.`);
       }
+      // This terminal consumer can resume without revisiting StageResult or either role.
+      for (const role of ['author', 'evaluator'] as const) {
+        await clearStageReportValidationError({
+          issueRoot: selection.workspace.root,
+          stage,
+          workId: selection.taskKey,
+          role,
+        });
+      }
       const retained = await readHandoff(selection.workspace.root);
       const invalidated = await invalidatedStages();
       const earliest = invalidated.find(
@@ -394,6 +404,15 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
       // assessment that explains it.
       let returning: { readonly narrative: string | null; readonly profile: string | null };
       try {
+        const producer = await requireRetainedReturn({
+          issueRoot: selection.workspace.root,
+          stage,
+          workId: selection.taskKey,
+          round: plan.round,
+          profiles: plan.profiles,
+          result,
+          context: `Publishing the ${stage} return for task ${selection.taskKey}.`,
+        });
         const text = await requireReturnReport({
           issueRoot: selection.workspace.root,
           workId: selection.taskKey,
@@ -404,21 +423,14 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
         });
         returning = {
           narrative: text === null ? null : openingNarrativeParagraph(text),
-          profile:
-            returningRole === null
-              ? null
-              : ((
-                  await readStageRoleArtifact({
-                    issueRoot: selection.workspace.root,
-                    stage,
-                    workId: selection.taskKey,
-                    round: plan.round,
-                    role: returningRole,
-                    profile: plan.profiles[returningRole],
-                    context: `Publishing the ${stage} ${returningRole} return for task ${selection.taskKey}.`,
-                  })
-                )?.profile ?? null),
+          profile: producer.profile,
         };
+        await clearStageReportValidationError({
+          issueRoot: selection.workspace.root,
+          stage,
+          workId: selection.taskKey,
+          role: producer.role,
+        });
       } catch (error) {
         return failed(messageOf(error));
       }
@@ -471,6 +483,13 @@ export function createPublishPreparation(settings: PublishPreparationSettings): 
           round: plan.round,
           workId: selection.taskKey,
           authoredRevision: result.authoredRevision,
+          question: result.reason,
+        });
+        await clearStageReportValidationError({
+          issueRoot: selection.workspace.root,
+          stage,
+          workId: selection.taskKey,
+          role: 'author',
         });
       } catch (error) {
         return failed(messageOf(error));

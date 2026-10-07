@@ -41,9 +41,9 @@ import {
 } from '../evaluation-content.js';
 import { readPrototypeObservation } from '../observation.js';
 import {
-  outstandingReportFeedback,
+  clearPendingValidationError,
   projectOfWorkspace,
-  recordReportCorrection,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
   type ReportScope,
@@ -456,7 +456,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         break;
       }
     }
-    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
 
     // A response round and a pending reassessment both revise the preceding authored revision
     // rather than starting from nothing; the new round's own directory holds only its response.
@@ -500,7 +500,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
                 : { outcome: terminal.outcome, reason: terminal.reason };
             })()
           : null,
-      feedback: outstanding,
+      feedback: pending,
       work: [
         task === 'propose'
           ? plan.route === 'reassess'
@@ -661,18 +661,9 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       String(plan.round),
       stageAuthorArtifact.pathFromArtifactsRoot,
     );
-    if (outstanding.length > 0) {
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
-        areaRoot: root,
-        scope,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: { path: artifact },
-        content: output,
-        invocationId,
-      });
-    }
+    // The owner validated and saved the usable replacement, whatever its business outcome; its
+    // pending validation-error context is cleared while the readable history stays.
+    await clearPendingValidationError({ areaRoot: root, scope });
     settings.publish(
       actionOutcomeEvent('stage-author', {
         task: selection.taskKey,

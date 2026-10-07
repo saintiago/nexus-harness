@@ -276,6 +276,18 @@ not inferred from Markdown. A return without a refined revision still uses captu
 functional framing; exhausted feedback still includes the current Challenger obstacle. Operational
 failures remain faults, not business decisions.
 
+Reusing a revised editor turn validates its separately saved refined idea for the current submission
+and cycle before clearing editor-turn validation-error context. Synthesis, response and post-help
+response use the same rule without creating another revision or invocation. Approval recording,
+replay and parent publication clear the validated editor and Challenger responsibilities only after
+the complete approved idea/editor/Challenger association and required reports are usable. This includes
+the editor-turn responsibility of the separate refined idea and any required framing; unrelated
+contributions remain non-clearing history. Fresh negative decision recording likewise clears its
+validated current producers after saving the decision. Negative-decision replay and parent publication
+validate the applicable current producers, the saved reason and idea/editor/Challenger references
+before completing interrupted clears. Unusable or unrelated replacements keep context pending;
+no additional role invocation or cycle is granted.
+
 ## Artifacts and revision binding
 
 Use `refinement/` under the stable `<storage root>/workspaces/<project>/<issue>/` root. Preserve

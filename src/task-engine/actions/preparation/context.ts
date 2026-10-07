@@ -34,11 +34,7 @@ import {
   upstreamResultReferences,
 } from './storage.js';
 import { prototypeObservationContract } from './observation.js';
-import {
-  reportFeedbackContextText,
-  type ReportRejection,
-  type RetainedReportFeedback,
-} from '../report-feedback.js';
+import { validationErrorContextText, type PendingValidationError } from '../report-feedback.js';
 import { capturedSourceText } from './readable-source.js';
 
 /**
@@ -287,8 +283,8 @@ export type StageContextSettings = {
   readonly capturedSource: string;
   /** The stage's retained terminal result when an upstream correction requires reassessment. */
   readonly retained: { readonly outcome: string; readonly reason: string | null } | null;
-  /** The outstanding report rejections of this stage that the invocation must correct. */
-  readonly feedback: readonly RetainedReportFeedback<ReportRejection>[];
+  /** The pending validation error of this stage's role that the invocation must correct. */
+  readonly feedback: PendingValidationError | null;
   /** The route-specific work instruction for this invocation. */
   readonly work: readonly string[];
   /** The stage-specific declarations, observation rules and response contract for this stage. */
@@ -493,7 +489,7 @@ async function activeCorrectionsSection(
   if (returned !== null) {
     items.push(returned);
   }
-  items.push(...reportFeedbackContextText(settings.feedback));
+  items.push(...validationErrorContextText(settings.feedback));
   if (
     settings.evaluation !== null &&
     activeEvaluation(settings.evaluation, handoff, settings.plan.stage)

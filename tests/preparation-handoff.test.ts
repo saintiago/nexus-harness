@@ -15,6 +15,8 @@ import { scriptedGit, repositoryState } from './support/git.js';
 import type { AgentRoleRunner, BoundAction } from '../src/task-engine/index.js';
 import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-author/index.js';
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
+import { createPublishPreparation } from '../src/task-engine/actions/project/publish-preparation/index.js';
+import { scriptedJira } from './support/jira.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import {
@@ -26,6 +28,7 @@ import {
   readCurrentDecision,
   readStagePlan,
   readStageArtifact,
+  readStageRoleArtifact,
   stageRoot,
 } from '../src/task-engine/actions/preparation/storage.js';
 import { stageReturnSchema } from '../src/task-engine/actions/select-work/artifacts.js';
@@ -36,10 +39,12 @@ import {
   type StageAuthorOutput,
   type StageEvaluationOutput,
   stageAuthorArtifact,
+  stageReportScope,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
-  readReportFeedback,
-  outstandingReportFeedback,
+  projectOfWorkspace,
+  readPendingValidationError,
+  readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
@@ -936,6 +941,73 @@ describe('preparation repair rounds', () => {
     expect(saved.returnFinding).not.toHaveProperty('consequence');
   });
 
+  it.each(['author', 'evaluator'] as const)(
+    'clears the repaired legacy %s upstream return on finalization and replay',
+    async (role) => {
+      const fixture = await stageWithEvaluation({ verdict: 'return-upstream' });
+      const { issueRoot, root, selectionFile } = fixture;
+      const authorFile = path.join(root, 'artifacts/1/author.json');
+      const evaluationFile = path.join(root, 'artifacts/1/evaluation.json');
+      if (role === 'author') {
+        const author = JSON.parse(await readFile(authorFile, 'utf8')) as Record<string, unknown>;
+        const evaluation = JSON.parse(await readFile(evaluationFile, 'utf8')) as {
+          upstream: unknown;
+        };
+        await writeFile(
+          authorFile,
+          JSON.stringify({ ...author, outcome: 'return-upstream', upstream: evaluation.upstream }),
+        );
+        await rm(evaluationFile);
+      }
+      const file = role === 'author' ? authorFile : evaluationFile;
+      const original = await readFile(file, 'utf8');
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      const finalize = createStageResult({
+        selectionFile,
+        stage: 'ux',
+        git: scriptedGit([]).git,
+        publish: () => undefined,
+      });
+      // Both new finalization and completed replay validate the producing record.
+      for (const replay of [false, true]) {
+        await writeFile(file, '{invalid');
+        await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/not valid JSON/);
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+        await writeFile(file, original);
+        if (replay) {
+          // A different valid return is unrelated to the saved terminal decision and cannot clear.
+          const producer = JSON.parse(original) as { upstream: { correction: string } };
+          await writeFile(
+            file,
+            JSON.stringify({
+              ...producer,
+              upstream: { ...producer.upstream, correction: 'Different correction.' },
+            }),
+          );
+          await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
+            /producing upstream outcome/,
+          );
+          expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+          await writeFile(file, original);
+        }
+        await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+        await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      }
+      expect(await readFile(file, 'utf8')).toBe(original);
+      expect(await readValidationErrorHistory(root)).toHaveLength(2);
+      await expect(artifact(root, 1, 'result.json')).resolves.toMatchObject({
+        outcome: 'returnUpstream',
+        returnFinding: { report: null, role: null },
+      });
+    },
+  );
+
   it('keeps a retained combined return problem and consequence as history', async () => {
     const { selectionFile, root } = await stageWithEvaluation({ verdict: 'return-upstream' });
     const { git } = scriptedGit([repositoryState()], {
@@ -1011,7 +1083,7 @@ describe('preparation repair rounds', () => {
     // changes do not invalidate the saved association, so the return can leave the stage.
     await writeFile(evaluation.report.path, '# Replaced assessment\n\nDifferent bytes.\n');
     await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
-    await expect(readReportFeedback(root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
 
     // A missing report is unusable evidence: the completed return cannot replay without its
     // assessment and the producing role's rejection evidence is retained.
@@ -1021,10 +1093,10 @@ describe('preparation repair rounds', () => {
       outcome: 'returnUpstream',
       returnFinding: { report: { invocationId: expect.any(String) } },
     });
-    const firstFeedback = await readReportFeedback(root);
+    const firstFeedback = await readValidationErrorHistory(root);
     expect(firstFeedback).toHaveLength(1);
     expect(firstFeedback[0]?.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       assignedReport: { path: evaluation.report.path },
     });
@@ -1076,10 +1148,10 @@ describe('preparation repair rounds', () => {
     await expect(destination({ stage: 'requirements', task: 'propose' })).rejects.toThrow(
       /does not exist/,
     );
-    const destinationFeedback = await readReportFeedback(root);
+    const destinationFeedback = await readValidationErrorHistory(root);
     expect(destinationFeedback).toHaveLength(2);
     expect(destinationFeedback.at(-1)?.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
       source: { path: path.join(root, 'artifacts/2/evaluation.json') },
       output: await readFile(path.join(root, 'artifacts/2/evaluation.json'), 'utf8'),
@@ -1230,6 +1302,153 @@ async function boundRound(
 }
 
 describe('preparation retained outcome usability', () => {
+  it.each(['author', 'evaluator'] as const)(
+    'validates the bound returning %s outcome before clearing replay context',
+    async (role) => {
+      const fixture = await boundRound(
+        role === 'author' ? 'return-upstream' : 'authored',
+        'return-upstream',
+      );
+      const { issueRoot, root, finalize } = fixture;
+      await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      const producer = role === 'author' ? fixture.author : fixture.evaluation!;
+      const file = path.join(
+        root,
+        'artifacts/2',
+        role === 'author' ? 'author.json' : 'evaluation.json',
+      );
+      const original = await readFile(file, 'utf8');
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      await writeFile(file, '{invalid');
+      await expect(
+        readStageRoleArtifact({
+          issueRoot,
+          stage: 'ux',
+          workId: 'NEX-1',
+          round: 2,
+          role,
+          profile: producer.profile,
+          context: 'Reading current return.',
+        }),
+      ).rejects.toThrow(/not valid JSON/);
+      await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/not valid JSON/);
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      // Schema-valid but unrelated replacements cannot authorize clearing the retained return.
+      const replacements = [
+        { ...producer, upstream: { ...producer.upstream, correction: 'Different correction.' } },
+        { ...producer, upstream: { ...producer.upstream, stage: 'idea' } },
+        { ...producer, invocationId: 'unrelated-invocation' },
+        { ...producer, taskKey: 'OTHER-1' },
+        { ...producer, stage: 'requirements' },
+        { ...producer, profile: 'other-profile' },
+        {
+          ...producer,
+          report: { path: fixture.author.report.path },
+          invocationId: 'unrelated-report',
+        },
+        { ...producer, ...(role === 'author' ? { revision: 99 } : { assessedRevision: 99 }) },
+      ];
+      for (const replacement of replacements) {
+        await writeFile(file, JSON.stringify(replacement));
+        await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/producing/);
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      }
+      await writeFile(file, original);
+      await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      expect(await readFile(file, 'utf8')).toBe(original);
+      expect(await readValidationErrorHistory(root)).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    { outcome: 'accepted', role: 'author' },
+    { outcome: 'accepted', role: 'evaluator' },
+    { outcome: 'returnUpstream', role: 'author' },
+    { outcome: 'returnUpstream', role: 'evaluator' },
+    { outcome: 'needsInput', role: 'author' },
+  ] as const)(
+    'clears repaired $role context at $outcome preparation publication',
+    async ({ outcome, role }) => {
+      const fixture = await boundRound(
+        outcome === 'needsInput'
+          ? 'needs-input'
+          : outcome === 'returnUpstream' && role === 'author'
+            ? 'return-upstream'
+            : 'authored',
+        outcome === 'returnUpstream' ? 'return-upstream' : 'accepted',
+      );
+      const { issueRoot, root, selectionFile, git, author, evaluation, finalize } = fixture;
+      await expect(finalize({ outcome })).resolves.toBe('saved');
+      const producer = role === 'author' ? author : evaluation!;
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+      let status = 'UX Proposal';
+      const transitions: string[] = [];
+      const { jira } = scriptedJira({
+        readIssue: () => ok({ id: '1', key: 'NEX-1', fields: { status: { name: status } } }),
+        readComments: () => ok([]),
+        readTransitions: () =>
+          ok(
+            ['Draft', 'Storybook Refinement', 'Waiting for Feedback'].map((name) => ({
+              id: name,
+              name,
+              to: { id: name, name },
+            })),
+          ),
+        transitionIssue: (_id, transition) => {
+          status = transition;
+          transitions.push(transition);
+          return ok(undefined);
+        },
+        addComment: () => ok({ id: 'comment', body: {} }),
+      });
+      const publish = createPublishPreparation({
+        selectionFile,
+        statuses: {
+          requirements: 'Draft',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+        waitingForFeedback: 'Waiting for Feedback',
+        ideaActive: 'Idea Refinement',
+        jira,
+        git,
+        publish: () => undefined,
+      });
+      const markdown = await readFile(producer.report.path, 'utf8');
+      await rm(producer.report.path);
+      await expect(publish({ stage: 'ux' })).resolves.toBe('failed');
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      expect(transitions).toEqual([]);
+      await writeFile(producer.report.path, markdown);
+      await expect(publish({ stage: 'ux' })).resolves.toBe(
+        outcome === 'needsInput' ? 'waiting' : 'advanced',
+      );
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      expect(transitions).toEqual([
+        outcome === 'accepted'
+          ? 'Storybook Refinement'
+          : outcome === 'needsInput'
+            ? 'Waiting for Feedback'
+            : 'Draft',
+      ]);
+      expect(await readValidationErrorHistory(root)).toHaveLength(1);
+    },
+  );
+
   it.each([
     { consumer: 'author', producerRole: 'author' },
     { consumer: 'author', producerRole: 'evaluator' },
@@ -1277,11 +1496,11 @@ describe('preparation retained outcome usability', () => {
           : createStageEvaluator(settings)();
       await expect(invocation).rejects.toThrow(malformed ? /report/ : /does not exist/);
       expect(contexts).toEqual([]);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(1);
       const rejection = feedback[0]!.record;
       expect(rejection).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: { role: `ux-${producerRole}` },
         invocationId: producer.invocationId,
         profile: producer.profile,
@@ -1289,14 +1508,14 @@ describe('preparation retained outcome usability', () => {
         output: damaged,
         assignedReport: malformed ? null : producer.report,
       });
-      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+      if (rejection.kind !== 'validation-error') throw new Error('Expected rejection evidence.');
       // Neither damage leaves readable Markdown to copy; the attempted binding stays as evidence.
       expect(rejection.report).toBeNull();
       await writeFile(file, original);
       expect(
-        await outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+        (await readPendingValidationError({ areaRoot: root, scope: rejection.scope }))?.entries,
       ).toHaveLength(1);
-      expect((await readReportFeedback(root))[0]!.record).toEqual(rejection);
+      expect((await readValidationErrorHistory(root))[0]!.record).toEqual(rejection);
     },
   );
 
@@ -1332,11 +1551,11 @@ describe('preparation retained outcome usability', () => {
       await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
         /does not exist/,
       );
-      const feedback = await readReportFeedback(fixture.root);
+      const feedback = await readValidationErrorHistory(fixture.root);
       expect(feedback).toHaveLength(2);
       for (const [index, entry] of feedback.entries()) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: { role: `ux-${role}` },
           invocationId: producer.invocationId,
           profile: producer.profile,
@@ -1344,7 +1563,8 @@ describe('preparation retained outcome usability', () => {
           output: index === 0 ? damaged : original,
           assignedReport: index === 0 ? { path: missing } : producer.report,
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         // Both rejections are unusable report reads: no Markdown was available to copy.
         expect(entry.record.report).toBeNull();
       }
@@ -1362,7 +1582,7 @@ describe('preparation retained outcome usability', () => {
       const changed = { ...author, revision: author.revision + 1 };
       await writeFile(file, JSON.stringify(changed));
       await expect(finalize({ outcome })).rejects.toThrow(/exact/);
-      expect(await readReportFeedback(root)).toEqual([]);
+      expect(await readValidationErrorHistory(root)).toEqual([]);
 
       // An unusable binding is retained before the changed revision can route the record stale.
       const missing = path.join(root, 'artifacts/2/reports/missing/author.md');
@@ -1376,11 +1596,11 @@ describe('preparation retained outcome usability', () => {
           reason: expect.stringContaining('does not exist'),
         });
       }
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(outcome === 'accepted' ? 2 : 1);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: author.invocationId,
           scope: { role: 'ux-author' },
           source: { path: file },
@@ -1388,6 +1608,38 @@ describe('preparation retained outcome usability', () => {
           reason: expect.stringContaining('does not exist'),
         });
       }
+    },
+  );
+
+  it.each(['author', 'evaluator'] as const)(
+    'completes the $role pending context when a validated replay resumes the bound round',
+    async (role) => {
+      const { issueRoot, root, author, evaluation, finalize } = await boundRound();
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      const producer = role === 'author' ? author : evaluation!;
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+
+      // The replay validates the retained decision again: the missing report is retained as the
+      // role's validation error instead of being silently accepted.
+      const markdown = await readFile(producer.report.path, 'utf8');
+      await rm(producer.report.path, { force: true });
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
+      expect((await readPendingValidationError({ areaRoot: root, scope }))?.entries).toHaveLength(
+        1,
+      );
+
+      // A restored report makes the replay valid again: the resumed owner validation completes
+      // the clear without another role invocation, and a later round cannot inherit the error.
+      await writeFile(producer.report.path, markdown, 'utf8');
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      await expect(readValidationErrorHistory(root)).resolves.toHaveLength(1);
     },
   );
 
@@ -1414,7 +1666,7 @@ describe('preparation retained outcome usability', () => {
           change === 'author' ? 'authored report changed' : 'captured issue input changed',
         ),
       });
-      expect(await readReportFeedback(root)).toEqual([]);
+      expect(await readValidationErrorHistory(root)).toEqual([]);
     },
   );
 
@@ -1432,10 +1684,10 @@ describe('preparation retained outcome usability', () => {
     });
     await expect(open({ route: 'next' })).rejects.toThrow(/invocationId/);
     expect(await readStagePlan(root)).toMatchObject({ round: 2 });
-    const feedback = await readReportFeedback(root);
+    const feedback = await readValidationErrorHistory(root);
     expect(feedback).toHaveLength(1);
     expect(feedback[0]!.record).toMatchObject({
-      kind: 'rejection',
+      kind: 'validation-error',
       scope: { role: 'ux-author' },
       source: { path: file },
       output: damaged,
@@ -1479,11 +1731,11 @@ describe('preparation retained outcome usability', () => {
       });
       await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(reason);
       expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(result);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(3);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           profile: producer.profile,
           scope: { workId: selection['taskKey'], role: `ux-${role}` },
           source: { path: file },
@@ -1491,17 +1743,21 @@ describe('preparation retained outcome usability', () => {
           assignedReport: producer.report,
           reason: expect.stringContaining(reason),
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
       // Repairing history alone neither retires feedback nor rewrites its original evidence.
       await writeFile(file, original);
       await writeFile(producer.report.path, 'Later replacement Markdown.');
+      // A later rejection updates the one pending context; the earlier evidence stays history.
       expect(
-        await outstandingReportFeedback({ areaRoot: root, scope: feedback[0]!.record.scope }),
-      ).toHaveLength(3);
+        (await readPendingValidationError({ areaRoot: root, scope: feedback[0]!.record.scope }))
+          ?.entries,
+      ).toHaveLength(1);
       for (const entry of feedback) {
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
     },
@@ -1537,17 +1793,18 @@ describe('preparation retained outcome usability', () => {
         await writeFile(file, damaged);
         await expect(fixture.finalize({ outcome })).rejects.toThrow(/invocationId/);
       }
-      const feedback = await readReportFeedback(fixture.root);
+      const feedback = await readValidationErrorHistory(fixture.root);
       expect(feedback).toHaveLength(exit === 'needsInput' ? 2 : 1);
       for (const entry of feedback) {
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: { role: `ux-${role}` },
           source: { path: file },
           output: damaged,
           assignedReport: producer.report,
         });
-        if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
+        if (entry.record.kind !== 'validation-error')
+          throw new Error('Expected rejection evidence.');
         expect(await readFile(entry.record.report!.path, 'utf8')).toBe(controlledMarkdown);
       }
     },
@@ -1675,11 +1932,11 @@ describe('preparation retained outcome usability', () => {
       await corrupt();
       await expect(finalize({ outcome: 'needsInput' })).rejects.toThrow(/report/);
       expect(await readFile(path.join(root, 'artifacts/2/result.json'), 'utf8')).toBe(original);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(2);
       for (const entry of feedback)
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: author.invocationId,
           profile: author.profile,
           scope: { role: 'ux-author', reportKind: 'stage-author' },
@@ -1689,11 +1946,107 @@ describe('preparation retained outcome usability', () => {
     },
   );
 
+  it.each(
+    (['fresh', 'replay', 'publication'] as const).flatMap((consumer) =>
+      (['current', 'legacy'] as const).map((kind) => ({ consumer, kind })),
+    ),
+  )(
+    'validates the $kind question producer before $consumer clearing',
+    async ({ consumer, kind }) => {
+      const { issueRoot, root, author, finalize, selectionFile, git } =
+        await boundRound('needs-input');
+      const file = path.join(root, 'artifacts/2/author.json');
+      const valid: Record<string, unknown> = { ...author };
+      if (kind === 'legacy') {
+        for (const key of ['taskKey', 'role', 'profile', 'invocationId', 'report'])
+          delete valid[key];
+        valid['summary'] = 'The retained author question.';
+      }
+      const original = JSON.stringify(valid);
+      await writeFile(file, original);
+      if (consumer !== 'fresh')
+        await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
+      const transitions: string[] = [];
+      const { jira } = scriptedJira({
+        readIssue: () => ok({ id: '1', key: 'NEX-1', fields: { status: { name: 'UX Proposal' } } }),
+        readComments: () => ok([]),
+        readTransitions: () =>
+          ok([
+            {
+              id: 'wait',
+              name: 'Waiting for Feedback',
+              to: { id: 'wait', name: 'Waiting for Feedback' },
+            },
+          ]),
+        transitionIssue: (_id, transition) => {
+          transitions.push(transition);
+          return ok(undefined);
+        },
+        addComment: () => ok({ id: 'comment', body: {} }),
+      });
+      const publish = createPublishPreparation({
+        selectionFile,
+        statuses: {
+          requirements: 'Draft',
+          uxProposal: 'UX Proposal',
+          storybookRefinement: 'Storybook Refinement',
+          architecture: 'Architecture',
+        },
+        waitingForFeedback: 'Waiting for Feedback',
+        ideaActive: 'Idea Refinement',
+        jira,
+        git,
+        publish: () => undefined,
+      });
+      const consume = () =>
+        consumer === 'publication' ? publish({ stage: 'ux' }) : finalize({ outcome: 'needsInput' });
+      const fails = async () => {
+        if (consumer === 'publication') await expect(consume()).resolves.toBe('failed');
+        else await expect(consume()).rejects.toThrow();
+      };
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role: 'author',
+      });
+      if (kind === 'current') await rm(author.report.path);
+      else await writeFile(file, '{invalid');
+      await fails();
+      expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+      await writeFile(author.report.path, controlledMarkdown);
+      const replacements = [
+        ...(kind === 'current' ? [{ ...valid, taskKey: 'OTHER-1' }] : []),
+        { ...valid, stage: 'requirements' },
+        { ...valid, outcome: 'authored', question: null },
+        { ...valid, question: null },
+        { ...valid, question: ' ' },
+        ...(consumer === 'fresh'
+          ? []
+          : [
+              { ...valid, question: 'An unrelated question?' },
+              { ...valid, revision: 99 },
+            ]),
+      ];
+      for (const replacement of replacements) {
+        await writeFile(file, JSON.stringify(replacement));
+        await fails();
+        expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+        expect(transitions).toEqual([]);
+      }
+      await writeFile(file, original);
+      await expect(consume()).resolves.toBe(consumer === 'publication' ? 'waiting' : 'saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      await expect(readFile(file, 'utf8')).resolves.toBe(original);
+    },
+  );
+
   it('finalizes a needs-input return after its report was reworded readably', async () => {
     const { root, author, finalize } = await boundRound('needs-input');
     await writeFile(author.report.path, 'Reworded readable report.\n');
     await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
-    await expect(readReportFeedback(root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(root)).resolves.toEqual([]);
   });
 
   it.each(['author', 'evaluator'] as const)(
@@ -1723,11 +2076,11 @@ describe('preparation retained outcome usability', () => {
         reason: expect.stringContaining('does not exist'),
       });
       await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
-      const feedback = await readReportFeedback(root);
+      const feedback = await readValidationErrorHistory(root);
       expect(feedback).toHaveLength(3);
       for (const entry of feedback)
         expect(entry.record).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           invocationId: producer.invocationId,
           profile: producer.profile,
           scope: {

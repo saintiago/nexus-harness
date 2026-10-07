@@ -40,16 +40,14 @@ import { projectGuideArtifact, projectGuideFollowUpArtifact } from './project-gu
 import { decisionArtifact } from './publish-decision/artifacts.js';
 import { readRecord } from './records.js';
 import {
-  finishSuppliedCorrection,
-  outstandingReportFeedback,
+  clearPendingValidationError,
   projectOfWorkspace,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
-  reportFeedbackContextText,
-  retainSuppliedFeedback,
-  type ReportRejection,
+  validationErrorContextText,
+  type PendingValidationError,
   type ReportScope,
-  type RetainedReportFeedback,
 } from './report-feedback.js';
 import { researchArtifact, researchFollowUpArtifact } from './researcher/artifacts.js';
 import { issueSummary } from './source.js';
@@ -153,8 +151,8 @@ export const ideaSourceScopeText = [
 const worktreeDirectory = 'worktree';
 
 /**
- * The saved report contract of one idea role: the responsibility a rejection or correction is
- * routed to and the operation whose report the artifact retains.
+ * The saved report contract of one idea role: the responsibility a validation error is routed to
+ * and the operation whose report the artifact retains.
  */
 export type IdeaReportContract = {
   readonly role: IdeaRole;
@@ -793,11 +791,15 @@ export async function readRetainedIdeaReport<
 }
 
 /**
- * Finish the correction a reused bound outcome's own invocation still owes: the rejections that
- * invocation was supplied and that no correction has resolved yet. Reading a saved outcome back is
- * the replay path, so an interrupted correction write completes without another invocation.
+ * Clear one reused outcome's pending validation error: reading the saved outcome back through the
+ * producer-owned reader is the replay path, and a record that reader accepts — a current bound
+ * record with its readable Markdown, or a retained former combined record under its compatibility
+ * rules — can be the owner's validated replacement once the caller also validates required
+ * functional deliverables and applicable associations. An interrupted save/clear then completes
+ * without another invocation. Clearing belongs to this consumption boundary; history reads never
+ * clear by themselves.
  */
-export async function finishRetainedIdeaCorrection<
+export async function clearRetainedIdeaValidationError<
   Declaration extends AnyIdeaReportDeclaration,
 >(settings: {
   readonly root: string;
@@ -805,10 +807,7 @@ export async function finishRetainedIdeaCorrection<
   readonly contract: IdeaReportContract;
   readonly read: RetainedIdeaReport<Declaration>;
 }): Promise<void> {
-  if (settings.read.binding === null) {
-    return;
-  }
-  await finishSuppliedCorrection({
+  await clearPendingValidationError({
     areaRoot: settings.root,
     scope: ideaReportScope({
       root: settings.root,
@@ -816,9 +815,6 @@ export async function finishRetainedIdeaCorrection<
       role: settings.contract.role,
       reportKind: settings.contract.reportKind,
     }),
-    invocationId: settings.read.binding.invocationId,
-    artifact: { path: settings.read.file },
-    content: settings.read.value,
   });
 }
 
@@ -935,10 +931,10 @@ export type IdeaInvocationOutcome<Schema extends z.ZodType> = {
    */
   reject(reason: string, cause?: unknown): Promise<never>;
   /**
-   * Record the correction this invocation owes once the caller validated and saved the usable
-   * replacement outcome.
+   * Clear this responsibility's pending validation error once the caller validated and saved the
+   * usable replacement outcome.
    */
-  finishFeedback(artifact: ArtifactRef, content: unknown): Promise<void>;
+  clearPendingError(): Promise<void>;
 };
 
 /** The instruction every idea role invocation carries for its assigned Markdown report. */
@@ -954,10 +950,10 @@ const ideaReportInstruction = [
 /**
  * Run one idea role through AgentRuntime with the profile the round plan selected, assign its
  * Markdown report path, then parse its declared response and require that report. The invocation
- * is supplied the outstanding rejections of its own report responsibility, and a malformed
- * response or missing report is retained as rejection evidence before the invocation fails. The
- * runner carries the invocation's preassigned identity and announces its boundaries, so concurrent
- * roles stay independently attributable; a provider failure is an execution error.
+ * is supplied the pending validation error of its own report responsibility, and a malformed
+ * response or missing report is retained as validation-error evidence before the invocation
+ * fails. The runner carries the invocation's preassigned identity and announces its boundaries,
+ * so concurrent roles stay independently attributable; a provider failure is an execution error.
  */
 export async function invokeIdeaRole<Schema extends z.ZodType>(
   settings: IdeaInvocationSettings<Schema>,
@@ -985,18 +981,11 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     `Idea refinement ${settings.role} (${settings.reportKind}), submission ` +
     `${String(settings.plan.submission)}, cycle ${String(settings.plan.cycle)}, ` +
     `idea ${settings.input.taskKey}.`;
-  const feedback: readonly RetainedReportFeedback<ReportRejection>[] =
-    await outstandingReportFeedback({ areaRoot: settings.root, scope });
+  const feedback: PendingValidationError | null = await readPendingValidationError({
+    areaRoot: settings.root,
+    scope,
+  });
   const assignedReport = await assignReportPath(cycleRoot, invocationId, settings.reportName);
-  if (feedback.length > 0) {
-    // Retain which rejections this invocation answers before it runs, so an interrupted
-    // correction write can finish on replay without retiring a rejection created later.
-    await retainSuppliedFeedback({
-      areaRoot: settings.root,
-      invocationId,
-      rejections: feedback.map((entry) => ({ path: entry.path })),
-    });
-  }
   const result = await settings.runner.run({
     operation: settings.operation,
     invocationId,
@@ -1016,7 +1005,7 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
       settings.context,
       `Assigned Markdown report: ${assignedReport.path}`,
       ideaReportInstruction,
-      ...reportFeedbackContextText(feedback),
+      ...validationErrorContextText(feedback),
     ].join('\n\n'),
     outputSchema: z.toJSONSchema(settings.schema),
     idea: settings.input.taskKey,
@@ -1083,16 +1072,10 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         cause,
       });
     },
-    async finishFeedback(artifact, content): Promise<void> {
-      // The action validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await finishSuppliedCorrection({
-        areaRoot: settings.root,
-        scope,
-        invocationId,
-        artifact,
-        content,
-      });
+    async clearPendingError(): Promise<void> {
+      // The action validated and saved the usable replacement, whatever its business outcome; its
+      // pending validation-error context is cleared while the readable history stays.
+      await clearPendingValidationError({ areaRoot: settings.root, scope });
     },
   };
 }

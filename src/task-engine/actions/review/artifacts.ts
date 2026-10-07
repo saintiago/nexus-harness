@@ -88,8 +88,10 @@ export function reviewReportScope(areaRoot: string, taskKey: string): ReportScop
  * Require one retained review outcome to be usable for a workflow decision: it must describe the
  * expected task (when the retained record names one) and, when it carries the current report
  * binding, its assigned Markdown must be readable. An unusable outcome is preserved under the
- * reviewer's report responsibility as attributable rejection evidence before the read fails. A
- * retained combined review stays readable history.
+ * reviewer's report responsibility as attributable validation-error evidence before the read
+ * fails. A retained combined review stays readable history. This shared validation serves history
+ * and other consumers; clearing pending context belongs to the owner's current-round reader and
+ * save paths.
  */
 export async function requireUsableReviewOutcome(settings: {
   readonly areaRoot: string;
@@ -126,8 +128,13 @@ export async function requireUsableReviewOutcome(settings: {
 
 /**
  * Read the current round's saved review outcome for a decision outside Review. An absent record
- * is null; an unusable record is preserved as the reviewer's rejection evidence before the read
- * fails; a returned outcome has already passed its task and report-binding checks.
+ * is null; an unusable record is preserved as the reviewer's validation-error evidence before the
+ * read fails; a returned outcome has already passed its task and report-binding checks. Because
+ * the caller names the owner's current round, the returned outcome is the current round's record.
+ * Reading validates evidence; it never clears the responsibility's pending context. The caller
+ * that established the saved outcome as the usable replacement for its own current basis clears
+ * it, so a caller whose revision or input checks fail keeps the actionable error for the next
+ * responsible invocation.
  */
 export async function readUsableReviewOutcome(settings: {
   readonly areaRoot: string;

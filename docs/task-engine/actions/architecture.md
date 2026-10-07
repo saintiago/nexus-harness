@@ -142,12 +142,19 @@ role/response variant within that area. It contains the actionable reason and at
 available output/report or their readable references. A later invalid attempt updates this context
 with its useful diagnosis while retaining earlier evidence. No rejection IDs, correction records,
 resolved-reference lists, supplied-feedback proofs or saved-outcome identity matches are created.
+Write pending context before its history record so an interrupted retention still supplies the
+diagnosis. Before replacing or clearing that context, complete any history records that it alone
+retains; another invalid attempt must not erase an interrupted diagnosis. Cleared history stays
+inactive.
 
 Preparation owns feedback in its stage area, idea refinement in its refinement area, finite delivery
 in the selected implementation issue root, analysis in its durable request area, and Application
 recovery in its stable project recovery area. Recovery partitions context by selected work, with a
-separate no-selected-work location, so a different item cannot inherit an earlier item's errors.
-Each caller selects a fixed work/role/response-variant location; concurrent roles remain separate. Repository donation, profile changes, round advancement,
+separate no-selected-work location, so a different item cannot inherit an earlier item's errors. A
+former project-wide recovery context is read by its own recorded attribution and supplied with the
+fact that its original work item cannot be established, so a converted legacy error is neither
+hidden nor presented as the selected work's own. Each caller selects a fixed
+work/role/response-variant location; concurrent roles remain separate. Repository donation, profile changes, round advancement,
 selection reset and worker restart neither transfer this context to another item nor erase it.
 
 Before the next permitted responsible invocation, supply its pending error reason, original
@@ -361,3 +368,5 @@ first unfinished phase: round planning for missing/failed development or failed 
 verification for completed development, delivery for matching passed verification, or retained
 publication/review for an already-delivered revision. It validates task and revision identity and
 writes no artifact. Restoring an active child uses its saved checkpoint instead of this entry route.
+Routing leaves validation-error context pending for the consuming owner to clear after its
+applicable revision and readiness checks.

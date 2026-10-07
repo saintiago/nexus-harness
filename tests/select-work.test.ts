@@ -10,7 +10,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import {
+  readPendingValidationError,
+  readValidationErrorHistory,
+  rejectReport,
+} from '../src/task-engine/actions/report-feedback.js';
+import { createRouteDeliveryEntry } from '../src/task-engine/actions/route-delivery-entry/index.js';
 import type { JiraIssue, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import {
@@ -414,20 +419,34 @@ describe('SelectWork admission and routing', () => {
             issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
           }),
         ).rejects.toThrow();
-        const records = await readReportFeedback(workspace);
+        const records = await readValidationErrorHistory(workspace);
         expect(records).toHaveLength(1);
         const rejection = records[0]!.record;
         expect(rejection).toMatchObject({
-          kind: 'rejection',
+          kind: 'validation-error',
           scope: developmentReportScope(workspace, 'NEX-1'),
           output: await readFile(file, 'utf8'),
           assignedReport: { path: reportFile },
         });
-        if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
         if (kind === 'missing Markdown') expect(rejection.report).toBeNull();
         else expect(await readFile(rejection.report!.path, 'utf8')).toBe(markdown);
         return;
       }
+      const scope = developmentReportScope(workspace, 'NEX-1');
+      await expect(
+        rejectReport({
+          areaRoot: workspace,
+          scope,
+          invocationId: 'rejected-dev',
+          operation: 'develop',
+          profile: 'nexus-sol',
+          context: 'Retained developer error.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable developer error.',
+        }),
+      ).rejects.toThrow('Actionable developer error.');
+      const pending = await readPendingValidationError({ areaRoot: workspace, scope });
       const selected = await select({
         issues: [issue('1', 'NEX-1', 'In Review', { [pointerField]: workspace })],
       });
@@ -435,6 +454,13 @@ describe('SelectWork admission and routing', () => {
       expect(selected.result).toBe('selected');
       expect(selected.selection).toMatchObject({ stage: 'delivery' });
       expect(selected.transitions).toEqual([]);
+      await expect(
+        createRouteDeliveryEntry({ selectionFile: selected.selectionFile })(),
+      ).resolves.toBe('review');
+      // Both admission and routing leave applicable worktree/replay validation with Review.
+      await expect(readPendingValidationError({ areaRoot: workspace, scope })).resolves.toEqual(
+        pending,
+      );
     },
   );
 

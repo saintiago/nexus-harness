@@ -18,7 +18,11 @@ import {
 } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { createCompleteTask } from '../src/task-engine/actions/complete-task/index.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import {
+  readPendingValidationError,
+  readValidationErrorHistory,
+  rejectReport,
+} from '../src/task-engine/actions/report-feedback.js';
 import { reviewReportScope } from '../src/task-engine/actions/review/artifacts.js';
 import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -353,9 +357,7 @@ describe('CompleteTask', () => {
       stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).rejects.toThrow(/ENOENT/);
     // The unavailable or foreign review stays attributable under the reviewer's responsibility.
-    const rejection = (await readReportFeedback(workspaceRoot)).find(
-      (entry) => entry.record.kind === 'rejection',
-    );
+    const rejection = (await readValidationErrorHistory(workspaceRoot))[0];
     expect(rejection?.record).toMatchObject({
       scope: reviewReportScope(workspaceRoot, 'NEX-1'),
       operation: 'review',
@@ -390,7 +392,7 @@ describe('CompleteTask', () => {
 
     // No Markdown-byte gate rejects the approval: its readable report and current revision bind it.
     await expect(completeTask()).resolves.toBe('completed');
-    expect(await readReportFeedback(workspaceRoot)).toEqual([]);
+    expect(await readValidationErrorHistory(workspaceRoot)).toEqual([]);
     await expect(
       stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
     ).resolves.toBeTruthy();
@@ -582,6 +584,56 @@ describe('CompleteTask', () => {
       type: 'failed',
       data: { reason: expect.stringMatching(/approval is not transferred/) },
     });
+  });
+
+  it('keeps the reviewer pending error when the saved review answers another head', async () => {
+    const laterHead = await workspace({ name: 'stale-review-clear' });
+    const helpers = createArtifactHelpers({ root: laterHead.workspaceRoot });
+    // The readable bound review approved a different revision: completion must fail on the
+    // revision mismatch and must not treat the review as the delivered head's replacement.
+    const reviewReport = path.join(laterHead.workspaceRoot, 'artifacts', '1', 'reviews', 'rev.md');
+    await mkdir(path.dirname(reviewReport), { recursive: true });
+    await writeFile(reviewReport, 'The change matches another revision.', 'utf8');
+    await helpers.writeOutputArtifact(reviewArtifact, {
+      taskSubject: 'Implement the retry guard',
+      taskKey: 'NEX-1',
+      profile: 'nexus-review',
+      headRevision: otherRevision,
+      verdict: 'approved',
+      role: 'reviewer',
+      report: { path: reviewReport },
+      invocationId: 'rev-9',
+    });
+    const scope = reviewReportScope(laterHead.workspaceRoot, 'NEX-1');
+    await rejectReport({
+      areaRoot: laterHead.workspaceRoot,
+      scope,
+      invocationId: 'rev-8',
+      operation: 'review',
+      profile: 'nexus-review',
+      context: 'Review of task NEX-1 round 1.',
+      source: null,
+      output: '{"verdict":"approved"}',
+      reason: 'The review turn left tracked changes in the worktree.',
+    }).catch(() => undefined);
+
+    await expect(
+      completeTaskAction({
+        selectionFile: laterHead.selectionFile,
+        github: scriptedGitHub({}).github,
+        jira: scriptedJira({}).jira,
+        wait: scriptedWait().wait,
+      })(),
+    ).resolves.toBe('failed');
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: { reason: expect.stringMatching(/approval is not transferred/) },
+    });
+    // The mismatch kept the actionable error for the next responsible invocation.
+    expect(
+      (await readPendingValidationError({ areaRoot: laterHead.workspaceRoot, scope }))?.entries,
+    ).toHaveLength(1);
   });
 
   it('consumes a retained combined approval without re-running its removed finding rule', async () => {

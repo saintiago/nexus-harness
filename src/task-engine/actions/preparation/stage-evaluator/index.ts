@@ -24,9 +24,9 @@ import {
 } from '../../agent-reports.js';
 import { readRequiredRecord } from '../../records.js';
 import {
-  outstandingReportFeedback,
+  clearPendingValidationError,
   projectOfWorkspace,
-  recordReportCorrection,
+  readPendingValidationError,
   rejectReport,
   rejectUnusableRecord,
   type ReportScope,
@@ -298,7 +298,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       });
     }
 
-    const outstanding = await outstandingReportFeedback({ areaRoot: root, scope });
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
     // The most recent preceding evaluation supplies the still-relevant concerns for this
     // assessment; an intervening author-only round, a return, a question, a restart or a `new`
     // route label never clears them.
@@ -367,7 +367,7 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       report: assignedReport,
       capturedSource,
       retained: retainedDecision,
-      feedback: outstanding,
+      feedback: pending,
       work: [
         `Assess the exact authored revision ${String(author.revision)} and judge whether earlier ` +
           'concerns remain. Accept adequate work, the author\u2019s evaluated skip or a concrete ' +
@@ -568,18 +568,9 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       String(plan.round),
       stageEvaluationArtifact.pathFromArtifactsRoot,
     );
-    if (outstanding.length > 0) {
-      // The owner validated and saved the usable replacement; recording its complete identity
-      // retires exactly the rejections this invocation was supplied, preserving their history.
-      await recordReportCorrection({
-        areaRoot: root,
-        scope,
-        rejections: outstanding.map((entry) => ({ path: entry.path })),
-        artifact: { path: artifact },
-        content: output,
-        invocationId,
-      });
-    }
+    // The owner validated and saved the usable replacement, whatever its business outcome; its
+    // pending validation-error context is cleared while the readable history stays.
+    await clearPendingValidationError({ areaRoot: root, scope });
     settings.publish(
       actionOutcomeEvent('stage-evaluator', {
         task: selection.taskKey,

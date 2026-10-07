@@ -37,6 +37,8 @@ export function createRouteDeliveryEntry(settings: {
       verificationArtifact,
       deliveryArtifact,
     );
+    // Routing selects a consumer; that owner completes pending clearing after its applicable
+    // revision/readiness checks. Matching saved artifacts alone cannot validate the worktree.
     if (development.status === 'failed') return 'round';
     if (verification === null || verification.headRevision !== development.headRevision)
       return 'verify';

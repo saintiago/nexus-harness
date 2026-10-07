@@ -19,6 +19,7 @@ import {
   type PreparationStage,
 } from '../artifacts.js';
 import {
+  clearStageReportValidationError,
   preparationWorktree,
   readStageArtifact,
   readStageRoleArtifact,
@@ -27,6 +28,7 @@ import {
   requireRetainedDecision,
   requireRetainedResultAssociation,
   requireReturnReport,
+  requireRetainedReturn,
   requireNeedsInputReport,
   roundArtifactDirectory,
   roundArtifactFile,
@@ -127,22 +129,26 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'A completed preparation round cannot be rewritten with a different result.',
         );
       }
+      // The roles whose current-round saved outcome this replay validates. Clearing their pending
+      // validation-error context belongs to these checks, never to opening a historical report.
+      const validated = new Set<'author' | 'evaluator'>();
       if (outcome === 'accepted' || outcome === 'skipped') {
         const author = await readAuthor();
         if (author === null) {
           throw new Error('A retained acceptance must keep its authored report.');
         }
+        const evaluation = await readEvaluation();
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        const evaluation = await requireRetainedDecision({
+        const decidedEvaluation = await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
           round: plan.round,
           verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
           author,
-          evaluation: await readEvaluation(),
+          evaluation,
           git: settings.git,
         });
         // The replay adopts a retained result only while its recorded attribution identifies the
@@ -152,8 +158,10 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           round: plan.round,
           result: completed,
           author,
-          evaluation,
+          evaluation: decidedEvaluation,
         });
+        validated.add('author');
+        validated.add('evaluator');
       }
       if (outcome === 'needsInput') {
         await requireNeedsInputReport({
@@ -162,24 +170,17 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           round: plan.round,
           workId: selection.taskKey,
           authoredRevision: completed.authoredRevision,
+          question: completed.reason,
         });
+        validated.add('author');
       }
-      if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
-        // A replayed return keeps its returning role's Markdown readable through the producer's
-        // saved binding: an unusable report is preserved as that role's rejection evidence instead
-        // of replaying a correction whose assessment is missing or unreadable.
-        await requireReturnReport({
-          issueRoot,
-          workId: selection.taskKey,
-          returned: {
-            stage: settings.stage,
-            role: completed.returnFinding.role ?? null,
-            report: completed.returnFinding.report,
-          },
-          context:
-            `Replaying the retained ${settings.stage} return of round ${String(plan.round)} for ` +
-            `task ${selection.taskKey}.`,
+      if (outcome === 'returnUpstream') {
+        const returning = await requireRetainedReturn({
+          ...roleContext,
+          profiles: plan.profiles,
+          result: completed,
         });
+        validated.add(returning.role);
       }
       if (
         outcome !== 'exhausted' &&
@@ -200,6 +201,19 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           observations: completed.prototypeObservations,
           author,
           evaluation,
+        });
+        validated.add('author');
+        validated.add('evaluator');
+      }
+      // A validated replay of the current round's saved outcomes is the owner continuation: a
+      // saved replacement whose clear was interrupted completes here, and a resolved error never
+      // reaches a later round.
+      for (const role of validated) {
+        await clearStageReportValidationError({
+          issueRoot,
+          stage: settings.stage,
+          workId: selection.taskKey,
+          role,
         });
       }
       const terminal =
@@ -237,6 +251,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'report.',
       );
     }
+    // The roles whose current-round saved outcome this finalization validates.
+    const validated = new Set<'author' | 'evaluator'>();
     if (outcome === 'needsInput') {
       await requireNeedsInputReport({
         issueRoot,
@@ -244,7 +260,9 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         round: plan.round,
         workId: selection.taskKey,
         authoredRevision: author.revision,
+        question: author.question,
       });
+      validated.add('author');
     }
     const evaluation = await readEvaluation();
     const upstream = evaluation?.upstream ?? author.upstream;
@@ -261,12 +279,12 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     /**
      * The returning role's saved Markdown report binding: the evaluator's when its verdict carried
      * the upstream request, otherwise the author's. A retained combined record has no report
-     * binding and returns null; its former problem and consequence travel through the return
-     * finding instead.
+     * binding, but still identifies the responsible role; its former problem and consequence
+     * travel through the return finding instead.
      */
     const returningReport = (): {
       readonly role: 'author' | 'evaluator';
-      readonly binding: ReturnReport;
+      readonly binding: ReturnReport | null;
     } | null => {
       if (upstream === null) {
         return null;
@@ -288,7 +306,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
                 invocationId: evaluation.invocationId,
               },
             }
-          : null;
+          : { role: 'evaluator', binding: null };
       }
       return isBoundStageAuthorOutput(author)
         ? {
@@ -306,7 +324,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               invocationId: author.invocationId,
             },
           }
-        : null;
+        : { role: 'author', binding: null };
     };
 
     const returning = outcome === 'returnUpstream' ? returningReport() : null;
@@ -315,14 +333,17 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       // returning role's Markdown through its saved binding, preserving an unusable report as that
       // role's rejection evidence instead of saving a return whose evidence is missing or
       // unreadable.
-      await requireReturnReport({
-        issueRoot,
-        workId: selection.taskKey,
-        returned: { stage: settings.stage, role: returning.role, report: returning.binding },
-        context:
-          `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
-          `${selection.taskKey}.`,
-      });
+      if (returning.binding !== null) {
+        await requireReturnReport({
+          issueRoot,
+          workId: selection.taskKey,
+          returned: { stage: settings.stage, role: returning.role, report: returning.binding },
+          context:
+            `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
+            `${selection.taskKey}.`,
+        });
+      }
+      validated.add(returning.role);
     }
 
     /**
@@ -360,6 +381,10 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         evaluation,
         git: settings.git,
       });
+      validated.add('author');
+      if (evaluation !== null) {
+        validated.add('evaluator');
+      }
     }
     if (author.plan.length > 0) {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
@@ -503,7 +528,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           ? {
               stage: upstream.stage,
               correction: upstream.correction,
-              role: returning?.role ?? null,
+              role: returning?.binding == null ? null : returning.role,
               report: returning?.binding ?? null,
               ...(returningHistory() ?? {}),
             }
@@ -515,6 +540,19 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       throw new Error(
         `The ${settings.stage} stage cannot return upstream without naming the earlier stage.`,
       );
+    }
+    if (result.outcome === 'returnUpstream') {
+      await requireRetainedReturn({ ...roleContext, profiles: plan.profiles, result });
+    }
+    // A finalized round's validated outcomes are the owners' saved replacements: complete any
+    // interrupted clear so a resolved error never reaches a later round.
+    for (const role of validated) {
+      await clearStageReportValidationError({
+        issueRoot,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        role,
+      });
     }
     await writeStageArtifact(root, plan.round, stageResultArtifact, result);
     await writeRecord(path.join(root, stageTerminalDeclaration.file), result);

@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
-  finishRetainedIdeaCorrection,
+  clearRetainedIdeaValidationError,
   ideaReportContracts,
   ideaReportReference,
   invokeIdeaRole,
@@ -390,7 +390,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
-      await finishRetainedIdeaCorrection({
+      await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,
         contract: ideaReportContracts.framing,
@@ -447,7 +447,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       invocationId: outcome.invocationId,
     };
     await writeCycleArtifact(cycleRoot, framingArtifact, stored);
-    await outcome.finishFeedback({ path: file }, stored);
+    await outcome.clearPendingError();
     return reported(
       input.taskKey,
       cycle,
@@ -474,7 +474,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
-      await finishRetainedIdeaCorrection({
+      if (
+        existing.value.disposition === 'revised' &&
+        (await cycleRevision(root, plan, taskKey)) === null
+      ) {
+        throw new Error(
+          'A reused revised editor turn must keep its refined idea for this submission and cycle.',
+        );
+      }
+      await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,
         contract: ideaReportContracts.editorTurn,
@@ -559,7 +567,15 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
         `cycle ${String(plan.cycle)} for idea ${taskKey}.`,
     });
     if (existing !== null) {
-      await finishRetainedIdeaCorrection({
+      if (
+        existing.value.disposition === 'revised' &&
+        (await cycleRevision(root, plan, taskKey)) === null
+      ) {
+        throw new Error(
+          'A reused revised editor turn must keep its refined idea for this submission and cycle.',
+        );
+      }
+      await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,
         contract: ideaReportContracts.editorTurn,
@@ -588,7 +604,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     });
     if (task === 'respond' && help !== null) {
       // The response asked for help before the invocation was interrupted; route it again.
-      await finishRetainedIdeaCorrection({
+      await clearRetainedIdeaValidationError({
         root,
         workId: taskKey,
         contract: ideaReportContracts.editorTurn,
@@ -737,7 +753,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
     };
     if (turn.disposition === 'help-requested') {
       const file = await writeCycleArtifact(cycleRoot, editorHelpArtifact, stored);
-      await outcome.finishFeedback({ path: file }, stored);
+      await outcome.clearPendingError();
       return reported(workId, cycle, 'help-requested', null, file);
     }
 
@@ -761,7 +777,7 @@ export function createIdeaEditor(settings: IdeaEditorSettings): BoundAction {
       }
     }
     const file = await writeCycleArtifact(cycleRoot, editorResponseArtifact, stored);
-    await outcome.finishFeedback({ path: file }, stored);
+    await outcome.clearPendingError();
     const workflowOutcome =
       task === 'edit' ? editOutcome(turn.disposition) : responseOutcome(turn.disposition);
     return reported(

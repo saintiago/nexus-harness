@@ -11,12 +11,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  readReportFeedback,
+  devArtifact,
+  developmentReportScope,
+} from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  readValidationErrorHistory,
+  readPendingValidationError,
+  rejectReport,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
-import { reviewArtifact, type ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
+import {
+  reviewArtifact,
+  reviewReportScope,
+  type ReviewOutput,
+} from '../src/task-engine/actions/review/artifacts.js';
 import type { CurrentRound } from '../src/task-engine/actions/start-round/artifacts.js';
 import {
   createStartRound,
@@ -324,9 +333,7 @@ describe('StartRound', () => {
       // producer's responsibility.
       expect(await readCurrentRound()).toEqual(before);
       await expect(stat(path.join(root, 'artifacts', '3'))).rejects.toThrow(/ENOENT/);
-      const rejection = (await readReportFeedback(root)).find(
-        (entry) => entry.record.kind === 'rejection',
-      );
+      const rejection = (await readValidationErrorHistory(root))[0];
       expect(rejection?.record).toMatchObject({
         scope: {
           project: path.basename(path.dirname(root)),
@@ -740,3 +747,73 @@ describe('StartRound', () => {
     expect(planned.profile).toBe('dev-a');
   });
 });
+
+it.each(['current', 'other head', 'historical'])(
+  'clears only the consumed same-revision review: %s',
+  async (source) => {
+    const round = source === 'historical' ? 2 : 1;
+    await writeCurrentRound({ number: round, profile: 'dev-a', reason: 'retained' });
+    await writeDevelopment(round, 'dev-a');
+    // An independent failed check permits planning even for unrelated review evidence.
+    await writeVerification(round, 'failed');
+    const reviewRound = source === 'historical' ? 1 : round;
+    await writeReview(
+      reviewRound,
+      'changesRequested',
+      source === 'other head' ? otherRevision : headOf(reviewRound),
+    );
+    const scope = reviewReportScope(root, 'NEX-1');
+    if (source === 'current') {
+      await rm(reportPathOf(round, 'reviewer'));
+      await expect(startRoundOver([{ profile: 'dev-a', repairAllowance: 3 }])()).rejects.toThrow(
+        /does not exist/,
+      );
+      await writeBoundReport(round, `rev-${round}`, 'reviewer', 'Restored current review.');
+    } else {
+      await expect(
+        rejectReport({
+          areaRoot: root,
+          scope,
+          invocationId: 'rejected-review',
+          operation: 'review',
+          profile: 'reviewer',
+          context: 'Current reviewer error.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable review error.',
+        }),
+      ).rejects.toThrow('Actionable review error.');
+    }
+    const pending = await readPendingValidationError({ areaRoot: root, scope });
+    expect(pending).not.toBeNull();
+    await expect(startRoundOver([{ profile: 'dev-a', repairAllowance: 3 }])()).resolves.toBe(
+      'started',
+    );
+    expect(await readCurrentRound()).toMatchObject({ number: round + 1 });
+    await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toEqual(
+      source === 'current' ? null : pending,
+    );
+    expect(await readValidationErrorHistory(root)).toHaveLength(1);
+  },
+);
+
+it.each([1, 0])(
+  'clears a repaired failed developer outcome with repair allowance %s',
+  async (repairAllowance) => {
+    await writeCurrentRound({ number: 1, profile: 'dev-a', reason: 'retained' });
+    await writeDevelopment(1, 'dev-a', 'failed');
+    const scope = developmentReportScope(root, 'NEX-1');
+    const start = startRoundOver([{ profile: 'dev-a', repairAllowance }]);
+    const file = reportPathOf(1, 'developer');
+    const markdown = await readFile(file, 'utf8');
+    await rm(file);
+    await expect(start()).rejects.toThrow(/does not exist/);
+    expect(await readPendingValidationError({ areaRoot: root, scope })).not.toBeNull();
+    expect(await readCurrentRound()).toMatchObject({ number: 1 });
+    await writeFile(file, markdown);
+    await expect(start()).resolves.toBe(repairAllowance === 0 ? 'exhausted' : 'started');
+    expect(await readCurrentRound()).toMatchObject({ number: repairAllowance === 0 ? 1 : 2 });
+    await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+    expect(await readValidationErrorHistory(root)).toHaveLength(1);
+  },
+);

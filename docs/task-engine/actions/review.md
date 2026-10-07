@@ -122,6 +122,9 @@ foreign task evidence or mismatched repository revisions fail before publication
 validation-error context under the developer's responsibility. Readable Markdown wording changes
 do not invalidate evidence. Approved and changesRequested saved replacements clear only the
 reviewer's pending validation-error context under the shared continuation rules.
+Developer context clears after validating the development basis: fresh assessment requires the
+delivered worktree head with no tracked changes; saved-review publication replay uses the validated
+assessment for the matching delivered and verified head without another worktree assessment.
 
 New agent responses use the strict current response schema. The producer's saved-record reader also
 accepts former finding IDs and disposition fields in retained reports without enforcing removed

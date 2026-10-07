@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
+import { readValidationErrorHistory } from '../src/task-engine/actions/report-feedback.js';
 import { challengerArtifact } from '../src/task-engine/actions/challenger/artifacts.js';
 import {
   ideaCycleDirectory,
@@ -341,7 +341,7 @@ describe('StartIdeaRound', () => {
       expect(await started.plan()).toEqual(plan);
       expect(await listIdeaCycles(started.root, 1)).toEqual([2]);
       expect(started.events).toEqual([]);
-      const feedback = await readReportFeedback(started.root);
+      const feedback = await readValidationErrorHistory(started.root);
       expect(feedback).toHaveLength(1);
       expect(feedback[0]?.record).toMatchObject({
         scope: { role: 'challenger', reportKind: 'challenge' },
@@ -352,13 +352,13 @@ describe('StartIdeaRound', () => {
         output: rejected,
         assignedReport: { path: report },
       });
-      // Restoring the saved result follows the same next-cycle route and leaves rejection
+      // Restoring the saved result follows the same next-cycle route and leaves validation-error
       // evidence outstanding for the next responsible Challenger invocation.
       await writeFile(file, JSON.stringify(result));
       await writeFile(report, markdown);
       await expect(started.action({ route: 'next' })).resolves.toBe('opened');
       expect(await started.plan()).toMatchObject({ cycle: 3, route: 'next' });
-      await expect(readReportFeedback(started.root)).resolves.toHaveLength(1);
+      await expect(readValidationErrorHistory(started.root)).resolves.toHaveLength(1);
     },
   );
 

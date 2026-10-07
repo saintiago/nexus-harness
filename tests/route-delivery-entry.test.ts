@@ -7,11 +7,12 @@ import { createTaskEngine, type BoundAction } from '../src/task-engine/index.js'
 import { createRouteDeliveryEntry } from '../src/task-engine/actions/route-delivery-entry/index.js';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
 import {
-  outstandingReportFeedback,
-  readReportFeedback,
+  readPendingValidationError,
+  readValidationErrorHistory,
   rejectReport,
-  retainSuppliedFeedback,
 } from '../src/task-engine/actions/report-feedback.js';
+import { createVerify } from '../src/task-engine/actions/verify/index.js';
+import { repositoryState, scriptedGit } from './support/git.js';
 import { finiteDelivery } from '../workflows/finite-delivery.js';
 
 const directories: string[] = [];
@@ -178,17 +179,16 @@ describe('retained finite delivery entry', () => {
       const rejectedOutput = await readFile(saved.file, 'utf8');
 
       await expect(prepared.route()).rejects.toThrow();
-      const records = await readReportFeedback(prepared.root);
+      const records = await readValidationErrorHistory(prepared.root);
       expect(records).toHaveLength(1);
       const rejection = records[0]!.record;
       expect(rejection).toMatchObject({
-        kind: 'rejection',
+        kind: 'validation-error',
         scope: developmentReportScope(prepared.root, 'NEX-1'),
         operation: 'develop',
         output: rejectedOutput,
         assignedReport: { path: saved.reportFile },
       });
-      if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
       if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
       else {
         expect(rejection.report).not.toBeNull();
@@ -203,14 +203,75 @@ describe('retained finite delivery entry', () => {
     await writeFile(saved.reportFile, 'Reworded after the turn, still readable.\n');
 
     await expect(prepared.route()).resolves.toBe('verify');
-    await expect(readReportFeedback(prepared.root)).resolves.toEqual([]);
+    await expect(readValidationErrorHistory(prepared.root)).resolves.toEqual([]);
   });
 
+  it.each(['moved head', 'tracked changes'])(
+    'keeps developer context through routing and Verify rejecting %s',
+    async (damage) => {
+      const prepared = await entry({ development: 'completed' });
+      await saveBoundDevelopment(prepared.root, 'completed');
+      await writeFile(
+        path.join(prepared.root, 'state/prepared-workspace.json'),
+        JSON.stringify({
+          taskKey: 'NEX-1',
+          repository: '/origin/repository.git',
+          branch: 'task/NEX-1',
+          baseRevision: 'base',
+        }),
+      );
+      const scope = developmentReportScope(prepared.root, 'NEX-1');
+      await expect(
+        rejectReport({
+          areaRoot: prepared.root,
+          scope,
+          invocationId: 'rejected-dev',
+          operation: 'develop',
+          profile: 'nexus-sol',
+          context: 'Current round development.',
+          source: null,
+          output: 'invalid',
+          reason: 'Actionable developer error.',
+        }),
+      ).rejects.toThrow('Actionable developer error.');
+      const pending = await readPendingValidationError({ areaRoot: prepared.root, scope });
+      await expect(prepared.route()).resolves.toBe('verify');
+      const state = repositoryState({
+        headRevision: damage === 'moved head' ? 'other-head' : 'head',
+        trackedChanges: damage === 'tracked changes',
+      });
+      const verify = (git: ReturnType<typeof scriptedGit>['git']) =>
+        createVerify({
+          workspace: { root: prepared.root },
+          checks: [],
+          environment: {},
+          git,
+          runCommand: async () => {
+            throw new Error('No commands expected.');
+          },
+          publish: () => undefined,
+        });
+      await expect(verify(scriptedGit([state]).git)()).rejects.toThrow(
+        damage === 'moved head' ? /not the development/ : /tracked changes/,
+      );
+      await expect(readPendingValidationError({ areaRoot: prepared.root, scope })).resolves.toEqual(
+        pending,
+      );
+      // Once the consumer's own checks pass, continuation completes the clear.
+      await expect(
+        verify(scriptedGit([repositoryState({ headRevision: 'head' })]).git)(),
+      ).resolves.toBe('passed');
+      await expect(
+        readPendingValidationError({ areaRoot: prepared.root, scope }),
+      ).resolves.toBeNull();
+    },
+  );
+
   it.each(['completed', 'failed'] as const)(
-    'finishes only the saved %s invocation correction before retained routing',
+    'leaves the bound %s outcome pending for the routed consumer to validate',
     async (status) => {
       const prepared = await entry({ development: status });
-      const saved = await saveBoundDevelopment(prepared.root, status);
+      await saveBoundDevelopment(prepared.root, status);
       const scope = developmentReportScope(prepared.root, 'NEX-1');
       const reject = (invocationId: string) =>
         rejectReport({
@@ -225,27 +286,21 @@ describe('retained finite delivery entry', () => {
           reason: `Unusable output from ${invocationId}.`,
         });
       await expect(reject('earlier')).rejects.toThrow('Unusable output');
-      const supplied = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
-      await retainSuppliedFeedback({
-        areaRoot: prepared.root,
-        invocationId: saved.outcome.invocationId,
-        rejections: supplied.map((entry) => ({ path: entry.path })),
-      });
       await expect(reject('later')).rejects.toThrow('Unusable output');
+      const before = await readPendingValidationError({ areaRoot: prepared.root, scope });
+      expect(before?.entries[0]?.invocationId).toBe('later');
       const expectedPhase = status === 'completed' ? 'verify' : 'round';
       expect(await prepared.route()).toBe(expectedPhase);
       expect(await prepared.route()).toBe(expectedPhase);
-      const outstanding = await outstandingReportFeedback({ areaRoot: prepared.root, scope });
-      expect(outstanding).toHaveLength(1);
-      expect(outstanding[0]!.record.invocationId).toBe('later');
-      const records = await readReportFeedback(prepared.root);
-      const corrections = records.filter((entry) => entry.record.kind === 'correction');
-      expect(corrections).toHaveLength(1);
-      expect(corrections[0]!.record).toMatchObject({
-        invocationId: saved.outcome.invocationId,
-        artifact: { path: saved.file },
-        rejections: supplied.map((entry) => ({ path: entry.path })),
-      });
+      // Routing does not establish worktree readiness; the consuming owner must validate it.
+      await expect(readPendingValidationError({ areaRoot: prepared.root, scope })).resolves.toEqual(
+        before,
+      );
+      const records = await readValidationErrorHistory(prepared.root);
+      expect(records.map((entry) => entry.record.reason)).toEqual([
+        'Unusable output from earlier.',
+        'Unusable output from later.',
+      ]);
     },
   );
 });

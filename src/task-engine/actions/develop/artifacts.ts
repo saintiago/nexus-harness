@@ -2,12 +2,7 @@ import { z } from 'zod';
 import { readBoundReport, retainedReportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
-import {
-  finishSuppliedCorrection,
-  projectOfWorkspace,
-  rejectUnusableRecord,
-  type ReportScope,
-} from '../report-feedback.js';
+import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
 
 /**
  * Develop's artifact contract: the saved Markdown report bound to the observed repository
@@ -98,10 +93,10 @@ export function developmentReportScope(areaRoot: string, taskKey: string): Repor
  * Require one retained development outcome to be usable for a workflow decision: it must describe
  * the expected task and, when it carries the current report binding, its assigned Markdown must be
  * readable. An unusable outcome is preserved under the developer's report responsibility as
- * attributable rejection evidence before the read fails. A retained combined report stays readable
- * history, and the check never makes a damaged outcome usable.
- * After validation, finish any interrupted correction attributed to this saved invocation, so
- * retained continuation also reconciles it when Develop itself is skipped.
+ * attributable validation-error evidence before the read fails. A retained combined report stays
+ * readable history, and the check never makes a damaged outcome usable. This shared validation
+ * serves history and other consumers; clearing pending context belongs to the owner's
+ * current-round reader and save paths.
  */
 export async function requireUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;
@@ -134,21 +129,16 @@ export async function requireUsableDevelopmentOutcome(settings: {
       error,
     });
   }
-  if (isBoundDevelopmentOutput(settings.outcome)) {
-    await finishSuppliedCorrection({
-      areaRoot: settings.areaRoot,
-      scope: developmentReportScope(settings.areaRoot, settings.taskKey),
-      invocationId: settings.outcome.invocationId,
-      artifact: { path: settings.file },
-      content: settings.outcome,
-    });
-  }
 }
 
 /**
  * Read the current round's saved development outcome for a decision outside Develop. An absent
- * record is null; an unusable record is preserved as the developer's rejection evidence before
- * the read fails; a returned outcome has already passed its task and report-binding checks.
+ * record is null; an unusable record is preserved as the developer's validation-error evidence
+ * before the read fails; a returned outcome has already passed its task and report-binding
+ * checks. Reading validates evidence; it never clears the responsibility's pending context. The
+ * caller that established the saved outcome as the usable replacement for its own current basis
+ * clears it, so a caller whose revision, task or readiness checks fail keeps the actionable error
+ * for the next responsible invocation.
  */
 export async function readUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;

@@ -318,6 +318,8 @@ export function createSelectWork(settings: SelectWorkSettings): BoundAction {
       ) {
         return `Issue ${issue.key} is In Review without retained delivery and matching successful verification evidence.`;
       }
+      // Admission checks saved evidence only. Leave developer context for the consuming owner,
+      // whose applicable checks establish readiness for fresh review or saved-review replay.
     }
     return null;
   }
