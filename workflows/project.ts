@@ -179,7 +179,7 @@ export const project = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'advanced',
-              target: 'analyzePreparationAdvanced',
+              target: 'route',
             },
             {
               guard: ({ event }) => event.output === 'waiting',
@@ -219,7 +219,7 @@ export const project = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'advanced',
-              target: 'analyzePreparationAdvanced',
+              target: 'route',
             },
             {
               guard: ({ event }) => event.output === 'waiting',
@@ -259,7 +259,7 @@ export const project = createMachine(
           onDone: [
             {
               guard: ({ event }) => event.output === 'advanced',
-              target: 'analyzePreparationAdvanced',
+              target: 'route',
             },
             {
               guard: ({ event }) => event.output === 'waiting',
@@ -303,7 +303,7 @@ export const project = createMachine(
             },
             {
               guard: ({ event }) => event.output === 'advanced',
-              target: 'analyzePreparationAdvanced',
+              target: 'route',
             },
             {
               guard: ({ event }) => event.output === 'waiting',
@@ -321,8 +321,10 @@ export const project = createMachine(
           ],
         },
       },
-      // Capture published outcomes and selected failures before selection, routing or recovery.
-      // Architecture capture follows the actual handoff; each analysis preserves its destination.
+      // The former intermediate-success capture: no new advance enters it, and successful stage
+      // publications route directly, but a parent snapshot paused here before consolidation keeps
+      // its saved state and invoked actor so restoration resumes routing without another capture.
+      // Requests already recorded under it stay independently resumable through the action.
       analyzePreparationAdvanced: {
         invoke: {
           src: 'AnalyzeExperience',

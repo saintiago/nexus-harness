@@ -26,7 +26,9 @@ import {
 import {
   createAnalyzeExperience,
   createAnalyzeExperienceAction,
+  publishCaptureOutcome,
 } from '../task-engine/actions/analyze-experience/index.js';
+import type { ExperienceHandoffIdentity } from '../task-engine/actions/analyze-experience/artifacts.js';
 import { createChallenger } from '../task-engine/actions/challenger/index.js';
 import { createCompleteTask } from '../task-engine/actions/complete-task/index.js';
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
@@ -84,6 +86,7 @@ import {
   ideaPublicationTerminals,
   isPreparationTerminal,
   preparationHandoff,
+  preparationSuccessIdentity,
   selectionFailureHandoff,
   type PreparationTerminal,
 } from './analysis-handoff.js';
@@ -274,10 +277,38 @@ export function createActionBinding(
 
     // The worker records terminal handoffs; Application supervises the action's analysis, memory
     // calls and submission, so this instance never contacts the service or a provider.
+    const analyzeExperienceOwner = createAnalyzeExperience(
+      experienceCaptureSettings(nexus, paths, taskSource.project),
+    );
     const analyzeExperience = createAnalyzeExperienceAction({
-      owner: createAnalyzeExperience(experienceCaptureSettings(nexus, paths, taskSource.project)),
+      owner: analyzeExperienceOwner,
       publish,
     });
+
+    /**
+     * Replay one recorded final handoff by identity before selecting replacement evidence: a miss
+     * reports null so the caller captures the complete handoff, while a replayed capture reports
+     * through the same outcome event as a new one. A damaged record saves no capture evidence, so
+     * its reason is reported on the event stream instead.
+     */
+    const replayExperience = async (
+      identity: ExperienceHandoffIdentity,
+      terminal: unknown,
+    ): Promise<string | null> => {
+      const replayed = await analyzeExperienceOwner.replayCapture(identity);
+      if (replayed === null) {
+        return null;
+      }
+      publishCaptureOutcome(publish, identity.workId, replayed);
+      if (replayed.evidence === null && replayed.outcome === 'unavailable') {
+        captureUnavailable(
+          publish,
+          terminal,
+          replayed.detail ?? 'the recorded request is unusable',
+        );
+      }
+      return replayed.outcome;
+    };
 
     /**
      * AnalyzeExperience's binding: resolve the selected issue and the producer-owned evidence of
@@ -285,13 +316,19 @@ export function createActionBinding(
      * the parent's publication; finite terminals record the child's completion evidence.
      */
     const experienceAction: BoundAction = async (input?: unknown) => {
-      if (!analysisEnabled(nexus)) {
-        return 'skipped';
-      }
       const terminal =
         typeof input === 'object' && input !== null
           ? (input as { readonly terminal?: unknown }).terminal
           : undefined;
+      if (terminal === 'preparation-advanced') {
+        // The former intermediate-success capture is a restored compatibility state: a parent
+        // snapshot paused there resumes routing without evidence discovery or a new capture.
+        // Consolidation moved the successful analysis boundary to the implementation handoff.
+        return 'skipped';
+      }
+      if (!analysisEnabled(nexus)) {
+        return 'skipped';
+      }
       try {
         if (terminal === 'selection-failed') {
           const failureFile = path.join(
@@ -332,6 +369,18 @@ export function createActionBinding(
               `The "${terminal}" preparation terminal names no preparation stage; its evidence ` +
                 'cannot be selected.',
             );
+          }
+          if (terminal === 'preparation-handoff') {
+            // The final success first replays the identity its earlier capture would have used, so
+            // an upgrade reuses the recorded request instead of expanding its artifact list.
+            const identity = await preparationSuccessIdentity({
+              selection,
+              stage: publishedStage,
+            });
+            const replayed = await replayExperience(identity, terminal);
+            if (replayed !== null) {
+              return replayed;
+            }
           }
           return await analyzeExperience(
             await preparationHandoff({

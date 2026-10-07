@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -465,6 +465,246 @@ describe('experience capture', () => {
   });
 });
 
+describe('recorded capture replay', () => {
+  it('replays one recorded request by identity without reselecting or re-timing it', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'project',
+      attemptId,
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    };
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+    await expect(owner.capture(handoff)).resolves.toMatchObject({ outcome: 'recorded' });
+    const identity = experienceIdentity(handoff);
+    const requestFile = experienceRequestFile(directory, identity);
+    const recorded = await readFile(requestFile, 'utf8');
+    const captureFile = experienceCaptureFile(directory, identity);
+    const capture = await readFile(captureFile, 'utf8');
+
+    // The source evidence disappears after capture; the request's own copy stays its evidence.
+    await rm(evidence);
+    const replayed = await owner.replayCapture(handoff);
+
+    expect(replayed).toMatchObject({
+      outcome: 'recorded',
+      detail: 'NEX-7 project/task/NEX-7/complete-completed ("completed")',
+    });
+    expect(replayed?.evidence?.path).toBe(captureFile);
+    expect(await readFile(requestFile, 'utf8')).toBe(recorded);
+    // The replay reuses the capture evidence its original capture recorded, byte for byte.
+    expect(await readFile(captureFile, 'utf8')).toBe(capture);
+    expect(JSON.parse(capture)).toMatchObject({
+      identity,
+      project,
+      outcome: 'recorded',
+      handoff,
+    });
+    // The replay neither reselected a source file nor invoked the analyst or the service.
+    expect(
+      await readFile(
+        path.join(experienceEvidenceRoot(directory, identity), 'artifacts', '1', 'completion.json'),
+        'utf8',
+      ),
+    ).toContain(mergeRevision);
+    expect(service.requests).toEqual([]);
+  });
+
+  it('reports no request as a miss so the binding can capture complete evidence', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+
+    await expect(
+      owner.replayCapture({
+        workId,
+        workflow: 'preparation',
+        attemptId: 'attempt-one:architecture:round-2',
+        terminalId: 'preparation-handoff',
+      }),
+    ).resolves.toBeNull();
+    await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports a damaged recorded request as unavailable without replacing it', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const identity = experienceIdentity({
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:architecture:round-2',
+      terminalId: 'preparation-handoff',
+    });
+    const requestFile = experienceRequestFile(directory, identity);
+    await mkdir(path.dirname(requestFile), { recursive: true });
+    await writeFile(requestFile, '{"identity":\n', 'utf8');
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+
+    const replayed = await owner.replayCapture({
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:architecture:round-2',
+      terminalId: 'preparation-handoff',
+    });
+
+    expect(replayed?.outcome).toBe('unavailable');
+    expect(replayed?.evidence).toBeNull();
+    expect(replayed?.detail).toContain('is not valid JSON');
+    // The unreadable record stays untouched: a miss would have permitted replacement.
+    expect(await readFile(requestFile, 'utf8')).toBe('{"identity":\n');
+    expect(await readdir(path.join(directory, 'requests'))).toEqual([`${identity}.json`]);
+    expect(service.requests).toEqual([]);
+  });
+
+  it('reports a request whose capture evidence is unusable as unavailable without replacing it', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    const evidence = path.join(workspace, 'artifacts', '1', 'completion.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, JSON.stringify({ revision: mergeRevision }), 'utf8');
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'project',
+      attemptId,
+      terminalId: 'complete-completed',
+      outcome: 'completed',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    };
+    const service = await controlledService();
+    const owner = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+    await expect(owner.capture(handoff)).resolves.toMatchObject({ outcome: 'recorded' });
+    const identity = experienceIdentity(handoff);
+    const requestFile = experienceRequestFile(directory, identity);
+    const recorded = await readFile(requestFile, 'utf8');
+    const captureFile = experienceCaptureFile(directory, identity);
+    await writeFile(captureFile, '{"identity":\n', 'utf8');
+
+    const replayed = await owner.replayCapture(handoff);
+
+    expect(replayed?.outcome).toBe('unavailable');
+    expect(replayed?.evidence).toBeNull();
+    expect(replayed?.detail).toContain('is missing or unusable');
+    // Neither the unreadable capture evidence nor the request it belongs to is replaced.
+    expect(await readFile(captureFile, 'utf8')).toBe('{"identity":\n');
+    expect(await readFile(requestFile, 'utf8')).toBe(recorded);
+    expect(service.requests).toEqual([]);
+  });
+
+  it('skips a replay when memory is disabled without writing anything', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const disabled = createAnalyzeExperience({
+      directory,
+      project,
+      profile: null,
+      memory: null,
+      analyze: null,
+    });
+
+    await expect(
+      disabled.replayCapture({
+        workId,
+        workflow: 'preparation',
+        attemptId: 'attempt-one:architecture:round-2',
+        terminalId: 'preparation-handoff',
+      }),
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      evidence: null,
+      detail: 'the memory integration is disabled',
+    });
+    await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('replays without disturbing settled analysis or a pending receipt', async () => {
+    const retained = await harness((_context, workspace) => ok(observation(workspace)));
+    const sourceKey = experienceObservationSourceKey(retained.identity, '1');
+    await retained.process();
+    retained.service.block(sourceKey, 'The embedding provider is not configured.');
+    await expect(retained.process()).resolves.toHaveLength(1);
+    const requestFile = experienceRequestFile(retained.directory, retained.identity);
+    const recorded = await readFile(requestFile, 'utf8');
+    const polls = retained.service.requests.length;
+
+    const replayed = await createAnalyzeExperience({
+      directory: retained.directory,
+      project,
+      profile,
+      memory: { url: retained.service.url },
+      analyze: () => Promise.reject(new Error('The settled analysis must be reused.')),
+    }).replayCapture(retained.handoff);
+    expect(replayed).toMatchObject({ outcome: 'recorded' });
+    expect(await readFile(requestFile, 'utf8')).toBe(recorded);
+
+    // The reconciled service stores the note; a restarted owner's receipt continuation uses the
+    // exact stored submission without invoking the analyst or resubmitting the observation.
+    retained.service.store(sourceKey);
+    const restarted = createAnalyzeExperience({
+      directory: retained.directory,
+      project,
+      profile,
+      memory: { url: retained.service.url },
+      analyze: () => Promise.reject(new Error('The settled analysis must be reused.')),
+    });
+
+    await expect(restarted.processPending()).resolves.toEqual([]);
+    await expect(submissionOf(retained)).resolves.toMatchObject({
+      status: 'stored',
+      receiptStatus: 'stored',
+      sourceKey,
+    });
+    expect(
+      retained.service.requests
+        .slice(polls)
+        .filter((request) => request.path === '/v1/observations'),
+    ).toEqual([]);
+    expect(
+      retained.service.requests
+        .slice(polls)
+        .filter((request) => request.path.startsWith('/v1/receipts')),
+    ).toHaveLength(1);
+  });
+});
+
 describe('experience analysis', () => {
   it('persists the validated output once and submits every observation under a stable key', async () => {
     const retained = await harness((_context, workspace) => ok(observation(workspace)));
@@ -892,6 +1132,68 @@ describe('experience analysis', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('the submission of observation 1 of NEX-7 is outstanding');
     expect(service.observations.size).toBe(1);
+  });
+
+  it('settles a pending intermediate-stage request captured before consolidation', async () => {
+    const root = await temporaryDirectory();
+    const directory = path.join(root, 'memory');
+    const workspace = path.join(root, 'workspaces', project, workId);
+    const evidence = path.join(workspace, 'ux', 'state', 'result.json');
+    await mkdir(path.dirname(evidence), { recursive: true });
+    await writeFile(evidence, JSON.stringify({ stage: 'ux', outcome: 'accepted' }), 'utf8');
+    // The former binding captured each accepted stage; its request keeps the original terminal,
+    // attempt identity and retained evidence after the success boundary moved to the handoff.
+    const handoff: ExperienceHandoff = {
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:ux:round-2',
+      terminalId: 'preparation-advanced',
+      outcome: 'advanced',
+      reason: null,
+      workspaceRoot: workspace,
+      artifacts: [{ path: evidence }],
+    };
+    const service = await controlledService();
+    const recorder = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: null,
+    });
+    await expect(recorder.capture(handoff)).resolves.toMatchObject({ outcome: 'recorded' });
+
+    // A restarted owner settles it as it stands: the request is not re-keyed or recaptured, and
+    // its retained copy is the evidence the analyst reads.
+    let invocations = 0;
+    const restarted = createAnalyzeExperience({
+      directory,
+      project,
+      profile,
+      memory: { url: service.url },
+      analyze: async (request) => {
+        invocations += 1;
+        const copy = path.join(request.workspace.root, 'ux', 'state', 'result.json');
+        expect(await readFile(copy, 'utf8')).toContain('accepted');
+        await writeFile(
+          request.reportPath,
+          'The intermediate stage analysis stays settled here.\n',
+          'utf8',
+        );
+        return ok({ output: JSON.stringify({ observations: [] }) });
+      },
+    });
+
+    await expect(restarted.processPending()).resolves.toEqual([]);
+
+    const requestFile = experienceRequestFile(directory, experienceIdentity(handoff));
+    const request = JSON.parse(await readFile(requestFile, 'utf8')) as {
+      readonly identity: string;
+      readonly handoff: ExperienceHandoff;
+    };
+    expect(request.identity).toBe(experienceIdentity(handoff));
+    expect(request.handoff).toEqual(handoff);
+    expect(invocations).toBe(1);
   });
 
   it('keeps an unresolved request analyzable after the attempt is discarded and replaced', async () => {

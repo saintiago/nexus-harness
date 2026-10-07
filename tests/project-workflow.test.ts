@@ -238,10 +238,12 @@ describe('project parent composition', () => {
       preparation: 'returnUpstream',
       publishPreparation: 'advanced',
     });
-    // The advanced publication routes again; the stub reports no further mapping for the same
-    // selection, which the parent treats as attention.
+    // The accepted stage, evaluated skip or upstream correction routes again without analysis; the
+    // stub reports no further mapping for the same selection, which the parent treats as attention.
     expect(returned.result).toEqual({ ok: true, value: 'blocked' });
     expect(returned.calls).not.toContain('HandoffImplementation');
+    expect(returned.calls).not.toContain('AnalyzeExperience');
+    expect(returned.states).not.toContain('analyzePreparationAdvanced');
 
     const waiting = await runParent({
       route: 'prototype',
@@ -250,6 +252,82 @@ describe('project parent composition', () => {
     });
     expect(waiting.result).toEqual({ ok: true, value: 'drained' });
     expect(waiting.states).toContain('select');
+  });
+
+  it('resumes a snapshot paused at the former intermediate-success analysis state without a new capture', async () => {
+    const directory = await temporaryDirectory();
+    const stateFile = path.join(directory, 'workflow.json');
+    // A parent persisted before consolidation: paused in the former intermediate-success capture
+    // with its invoked AnalyzeExperience actor still active and its stage input retained.
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        status: 'active',
+        value: 'analyzePreparationAdvanced',
+        historyValue: {},
+        context: { publishedStage: 'requirements' },
+        children: {
+          '0.project.analyzePreparationAdvanced': {
+            snapshot: {
+              status: 'active',
+              input: { terminal: 'preparation-advanced', stage: 'requirements' },
+            },
+            src: 'AnalyzeExperience',
+            syncSnapshot: false,
+          },
+        },
+      }),
+      'utf8',
+    );
+    const calls: string[] = [];
+    const handoffs: unknown[] = [];
+    let selections = 0;
+    const actions: Record<string, ActionStub> = {
+      SelectWork: async () => (selections++ === 0 ? 'selected' : 'empty'),
+      RouteSelection: async () => {
+        calls.push('RouteSelection');
+        return 'requirements';
+      },
+      PublishPreparationResult: async () => 'waiting',
+      PublishIdeaResult: async () => 'approved',
+      HandoffImplementation: async () => 'handed-off',
+      CompleteDelivery: async () => 'completed',
+      AnalyzeExperience: async (input) => {
+        calls.push('AnalyzeExperience');
+        handoffs.push(input);
+        // The consolidated binding's legacy terminal returns skipped before evidence discovery.
+        return 'skipped';
+      },
+      PreparationStub: async () => 'accepted',
+      IdeaStub: async () => 'approved',
+      DeliveryStub: async () => 'completed',
+    };
+    const engine = createTaskEngine({
+      workflow: project,
+      children: {
+        IdeaRefinement: childMachine('IdeaStub', 'approved'),
+        FiniteDelivery: childMachine('DeliveryStub', 'completed'),
+        Preparation: childMachine('PreparationStub', 'accepted'),
+      },
+      stateFile,
+      bindActions: () => actions,
+    });
+    const states: string[] = [];
+    engine.subscribe((event: EngineEvent) => {
+      if (event.source === 'execution-runner' && event.type === 'state') {
+        states.push(String((event.data as { readonly value: unknown }).value));
+      }
+    });
+
+    expect(await engine.run()).toEqual({ ok: true, value: 'drained' });
+    expect(states[0]).toBe('analyzePreparationAdvanced');
+    expect(states).toContain('route');
+    // The retained invocation restarted with its saved input, then the parent routed onward. The
+    // skipped legacy capture scheduled nothing, and the later waiting capture preserved its
+    // original destination.
+    expect(handoffs[0]).toEqual({ terminal: 'preparation-advanced', stage: 'requirements' });
+    expect(calls[0]).toBe('AnalyzeExperience');
+    expect(calls[1]).toBe('RouteSelection');
   });
 
   it('restores an interrupted child from the composed snapshot and keeps its stage input', async () => {
