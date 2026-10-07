@@ -48,6 +48,7 @@ import {
 import {
   readPendingValidationError,
   readValidationErrorHistory,
+  reportFeedbackRoot,
   type ReportScope,
 } from '../src/task-engine/actions/report-feedback.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
@@ -1395,6 +1396,76 @@ describe('Application execution', () => {
     const records = await readValidationErrorHistory(recoveryArea);
     expect(records).toHaveLength(1);
     expect(records[0]?.record.kind).toBe('validation-error');
+  });
+
+  it('reconciles a legacy project-wide recovery error into the next invocation explicitly', async () => {
+    const executed = await harness({
+      completions: [stopped('first stop\n'), successful],
+      agent: async (request) => {
+        await writeFile(request.reportPath, 'Reconciled the legacy recovery error.', 'utf8');
+        return ok({ output: decision('resume') });
+      },
+    });
+    const recoveryArea = path.join(executed.executionDirectory, 'recovery');
+    // Before HARN-125 recovery recorded one responsibility for the whole project execution under
+    // the project identity as its work; the legacy record names no original work item.
+    await mkdir(reportFeedbackRoot(recoveryArea), { recursive: true });
+    await writeFile(
+      path.join(reportFeedbackRoot(recoveryArea), '000000001-legacy.json'),
+      `${JSON.stringify({
+        kind: 'rejection',
+        scope: {
+          project: 'NEX',
+          workId: 'NEX',
+          area: recoveryArea,
+          role: 'recovery',
+          reportKind: 'recovery-report',
+        },
+        invocationId: 'legacy-invocation',
+        operation: 'Recovery',
+        profile: 'nexus-astra',
+        context: 'Recovery invocation 1 of project NEX, stopped because: the worker failed.',
+        source: null,
+        output: '{"summary":"The former malformed decision."}',
+        reason: 'The former recovery response did not match the response format.',
+        report: null,
+        assignedReport: null,
+      })}\n`,
+    );
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'project',
+    });
+    expect(result.outcome).toBe('completed');
+
+    // The next permitted invocation receives the legacy diagnosis by its own recorded
+    // attribution, with its unknown original work item stated instead of mapped onto the
+    // currently selected work.
+    expect(executed.invocations).toHaveLength(1);
+    const context = executed.invocations[0]?.context ?? '';
+    expect(context).toContain('former project-wide recovery responsibility');
+    expect(context).toContain('original work item cannot be established');
+    expect(context).toContain('The former recovery response did not match the response format.');
+    expect(context).toContain('The former malformed decision.');
+
+    // The validated saved replacement retires the legacy context while its record stays readable.
+    const formerScope: ReportScope = {
+      project: 'NEX',
+      workId: 'NEX',
+      area: recoveryArea,
+      role: 'recovery',
+      reportKind: 'recovery-report',
+    };
+    await expect(
+      readPendingValidationError({ areaRoot: recoveryArea, scope: formerScope }),
+    ).resolves.toBeNull();
+    const records = await readValidationErrorHistory(recoveryArea);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.record).toMatchObject({
+      kind: 'validation-error',
+      reason: 'The former recovery response did not match the response format.',
+    });
   });
 
   it('stops for attention when the retained recovery feedback is unreadable', async () => {

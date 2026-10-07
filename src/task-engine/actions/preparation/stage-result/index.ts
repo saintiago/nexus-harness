@@ -19,6 +19,7 @@ import {
   type PreparationStage,
 } from '../artifacts.js';
 import {
+  clearStageReportValidationError,
   preparationWorktree,
   readStageArtifact,
   readStageRoleArtifact,
@@ -127,22 +128,26 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'A completed preparation round cannot be rewritten with a different result.',
         );
       }
+      // The roles whose current-round saved outcome this replay validates. Clearing their pending
+      // validation-error context belongs to these checks, never to opening a historical report.
+      const validated = new Set<'author' | 'evaluator'>();
       if (outcome === 'accepted' || outcome === 'skipped') {
         const author = await readAuthor();
         if (author === null) {
           throw new Error('A retained acceptance must keep its authored report.');
         }
+        const evaluation = await readEvaluation();
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        const evaluation = await requireRetainedDecision({
+        const decidedEvaluation = await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
           round: plan.round,
           verdict: outcome === 'accepted' ? 'accepted' : 'accepted-skip',
           author,
-          evaluation: await readEvaluation(),
+          evaluation,
           git: settings.git,
         });
         // The replay adopts a retained result only while its recorded attribution identifies the
@@ -152,8 +157,10 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           round: plan.round,
           result: completed,
           author,
-          evaluation,
+          evaluation: decidedEvaluation,
         });
+        validated.add('author');
+        validated.add('evaluator');
       }
       if (outcome === 'needsInput') {
         await requireNeedsInputReport({
@@ -163,6 +170,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           workId: selection.taskKey,
           authoredRevision: completed.authoredRevision,
         });
+        validated.add('author');
       }
       if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
         // A replayed return keeps its returning role's Markdown readable through the producer's
@@ -180,6 +188,9 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
             `Replaying the retained ${settings.stage} return of round ${String(plan.round)} for ` +
             `task ${selection.taskKey}.`,
         });
+        if (completed.returnFinding.role !== null) {
+          validated.add(completed.returnFinding.role);
+        }
       }
       if (
         outcome !== 'exhausted' &&
@@ -200,6 +211,19 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           observations: completed.prototypeObservations,
           author,
           evaluation,
+        });
+        validated.add('author');
+        validated.add('evaluator');
+      }
+      // A validated replay of the current round's saved outcomes is the owner continuation: a
+      // saved replacement whose clear was interrupted completes here, and a resolved error never
+      // reaches a later round.
+      for (const role of validated) {
+        await clearStageReportValidationError({
+          issueRoot,
+          stage: settings.stage,
+          workId: selection.taskKey,
+          role,
         });
       }
       const terminal =
@@ -237,6 +261,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           'report.',
       );
     }
+    // The roles whose current-round saved outcome this finalization validates.
+    const validated = new Set<'author' | 'evaluator'>();
     if (outcome === 'needsInput') {
       await requireNeedsInputReport({
         issueRoot,
@@ -245,6 +271,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         workId: selection.taskKey,
         authoredRevision: author.revision,
       });
+      validated.add('author');
     }
     const evaluation = await readEvaluation();
     const upstream = evaluation?.upstream ?? author.upstream;
@@ -323,6 +350,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           `Finalizing the ${settings.stage} return of round ${String(plan.round)} for task ` +
           `${selection.taskKey}.`,
       });
+      validated.add(returning.role);
     }
 
     /**
@@ -360,6 +388,10 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         evaluation,
         git: settings.git,
       });
+      validated.add('author');
+      if (evaluation !== null) {
+        validated.add('evaluator');
+      }
     }
     if (author.plan.length > 0) {
       // The implementation plan stays a stage artifact consumed through its own declaration; it
@@ -515,6 +547,16 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       throw new Error(
         `The ${settings.stage} stage cannot return upstream without naming the earlier stage.`,
       );
+    }
+    // A finalized round's validated outcomes are the owners' saved replacements: complete any
+    // interrupted clear so a resolved error never reaches a later round.
+    for (const role of validated) {
+      await clearStageReportValidationError({
+        issueRoot,
+        stage: settings.stage,
+        workId: selection.taskKey,
+        role,
+      });
     }
     await writeStageArtifact(root, plan.round, stageResultArtifact, result);
     await writeRecord(path.join(root, stageTerminalDeclaration.file), result);

@@ -34,7 +34,11 @@ import {
   type StageRoundPlan,
   type PreparationResult,
 } from './artifacts.js';
-import { projectOfWorkspace, rejectUnusableRecord } from '../report-feedback.js';
+import {
+  clearPendingValidationError,
+  projectOfWorkspace,
+  rejectUnusableRecord,
+} from '../report-feedback.js';
 import {
   authoredIdentity,
   recordIdentity,
@@ -688,6 +692,32 @@ export async function requireStageReport(settings: {
       assignedReport: binding.report,
     });
   }
+}
+
+/**
+ * Complete an interrupted save/clear for one stage role after the caller validated that role's
+ * current-round saved outcome as the usable replacement for its decision. The caller names the
+ * validated role; the producer-owned retained-decision validation accepted the record, bound or
+ * under its documented compatibility rules, and opening a report or replaying a historical round
+ * never clears by itself.
+ */
+export async function clearStageReportValidationError(settings: {
+  readonly issueRoot: string;
+  readonly stage: PreparationStage;
+  readonly workId: string;
+  readonly role: 'author' | 'evaluator';
+}): Promise<void> {
+  const area = stageRoot(settings.issueRoot, settings.stage);
+  await clearPendingValidationError({
+    areaRoot: area,
+    scope: stageReportScope({
+      project: projectOfWorkspace(settings.issueRoot),
+      workId: settings.workId,
+      area,
+      stage: settings.stage,
+      role: settings.role,
+    }),
+  });
 }
 
 /** A retained question needs its exact producing author and that author's usable report. */

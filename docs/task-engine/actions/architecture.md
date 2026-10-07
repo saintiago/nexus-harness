@@ -146,8 +146,11 @@ resolved-reference lists, supplied-feedback proofs or saved-outcome identity mat
 Preparation owns feedback in its stage area, idea refinement in its refinement area, finite delivery
 in the selected implementation issue root, analysis in its durable request area, and Application
 recovery in its stable project recovery area. Recovery partitions context by selected work, with a
-separate no-selected-work location, so a different item cannot inherit an earlier item's errors.
-Each caller selects a fixed work/role/response-variant location; concurrent roles remain separate. Repository donation, profile changes, round advancement,
+separate no-selected-work location, so a different item cannot inherit an earlier item's errors. A
+former project-wide recovery context is read by its own recorded attribution and supplied with the
+fact that its original work item cannot be established, so a converted legacy error is neither
+hidden nor presented as the selected work's own. Each caller selects a fixed
+work/role/response-variant location; concurrent roles remain separate. Repository donation, profile changes, round advancement,
 selection reset and worker restart neither transfer this context to another item nor erase it.
 
 Before the next permitted responsible invocation, supply its pending error reason, original

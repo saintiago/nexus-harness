@@ -2,8 +2,9 @@ import path from 'node:path';
 import type { BoundAction } from '../../index.js';
 import { createArtifactHelpers } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
-import { readUsableDevelopmentOutcome } from '../develop/artifacts.js';
+import { developmentReportScope, readUsableDevelopmentOutcome } from '../develop/artifacts.js';
 import { readRecord, readRequiredRecord } from '../records.js';
+import { clearPendingValidationError } from '../report-feedback.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
@@ -37,6 +38,13 @@ export function createRouteDeliveryEntry(settings: {
       verificationArtifact,
       deliveryArtifact,
     );
+    // The current round's saved outcome is the retained basis this route selects a phase for; the
+    // evidence below only chooses that phase, so an owner-validated saved replacement completes
+    // its pending validation-error context before the phase is entered.
+    await clearPendingValidationError({
+      areaRoot: root,
+      scope: developmentReportScope(root, selection.taskKey),
+    });
     if (development.status === 'failed') return 'round';
     if (verification === null || verification.headRevision !== development.headRevision)
       return 'verify';

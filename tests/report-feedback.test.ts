@@ -860,3 +860,155 @@ it('preserves an unusable retained evaluation under the evaluator responsibility
   expect(retained.entries[0]?.invocationId).toBeNull();
   await expect(readValidationErrorHistory(root)).resolves.toHaveLength(2);
 });
+
+it('keeps a rejection actionable when another responsibility’s correction references it', async () => {
+  const areaRoot = await temporaryDirectory();
+  const developer = scopeIn(areaRoot);
+  const reviewer = scopeIn(areaRoot, { role: 'reviewer', reportKind: 'review' });
+  const rejectionFile = path.join(reportFeedbackRoot(areaRoot), '000000001-rejection.json');
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(
+    rejectionFile,
+    `${JSON.stringify({
+      kind: 'rejection',
+      scope: developer,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'rejected bytes',
+      reason: 'The developer rule was violated.',
+    })}\n`,
+  );
+  // The correction belongs to the reviewer's responsibility; a former correction resolved only
+  // the rejections of its own scope, so the developer's diagnostic stays actionable.
+  await writeFile(
+    path.join(reportFeedbackRoot(areaRoot), '000000002-correction.json'),
+    `${JSON.stringify({
+      kind: 'correction',
+      scope: reviewer,
+      rejections: [{ path: rejectionFile }],
+      artifact: { path: path.join(areaRoot, 'artifacts', '1', 'review.json') },
+      artifactIdentity: 'former-identity',
+      invocationId: 'invocation-2',
+    })}\n`,
+  );
+
+  const pending = await pendingOf(areaRoot, developer);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]).toMatchObject({
+    output: 'rejected bytes',
+    reason: 'The developer rule was violated.',
+  });
+  await expect(readPendingValidationError({ areaRoot, scope: reviewer })).resolves.toBeNull();
+  expect((await readValidationErrorHistory(areaRoot)).map((entry) => entry.record.reason)).toEqual([
+    'The developer rule was violated.',
+  ]);
+});
+
+it('retires resolved rejections before their corrections so an interruption cannot reopen them', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  const correctionFile = path.join(reportFeedbackRoot(areaRoot), 'a-correction.json');
+  const rejectionFile = path.join(reportFeedbackRoot(areaRoot), 'z-rejection.json');
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(
+    rejectionFile,
+    `${JSON.stringify({
+      kind: 'rejection',
+      scope,
+      invocationId: 'invocation-1',
+      operation: 'Develop',
+      profile: 'dev-a',
+      context: 'Development round 1, task NEX-7.',
+      source: null,
+      output: 'resolved bytes',
+      reason: 'The resolved rule was violated.',
+    })}\n`,
+  );
+  await writeFile(
+    correctionFile,
+    `${JSON.stringify({
+      kind: 'correction',
+      scope,
+      rejections: [{ path: rejectionFile }],
+      artifact: { path: path.join(areaRoot, 'artifacts', '1', 'development.json') },
+      artifactIdentity: 'former-identity',
+      invocationId: 'invocation-1',
+    })}\n`,
+  );
+
+  // The rejection's retirement is interrupted: its history target cannot be created while the
+  // resolution evidence is still in the active location, so a retry still reads both records.
+  await mkdir(path.join(reportFeedbackRoot(areaRoot), 'history', 'z-rejection.json'), {
+    recursive: true,
+  });
+  await expect(readPendingValidationError({ areaRoot, scope })).rejects.toThrow(
+    /could not be moved into readable history/,
+  );
+  await expect(stat(rejectionFile)).resolves.toBeDefined();
+  await expect(stat(correctionFile)).resolves.toBeDefined();
+
+  // With the interruption cleared, the retirement resolves the diagnostic instead of reopening
+  // it: the rejection is retired first, while the correction that resolves it is still active.
+  await rm(path.join(reportFeedbackRoot(areaRoot), 'history', 'z-rejection.json'), {
+    recursive: true,
+    force: true,
+  });
+  await expect(readPendingValidationError({ areaRoot, scope })).resolves.toBeNull();
+  const history = await readValidationErrorHistory(areaRoot);
+  expect(history).toHaveLength(1);
+  expect(history[0]?.record.reason).toBe('The resolved rule was violated.');
+  await expect(
+    stat(path.join(reportFeedbackRoot(areaRoot), 'history', 'legacy', 'a-correction.json')),
+  ).resolves.toBeDefined();
+});
+
+it('recovers a new error whose readable record write was interrupted after its pending context', async () => {
+  const areaRoot = await temporaryDirectory();
+  const scope = scopeIn(areaRoot);
+  // The readable history area is obstructed: the pending context lands, its record cannot.
+  await mkdir(reportFeedbackRoot(areaRoot), { recursive: true });
+  await writeFile(path.join(reportFeedbackRoot(areaRoot), 'history'), 'not a directory');
+  const failure = await rejectReport({
+    areaRoot,
+    scope,
+    invocationId: 'invocation-1',
+    operation: 'Develop',
+    profile: 'dev-a',
+    context: 'Development round 1, task NEX-7.',
+    source: null,
+    output: 'rejected bytes',
+    reason: 'The rule was violated.',
+  }).then(
+    () => null,
+    (error: Error) => error,
+  );
+  expect(failure?.message).toContain('The rule was violated.');
+  expect(failure?.message).toContain('its pending context is retained');
+
+  // The interrupted retention still reaches the next responsible invocation with the whole
+  // diagnosis and the record path it promises.
+  const pending = await pendingOf(areaRoot, scope);
+  expect(pending.entries).toHaveLength(1);
+  expect(pending.entries[0]).toMatchObject({
+    output: 'rejected bytes',
+    reason: 'The rule was violated.',
+  });
+  expect(path.dirname(pending.entries[0]!.evidence.path)).toBe(
+    path.join(reportFeedbackRoot(areaRoot), 'history'),
+  );
+
+  // Once the obstruction clears, the owner-validated clear completes the readable record the
+  // context promised instead of discarding it.
+  await rm(path.join(reportFeedbackRoot(areaRoot), 'history'), { force: true });
+  await clearPendingValidationError({ areaRoot, scope });
+  const history = await readValidationErrorHistory(areaRoot);
+  expect(history).toHaveLength(1);
+  expect(history[0]?.path).toBe(pending.entries[0]!.evidence.path);
+  expect(history[0]?.record).toMatchObject({
+    output: 'rejected bytes',
+    reason: 'The rule was violated.',
+  });
+});

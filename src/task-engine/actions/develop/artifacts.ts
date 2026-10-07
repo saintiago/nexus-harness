@@ -2,12 +2,7 @@ import { z } from 'zod';
 import { readBoundReport, retainedReportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
-import {
-  clearPendingValidationError,
-  projectOfWorkspace,
-  rejectUnusableRecord,
-  type ReportScope,
-} from '../report-feedback.js';
+import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
 
 /**
  * Develop's artifact contract: the saved Markdown report bound to the observed repository
@@ -140,9 +135,10 @@ export async function requireUsableDevelopmentOutcome(settings: {
  * Read the current round's saved development outcome for a decision outside Develop. An absent
  * record is null; an unusable record is preserved as the developer's validation-error evidence
  * before the read fails; a returned outcome has already passed its task and report-binding
- * checks. Because the caller names the owner's current round, validating the saved replacement
- * here also clears a pending validation-error context, completing an interrupted save/clear
- * without another development turn.
+ * checks. Reading validates evidence; it never clears the responsibility's pending context. The
+ * caller that established the saved outcome as the usable replacement for its own current basis
+ * clears it, so a caller whose revision, task or readiness checks fail keeps the actionable error
+ * for the next responsible invocation.
  */
 export async function readUsableDevelopmentOutcome(settings: {
   readonly areaRoot: string;
@@ -182,12 +178,6 @@ export async function readUsableDevelopmentOutcome(settings: {
       invocationId: null,
       context: settings.context,
     });
-    if (isBoundDevelopmentOutput(outcome)) {
-      await clearPendingValidationError({
-        areaRoot: settings.areaRoot,
-        scope: developmentReportScope(settings.areaRoot, settings.taskKey),
-      });
-    }
   }
   return outcome;
 }

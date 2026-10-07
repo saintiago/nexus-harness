@@ -390,19 +390,18 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       existing.headRevision === before.headRevision &&
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
-      if (isBoundDevelopmentOutput(existing)) {
-        await requireUsableDevelopmentOutcome({
-          areaRoot: root,
-          taskKey: selection.taskKey,
-          file: artifactFile,
-          outcome: existing,
-          invocationId,
-          context: attribution,
-        });
-        // The owner validated the current round's saved replacement; finish an interrupted
-        // save/clear replay without another invocation.
-        await clearPendingValidationError({ areaRoot: root, scope });
-      }
+      await requireUsableDevelopmentOutcome({
+        areaRoot: root,
+        taskKey: selection.taskKey,
+        file: artifactFile,
+        outcome: existing,
+        invocationId,
+        context: attribution,
+      });
+      // The owner validated the current round's saved outcome — current bound or retained
+      // combined — as the replacement this turn reuses; finish an interrupted save/clear replay
+      // without another invocation.
+      await clearPendingValidationError({ areaRoot: root, scope });
       report(existing.status);
       return existing.status;
     }

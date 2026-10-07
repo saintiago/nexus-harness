@@ -1475,9 +1475,9 @@ describe('experience analysis', () => {
   });
 
   it.each([
-    { variant: 'restored bound report' as const, invokes: false },
-    { variant: 'repaired record without a current binding' as const, invokes: true },
-  ])('continues an interrupted save/clear from a $variant', async ({ variant, invokes }) => {
+    { variant: 'restored bound report' as const },
+    { variant: 'repaired record without a current binding' as const },
+  ])('continues an interrupted save/clear from a $variant', async ({ variant }) => {
     const retained = await harness(() => ok(JSON.stringify({ observations: [] })));
     await expect(retained.process()).resolves.toEqual([]);
     const saved = await analysisOf(retained);
@@ -1494,8 +1494,9 @@ describe('experience analysis', () => {
       // replacement: the replay completes the interrupted clear without another invocation.
       await writeFile(report.path, markdown, 'utf8');
     } else {
-      // A readable former handoff-shaped record replaces the damaged one: it stays submittable,
-      // but carries no current binding, so the next permitted invocation supplies one.
+      // A readable former handoff-shaped record replaces the damaged one: the producer-owned
+      // compatibility reader accepts it without retroactive Markdown, and its accepted
+      // observations stay submittable.
       await writeFile(
         experienceAnalysisFile(retained.directory, retained.identity),
         `${JSON.stringify(
@@ -1520,14 +1521,9 @@ describe('experience analysis', () => {
     await expect(
       retained.process({ analyze: () => ok(JSON.stringify({ observations: [] })) }),
     ).resolves.toEqual([]);
-    if (invokes) {
-      expect(retained.requests).toHaveLength(invocations + 1);
-      const context = retained.contexts.at(-1) ?? '';
-      expect(context).toContain('Pending validation error');
-      expect(context).toContain('does not exist');
-    } else {
-      expect(retained.requests).toHaveLength(invocations);
-    }
+    // The saved analysis the producer-owned reader accepted — current bound or retained former
+    // shape — completes the interrupted clear without another analyst invocation.
+    expect(retained.requests).toHaveLength(invocations);
     await expect(
       readPendingValidationError({
         areaRoot: evidenceRootOf(retained),

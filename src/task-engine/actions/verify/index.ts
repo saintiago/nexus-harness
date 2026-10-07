@@ -9,12 +9,17 @@ import type {
 import type { Command } from '../../../configuration/index.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
-import { devArtifact, readUsableDevelopmentOutcome } from '../develop/artifacts.js';
+import {
+  developmentReportScope,
+  devArtifact,
+  readUsableDevelopmentOutcome,
+} from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
+import { clearPendingValidationError } from '../report-feedback.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from './artifacts.js';
 
@@ -152,6 +157,15 @@ export function createVerify(settings: VerifySettings): BoundAction {
           `result's revision ${development.headRevision}; the configured checks were not run.`,
       );
     }
+
+    // The saved outcome is now the validated basis for these checks: it describes the worktree's
+    // revision with no tracked changes, so an owner-validated saved replacement completes its
+    // pending validation-error context. A revision or tracked-change mismatch above keeps the
+    // actionable error for the next responsible invocation.
+    await clearPendingValidationError({
+      areaRoot: root,
+      scope: developmentReportScope(root, prepared.taskKey),
+    });
 
     const checks: CheckResult[] = [];
     for (const [index, check] of settings.checks.entries()) {

@@ -36,8 +36,10 @@ import {
   type StageAuthorOutput,
   type StageEvaluationOutput,
   stageAuthorArtifact,
+  stageReportScope,
 } from '../src/task-engine/actions/preparation/artifacts.js';
 import {
+  projectOfWorkspace,
   readPendingValidationError,
   readValidationErrorHistory,
 } from '../src/task-engine/actions/report-feedback.js';
@@ -1389,6 +1391,38 @@ describe('preparation retained outcome usability', () => {
           reason: expect.stringContaining('does not exist'),
         });
       }
+    },
+  );
+
+  it.each(['author', 'evaluator'] as const)(
+    'completes the $role pending context when a validated replay resumes the bound round',
+    async (role) => {
+      const { issueRoot, root, author, evaluation, finalize } = await boundRound();
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      const producer = role === 'author' ? author : evaluation!;
+      const scope = stageReportScope({
+        project: projectOfWorkspace(issueRoot),
+        workId: 'NEX-1',
+        area: root,
+        stage: 'ux',
+        role,
+      });
+
+      // The replay validates the retained decision again: the missing report is retained as the
+      // role's validation error instead of being silently accepted.
+      const markdown = await readFile(producer.report.path, 'utf8');
+      await rm(producer.report.path, { force: true });
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
+      expect((await readPendingValidationError({ areaRoot: root, scope }))?.entries).toHaveLength(
+        1,
+      );
+
+      // A restored report makes the replay valid again: the resumed owner validation completes
+      // the clear without another role invocation, and a later round cannot inherit the error.
+      await writeFile(producer.report.path, markdown, 'utf8');
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      await expect(readPendingValidationError({ areaRoot: root, scope })).resolves.toBeNull();
+      await expect(readValidationErrorHistory(root)).resolves.toHaveLength(1);
     },
   );
 

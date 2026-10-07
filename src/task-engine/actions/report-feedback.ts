@@ -271,9 +271,12 @@ async function moveToHistory(file: string, target: string): Promise<void> {
  * Convert a former rejection/correction ledger into the simple pending contexts and readable
  * history: the still-actionable unresolved rejections of every responsibility become that
  * responsibility's pending context, previously resolved diagnostics stay history, and the former
- * ledger and supplied-feedback files move into history so a later clear cannot reimport them. No
- * migration marker or journal is introduced; an interrupted conversion retries from the remaining
- * original diagnostics, and an existing pending context is never overwritten.
+ * ledger and supplied-feedback files move into history so a later clear cannot reimport them. A
+ * former correction resolves only the rejections of its own responsibility, and rejections retire
+ * before the corrections that resolve them so an interruption between moves cannot reopen
+ * resolved history. No migration marker or journal is introduced; an interrupted conversion
+ * retries from the remaining original diagnostics, and an existing pending context is never
+ * overwritten.
  */
 async function convertLegacyReportFeedback(areaRoot: string): Promise<void> {
   const root = reportFeedbackRoot(areaRoot);
@@ -321,17 +324,27 @@ async function convertLegacyReportFeedback(areaRoot: string): Promise<void> {
   if (legacy.length === 0) {
     return;
   }
-  const corrections = legacy
-    .filter((entry) => entry.record.kind === 'correction')
-    .map((entry) => entry.record as z.infer<typeof legacyCorrectionSchema>);
-  const unresolved = legacy.filter((entry) => {
-    if (entry.record.kind !== 'rejection') {
-      return false;
+  // A former correction resolved exactly the rejections of its own responsibility, so a
+  // correction of another work/role/variant never retires this one's diagnostic.
+  const resolved = new Set<string>();
+  for (const entry of legacy) {
+    if (entry.record.kind !== 'correction') {
+      continue;
     }
-    return !corrections.some((correction) =>
-      correction.rejections.some((reference) => reference.path === entry.path),
-    );
-  });
+    for (const reference of entry.record.rejections) {
+      const candidate = legacy.find((other) => other.path === reference.path);
+      if (
+        candidate !== undefined &&
+        candidate.record.kind === 'rejection' &&
+        sameReportScope(entry.record.scope, candidate.record.scope)
+      ) {
+        resolved.add(reference.path);
+      }
+    }
+  }
+  const unresolved = legacy.filter(
+    (entry) => entry.record.kind === 'rejection' && !resolved.has(entry.path),
+  );
   const scopes: ReportScope[] = [];
   for (const entry of unresolved) {
     const scope = entry.record.scope;
@@ -376,13 +389,18 @@ async function convertLegacyReportFeedback(areaRoot: string): Promise<void> {
       );
     }
   }
+  // Retire the rejections before the corrections that resolve them: an interruption between moves
+  // must never leave a rejection active without the resolution evidence a later conversion needs,
+  // or an already resolved diagnostic would reopen as pending context.
   for (const entry of legacy) {
-    await moveToHistory(
-      entry.path,
-      entry.record.kind === 'correction'
-        ? path.join(historyRoot, 'legacy', path.basename(entry.path))
-        : historyTargetFor(entry.path),
-    );
+    if (entry.record.kind === 'rejection') {
+      await moveToHistory(entry.path, historyTargetFor(entry.path));
+    }
+  }
+  for (const entry of legacy) {
+    if (entry.record.kind === 'correction') {
+      await moveToHistory(entry.path, path.join(historyRoot, 'legacy', path.basename(entry.path)));
+    }
   }
   const supplied = path.join(root, 'supplied');
   let suppliedEntries: string[];
@@ -496,7 +514,9 @@ export async function readPendingValidationError(settings: {
  * includes valid negative business outcomes and a replay of an interrupted save/clear: mere edits
  * or the existence of a historical file are insufficient, and no proof that the replacement's
  * invocation received particular errors is required. The readable history is never removed.
- * Returns whether a pending context existed.
+ * A retention interrupted between its context and its readable record completes that record here,
+ * so clearing never discards a diagnosis the context promised as retained evidence. Returns
+ * whether a pending context existed.
  */
 export async function clearPendingValidationError(settings: {
   readonly areaRoot: string;
@@ -505,6 +525,9 @@ export async function clearPendingValidationError(settings: {
   const pending = await readPendingValidationError(settings);
   if (pending === null) {
     return false;
+  }
+  for (const entry of pending.entries) {
+    await completeRetainedEvidence(pending.scope, entry);
   }
   const file = pendingValidationErrorFile(settings.areaRoot, settings.scope);
   try {
@@ -519,9 +542,54 @@ export async function clearPendingValidationError(settings: {
 }
 
 /**
- * Retain one rejected report's readable history and update its responsibility's pending context,
- * then fail with its reason. The evidence is written before the context so an interruption keeps
- * the actionable rule; an unusable area reports the original problem together with the storage
+ * Complete one evidence record the pending context promises but an interrupted retention did not
+ * write. The context carries the complete record, so the readable history gains nothing new; an
+ * existing record is left untouched.
+ */
+async function completeRetainedEvidence(
+  scope: ReportScope,
+  entry: PendingValidationErrorEntry,
+): Promise<void> {
+  if (
+    (await readDocumentText(entry.evidence.path, 'Retained validation-error evidence')) !== null
+  ) {
+    return;
+  }
+  try {
+    await writeComplete(
+      entry.evidence.path,
+      `${JSON.stringify(
+        {
+          kind: 'validation-error',
+          scope,
+          invocationId: entry.invocationId,
+          operation: entry.operation,
+          profile: entry.profile,
+          context: entry.context,
+          source: entry.source,
+          output: entry.output,
+          reason: entry.reason,
+          report: entry.report,
+          assignedReport: entry.assignedReport,
+        } satisfies ReportValidationError,
+        null,
+        2,
+      )}\n`,
+    );
+  } catch (error) {
+    throw new Error(
+      `The retained validation-error evidence at "${entry.evidence.path}" could not be saved: ` +
+        `${messageOf(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Retain one rejected report's pending context and readable history, then fail with its reason.
+ * The context is written first: an interruption between the two writes still reaches the next
+ * responsible invocation with the actionable rule, and a clear completes the readable record the
+ * context promised. An unusable area reports the original problem together with the storage
  * failure and grants no acceptance.
  */
 export async function rejectReport(settings: {
@@ -555,33 +623,6 @@ export async function rejectReport(settings: {
     }
   }
   const file = reportFeedbackRecordFile(settings.areaRoot, recordId);
-  try {
-    await writeComplete(
-      file,
-      `${JSON.stringify(
-        {
-          kind: 'validation-error',
-          scope: settings.scope,
-          invocationId: settings.invocationId,
-          operation: settings.operation,
-          profile: settings.profile,
-          context: settings.context,
-          source: settings.source,
-          output: settings.output,
-          reason: settings.reason,
-          report,
-          assignedReport,
-        } satisfies ReportValidationError,
-        null,
-        2,
-      )}\n`,
-    );
-  } catch (error) {
-    throw new Error(
-      `${settings.reason} The validation-error evidence could not be saved: ${messageOf(error)}`,
-      { cause: error },
-    );
-  }
   const pendingFile = pendingValidationErrorFile(settings.areaRoot, settings.scope);
   const pending: PendingValidationError = {
     kind: 'pending-validation-error',
@@ -607,6 +648,34 @@ export async function rejectReport(settings: {
     throw new Error(
       `${settings.reason} The pending validation-error context could not be saved: ` +
         `${messageOf(error)}`,
+      { cause: error },
+    );
+  }
+  try {
+    await writeComplete(
+      file,
+      `${JSON.stringify(
+        {
+          kind: 'validation-error',
+          scope: settings.scope,
+          invocationId: settings.invocationId,
+          operation: settings.operation,
+          profile: settings.profile,
+          context: settings.context,
+          source: settings.source,
+          output: settings.output,
+          reason: settings.reason,
+          report,
+          assignedReport,
+        } satisfies ReportValidationError,
+        null,
+        2,
+      )}\n`,
+    );
+  } catch (error) {
+    throw new Error(
+      `${settings.reason} The validation-error evidence could not be saved; its pending context ` +
+        `is retained: ${messageOf(error)}`,
       { cause: error },
     );
   }

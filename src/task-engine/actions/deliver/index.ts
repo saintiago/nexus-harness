@@ -4,6 +4,7 @@ import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import {
+  developmentReportScope,
   devArtifact,
   developmentReportText,
   readUsableDevelopmentOutcome,
@@ -13,6 +14,7 @@ import {
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
+import { clearPendingValidationError } from '../report-feedback.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import { issueSummary } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
@@ -195,6 +197,15 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
           'verified revision is published instead.',
       );
     }
+
+    // The saved outcome is now the validated basis for publication: its revision is the verified
+    // worktree head on the prepared branch with no tracked changes, so an owner-validated saved
+    // replacement completes its pending validation-error context. An earlier failure keeps the
+    // actionable error for the next responsible invocation.
+    await clearPendingValidationError({
+      areaRoot: root,
+      scope: developmentReportScope(root, selection.taskKey),
+    });
 
     // A normal non-forced push of the prepared branch, with the remote head confirmed afterwards.
     const pushed = await settings.git.pushBranch(worktree, taskBranch, headRevision);

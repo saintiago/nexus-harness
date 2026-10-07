@@ -1114,8 +1114,10 @@ describe('Develop', () => {
       code: 'ENOENT',
     });
 
-    // Mere reuse of a retained combined artifact never clears the pending context: the rejection
-    // stays outstanding until a current bound producer-validated replacement resolves it.
+    // A retained combined outcome the reuse checks accept — same task, profile, base, head and
+    // readiness, with a readable record — is the developer's validated replacement: the turn
+    // continues on it without another invocation and completes the pending context. An unusable
+    // record or a mere history read never clears.
     await writeFile(
       path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
       JSON.stringify({
@@ -1140,26 +1142,11 @@ describe('Develop', () => {
     });
     await expect(reused()).resolves.toBe('completed');
     expect(replay.requests).toHaveLength(0);
-    expect(
-      (await readPendingValidationError({ areaRoot: workspaceRoot, scope }))?.entries,
-    ).toHaveLength(1);
-
-    // The next permitted invocation receives the rejection; its validated saved replacement
-    // clears the pending context.
-    await rm(path.join(workspaceRoot, 'artifacts', '1', 'development.json'));
-    const retry = scriptedRuntime(() => JSON.stringify({ status: 'completed' }));
-    const develop = createDevelop({
-      selectionFile,
-      runner: runnerOf(retry.runtime),
-      git: scriptedGit([repositoryState(), repositoryState({ headRevision })]).git,
-      publish: (event) => events.push(event),
-    });
-    await expect(develop()).resolves.toBe('completed');
-    expect(retry.requests[0]?.context).toContain('Violated rule:');
-    expect(retry.requests[0]?.context).toContain('not a JSON report');
     await expect(
       readPendingValidationError({ areaRoot: workspaceRoot, scope }),
     ).resolves.toBeNull();
+    const records = await readValidationErrorHistory(workspaceRoot);
+    expect(records).toHaveLength(1);
   });
 
   it('completes an interrupted save/clear when a repetition reuses the saved outcome', async () => {

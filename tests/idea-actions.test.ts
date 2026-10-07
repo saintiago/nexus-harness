@@ -2638,6 +2638,49 @@ describe('retained idea reports', () => {
     expect(await readValidationErrorHistory(area.root)).toHaveLength(1);
   });
 
+  it('reuses an accepted legacy contribution and completes its pending context', async () => {
+    const area = await refinementArea();
+    const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);
+    await mkdir(file, { recursive: true });
+    const options = { workId: capturedInput.taskKey, omitCurrentCycleOf: null };
+    // An unreadable retained contribution is preserved under the current research responsibility.
+    await expect(retainedHistoryText(area.root, area.plan, options)).rejects.toThrow(
+      'could not be read',
+    );
+    const scope = scopeOf(area, 'researcher', 'research');
+    expect(
+      (await readPendingValidationError({ areaRoot: area.root, scope }))?.entries,
+    ).toHaveLength(1);
+
+    // The repaired contribution is a valid former combined record: the producer-owned
+    // compatibility reader accepts it without retroactive Markdown, so the role reuses it and the
+    // pending context completes without another invocation.
+    await rm(file, { recursive: true });
+    await writeFile(
+      file,
+      JSON.stringify({
+        role: 'researcher',
+        question: null,
+        contribution: 'Linters keep reviews focused on behaviour.',
+        findings: ['Teams catch style defects early.'],
+        options: [],
+        sources: [
+          { title: 'Lint overview', link: 'https://example.com/lint', accessed: '2026-09-24' },
+        ],
+      }),
+    );
+    const agent = scriptedRuntime([]);
+    const researcher = createResearcher({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+    await expect(researcher({ phase: 'initial' })).resolves.toBe('contributed');
+    expect(agent.requests).toHaveLength(0);
+    await expect(readPendingValidationError({ areaRoot: area.root, scope })).resolves.toBeNull();
+    expect(await readValidationErrorHistory(area.root)).toHaveLength(1);
+  });
+
   it('preserves an unusable retained research contribution for the next researcher', async () => {
     const area = await refinementArea();
     const file = path.join(area.cycleRoot(), researchArtifact.pathFromArtifactsRoot);

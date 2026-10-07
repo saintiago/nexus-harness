@@ -308,6 +308,11 @@ type RecoveryContextSettings = {
   readonly stop: RecoveryStop;
   /** The pending validation error of this recovery report responsibility, or null. */
   readonly feedback: PendingValidationError | null;
+  /**
+   * A pending validation error retained under the former project-wide recovery responsibility,
+   * whose original work item cannot be established, or null.
+   */
+  readonly formerFeedback: PendingValidationError | null;
 };
 
 /** One producer-owned declaration the recovery context states: its path and generated schema. */
@@ -521,6 +526,18 @@ async function recoveryContextText(settings: RecoveryContextSettings): Promise<s
       actionOwnedRecordsText([settings.outcomeFile]),
     ].join('\n\n'),
     ...validationErrorContextText(settings.feedback),
+    ...(settings.formerFeedback === null
+      ? []
+      : [
+          [
+            'A legacy recovery diagnostic retained under the former project-wide recovery ' +
+              'responsibility follows. Its original work item cannot be established from the ' +
+              'retained record, so reconcile it explicitly against this execution instead of ' +
+              'assuming it belongs to the currently selected work item. A validated saved ' +
+              'replacement retires it together with the current pending context.',
+          ].join('\n'),
+          ...validationErrorContextText(settings.formerFeedback),
+        ]),
   ].join('\n\n');
 }
 
@@ -659,9 +676,24 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         role: 'recovery',
         reportKind: 'recovery-report',
       };
+      // Before HARN-125 recovery retained one context for the whole project execution under the
+      // project identity as its work, so this former responsibility must stay reachable: it is
+      // read by its own recorded attribution and supplied with the uncertainty stated, never
+      // silently mapped onto the currently selected work item.
+      const formerProjectWideScope: ReportScope = {
+        ...scope,
+        workId: project.taskSource.project,
+      };
       let feedback: PendingValidationError | null;
+      let formerFeedback: PendingValidationError | null = null;
       try {
         feedback = await readPendingValidationError({ areaRoot: directory, scope });
+        if (formerProjectWideScope.workId !== scope.workId) {
+          formerFeedback = await readPendingValidationError({
+            areaRoot: directory,
+            scope: formerProjectWideScope,
+          });
+        }
       } catch (error) {
         // Missing or unusable evidence is an explicit error, never an empty context: an
         // invocation that cannot receive its required diagnosis must not run unawares.
@@ -691,6 +723,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         outcomeFile,
         stop,
         feedback,
+        formerFeedback,
       });
 
       publish({ source: 'application', type: 'recovering', data: { reason: stop.failure } });
@@ -800,8 +833,13 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       }
       try {
         // The owner validated and saved the usable replacement; its pending validation-error
-        // context is cleared while the readable history stays.
+        // context is cleared while the readable history stays. A former project-wide diagnostic
+        // supplied to this invocation is retired with it, so a resolved error cannot reach a
+        // later selection that never inherited it.
         await clearPendingValidationError({ areaRoot: directory, scope });
+        if (formerFeedback !== null) {
+          await clearPendingValidationError({ areaRoot: directory, scope: formerProjectWideScope });
+        }
       } catch (error) {
         return attention(
           `The recovery outcome was saved, but its pending validation-error context could not be ` +

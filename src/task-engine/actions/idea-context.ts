@@ -791,10 +791,11 @@ export async function readRetainedIdeaReport<
 }
 
 /**
- * Clear one reused bound outcome's pending validation error: reading the saved outcome back is the
- * replay path, and a bound, readable record is the owner's validated replacement, so an
- * interrupted save/clear completes without another invocation. A former combined record carries no
- * binding and cannot clear a pending error by itself.
+ * Clear one reused outcome's pending validation error: reading the saved outcome back through the
+ * producer-owned reader is the replay path, and a record that reader accepts — a current bound
+ * record with its readable Markdown, or a retained former combined record under its compatibility
+ * rules — is the owner's validated replacement, so an interrupted save/clear completes without
+ * another invocation. Clearing belongs to this reuse boundary; a mere history read never clears.
  */
 export async function clearRetainedIdeaValidationError<
   Declaration extends AnyIdeaReportDeclaration,
@@ -804,9 +805,6 @@ export async function clearRetainedIdeaValidationError<
   readonly contract: IdeaReportContract;
   readonly read: RetainedIdeaReport<Declaration>;
 }): Promise<void> {
-  if (settings.read.binding === null) {
-    return;
-  }
   await clearPendingValidationError({
     areaRoot: settings.root,
     scope: ideaReportScope({

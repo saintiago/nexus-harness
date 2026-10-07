@@ -158,10 +158,12 @@ are accepted; a readable Markdown edit or an obsolete hash/ledger alone never re
 
 Once observations were accepted, preserve their content and identities, analysis timestamp/profile
 and all stored submissions. A report replacement cannot replace accepted lessons with new, fewer
-or zero candidates. Supply the settled observations as context if an actual unusable report needs
-repair. Receipt continuation uses settled analysis and stored submission payloads, not another
-analyst invocation. Evidence or invocation failures leave analysis pending without changing the
-original handoff. Legacy accepted analyses need no retroactive Markdown association.
+or zero candidates. A saved analysis the producer-owned reader accepts — a current bound record and
+its readable Markdown, or a retained former record under its compatibility rules — is the settled
+basis: owner validation completes any interrupted clear without another invocation. Receipt
+continuation uses settled analysis and stored submission payloads, not another analyst invocation.
+Evidence or invocation failures leave analysis pending without changing the original handoff.
+Legacy accepted analyses need no retroactive Markdown association.
 
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
 payloads, provenance, timestamps and keys after interruption or configuration changes. Processing
