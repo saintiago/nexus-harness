@@ -17,6 +17,7 @@ import {
   isBoundStageAuthorOutput,
   isBoundStageEvaluationOutput,
   preparationStages,
+  preparationAttemptDeclaration,
   preparationWorkspaceDeclaration,
   stageAreas,
   stageAuthorArtifact,
@@ -26,6 +27,7 @@ import {
   stageRoundPlanDeclaration,
   stageReportScope,
   type AcceptanceBasis,
+  type PreparationAttempt,
   type PreparationWorkspace,
   type ReturnReport,
   type PreparationStage,
@@ -83,6 +85,22 @@ export async function writePreparationWorkspace(
   workspace: PreparationWorkspace,
 ): Promise<void> {
   await writeRecord(path.join(issueWorkspaceRoot, preparationWorkspaceDeclaration.file), workspace);
+}
+
+/** Read the stage's retained attempt identity; null for a stage area that has no record yet. */
+export async function readPreparationAttempt(root: string): Promise<PreparationAttempt | null> {
+  return readRecord(
+    path.join(root, preparationAttemptDeclaration.file),
+    preparationAttemptDeclaration,
+  );
+}
+
+/** Persist the stage's attempt identity before any fallible preparation work. */
+export async function writePreparationAttempt(
+  root: string,
+  attempt: PreparationAttempt,
+): Promise<void> {
+  await writeRecord(path.join(root, preparationAttemptDeclaration.file), attempt);
 }
 
 /** Read the stage's current-round plan; null before the first round exists. */

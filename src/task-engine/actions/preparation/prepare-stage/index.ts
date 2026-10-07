@@ -1,4 +1,5 @@
-import { mkdir, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitAdapter } from '../../../../adapters/git.js';
 import { messageOf } from '../../../../result.js';
@@ -6,20 +7,26 @@ import type { BoundAction, EventPublisher } from '../../../index.js';
 import { retainStageFailure } from '../failure.js';
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
-import { preparationStages, type PreparationWorkspace } from '../artifacts.js';
+import {
+  preparationStages,
+  type PreparationAttempt,
+  type PreparationWorkspace,
+} from '../artifacts.js';
 import {
   preparationWorktree,
+  readPreparationAttempt,
   readPreparationWorkspace,
   stageRoot,
+  writePreparationAttempt,
   writePreparationWorkspace,
 } from '../storage.js';
 
 /**
  * PrepareStage creates or reuses the preparation issue's one shared checkout and branch. Every
- * stage author and evaluator edits that checkout; the stage areas keep only artifacts. A retained
- * repository record is validated against the actual checkout, and a missing, divergent or
- * legacy per-stage layout requests attention with its identity instead of silently cloning,
- * resetting or selecting another branch. Idea refinement keeps its separate repository.
+ * stage author and evaluator edits that checkout; each stage area retains its attempt identity and
+ * artifacts. A retained repository record is validated against the actual checkout, and a missing,
+ * divergent or legacy per-stage layout requests attention with its identity instead of silently
+ * cloning, resetting or selecting another branch. Idea refinement keeps its separate repository.
  */
 
 export type PrepareStageSettings = {
@@ -59,6 +66,25 @@ async function legacyCheckout(issueRoot: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Whether one stage area retains current-attempt records. A pre-upgrade area that still keeps its
+ * current attempt continues under the former handoff identities instead of receiving a retrofitted
+ * value that could duplicate an already captured request; historical round directories alone do
+ * not establish an active attempt.
+ */
+async function retainsStageState(root: string): Promise<boolean> {
+  try {
+    return (await readdir(path.join(root, 'state'))).length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw new Error(`The stage state at "${root}" could not be read: ${messageOf(error)}`, {
+      cause: error,
+    });
+  }
+}
+
 /** Create PrepareStage over the configured repository: one shared preparation checkout. */
 export function createPrepareStage(settings: PrepareStageSettings): BoundAction {
   return async (input?: unknown) => {
@@ -81,12 +107,30 @@ export function createPrepareStage(settings: PrepareStageSettings): BoundAction 
       'Selection',
     );
     const issueRoot = selection.workspace.root;
+    const area = stageRoot(issueRoot, invokedStage);
 
     /** Report a repository condition that prevents readiness. */
     async function fail(reason: string): Promise<'failed'> {
-      await retainStageFailure(stageRoot(issueRoot, invokedStage), reason);
+      await retainStageFailure(area, reason);
       settings.publish({ source: 'prepare-stage', type: 'failed', data: { reason } });
       return 'failed';
+    }
+
+    // The attempt identity is retained before any fallible repository observation, so a failure
+    // during preparation still names this attempt. A pre-upgrade area that keeps current-attempt
+    // state continues under its former handoff identities rather than being retrofitted.
+    let retainedAttempt: PreparationAttempt | null;
+    try {
+      retainedAttempt = await readPreparationAttempt(area);
+    } catch (error) {
+      return await fail(
+        `The retained ${invokedStage} stage attempt identity is unreadable ` +
+          `(${messageOf(error)}); reconciliation is required instead of minting a new identity.`,
+      );
+    }
+    if (retainedAttempt === null && !(await retainsStageState(area))) {
+      await mkdir(path.join(area, 'state'), { recursive: true });
+      await writePreparationAttempt(area, { attemptId: randomUUID() });
     }
 
     const retained = await readPreparationWorkspace(issueRoot);
