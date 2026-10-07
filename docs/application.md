@@ -342,3 +342,34 @@ uses the former binding's stage/round or no-round value for that retained legacy
 its existing operational-error workflow naming. An invalid identity is unavailable capture, never
 an invitation to silently create another request. Selection-failure capture keeps its existing
 ownership contract and does not fabricate a preparation attempt.
+
+### Successful preparation evidence binding
+
+The project parent routes successful stage publication, evaluated skips and upstream corrections
+directly to the next destination. Its successful analysis boundary is the completed implementation
+handoff. Failure and attention bindings retain their current stage evidence, reasons and destinations.
+
+For the final success, derive the existing preparation handoff identity from Architecture's retained
+attempt and round declarations, keeping the legacy fallback. First ask AnalyzeExperience's
+[recorded capture replay](task-engine/actions/analyze-experience.md#recorded-capture-replay)
+capability to reuse that identity. Any non-null replay result ends capture normally; only a missing
+request selects new evidence. This prevents an upgrade from rebuilding an older final request with
+a conflicting expanded artifact list. No binding reads the action's private store.
+
+For a new final request, use the preparation issue root as `workspaceRoot`. Select regular files in
+`parent/` and each preparation stage's `state/`, all retained numbered `artifacts/<round>/` trees
+and retained `report-feedback/`. Stage areas and round enumeration use preparation-owned contracts;
+missing areas contribute nothing. Enumerate in stable stage, numeric-round and path order, selecting
+each path once. Do not filter by the latest plan, accepted outcome or latest authored revision:
+cumulative rounds retain rejected revisions, evaluated skips, corrections and reevaluations. Source
+snapshots and attributed conversation travel with their retained round/parent inputs. Preserve the
+original records and paths so stage, round, revision and source attribution remain readable.
+
+Expand this selection with the associated Markdown from producer report declarations, including
+reports referenced outside their round tree. Required missing or unreadable selected evidence uses
+the existing unavailable outcome. Checkouts, delivery histories and the separate idea-refinement
+area are not preparation evidence trees; referenced reports still follow the normal evidence-scope
+rules. No history is synthesized from the mutable checkout or reread from Jira. The action copies
+the selected evidence into its own durable area before recording a new request. Final success uses
+the existing `preparation` workflow, `preparation-handoff` terminal and `handed-off` outcome; broader
+evidence does not create a new attempt identity or change failure evidence selection.

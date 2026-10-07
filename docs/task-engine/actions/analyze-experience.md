@@ -46,6 +46,23 @@ A fresh attempt differs even for the same work/stage/round/terminal, including a
 first round. Replaying the same retained attempt and handoff preserves its identity. This requires
 no change to ExperienceHandoff or the request/submission identity algorithms below.
 
+### Recorded capture replay
+
+The action's public capability also supports `replayCapture(identity)`, where identity contains only
+`workId`, `workflow`, `attemptId` and `terminalId` from ExperienceHandoff. It returns the ordinary
+capture result for an existing durable request, or null when no request exists. The action owns the
+lookup and request validation; Application does not read the memory store or construct request keys.
+A usable recorded request is replayed with its original handoff and capture evidence, without
+reselecting or copying source files, invoking analysis or changing its requested time. An unreadable
+record returns unavailable, never a miss that permits replacement. Disabled memory returns skipped
+without discovery. Replay publishes the same ordinary capture outcome through the action binding.
+
+This capability lets a binding reuse a recorded final preparation handoff before selecting evidence
+under the current rules. It preserves older final requests whose evidence selection was narrower,
+and newer requests after source artifacts have changed or disappeared. A miss permits ordinary
+capture of the complete handoff. Ordinary capture still rejects conflicting complete inputs;
+replay does not relax immutable-handoff validation or alter request/submission identities.
+
 ### Output and outcomes
 
 Persist an experience request with the complete immutable handoff, its retained copy of the selected

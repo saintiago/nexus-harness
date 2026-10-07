@@ -107,6 +107,19 @@ past a failed source write. Repetition inspects retained publication identities 
 state, finishing only missing effects. Machine context contains control values/references, not full
 reports.
 
+Successful publication advances directly through routing, including evaluated skips and upstream
+corrections. The completed implementation handoff is the sole successful preparation analysis
+boundary under [AnalyzeExperience](task-engine/actions/analyze-experience.md#preparation-handoff-requirements).
+Waiting, exhaustion and failure keep their existing analysis routes and destinations.
+
+A retained parent snapshot paused at the former intermediate-success analysis state must resume
+routing without scheduling another analysis. Keep the saved state and invoked actor identities for
+restoration; its legacy intermediate-success binding returns skipped before evidence discovery or
+capture, then continues to routing. New advances never enter it. Requests already captured there
+continue independently through the action's pending processor, with their original terminal names
+and immutable inputs.
+The compatibility state adds no memory gate, stage evaluation or source publication.
+
 ## Evaluation and stage applicability
 
 Each preparation stage begins with its author assessing the requested change and stage applicability.
