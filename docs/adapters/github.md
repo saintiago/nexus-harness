@@ -82,6 +82,20 @@ review comments → receive the complete conversation or the existing error outc
 Keep this change within the existing adapter and focused tests. Do not introduce JEv, a new cache
 or a concurrency framework.
 
+#### Internal composition
+
+The conversation operation owns concurrent stream composition. Validate the repository identity
+before starting requests, then compose the three complete-collection reads with one native
+`Promise.all` join, retaining fixed result positions for issue comments, reviews and inline review
+comments. Each collection reader owns its sequential pagination, response validation and local
+accumulation; command output buffers remain local to each request.
+
+Expected request and validation failures remain failed result values, so the join does not choose
+a diagnostic by response timing. After the join, inspect results in the documented error-priority
+order and assemble the conversation only when all succeeded. Retain the existing schemas and
+review-author mapping. All accumulated data is operation-local; this composition adds no shared
+state, persistence, public-contract change or consumer coordination.
+
 #### Observable acceptance examples
 
 | Situation | Observable result |
