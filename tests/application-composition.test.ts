@@ -164,30 +164,38 @@ describe('memory composition', () => {
       configured,
       'developer',
       unusedCapability<CodingRuntime>('coding runtime'),
+      hostEnvironment,
     );
 
     const developer = settings.profiles.find((profile) => profile.id === 'nexus-flash');
-    expect(developer?.toolSettings).toEqual({
-      profile: 'nexus-flash',
+    expect(developer?.toolSettings).toMatchObject({
       config: {
         'mcp_servers.amem.command': 'npm',
         'mcp_servers.amem.args': ['run', '--silent', 'mcp'],
         'mcp_servers.amem.cwd': path.join(installationDirectory, 'agentic-memory'),
         'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: 'http://127.0.0.1:4748' },
         'mcp_servers.amem.enabled': true,
+        // JEv is omitted in this configuration: its reserved server is composed disabled.
+        'mcp_servers.jev.enabled': false,
       },
     });
     expect(settings.baseInstructions).toContain(memoryUseGuidance);
 
-    // Disabled memory adds neither the tools nor their guidance.
+    // Disabled memory adds neither the AMEM tools nor their guidance.
     const disabled = createAgentRuntimeSettings(
       nexus,
       'developer',
       unusedCapability<CodingRuntime>('coding runtime'),
+      hostEnvironment,
     );
-    expect(disabled.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
-      true,
-    );
+    expect(
+      disabled.profiles.every(
+        (profile) =>
+          (profile.toolSettings['config'] as Record<string, unknown> | undefined)?.[
+            'mcp_servers.amem.enabled'
+          ] === undefined,
+      ),
+    ).toBe(true);
     expect(disabled.baseInstructions).not.toContain(memoryUseGuidance);
   });
 
@@ -197,14 +205,14 @@ describe('memory composition', () => {
       configured,
       'analysis',
       unusedCapability<CodingRuntime>('coding runtime'),
+      hostEnvironment,
     );
 
     // The configured analysis profile carries the AMEM server restricted to search: Nexus submits
     // the validated output itself, so the analyst cannot save directly. No other profile is
     // selected for the analysis role, so only the analyst gains those settings.
     const analyst = settings.profiles.find((profile) => profile.id === 'nexus-astra');
-    expect(analyst?.toolSettings).toEqual({
-      profile: 'nexus-astra',
+    expect(analyst?.toolSettings).toMatchObject({
       config: {
         'mcp_servers.amem.command': 'npm',
         'mcp_servers.amem.args': ['run', '--silent', 'mcp'],
@@ -212,12 +220,18 @@ describe('memory composition', () => {
         'mcp_servers.amem.env': { AMEM_MCP_SERVICE_URL: 'http://127.0.0.1:4748' },
         'mcp_servers.amem.enabled': true,
         'mcp_servers.amem.enabled_tools': ['memory_search'],
+        'mcp_servers.jev.enabled': false,
       },
     });
     expect(
       settings.profiles
         .filter((profile) => profile.id !== 'nexus-astra')
-        .every((profile) => profile.toolSettings['config'] === undefined),
+        .every(
+          (profile) =>
+            (profile.toolSettings['config'] as Record<string, unknown> | undefined)?.[
+              'mcp_servers.amem.enabled'
+            ] === undefined,
+        ),
     ).toBe(true);
     expect(settings.baseInstructions).toContain(memoryAnalysisGuidance);
     expect(settings.baseInstructions).not.toContain(memoryUseGuidance);
@@ -227,10 +241,16 @@ describe('memory composition', () => {
       memoryNexus('/srv/nexus/state', false),
       'analysis',
       unusedCapability<CodingRuntime>('coding runtime'),
+      hostEnvironment,
     );
-    expect(disabled.profiles.every((profile) => profile.toolSettings['config'] === undefined)).toBe(
-      true,
-    );
+    expect(
+      disabled.profiles.every(
+        (profile) =>
+          (profile.toolSettings['config'] as Record<string, unknown> | undefined)?.[
+            'mcp_servers.amem.enabled'
+          ] === undefined,
+      ),
+    ).toBe(true);
     expect(disabled.baseInstructions).not.toContain(memoryAnalysisGuidance);
     expect(disabled.baseInstructions).not.toContain(memoryUseGuidance);
   });

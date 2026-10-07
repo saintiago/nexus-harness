@@ -66,7 +66,7 @@ export function createAnalysisRuntime(
       publishActivity: construction.publishActivity,
     });
     const runtime = createAgentRuntime(
-      createAgentRuntimeSettings(nexus, 'analysis', codingRuntime),
+      createAgentRuntimeSettings(nexus, 'analysis', codingRuntime, environment),
     );
     let result: AgentResult;
     try {

@@ -18,6 +18,7 @@ import {
   challengerRoleInstructions,
   developmentRoleInstructions,
   ideaEditorRoleInstructions,
+  jevUseGuidance,
   memoryUseGuidance,
   preparationRoleInstructions,
   projectGuideRoleInstructions,
@@ -25,6 +26,11 @@ import {
   researcherRoleInstructions,
   reviewerRoleInstructions,
 } from '../src/agent-runtime/index.js';
+import {
+  createJevCapability,
+  jevExecutablePath,
+  type JevCapability,
+} from '../src/application/jev.js';
 import type { CodingRuntime, CodingRuntimeRequest } from '../src/adapters/coding-runtime.js';
 import {
   createJiraAdapter,
@@ -53,6 +59,12 @@ const hostEnvironment = {
   AWS_ACCESS_KEY_ID: 'host-resolved-access-key',
   AWS_SECRET_ACCESS_KEY: 'host-resolved-secret-key',
   AWS_SESSION_TOKEN: 'host-resolved-session-token',
+};
+
+/** The controlled host environment with a JEv key: composition composes enabled JEv access. */
+const jevHostEnvironment = {
+  ...hostEnvironment,
+  JEV_API_KEY: 'host-resolved-jev-key',
 };
 
 /** The real parsed project configuration. */
@@ -159,6 +171,7 @@ describe('AgentRuntime construction', () => {
   function harness(
     configuration: NexusConfiguration,
     role: ProfileRole,
+    environment: Readonly<Record<string, string | undefined>> = hostEnvironment,
   ): {
     readonly runtime: ReturnType<typeof createAgentRuntime>;
     readonly settings: ReturnType<typeof createAgentRuntimeSettings>;
@@ -171,7 +184,7 @@ describe('AgentRuntime construction', () => {
         return Promise.resolve({ ok: true, value: { output: '{"status":"completed"}' } });
       },
     };
-    const settings = createAgentRuntimeSettings(configuration, role, codingRuntime);
+    const settings = createAgentRuntimeSettings(configuration, role, codingRuntime, environment);
     return { runtime: createAgentRuntime(settings), settings, requests };
   }
 
@@ -221,7 +234,8 @@ describe('AgentRuntime construction', () => {
       expect(request.prompt).toContain(configuration.agentRuntime.baseInstructions[0]!);
       expect(request.model).toBe(configured.model);
       expect(request.effort).toBe(configured.effort);
-      expect(request.toolSettings).toEqual(configured.toolSettings);
+      // The configured native settings are preserved beside the composed JEv server entry.
+      expect(request.toolSettings).toMatchObject(configured.toolSettings);
       expect(request.directory).toBe(path.join(workspaceRoot, 'worktree'));
       expect(request.timeLimitMs).toBe(
         configuration.executionPolicy.agentInvocationLimitMinutes * 60_000,
@@ -430,7 +444,9 @@ describe('AgentRuntime construction', () => {
       // Search and save are both available: no `enabled_tools` restriction narrows the server to
       // the analysis role's search-only access.
       expect(tools).toMatchObject({ config: { 'mcp_servers.amem.enabled': true } });
-      expect(JSON.stringify(tools)).not.toContain('enabled_tools');
+      expect(
+        (tools as { config: Record<string, unknown> }).config['mcp_servers.amem.enabled_tools'],
+      ).toBeUndefined();
       expect(requests.at(-1)!.prompt).toContain(memoryUseGuidance);
     }
   });
@@ -614,5 +630,211 @@ describe('AgentRuntime construction', () => {
     for (const value of Object.values(hostEnvironment)) {
       expect(requests[0]!.prompt).not.toContain(value);
     }
+  });
+
+  it('composes optional JEv access and its guidance once for every role and profile', async () => {
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+    const preparation = configuration.preparation.profiles;
+    const idea = configuration.ideaRefinement.profiles;
+    const ladder = configuration.executionPolicy.developerLadder.map((entry) => entry.profile);
+    const selectable: readonly {
+      readonly role: ProfileRole;
+      readonly profiles: readonly string[];
+    }[] = [
+      { role: 'developer', profiles: ladder },
+      { role: 'reviewer', profiles: [configuration.executionPolicy.reviewerProfile] },
+      { role: 'recovery', profiles: [configuration.executionPolicy.recoveryProfile] },
+      { role: 'idea-editor', profiles: [idea.editor] },
+      { role: 'researcher', profiles: [idea.researcher] },
+      { role: 'project-guide', profiles: [idea.projectGuide] },
+      { role: 'challenger', profiles: [idea.challenger] },
+      { role: 'requirements-author', profiles: [preparation.requirements.author] },
+      { role: 'requirements-evaluator', profiles: [preparation.requirements.evaluator] },
+      { role: 'ux-author', profiles: [preparation.ux.author] },
+      { role: 'ux-evaluator', profiles: [preparation.ux.evaluator] },
+      { role: 'prototype-author', profiles: preparation.prototype.authors },
+      { role: 'prototype-evaluator', profiles: [preparation.prototype.evaluator] },
+      { role: 'architecture-author', profiles: [preparation.architecture.author] },
+      { role: 'architecture-evaluator', profiles: [preparation.architecture.evaluator] },
+    ];
+
+    for (const { role, profiles } of selectable) {
+      const { runtime, settings, requests } = harness(configuration, role, jevHostEnvironment);
+      for (const profile of profiles) {
+        await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
+        const tools = settings.profiles.find((candidate) => candidate.id === profile)!.toolSettings;
+        expect(tools, `${role}: ${profile}`).toMatchObject({
+          config: {
+            'mcp_servers.jev.command': jevExecutablePath(),
+            'mcp_servers.jev.args': [],
+            'mcp_servers.jev.enabled': true,
+            'mcp_servers.jev.required': false,
+            'mcp_servers.jev.enabled_tools': ['ask_jev'],
+            'mcp_servers.jev.env_vars': ['JEV_API_KEY'],
+          },
+        });
+        expect(occurrences(requests.at(-1)!.prompt, jevUseGuidance)).toBe(1);
+      }
+    }
+  });
+
+  it('keeps existing tools and the search-only analysis memory access with enabled JEv', async () => {
+    const enabled = nexusConfiguration();
+    enabled.memory = {
+      enabled: true,
+      serviceUrl: 'http://127.0.0.1:4748',
+      mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+      analysisProfile: 'nexus-astra',
+    };
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+
+    const developer = harness(configuration, 'developer', jevHostEnvironment).settings;
+    const tools = developer.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings;
+    expect(tools).toMatchObject({
+      config: {
+        'mcp_servers.amem.enabled': true,
+        'mcp_servers.jev.enabled': true,
+      },
+    });
+    // Search and save stay available to the developer; only the analyst is restricted to search.
+    expect(JSON.stringify(tools)).not.toContain('mcp_servers.amem.enabled_tools');
+
+    const analysis = harness(configuration, 'analysis', jevHostEnvironment).settings;
+    const analyst = analysis.profiles.find((profile) => profile.id === 'nexus-astra')!.toolSettings;
+    expect(analyst).toMatchObject({
+      config: {
+        'mcp_servers.amem.enabled_tools': ['memory_search'],
+        'mcp_servers.jev.enabled': true,
+      },
+    });
+  });
+
+  it('composes no JEv tool or guidance when disabled, omitted or missing its host key', async () => {
+    // A base configuration that would otherwise enable the reserved server is overridden.
+    const inherited = nexusConfiguration();
+    inherited.agentRuntime.profiles[0]!.toolSettings = {
+      profile: 'nexus-flash',
+      config: { 'mcp_servers.jev.enabled': true },
+    };
+    const omitted = parseNexusConfiguration(inherited, installationDirectory);
+    const { runtime, settings, requests } = harness(omitted, 'developer');
+    await runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+    const tools = settings.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings;
+    expect(tools).toMatchObject({ config: { 'mcp_servers.jev.enabled': false } });
+    expect(requests.at(-1)!.prompt).not.toContain(jevUseGuidance);
+
+    const disabled = nexusConfiguration();
+    disabled.jev = { enabled: false, credential: 'jevApiKey' };
+    const parsed = parseNexusConfiguration(disabled, installationDirectory);
+    const disabledHarness = harness(parsed, 'developer', jevHostEnvironment);
+    await disabledHarness.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      context,
+      () => undefined,
+    );
+    expect(
+      disabledHarness.settings.profiles.find((profile) => profile.id === 'nexus-flash')!
+        .toolSettings,
+    ).toMatchObject({ config: { 'mcp_servers.jev.enabled': false } });
+    expect(disabledHarness.requests.at(-1)!.prompt).not.toContain(jevUseGuidance);
+
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const parsedEnabled = parseNexusConfiguration(enabled, installationDirectory);
+    const missingKey = harness(parsedEnabled, 'developer', hostEnvironment);
+    await missingKey.runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+    expect(
+      missingKey.settings.profiles.find((profile) => profile.id === 'nexus-flash')!.toolSettings,
+    ).toMatchObject({ config: { 'mcp_servers.jev.enabled': false } });
+    expect(missingKey.requests.at(-1)!.prompt).not.toContain(jevUseGuidance);
+  });
+
+  it('supplies the composed JEv guidance once when a configured instruction repeats it', async () => {
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    enabled.agentRuntime.baseInstructions = [
+      ...enabled.agentRuntime.baseInstructions,
+      jevUseGuidance,
+    ];
+    enabled.agentRuntime.profiles[0]!.instructions = [
+      ...enabled.agentRuntime.profiles[0]!.instructions,
+      jevUseGuidance,
+    ];
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+    const { runtime, settings, requests } = harness(configuration, 'developer', jevHostEnvironment);
+
+    await runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+
+    expect(occurrences(requests.at(-1)!.prompt, jevUseGuidance)).toBe(1);
+    expect(
+      settings.profiles.find((profile) => profile.id === 'nexus-flash')!.instructions,
+    ).not.toContain(jevUseGuidance);
+    expect(settings.baseInstructions).toContain(jevUseGuidance);
+  });
+
+  it('keeps the composed JEv key out of settings and prompts', async () => {
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+    const { runtime, settings, requests } = harness(configuration, 'developer', jevHostEnvironment);
+
+    await runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+
+    const key = jevHostEnvironment.JEV_API_KEY;
+    expect(JSON.stringify(settings)).not.toContain(key);
+    expect(requests.at(-1)!.prompt).not.toContain(key);
+    expect(JSON.stringify(requests.at(-1)!.toolSettings)).not.toContain(key);
+  });
+});
+
+describe('JEv capability construction', () => {
+  /** The constructed capability, failing the check when the integration is unexpectedly disabled. */
+  function capabilityOf(
+    configuration: NexusConfiguration,
+    environment: Readonly<Record<string, string | undefined>>,
+  ): JevCapability {
+    const capability = createJevCapability(configuration, environment);
+    if (capability === null) {
+      throw new Error('the JEv capability is absent although the integration is enabled');
+    }
+    return capability;
+  }
+
+  it('constructs the public client only for an enabled integration with a host key', () => {
+    const omitted = nexus();
+    expect(createJevCapability(omitted, jevHostEnvironment)).toBeNull();
+
+    const disabled = nexusConfiguration();
+    disabled.jev = { enabled: false, credential: 'jevApiKey' };
+    expect(
+      createJevCapability(
+        parseNexusConfiguration(disabled, installationDirectory),
+        jevHostEnvironment,
+      ),
+    ).toBeNull();
+
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+    const capability = createJevCapability(configuration, jevHostEnvironment);
+    expect(capability?.kind).toBe('available');
+    if (capability?.kind !== 'available') {
+      throw new Error('the enabled integration did not construct a client');
+    }
+    expect(typeof capability.client.evaluate).toBe('function');
+  });
+
+  it('reports missing credentials and unusable keys without failing construction', () => {
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const configuration = parseNexusConfiguration(enabled, installationDirectory);
+
+    expect(capabilityOf(configuration, {}).kind).toBe('missing-credential');
+    expect(capabilityOf(configuration, { JEV_API_KEY: '' }).kind).toBe('missing-credential');
+    expect(capabilityOf(configuration, { JEV_API_KEY: 'bad\u0000key' }).kind).toBe('unavailable');
   });
 });

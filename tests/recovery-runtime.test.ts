@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../src/agent-runtime/index.js';
 import { recoveryRoleInstructions } from '../src/agent-runtime/index.js';
+import { jevExecutablePath } from '../src/application/jev.js';
 import { recoveryResponseSchema } from '../src/application/recovery.js';
 import { createRecoveryRuntime } from '../src/application/recovery-runtime.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
@@ -148,6 +149,18 @@ describe('recovery runtime', () => {
       'gpt-6-astra',
       '-c',
       'model_reasoning_effort="high"',
+      '-c',
+      `mcp_servers.jev.command="${jevExecutablePath()}"`,
+      '-c',
+      'mcp_servers.jev.args=[]',
+      '-c',
+      'mcp_servers.jev.enabled=false',
+      '-c',
+      'mcp_servers.jev.required=false',
+      '-c',
+      'mcp_servers.jev.enabled_tools=["ask_jev"]',
+      '-c',
+      'mcp_servers.jev.env_vars=["JEV_API_KEY"]',
       '--output-schema',
       schemaPath,
       '-',

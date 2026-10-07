@@ -163,6 +163,7 @@ export function nexusConfiguration(): NexusConfiguration {
       awsAccessKeyId: { environment: 'AWS_ACCESS_KEY_ID' },
       awsSecretAccessKey: { environment: 'AWS_SECRET_ACCESS_KEY' },
       awsSessionToken: { environment: 'AWS_SESSION_TOKEN' },
+      jevApiKey: { environment: 'JEV_API_KEY' },
       nexusLensPrivateKey: { environment: 'NEXUS_LENS_PRIVATE_KEY' },
     },
     nexusLens: {

@@ -311,6 +311,66 @@ describe('Nexus configuration', () => {
     });
   });
 
+  it('keeps JEv omitted, disabled or enabled configurations valid', () => {
+    expect(
+      parseNexusConfiguration(nexusConfiguration(), configurationDirectory).jev,
+    ).toBeUndefined();
+
+    const disabled = nexusConfiguration();
+    disabled.jev = { enabled: false, credential: 'jevApiKey' };
+    expect(parseNexusConfiguration(disabled, configurationDirectory).jev).toEqual({
+      enabled: false,
+      credential: 'jevApiKey',
+    });
+
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    expect(parseNexusConfiguration(enabled, configurationDirectory).jev).toEqual({
+      enabled: true,
+      credential: 'jevApiKey',
+    });
+  });
+
+  it('requires an enabled JEv credential reference to name JEV_API_KEY', () => {
+    const missing = nexusConfiguration();
+    missing.jev = { enabled: true };
+    expect(() => parseNexusConfiguration(missing, configurationDirectory)).toThrow(
+      /jev\.credential/,
+    );
+
+    const unknown = nexusConfiguration();
+    unknown.jev = { enabled: true, credential: 'missing' };
+    expect(() => parseNexusConfiguration(unknown, configurationDirectory)).toThrow(
+      /Unknown credential reference "missing"/,
+    );
+
+    const mistargeted = nexusConfiguration();
+    mistargeted.credentials['otherKey'] = { environment: 'OTHER_KEY' };
+    mistargeted.jev = { enabled: true, credential: 'otherKey' };
+    expect(() => parseNexusConfiguration(mistargeted, configurationDirectory)).toThrow(
+      /JEV_API_KEY/,
+    );
+
+    // A disabled integration validates a retained reference but does not require one.
+    const disabled = nexusConfiguration();
+    disabled.jev = { enabled: false, credential: 'missing' };
+    expect(() => parseNexusConfiguration(disabled, configurationDirectory)).toThrow(
+      /Unknown credential reference "missing"/,
+    );
+  });
+
+  it('rejects unknown JEv settings and non-boolean enablement', () => {
+    const unknown = nexusConfiguration() as unknown as { jev?: unknown };
+    unknown.jev = { enabled: true, credential: 'jevApiKey', model: 'other' };
+    expect(() => parseNexusConfiguration(unknown, configurationDirectory)).toThrow(
+      /jev.*Unrecognized key/,
+    );
+
+    const blank = nexusConfiguration() as unknown as { jev?: unknown };
+    blank.jev = { enabled: 'yes', credential: 'jevApiKey' };
+    expect(() => parseNexusConfiguration(blank, configurationDirectory)).toThrow(/jev\.enabled/);
+  });
+
   it('rejects a credential-bearing memory service URL', () => {
     const embedded = nexusConfiguration();
     embedded.memory = memorySection({
