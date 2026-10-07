@@ -8,6 +8,9 @@ Repository validation runs independent checks with a concurrency limit of two. A
 invocation discovers the component, integration and system projects; these scopes classify coverage,
 not mandatory execution phases. During development run focused checks for changed behavior, broadening
 only to resolve a specific integration concern. Nexus Verify owns complete configured validation.
+GitHub CI preserves only `.turbo/cache` between runs for deterministic checks, using an OS,
+architecture, Node-major and lockfile namespace with revision keys and same-namespace fallback.
+Turbo still checks task inputs; tests and production builds run normally on every selected run.
 
 ## Unit and component tests
 
