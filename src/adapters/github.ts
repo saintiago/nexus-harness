@@ -993,27 +993,29 @@ export function createGitHubAdapter(
       const path = target.value.path;
       const pageQuery = (page: number): string =>
         new URLSearchParams({ per_page: String(pageSize), page: String(page) }).toString();
-      const comments = await readPages(
-        (page) => `/repos/${path}/issues/${pullRequestNumber}/comments?${pageQuery(page)}`,
-        z.array(commentSchema),
-        (page) => page,
-      );
+      const [comments, reviews, reviewComments] = await Promise.all([
+        readPages(
+          (page) => `/repos/${path}/issues/${pullRequestNumber}/comments?${pageQuery(page)}`,
+          z.array(commentSchema),
+          (page) => page,
+        ),
+        readPages(
+          (page) => `/repos/${path}/pulls/${pullRequestNumber}/reviews?${pageQuery(page)}`,
+          z.array(reviewSchema),
+          (page) => page,
+        ),
+        readPages(
+          (page) => `/repos/${path}/pulls/${pullRequestNumber}/comments?${pageQuery(page)}`,
+          z.array(reviewCommentSchema),
+          (page) => page,
+        ),
+      ]);
       if (!comments.ok) {
         return comments;
       }
-      const reviews = await readPages(
-        (page) => `/repos/${path}/pulls/${pullRequestNumber}/reviews?${pageQuery(page)}`,
-        z.array(reviewSchema),
-        (page) => page,
-      );
       if (!reviews.ok) {
         return reviews;
       }
-      const reviewComments = await readPages(
-        (page) => `/repos/${path}/pulls/${pullRequestNumber}/comments?${pageQuery(page)}`,
-        z.array(reviewCommentSchema),
-        (page) => page,
-      );
       if (!reviewComments.ok) {
         return reviewComments;
       }

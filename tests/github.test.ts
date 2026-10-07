@@ -13,6 +13,7 @@ import {
   type GitHubHttpRequest,
   type GitHubHttpResponse,
   type GitHubHttpTransport,
+  type PullRequestConversation,
 } from '../src/adapters/github.js';
 import type { Result } from '../src/result.js';
 
@@ -33,9 +34,15 @@ function valueOf<Value>(result: Result<Value>): Value {
   return result.value;
 }
 
+/** One plain scripted gh command result. */
+type CliAnswer = {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
+};
+
 /** One scripted gh command result. */
-type GhAnswer =
-  { readonly stdout?: string; readonly stderr?: string; readonly exitCode?: number } | Error;
+type GhAnswer = CliAnswer | Error;
 
 /** A gh CLI answering the supplied results in order and recording every command. */
 function createGh(answers: readonly GhAnswer[]): {
@@ -100,7 +107,7 @@ function appJson(value: unknown, status = 200): GitHubHttpResponse {
 }
 
 /** A gh command answering with a JSON body. */
-function ghJson(value: unknown): GhAnswer {
+function ghJson(value: unknown): { readonly stdout: string } {
   return { stdout: JSON.stringify(value) };
 }
 
@@ -147,6 +154,147 @@ function ghFields(call: readonly string[]): Record<string, string> {
 /** The JSON body of one recorded App request. */
 function appBody(request: GitHubHttpRequest | undefined): unknown {
   return JSON.parse(request?.body ?? 'null') as unknown;
+}
+
+const commentsPath = '/repos/acme/nexus/issues/9/comments';
+const reviewsPath = '/repos/acme/nexus/pulls/9/reviews';
+const reviewCommentsPath = '/repos/acme/nexus/pulls/9/comments';
+
+/** One conversation stream the controlled CLI fixture routes by request path. */
+type ConversationStream = {
+  readonly name: string;
+  readonly path: string;
+  readonly entry: (id: number) => Record<string, unknown>;
+  readonly collection: (
+    conversation: PullRequestConversation,
+  ) => readonly { readonly id: number }[];
+};
+
+/** The three streams one conversation read composes. */
+const conversationStreams: readonly ConversationStream[] = [
+  {
+    name: 'issue comments',
+    path: commentsPath,
+    entry: (id) => ({ id, body: `entry ${id}` }),
+    collection: (conversation) => conversation.comments,
+  },
+  {
+    name: 'reviews',
+    path: reviewsPath,
+    entry: (id) => ({ id, state: 'COMMENTED', body: `entry ${id}`, commit_id: null, user: null }),
+    collection: (conversation) => conversation.reviews,
+  },
+  {
+    name: 'inline review comments',
+    path: reviewCommentsPath,
+    entry: (id) => ({ id, body: `entry ${id}` }),
+    collection: (conversation) => conversation.reviewComments,
+  },
+];
+
+/** One conversation-stream failure case: a stream and the page whose request fails. */
+const conversationFailures = conversationStreams.flatMap((stream) =>
+  (['first', 'later'] as const).map((page) => ({
+    name: stream.name,
+    path: stream.path,
+    entry: stream.entry,
+    page,
+  })),
+);
+
+/** One controlled stream answer: a plain CLI answer, a process fault, or a held CLI answer. */
+type ControlledAnswer = CliAnswer | { readonly processFault: string } | (() => Promise<CliAnswer>);
+
+/** One conversation stream's scripted answers, consumed in request order. */
+type ControlledStream = {
+  readonly path: string;
+  readonly answers: readonly ControlledAnswer[];
+};
+
+/** A held CLI answer the test releases when it chooses. */
+function heldAnswer(): {
+  readonly promise: Promise<CliAnswer>;
+  readonly release: (answer: CliAnswer) => void;
+} {
+  const { promise, resolve } = Promise.withResolvers<CliAnswer>();
+  return { promise, release: resolve };
+}
+
+/** A gh CLI answering the controlled streams by request path, without cross-stream ordering. */
+function controlledGh(streams: readonly ControlledStream[]): {
+  readonly calls: string[][];
+  readonly execute: GhCommandExecution;
+} {
+  const calls: string[][] = [];
+  const queues = streams.map((stream) => ({ path: stream.path, answers: [...stream.answers] }));
+  return {
+    calls,
+    execute: async (args, onOutput) => {
+      calls.push([...args]);
+      const requested = String(args[3] ?? '');
+      const queue = queues.find((candidate) => requested.startsWith(candidate.path));
+      if (queue === undefined) {
+        throw new Error(`Unexpected gh command: ${args.join(' ')}`);
+      }
+      const answer = queue.answers.shift();
+      if (answer === undefined) {
+        throw new Error(`Unexpected gh request: ${requested}`);
+      }
+      const resolved = typeof answer === 'function' ? await answer() : answer;
+      if ('processFault' in resolved) {
+        return { ok: false, fault: { message: resolved.processFault } };
+      }
+      if (resolved.stdout !== undefined && resolved.stdout !== '') {
+        onOutput({ stream: 'stdout', chunk: Buffer.from(resolved.stdout) });
+      }
+      if (resolved.stderr !== undefined) {
+        onOutput({ stream: 'stderr', chunk: Buffer.from(resolved.stderr) });
+      }
+      return { ok: true, value: { exitCode: resolved.exitCode ?? 0 } };
+    },
+  };
+}
+
+/** An adapter over controlled conversation streams, with every request they observed. */
+function conversationHarness(streams: readonly ControlledStream[]): {
+  readonly adapter: ReturnType<typeof createGitHubAdapter>;
+  readonly gh: string[][];
+} {
+  const gh = controlledGh(streams);
+  return {
+    adapter: createGitHubAdapter({ gh: gh.execute, nexusLens }),
+    gh: gh.calls,
+  };
+}
+
+/** One stream request path for a page. */
+function pageOf(path: string, page: number): string {
+  return `${path}?per_page=100&page=${page}`;
+}
+
+/** The recorded requests to one conversation stream, in request order. */
+function streamRequests(calls: readonly string[][], path: string): string[] {
+  return calls.map((call) => call[3] ?? '').filter((requested) => requested.startsWith(path));
+}
+
+/** Let queued work run before the next assertion. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Whether the promise has settled after queued work has run. */
+async function settled(promise: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void promise.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    },
+  );
+  await flush();
+  return done;
 }
 
 afterEach(() => {
@@ -363,25 +511,116 @@ describe('GitHub adapter', () => {
     expect(ghFields(gh[0] ?? [])).toEqual({ body: 'Refreshed summary.' });
   });
 
+  it('starts all three conversation streams before any first response completes', async () => {
+    const comments = heldAnswer();
+    const reviews = heldAnswer();
+    const reviewComments = heldAnswer();
+    const { adapter, gh } = conversationHarness([
+      { path: commentsPath, answers: [() => comments.promise] },
+      { path: reviewsPath, answers: [() => reviews.promise] },
+      { path: reviewCommentsPath, answers: [() => reviewComments.promise] },
+    ]);
+
+    const reading = adapter.readConversation(repository, 9);
+    await flush();
+
+    expect(gh).toHaveLength(3);
+    expect(new Set(gh.map((call) => call[3]))).toEqual(
+      new Set([pageOf(commentsPath, 1), pageOf(reviewsPath, 1), pageOf(reviewCommentsPath, 1)]),
+    );
+    expect(await settled(reading)).toBe(false);
+
+    comments.release(ghJson([{ id: 1, body: 'comment' }]));
+    reviews.release(ghJson([]));
+    reviewComments.release(ghJson([]));
+
+    const conversation = valueOf(await reading);
+    expect(conversation.comments).toEqual([{ id: 1, body: 'comment' }]);
+    expect(conversation.reviews).toEqual([]);
+    expect(conversation.reviewComments).toEqual([]);
+  });
+
+  it('returns success only after every conversation stream completes', async () => {
+    const comments = heldAnswer();
+    const { adapter } = conversationHarness([
+      { path: commentsPath, answers: [() => comments.promise] },
+      {
+        path: reviewsPath,
+        answers: [
+          ghJson([
+            {
+              id: 55,
+              state: 'CHANGES_REQUESTED',
+              body: 'Needs work',
+              commit_id: 'reviewed-revision',
+              user: { login: 'nexus-lens[bot]', type: 'Bot' },
+            },
+          ]),
+        ],
+      },
+      {
+        path: reviewCommentsPath,
+        answers: [ghJson([{ id: 77, body: 'Reply', path: 'src/index.ts', in_reply_to_id: 66 }])],
+      },
+    ]);
+
+    const reading = adapter.readConversation(repository, 9);
+    await flush();
+
+    // Reviews and inline comments are complete, but no conversation is returned before the issue
+    // comments finish.
+    expect(await settled(reading)).toBe(false);
+
+    comments.release(ghJson([{ id: 1, body: 'comment' }]));
+    const conversation = valueOf(await reading);
+
+    expect(conversation.comments).toEqual([{ id: 1, body: 'comment' }]);
+    expect(conversation.reviews).toEqual([
+      {
+        id: 55,
+        state: 'CHANGES_REQUESTED',
+        body: 'Needs work',
+        commit_id: 'reviewed-revision',
+        user: { login: 'nexus-lens[bot]', type: 'Bot' },
+        author: 'nexus-lens[bot]',
+      },
+    ]);
+    expect(conversation.reviewComments[0]).toMatchObject({
+      id: 77,
+      path: 'src/index.ts',
+      in_reply_to_id: 66,
+    });
+  });
+
   it('reads the complete conversation, reviews and review threads', async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,
       body: `comment ${index + 1}`,
     }));
-    const { adapter, gh } = harness([
-      ghJson(firstPage),
-      ghJson([{ id: 101, body: 'comment 101' }]),
-      ghJson([
-        {
-          id: 55,
-          state: 'CHANGES_REQUESTED',
-          body: 'Needs work',
-          commit_id: 'reviewed-revision',
-          user: { login: 'nexus-lens[bot]', type: 'Bot' },
-        },
-        { id: 56, state: 'COMMENTED', body: 'Note', commit_id: null, user: null },
-      ]),
-      ghJson([{ id: 77, body: 'Reply', path: 'src/index.ts', in_reply_to_id: 66 }]),
+    const { adapter, gh } = conversationHarness([
+      {
+        path: commentsPath,
+        answers: [ghJson(firstPage), ghJson([{ id: 101, body: 'comment 101' }])],
+      },
+      {
+        path: reviewsPath,
+        answers: [
+          ghJson([
+            {
+              id: 55,
+              state: 'CHANGES_REQUESTED',
+              body: 'Needs work',
+              commit_id: 'reviewed-revision',
+              user: { login: 'nexus-lens[bot]', type: 'Bot' },
+            },
+            { id: 56, state: 'COMMENTED', body: 'Note', commit_id: null, user: null },
+          ]),
+        ],
+      },
+      {
+        path: reviewCommentsPath,
+        answers: [ghJson([{ id: 77, body: 'Reply', path: 'src/index.ts', in_reply_to_id: 66 }])],
+      },
     ]);
 
     const conversation = valueOf(await adapter.readConversation(repository, 9));
@@ -404,12 +643,146 @@ describe('GitHub adapter', () => {
       path: 'src/index.ts',
       in_reply_to_id: 66,
     });
-    expect(gh.map((call) => call[3])).toEqual([
-      '/repos/acme/nexus/issues/9/comments?per_page=100&page=1',
-      '/repos/acme/nexus/issues/9/comments?per_page=100&page=2',
-      '/repos/acme/nexus/pulls/9/reviews?per_page=100&page=1',
-      '/repos/acme/nexus/pulls/9/comments?per_page=100&page=1',
+    expect(streamRequests(gh, commentsPath)).toEqual([
+      pageOf(commentsPath, 1),
+      pageOf(commentsPath, 2),
     ]);
+    expect(streamRequests(gh, reviewsPath)).toEqual([pageOf(reviewsPath, 1)]);
+    expect(streamRequests(gh, reviewCommentsPath)).toEqual([pageOf(reviewCommentsPath, 1)]);
+  });
+
+  it.each(conversationStreams)(
+    'reads $name one page at a time through its own responses',
+    async (stream) => {
+      const first = heldAnswer();
+      const firstPage = Array.from({ length: 100 }, (_, index) => stream.entry(index + 1));
+      const { adapter, gh } = conversationHarness([
+        { path: stream.path, answers: [() => first.promise, ghJson([stream.entry(101)])] },
+        ...conversationStreams
+          .filter((candidate) => candidate.path !== stream.path)
+          .map((candidate) => ({ path: candidate.path, answers: [ghJson([])] })),
+      ]);
+
+      const reading = adapter.readConversation(repository, 9);
+      await flush();
+
+      expect(streamRequests(gh, stream.path)).toEqual([pageOf(stream.path, 1)]);
+      expect(await settled(reading)).toBe(false);
+
+      first.release(ghJson(firstPage));
+      const conversation = valueOf(await reading);
+
+      expect(streamRequests(gh, stream.path)).toEqual([
+        pageOf(stream.path, 1),
+        pageOf(stream.path, 2),
+      ]);
+      expect(stream.collection(conversation).map((entry) => entry.id)).toEqual(
+        Array.from({ length: 101 }, (_, index) => index + 1),
+      );
+      expect(stream.collection(conversation)[100]).toEqual(
+        expect.objectContaining(stream.entry(101)),
+      );
+    },
+  );
+
+  it('returns empty collections for a conversation without entries', async () => {
+    const { adapter } = conversationHarness(
+      conversationStreams.map((stream) => ({ path: stream.path, answers: [ghJson([])] })),
+    );
+
+    const conversation = valueOf(await adapter.readConversation(repository, 9));
+
+    expect(conversation).toEqual({ comments: [], reviews: [], reviewComments: [] });
+  });
+
+  it.each(conversationFailures)(
+    'reports a $page-page failure in $name without partial content',
+    async ({ path, entry, page }) => {
+      const firstPage = Array.from({ length: 100 }, (_, index) => entry(index + 1));
+      const failure = { exitCode: 1, stderr: 'gh: conversation read failed (HTTP 502)\n' };
+      const { adapter } = conversationHarness([
+        { path, answers: page === 'first' ? [failure] : [ghJson(firstPage), failure] },
+        ...conversationStreams
+          .filter((candidate) => candidate.path !== path)
+          .map((candidate) => ({ path: candidate.path, answers: [ghJson([])] })),
+      ]);
+
+      const result = await adapter.readConversation(repository, 9);
+
+      expect(result).toMatchObject({
+        ok: false,
+        fault: { message: expect.stringContaining('gh: conversation read failed (HTTP 502)') },
+      });
+      expect(result).not.toHaveProperty('value');
+    },
+  );
+
+  it.each([
+    ['a process fault', { processFault: 'Cannot run gh: spawn gh ENOENT' }, 'Cannot run gh'],
+    [
+      'a CLI failure',
+      { exitCode: 1, stderr: 'gh: Bad credentials (HTTP 401)\n' },
+      'gh: Bad credentials (HTTP 401)',
+    ],
+    ['invalid JSON', { stdout: 'not json' }, 'not JSON'],
+    ['an unexpected response shape', ghJson({ not: 'a page' }), 'unexpected response'],
+  ])('preserves %s diagnostics for a conversation read', async (_label, answer, expected) => {
+    const { adapter } = conversationHarness([
+      { path: commentsPath, answers: [answer] },
+      { path: reviewsPath, answers: [ghJson([])] },
+      { path: reviewCommentsPath, answers: [ghJson([])] },
+    ]);
+
+    const result = await adapter.readConversation(repository, 9);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining(expected) },
+    });
+  });
+
+  it('returns the issue-comments error when lower-priority streams fail first', async () => {
+    const comments = heldAnswer();
+    const { adapter } = conversationHarness([
+      { path: commentsPath, answers: [() => comments.promise] },
+      { path: reviewsPath, answers: [{ exitCode: 1, stderr: 'reviews failed\n' }] },
+      { path: reviewCommentsPath, answers: [{ exitCode: 1, stderr: 'inline comments failed\n' }] },
+    ]);
+
+    const reading = adapter.readConversation(repository, 9);
+    await flush();
+
+    // The reviews and inline-comment failures arrived earlier by construction; the issue-comments
+    // failure arrives last and still keeps the documented priority.
+    comments.release({ exitCode: 1, stderr: 'issue comments failed\n' });
+    const result = await reading;
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('issue comments failed') },
+    });
+    expect(result).not.toHaveProperty('value');
+  });
+
+  it('returns the reviews error when the inline-comment failure arrives first', async () => {
+    const reviews = heldAnswer();
+    const { adapter } = conversationHarness([
+      { path: commentsPath, answers: [ghJson([])] },
+      { path: reviewsPath, answers: [() => reviews.promise] },
+      { path: reviewCommentsPath, answers: [{ exitCode: 1, stderr: 'inline comments failed\n' }] },
+    ]);
+
+    const reading = adapter.readConversation(repository, 9);
+    await flush();
+
+    reviews.release({ exitCode: 1, stderr: 'reviews failed\n' });
+    const result = await reading;
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('reviews failed') },
+    });
+    expect(result).not.toHaveProperty('value');
   });
 
   it('reads checks with their producing app identity', async () => {
