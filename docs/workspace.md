@@ -33,14 +33,15 @@ artifacts, without separate checkouts. There is no cross-stage copying or assemb
 | `state/prepared-workspace.json` | Task, repository workspace, branch and comparison-base identity |
 | `state/preparation/` | Preparation command output |
 | `state/current-round.json` | Current developer round plan |
-| `report-feedback/` | Report rejection/correction evidence retained outside disposable delivery attempts |
+| `report-feedback/` | Readable validation-error history and pending context retained outside disposable delivery attempts |
 
 These locations are fixed. roundNumber is a positive integer. Producers define the record schemas.
 
 Preparation stage areas and the refinement area retain their own `report-feedback/` directories.
 The [report owner](task-engine/actions/architecture.md#rejection-evidence-and-continuation) supplies
-the scope and declaration. Repository continuation never transfers feedback to a donor issue or
-another role. Delivery cleanup preserves the issue-root feedback directory.
+the fixed role/response-variant location and attributable context; each has at most one pending
+validation-error file, with readable original evidence retained separately. Repository continuation
+never transfers feedback to a donor issue or another role. Delivery cleanup preserves the issue-root feedback directory.
 
 ```ts
 type WorkspaceRef = {
@@ -80,6 +81,13 @@ identity and stage acceptance records. The [implementation handoff](task-engine/
 owns the plan-to-ticket mapping and repository continuation input under parent/. Each stage writes
 only its own numbered rounds and current terminal record. Later stages and implementation issues
 read immutable producer artifacts by reference, including accepted prototype evidence.
+
+Each preparation stage also retains `state/attempt.json` for new attempts, owned by
+[PrepareStage](task-engine/actions/preparation-stage.md#preparation-attempt-identity-output).
+Worker restart and reselection preserve it; deliberately replacing attempt state gives a fresh
+identity without deleting completed history or renewing finite allowances. Retained pre-upgrade
+attempts without that record keep their former handoff identities. Analysis requests stay in the
+project's durable memory area independently of this state.
 
 The project execution directory owns one composed parent/child snapshot. Checkouts are working state,
 not handoff evidence. Recovery preserves the preparation repository while its first implementation

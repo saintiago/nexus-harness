@@ -40,6 +40,12 @@ record and the attempt's own artifacts — instead of an event that lived only i
 so a restarted worker reconstructs the identical handoff. A terminal the producer states no reason
 for carries a null reason.
 
+Preparation's workflow binding follows the [Application composition](../../application.md#memory-composition)
+and imports the [preparation attempt declaration](preparation-stage.md#preparation-attempt-identity-output).
+A fresh attempt differs even for the same work/stage/round/terminal, including a failure before the
+first round. Replaying the same retained attempt and handoff preserves its identity. This requires
+no change to ExperienceHandoff or the request/submission identity algorithms below.
+
 ### Output and outcomes
 
 Persist an experience request with the complete immutable handoff, its retained copy of the selected
@@ -143,24 +149,26 @@ already accepted legacy outputs and exact submission payloads without requiring 
 reinvoking the analyst; an unfinished new analysis must satisfy its report binding before
 submission.
 
-Use the [report rejection contract](architecture.md#rejection-evidence-and-continuation) within the
-durable request area to retain rejected analyst output and the validation reason. The next existing
-analysis attempt receives that request's outstanding feedback. A saved usable analysis, including
-its report binding, resolves report feedback before submissions: an attributable replay correction
-finishes without another invocation, while feedback its invocation was never supplied — or that a
-former record carries no invocation identity for — leaves the next permitted invocation due. Receipt
-retries reuse a settled analysis rather than invoking again. Report correction replaces the binding
-while preserving the accepted observations, their identities, analysis time and profile; the analyst
-receives those facts as correction context. A correction returning fewer or no candidates cannot
-remove previously accepted lessons. Evidence or invocation failures remain outstanding analysis and
-never alter the original handoff.
+Use the [shared validation-error continuation](architecture.md#rejection-evidence-and-continuation)
+in the durable request area. The next permitted analyst receives its pending error and original
+output/report evidence. Validate and save a usable replacement before clearing pending context;
+resumed owner validation can finish the clear without invoking again or matching correction records.
+Zero candidates is a valid replacement. Report usability remains required before new observations
+are accepted; a readable Markdown edit or an obsolete hash/ledger alone never reinvokes analysis.
+
+Once observations were accepted, preserve their content and identities, analysis timestamp/profile
+and all stored submissions. A report replacement cannot replace accepted lessons with new, fewer
+or zero candidates. Supply the settled observations as context if an actual unusable report needs
+repair. Receipt continuation uses settled analysis and stored submission payloads, not another
+analyst invocation. Evidence or invocation failures leave analysis pending without changing the
+original handoff. Legacy accepted analyses need no retroactive Markdown association.
 
 Stable submission keys derive from the persisted request and observation identities. Reuse exact
 payloads, provenance, timestamps and keys after interruption or configuration changes. Processing
 visits persisted submission identities as well as the current analysis observations, so removing or
 replacing an analysis record cannot orphan pending submissions, receipt polling or failure reporting.
-The corrected analysis must be usable and its feedback resolved before these submissions resume. Durable
-acceptance is distinct from stored/searchable memory; poll accepted receipts, including blocked
+The analysis must be usable under current owner rules before these submissions resume; obsolete
+hash or ledger fields add no gate. Durable acceptance is distinct from stored/searchable memory; poll accepted receipts, including blocked
 receipts. Report outstanding work without changing the business result. Preserve existing memories
 and persisted pending requests during migration; do not delete, silently re-embed or backfill them.
 Before retrying analysis of a request recorded without retention, preserve its available declared

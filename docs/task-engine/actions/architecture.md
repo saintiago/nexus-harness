@@ -35,12 +35,11 @@ supplies it with the outcome schema and reserved record paths. The agent writes 
 returns only the outcome. AgentRuntime transports this context and schema; it neither reads the
 report nor owns storage, validation or routing.
 
-The shared report helpers own this association declaration and byte-level operations:
+The shared report helpers own this association declaration and readable-file operations:
 
 ```ts
 type ReportBinding = {
   report: ArtifactRef;
-  reportIdentity: string; // SHA-256 of the report's exact UTF-8 bytes
   invocationId: string;
 };
 ```
@@ -59,13 +58,14 @@ records. Reports stay outside the product checkout and path-scoped commits.
 
 After the invocation, validate the strict response and functional data, read the assigned report as
 UTF-8 text, and require a readable regular file at that path. Do not impose headings, length,
-nonempty-prose or JSON rules. Compute its identity and check the owner's existing input/revision
-rules before saving the outcome. A saved new outcome is usable only with its associated readable
-report and matching identity. Do not infer status, verdict, findings or routing from report prose.
-The hash associates bytes; it proves neither their claims nor assessment quality.
+nonempty-prose or JSON rules. Check the owner's existing input/revision rules before saving the
+outcome. A saved new outcome is usable only with its associated readable report. Do not compute or
+compare Markdown-byte hashes, including on retained reads, capture or publication. Readable changes
+to report wording do not invalidate the association. Do not infer status, verdict, findings or
+routing from report prose; assessment quality remains the responsible role's judgment.
 
 Persist the outcome only after these checks. Retained invocation context records the assigned path,
-identity and current inputs with existing invocation evidence. An interrupted save can finish only
+invocation and current inputs with existing invocation evidence. An interrupted save can finish only
 from that invocation's usable output/report and still-valid owner basis; otherwise normal recovery
 or reassessment applies. Never attach a previous invocation's report to a new outcome. Do not
 reinvoke merely to reconstruct an already saved usable result.
@@ -109,7 +109,11 @@ where existing associations depend on them; a simplified typed view is not a new
 compatibility belongs to the report producer, not to a generic history reader, AgentRuntime or a
 parallel workflow.
 
-New saved-outcome readers require ReportBinding. Producer-owned compatibility readers separately
+New saved-outcome readers require ReportBinding. Retained separated outcomes may contain the former
+`reportIdentity` field as opaque historical data; its absence, value or mismatch with readable
+Markdown is never a gate. Preserve the original saved values when existing author/evaluation or
+source associations use the complete record identity, without hashing the Markdown it references.
+Producer-owned compatibility readers separately
 accept former combined artifacts with their former required narrative and identity fields. A record
 with any new binding field must satisfy the new schema; a damaged new record cannot fall back to
 legacy parsing. Retain legacy bytes without adding report paths or rewriting them into Markdown.
@@ -122,84 +126,64 @@ longer require machine consistency or lifecycle validation.
 
 ### Rejection evidence and continuation
 
-Report rejection is distinct from a valid negative business report and from an invocation that
-returned no output. Preserve the exact returned bytes, the specific violated rule and attributable
-context before raising the existing execution error. A malformed saved record retains its readable
-bytes and path; it does not become a usable producer artifact. When output is unavailable, record
-null and explain why. Do not manufacture a report from activity messages or guessed metadata.
+Validation errors are distinct from valid negative business outcomes and unavailable invocation
+output. The validating caller preserves the exact returned outcome bytes, available original
+Markdown and the specific violated rule before raising the existing execution error. A malformed
+saved record remains readable evidence, not a usable producer artifact. Unavailable output/report
+stays explicitly unavailable with its attempted path; do not reconstruct it from activity.
 
-The report helpers own one runtime-validated rejection and correction declaration, exposed for
-consumers through the TaskEngine data interface. The validating caller owns each evidence write;
-the responsible report producer owns validation of the replacement. The boundary values are:
+The caller supplies the owning area and responsible role/response variant. Shared helpers perform
+readable evidence storage and context formatting; they do not own routing or decide usability.
+Use the existing `report-feedback/` area outside disposable attempt state. Preserve diagnostics and
+available report copies there as readable history, with observed work, role/profile, invocation,
+operation and relevant round/request/revision attribution. Retain original reports without rewriting
+history. The sole continuation state is one `pending.json` validation-error context per responsible
+role/response variant within that area. It contains the actionable reason and attribution plus
+available output/report or their readable references. A later invalid attempt updates this context
+with its useful diagnosis while retaining earlier evidence. No rejection IDs, correction records,
+resolved-reference lists, supplied-feedback proofs or saved-outcome identity matches are created.
 
-```ts
-type ReportScope = {
-  project: string;
-  workId: string;
-  area: string; // absolute owning area, independent of the repository checkout
-  role: string;
-  reportKind: string; // distinguishes incompatible response contracts of one role
-};
-type ReportRejection = {
-  kind: 'rejection';
-  scope: ReportScope;
-  invocationId: string | null; // null only when importing unattributed retained evidence
-  operation: string;
-  profile: string | null;
-  context: string; // original round/cycle/request and relevant revision attribution
-  source: ArtifactRef | null; // malformed saved record, when applicable
-  output: string | null;
-  reason: string;
-  report: ArtifactRef | null; // immutable copy of available rejected Markdown
-  assignedReport: ArtifactRef | null; // attempted path, even when unreadable/missing
-};
-type ReportCorrection = {
-  kind: 'correction';
-  scope: ReportScope;
-  rejections: ArtifactRef[];
-  artifact: ArtifactRef; // usable replacement report, not approval of its claims
-  artifactIdentity: string; // complete saved outcome, including its report binding
-  invocationId: string | null;
-};
-```
+Preparation owns feedback in its stage area, idea refinement in its refinement area, finite delivery
+in the selected implementation issue root, analysis in its durable request area, and Application
+recovery in its stable project recovery area. Recovery partitions context by selected work, with a
+separate no-selected-work location, so a different item cannot inherit an earlier item's errors.
+Each caller selects a fixed work/role/response-variant location; concurrent roles remain separate. Repository donation, profile changes, round advancement,
+selection reset and worker restart neither transfer this context to another item nor erase it.
 
-Copy available rejected Markdown byte-for-byte into the feedback area before raising the error,
-alongside exact returned outcome bytes and the original violated rule. Missing/unreadable Markdown
-remains explicitly unavailable, with its attempted path retained; do not synthesize it from
-activity. Former feedback records lacking Markdown references remain readable as retained evidence.
+Before the next permitted responsible invocation, supply its pending error reason, original
+attribution and available rejected evidence as historical context. Current human input, response
+rules and substantive finding obligations govern. Do not require a previous profile, round, branch
+or invocation to match the new attempt. Incompatible response variants and other roles/items do not
+inherit the context. Agents do not write error-state or correction declarations.
 
-Store immutable rejection and correction records under the owning area's
-`report-feedback/<record-id>.json`, using unique record IDs. Derive outstanding feedback from
-rejections without a valid matching correction; no separately persisted pending pointer is needed.
-A correction references the exact rejection records it resolves. The owner validates and saves
-the replacement before recording its complete identity and those references. Readers validate the
-correction declaration and matching scope, rather than inferring correction from a file's existence.
-Later disposal of delivery artifacts does not reopen a recorded correction. It is evidence of report
-usability, not stage acceptance, review approval or task completion.
+After the responsible owner validates and saves a replacement under its normal functional,
+readable-report and applicable input/revision checks, clear that responsibility's pending context.
+This includes valid failed, changes-requested, needs-input and upstream-return outcomes: usability
+is not business approval. Interrupted processing may clear context after owner validation of the
+saved replacement; no proof that its invocation received particular errors is required. Mere edits
+or existence of a historical file are insufficient. Use the owner's current attempt/round and
+input/revision rules to select the replacement; do not search older usable outcomes to bypass a
+failed responsible attempt. An invalid replacement leaves actionable
+context pending. Save-before-clear ordering makes interruption safe: replay validates the saved
+replacement and completes the clear without another invocation or a correction protocol. A missing
+pending file means no pending context; an unreadable existing one is an explicit storage error.
+Failure to preserve evidence or clear context reports the original problem and storage failure
+without granting acceptance or a new attempt.
 
-Preparation uses its stage area, idea refinement its refinement area, and finite delivery the
-selected implementation issue root even when its repository belongs to a preparation issue. The
-feedback directory is outside disposable delivery `state/` and `artifacts/`. Analysis uses its
-durable request area and recovery its stable project recovery area, retaining their existing failure
-policies. Parallel roles have independent invocation identities and evidence writes.
-
-Before the next responsible invocation, load outstanding feedback matching project, work, owning
-area, role and report kind. Include the rejection reason, original invocation/context attribution
-and readable rejected outcome and Markdown references in context, labelled as rejected historical
-evidence. Current input, current response rules and finding obligations remain authoritative. Match
-the logical report responsibility across round advancement, profile changes, worker exit and
-reselection; do not require the old round, branch or profile to equal the new one. Incompatible
-variants and other roles/items do not inherit it. A correction retires the records it addresses,
-preserving their history; a later rejection remains outstanding independently.
-
-Resolve feedback only after the owner validates and saves the usable replacement. Replay can finish
-recording a correction without another invocation only when retained evidence attributes the
-replacement to an owner invocation supplied with those rejections. Mere reuse or a recovery-edited
-historical artifact is insufficient. Otherwise feedback remains for the next permitted invocation.
-Missing or unusable evidence is an explicit error, never an empty feedback set. A failed
-evidence write reports both the original rejection and persistence failure, and grants no acceptance.
-Report-evidence helpers add no invocation, allowance, route, escalation or retry policy. Existing
-recovery, round planning and gates decide whether another invocation is permitted.
+Producer-owned compatibility handling carries still-actionable former feedback into this simple
+context before retiring active ledger/supplied-feedback state. Previously resolved diagnostics stay
+history and must not be reopened solely because their ledger is removed. Existing validated
+replacement evidence can establish usability under current owner rules without correction identity
+matching. The owner imports applicable unresolved legacy diagnostics once, persisting simple
+pending context before moving their active ledger/supplied-feedback files into readable history.
+Complete this conversion before invoking or clearing context; retry an interrupted conversion
+from available original diagnostics without reopening already resolved errors. Historical files
+are thereafter evidence only, so clearing pending context cannot reimport old ledger entries.
+No migration marker or journal is introduced. Preserve legacy feedback bytes as readable history;
+do not maintain a second ledger reader as a runtime validation gate. Remove correction schemas,
+record hashing, matching and related prompt instructions and tests across all owners together. No new migration registry or matching mechanism
+is needed. Existing recovery, finite allowances, workflow routes and acceptance/review/CI gates
+continue to decide whether any further invocation is permitted.
 
 ### Artifact declarations
 

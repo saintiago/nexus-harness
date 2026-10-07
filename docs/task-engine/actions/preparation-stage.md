@@ -36,6 +36,35 @@ retained repository exists. Preserve local work; a missing retained checkout or 
 requests attention instead of silently cloning, resetting or selecting another stage branch.
 Idea refinement keeps its separate repository. Preparation-stage entry never creates a stage checkout.
 
+### Preparation attempt identity output
+
+PrepareStage also owns `<stage>/state/attempt.json`, declared by the preparation operations:
+
+```ts
+type PreparationAttempt = { attemptId: string };
+```
+
+For a new stage area, persist one opaque unique identity before repository observations, cloning or
+other fallible preparation work. This identifies failed attempts even before a round exists.
+Reentry reuses the retained value across worker restarts, author/evaluator repair rounds, questions,
+upstream returns and normal stage revisits. The record names an attempt, not a role invocation or
+acceptance; creating it grants no additional allowance. An unreadable existing record fails rather
+than minting a new identity. Stage plans, repository identity and routing keep their existing owners.
+
+A deliberate fresh restart that replaces the stage attempt's working state starts with a new
+identity even if the ticket, shared branch and round numbers repeat. Clearing selection or restarting
+a worker alone does not replace the attempt. Preserve retained reports, completed history, shared
+repository and consumed allowances under their existing continuation rules; this identity record
+adds no reset command or automatic preparation cleanup.
+
+Pre-upgrade stage areas with retained current attempt state but no attempt record continue with
+the former stage/round identity scheme. Historical round directories alone do not establish an
+active legacy attempt after a deliberate fresh restart. Do not retrofit an identity into that
+evidence on replay: it could duplicate an already captured legacy request. Only genuinely new attempt state receives the
+new record. Legacy requests keep their stored immutable handoffs and submission identities even
+after a fresh attempt uses a new identity. Compatibility is owned here; Application imports the
+attempt declaration/reader and does not reconstruct it from branch, profile, process or timestamps.
+
 ### Result output
 
 ```ts
@@ -70,7 +99,10 @@ type AcceptanceBasis = {
 };
 ```
 
-Identities bind complete saved reports or captured source input, including attributed conversation.
+Identities bind saved functional outcomes and their observed report/invocation attribution, or
+captured source input including attributed conversation. Markdown bytes are not part of this check.
+For retained outcomes, preserve complete historical record values for existing author/evaluation
+associations while treating any former report hash as opaque data.
 Publication acknowledgements do not themselves replace that captured input. Refreshed human input
 must be reconciled before reuse. Repository paths used to commit authored work are canonical
 checkout-relative paths. A declaration may name a deletion when the path was tracked before the
@@ -183,8 +215,9 @@ stage area. The responsible role receives outstanding feedback after recovery or
 Retained author/evaluator reads preserve malformed outcome bytes and recover available Markdown
 references as producer-attributed rejection evidence before parsing failures propagate or route stale,
 including round opening, finalization, replay, downstream decisions and publication.
-Repaired history alone does not retire feedback; validate and record a usable replacement as its
-correction. Rejection and correction grant no acceptance or extra allowance.
+The owner validates and saves a usable replacement, then clears that role's pending validation-
+error context without correction records or invocation/error matching. This grants no acceptance or
+extra allowance; business routes still follow the saved outcome and current evaluator decision.
 
 ### Current-worktree evaluation
 
@@ -206,9 +239,10 @@ invocation. Architecture also evaluates the current implementation plan.
 Before evaluation, commit declared documents and applicable prototype sources in the shared
 checkout. Named commits exclude unrelated staged work. The evaluator does not edit tracked work.
 Capture the current author identity, source identity, upstream result identities and repository
-revision before invocation. For a fresh decision and interrupted finalization, require those inputs,
-their associated report bytes and the repository revision to remain unchanged through result
-persistence, with declared stage work still committed and applicable browser evidence readable.
+revision before invocation. For a fresh decision and interrupted finalization, require those inputs
+and the repository revision to remain unchanged through result persistence, with their associated
+reports readable, declared stage work still committed and applicable browser evidence readable.
+There is no Markdown-byte identity check.
 Preserve unrelated retained work; do not turn this into a worktree-wide readiness rule. Build caches
 and untracked diagnostic output do not constitute changed assessed work. A changed assessment basis
 requires normal reevaluation rather than binding an old report to current bytes.
@@ -362,10 +396,11 @@ including when a later invocation reads repair context. The role and complete bi
 together; their omission cannot reclassify a current return as legacy. Unbound legacy and action-generated corrections
 require their problem and consequence text. The result's destination must match its correction.
 Finalization, replay, publication and destination context loading resolve the report
-through that producer-owned binding: a missing or changed report is preserved as the returning
-role's rejection evidence and the correction cannot proceed, so replacement bytes never stand in
-for the assessment the return cites. The parent records the destination and downstream stages
-awaiting reassessment before advancing source state; this pending route survives restart. The
+through that producer-owned binding: a missing or unreadable report is preserved as the returning
+role's validation-error evidence and the correction cannot proceed without readable assessment.
+Readable wording changes require no hash matching; the observed outcome, invocation and upstream
+destination/correction pairing remain validated. The parent records the destination and downstream
+stages awaiting reassessment before advancing source state; this pending route survives restart. The
 destination corrects its work in the shared checkout. Idea correction changes its input artifacts
 without replacing that checkout.
 
@@ -395,7 +430,8 @@ fields, including former prototype per-file content, as retained data without en
 matching, citation-reuse or observation scope/content rules. Preserve
 original reports byte-for-byte and supply readable references so their full evidence remains
 available. Reading a simplified typed view must not change the complete recorded identity used to
-associate an author with its evaluation or retire rejection feedback. Required control/functional
+associate an author with its evaluation. Error-context clearing uses owner validation and saving,
+not a saved-record identity match. Required control/functional
 fields, outcome/verdict pairing, the verdict's upstream destination/correction pairing, source
 association and applicable observation validity still receive validation from the producer-owned
 retained-decision reader. Every retained evaluation read enforces verdict/upstream pairing, including
@@ -406,8 +442,8 @@ replay and publication. Validate bound reports before author/evaluation, revisio
 checks can short-circuit rejection retention, including the author reread after evaluator invocation;
 valid changed inputs still follow ordinary stale routing or reevaluation.
 Report failures retain the available outcome/report and producer-attributed
-rejection before failing or marking a completed decision stale; recovery cannot lose the correction
-obligation by repairing the old artifact alone.
+validation-error context before failing or marking a completed decision stale. Recovery edits
+alone do not establish usability; resumed owner validation of a saved replacement clears context.
 
 Completed document-stage decisions can continue under these association and routing checks, without
 retroactive citation bindings or new report fields. An unfinished legacy evaluation that lacks
@@ -423,7 +459,8 @@ Retained readers permit former `content` as opaque historical data, whether pres
 longer valid under its removed schema. They validate the remaining observation/basis fields without
 supplying an empty inventory, coercing old entries or rewriting saved files. Preserve complete
 recorded values for identity checks separately from the usable current view; removed fields cannot
-silently alter an existing author/evaluation or rejection/correction association.
+silently alter an existing author/evaluation association. Former Markdown hashes and ledger fields
+are readable historical data, not active validation or context-clearing rules.
 
 When an applicable retained result omits observation references, resolve each role's reference from
 its producing author/evaluator outcome for that result's authored revision and evaluation. Resolve
@@ -431,8 +468,9 @@ relative evidence paths against the producing round, not the consumer's current 
 references must agree with those producing outcomes; do not search unrelated rounds or guess
 filenames. If a role has no usable declared evidence, require normal recovery/reassessment. This
 also applies to former reuse-skip results retaining a prototype. An obsolete file-mismatch rejection
-remains historical feedback until the responsible role records a usable correction through existing
-handling; compatibility alone does not retire it or promote rejected output into acceptance.
+retains its readable diagnosis and original evidence. Owner validation and saving of a usable
+replacement clears pending context without a correction protocol; compatibility alone does not
+promote rejected output into acceptance.
 
 Reassessment writes a new decision and preserves historical author reports, evaluations, results
 and observations. An interrupted new finalization can resume its saved checkpoint when its current
