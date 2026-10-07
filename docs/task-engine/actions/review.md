@@ -74,17 +74,59 @@ Stage acceptance is context, not delivery approval.
 Keep review artifacts under the implementation issue; earlier stage or PR approval cannot approve
 a changed head.
 
-Confirm that the delivered head, development result, verification result and retained worktree describe
-the same revision. Read saved task conversation and round history. A parent-owned input actor supplies refreshed task
-conversation; save that input and refreshed GitHub PR conversations locally. Supply task requirements,
-the current developer artifact and verification evidence, and complete earlier review/development
-reports or readable local references, preserving their evidence and attribution. Published Jira
-summaries do not replace these reports. Previous reports provide context; there is no eligible
-finding set, per-finding response or disposition input.
+### Prompt context requirements
 
-Read the comparison diff for the recorded base/head and include that revision range in the review
-context, explicitly identifying it as orientation rather than a scope boundary. Agent claims do not
-change the revision this action is evaluating.
+The affected categories are task and human direction, current reports and verification evidence,
+active correction/validation feedback, historical conversations and reports, and comparison evidence.
+The reviewer must see its active obligations directly while retaining access to complete supporting
+history. The journey is: receive current requirements and feedback -> inspect labeled evidence
+references and the task-relevant implementation -> assess the delivered revision -> report through
+the existing review and repair/publication paths.
+
+1. Confirm that the delivered head, development result, verification result and retained worktree
+   describe the same revision. A parent-owned input actor supplies refreshed task conversation;
+   retain that input and refreshed GitHub PR conversations locally as complete readable evidence.
+2. Keep current task requirements, relevant human instructions, the current development report and
+   verification result directly visible in the invocation. Preserve scope, qualifications, exclusions
+   and acceptance conditions. Relevant human instructions include clarifications or corrections
+   that govern the current task even when they occur in older conversation entries. Preserve their
+   original meaning and attribution; conflicting or uncertain direction remains explicit rather
+   than being silently resolved. Agent assessments and Nexus publications are not human decisions.
+3. Keep active correction and validation feedback directly visible, including the preceding review
+   assessment when its concerns require judgment against the current revision. Include the original
+   narrative, not a lossy summary or an extracted finding set. Supporting reports may be referenced,
+   but a reference alone cannot hide an active obligation. Use the existing
+   [report requirements](../../agent-runtime/report-requirements.md) for actionable rejection reasons,
+   attributable rejected evidence and owner-validated clearing of pending feedback; changing prompt
+   presentation does not introduce a correction ledger or Markdown-byte matching gate.
+4. Supply supporting Jira/PR conversation history and earlier review/development reports through
+   clearly labeled readable references instead of repeatedly embedding their complete bodies.
+   Identify the source and task/PR, and preserve available author, chronology, round, role/profile,
+   invocation, revision and outcome attribution in the references or referenced evidence. The
+   reviewer can read the complete captured conversations and original reports, including legacy
+   combined records and rejected evidence, without fetching them again from Jira or GitHub.
+   Published summaries do not replace these originals. Previous reports remain context, not an
+   eligible finding set, per-finding response or disposition input.
+5. Supply the complete comparison diff through a labeled readable reference, identifying its recorded
+   base/head in the invocation. Explicitly state that it orients inspection and does not bound scope:
+   all code relevant to task correctness, including pre-existing code outside the range, remains in
+   scope. Do not truncate, summarize or omit comparison evidence to shorten the prompt. Agent claims
+   do not change the revision this action evaluates.
+6. Verify assembled reviewer invocations on initial review and subsequent reviews, including retained
+   continuation that needs a fresh assessment: active obligations remain directly visible,
+   supporting historical bodies and the diff are referenced, and those references resolve to
+   complete readable evidence from the reviewer workspace. Preserve existing evidence usability,
+   attribution and revision checks. Unavailable
+   required evidence follows existing execution-error/recovery handling; it is not approval, an
+   invented finding or a new upstream product requirement.
+
+This change is bounded to Review context and its owning documentation and verification. Reuse
+preparation's existing reference-based approach where appropriate; it does not require a rewrite
+of other role contexts, JEv or a new context-ranking service. There is no prompt-size target or
+cutoff for active obligations. Reference layout and prompt assembly belong to technical design;
+no material product decision is unsettled.
+
+### Assessment and publication
 
 Use the existing worktree with the reviewer profile. Dependency installation, builds, focused checks
 and temporary reproduction tests may write files. Verify that the reviewed revision and implementation
@@ -146,3 +188,9 @@ Review has no Jira capability. GitHub Nexus Lens review/check publication remain
 | Material evidence is unavailable and the assessment cannot finish | Execution fails through the existing recovery path; no usable review verdict, invented blocking finding or additional review retry mechanism is produced. |
 | A reviewer returns the removed inconclusive verdict | The report is unusable output and is handled as an execution error. |
 | Approval applies to a different head, a required pre-merge check fails, or merge and successful required post-merge checks are unconfirmed | The task cannot complete; the existing revision and pre/post-merge gates still apply. |
+| A long Jira/PR conversation contains an older human scope clarification that still governs the task, a later conflicting human instruction and Nexus-published summaries | The assembled invocation directly shows the relevant human instructions with attribution and the unresolved conflict. Labeled references expose the complete captured conversations and distinguish publications from human direction; full historical conversation bodies are not embedded. |
+| A repair review has a current developer report, verification result, preceding changes-requested assessment, pending reviewer validation error and several older rounds | The current report, verification evidence, original active assessment and actionable validation reason are directly visible. Older supporting reports and rejected evidence remain accessible through attributed references; no summary or reference replaces the active obligations. |
+| A comparison diff is large and a task-relevant defect lies in pre-existing code outside its base/head range | The invocation states the base/head and provides a readable reference to the complete diff without embedding its body. It explicitly preserves inspection of task-relevant code outside the range; shortening context does not narrow review scope. |
+| Review resumes for a fresh assessment after history has grown | The assembled invocation retains current requirements, relevant human instructions, current reports and pending feedback directly, with complete historical evidence accessible by reference. Historical age or context size does not hide an active correction. |
+| A required evidence reference cannot be read and the reviewer cannot finish its assessment | Existing execution-error/recovery handling applies without a usable verdict, fabricated defect or extra retry route. Merely providing a path does not establish evidence availability. |
+| A referenced report has readable wording changes, or a replacement outcome has cleared pending validation context under its owner's rules | Context follows the existing report requirements: no Markdown-byte matching or correction ledger is restored, cleared errors remain readable history, and task/invocation/revision attribution and review gates still apply. |
