@@ -189,7 +189,7 @@ function historySection(root: string, histories: RoundHistories): string {
   }
   const ordered = [...rounds.entries()].sort(([left], [right]) => left - right);
   return [
-    'Earlier rounds (read these for prior decisions and evidence):',
+    'Earlier rounds (consult relevant reports for unresolved questions or prior decisions):',
     ...ordered.flatMap(([number, lines]) => [`- Round ${number}:`, ...lines]),
   ].join('\n');
 }
@@ -219,10 +219,10 @@ function checkEvidence(root: string, histories: RoundHistories): string | null {
 function responseInstructions(reportFile: string, artifactFile: string): string {
   return [
     `Assigned Markdown report: ${reportFile}`,
-    'Write your complete report to that path before returning. It carries what changed and why, ' +
+    'Write your concise report to that path before returning. It carries what changed and why, ' +
       'the verification performed and its results, corrections, disagreements, the scope checked ' +
-      'and remaining problems. Begin with a brief account of what changed and why for concise ' +
-      'publication. Report incomplete work or missing material context honestly.',
+      'and remaining problems. Supply evidence needed by the next actor without repeating history ' +
+      'or unchanged behavior. Report incomplete work or missing material context honestly.',
     responseFormatText(developmentResponseSchema),
     'status "completed" means the implementation is committed on the prepared branch and ready ' +
       'for verification; "failed" means it could not be completed. Return exactly one of those ' +

@@ -8,6 +8,9 @@ Keep documentation current, concise and useful for decisions.
 - Describe component responsibilities and required behavior, not files, functions or code walkthroughs.
   Code should explain its own implementation. Use code examples or pseudocode only to illustrate an idea.
 - Keep repository contents limited to current documentation, implementation, configuration and tests.
+  Remove completed ticket-specific rollout instructions from permanent design documents; describe
+  current behavior once at its owner. Consult indexed references for the affected responsibility,
+  rather than treating the index or historical reports as mandatory reading.
   Keep task inventories, activity journals, run results, agent transcripts and other development
   bookkeeping in the task tracker or pull request, not in repository files or archives. Test fixtures
   must be consumed by tests. Git history retains past versions and decisions.

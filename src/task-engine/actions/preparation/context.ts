@@ -64,8 +64,10 @@ export const preparationSharedGuidance = [
   'Existing work that meets this standard receives direct evaluation and acceptance without',
   'manufactured edits, citations or a reuse skip. Apply the standard to the selected role’s work;',
   'visual and motion assessment belongs only where relevant.',
-  'Use the connected worktree, captured author input, attributed conversation, accepted upstream',
-  'outputs and project documents. Human intent governs; agent summaries are revisable history.',
+  'Start with current captured requirements, active corrections and affected component contracts.',
+  'Consult accepted upstream outputs, related documents and historical reports for specific questions;',
+  'document indexes are navigation aids, not reading assignments. Human intent governs;',
+  'agent summaries are revisable history.',
   'Keep source attribution and material uncertainty. Do not retrieve Jira, publish source comments,',
   'change issue status or create implementation issues; source operations belong to the parent.',
   'Assess only the selected stage’s responsibilities. Shared-memory search/save is explicit when',
@@ -85,7 +87,9 @@ export const preparationSharedGuidance = [
   'ownership cause, correct it at its owning boundary; repetition alone does not justify',
   'abstraction or redesign.',
   'Evaluators inspect the resulting design and applicable implementation, affected interactions',
-  'and existing behavior, not just additions or the author’s summary. Seek contradictions,',
+  'and existing behavior, not just additions or the author’s summary. Expand inspection when',
+  'evidence indicates wider impact or a shared cause; unrelated improvements are not completion',
+  'requirements. Seek contradictions,',
   'unnecessary complexity, scattered ownership and interaction inconsistencies. Necessary findings',
   'identify the concrete problem, evidence, consequence and required correction through the',
   'existing finding and return paths. Preserve stage responsibility, bounded material-quality',
@@ -114,6 +118,8 @@ export const preparationReportingGuidance = [
   'remain and seek useful improvements as well as omissions. Report actionable current findings',
   'in Markdown without stable IDs or disposition records, separating necessary changes from',
   'optional suggestions and explaining why the latter are nonblocking.',
+  'Lead with the result, necessary corrections, verification and material limitations. Include',
+  'evidence the next actor needs; omit repeated history and exhaustive inspection narratives.',
 ].join('\n');
 
 /** The stage's own area root inside the shared issue workspace. */

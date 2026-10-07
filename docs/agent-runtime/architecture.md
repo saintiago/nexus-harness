@@ -83,7 +83,7 @@ request native server isolation, preventing inherited files from changing the ca
 existing tool settings for every selectable role profile, including recovery and analysis.
 Do not replace the entire native configuration or share a mutable settings object across roles.
 The runtime's `run` contract is unchanged; provider-native MCP owns discovery, launch and calls.
-The enabled tool's guidance is the constant text under Optional JEv judgments below, supplied
+The enabled tool's guidance is the guidance under Advisory JEv judgments below, supplied
 once by composition. Deduplicate that same constant across configured base/profile instructions
 and composed guidance. No tool guidance is supplied when access is disabled or credentials are missing.
 
@@ -131,37 +131,40 @@ Prompt and settings are values. Receive the provider's output and activity as da
 The adapter may use temporary files when its transport requires them; it does not choose Nexus
 artifact locations.
 
-### Optional JEv judgments
+### Advisory JEv judgments
 
-Agents can consult the standalone [JEv package](https://github.com/saintiago/jev-mcp/blob/main/docs/contracts.md)
-for bounded judgments. When the integration is enabled, every Nexus role receives optional
-`ask_jev` access through provider-native MCP configuration: all preparation authors/evaluators,
-all four idea-refinement roles, development, review, recovery and experience analysis. This applies
-to every selectable profile, including repair/escalation entries and profiles reused across roles.
-No invocation requires a call merely because the tool is available.
+Every role can consult the standalone [JEv package](https://github.com/saintiago/jev-mcp/blob/main/docs/contracts.md)
+through provider-native MCP when enabled: preparation authors/evaluators, idea roles, development,
+review, recovery and experience analysis, including every selectable profile and repair turn.
+Access does not require a call. The responsible role owns its decisions.
 
-The package owns provider requests, schemas, response validation, MCP transport and optional local
-usage logging. Nexus consumes its delivered dependency and owns decisions made from its answers.
-Tool composition preserves the role's existing capabilities and restrictions, including experience
-analysis's search-only memory access. Enablement, host credentials and optional host logging
-settings follow [configuration](../configuration.md#jev-settings); installation and effective tool
-checks follow [profiles](profiles.md#jev-access).
+Consult JEv for consequential uncertainty: competing contract interpretations, significant design
+choices or disputed blocking findings. Routine execution, wording and straightforward instructions
+remain with the agent. Ask bounded questions with balanced alternatives, relevant authoritative
+evidence and clear criteria; distinguish assumptions from observed facts and batch questions sharing
+one state. Answers and confidence are evidence, not binding decisions or proof of correctness.
+Evaluate them against current human direction, owning contracts and executable evidence; explain
+material disagreement. A low score alone is not a defect or a reason to ask again. Follow up to resolve
+a specific uncertainty or changed evidence or criteria.
 
-Supply this concise guidance once with enabled access: ask narrow questions with explicit
-alternatives and only relevant evidence; batch questions sharing the same state. JEv returns
-judgments, not code or prose answers. Use deterministic tools for arithmetic, counting and executable
-checks. Answers and confidence are evidence for the responsible role, never permission to bypass
-required stages, independent evaluation, verification or merge checks. If the tool cannot answer,
-continue the role's existing reasoning and checks; do not make JEv availability a completion gate.
+Use existing tools for fact lookup, arithmetic, checks and code/prose generation. JEv does not
+replace required stages, independent review, verification or merge checks. If unavailable, continue
+reasoning and checks and disclose a material limitation.
+
+The package owns provider requests, schemas, response validation, MCP transport and optional usage
+logging. Nexus supplies this guidance once with enabled access and preserves other tools, including
+analysis's search-only memory access. Enablement and credentials follow
+[configuration](../configuration.md#jev-settings); effective tool checks follow
+[profiles](profiles.md#jev-access).
 
 Acceptance examples:
 
 - With JEv enabled, the effective tool catalogue for each role/profile combination exposes
   `ask_jev`, and the assembled invocation includes the usage guidance once. A reused profile
-  retains only the invoked role's instructions; an invocation making no JEv call can complete.
+  retains only the invoked role's instructions; an invocation can complete without a JEv call.
 - A native MCP call with synthetic state and explicit alternatives returns the package's
-  structured judgment. A tool failure leaves the role able to complete through its existing
-  reasoning; a positive judgment alone cannot approve a revision or satisfy a failing check.
+  structured judgment. If the tool cannot answer, the role can continue with a material limitation
+  disclosed; a positive judgment alone cannot satisfy required review or a failing check.
 - With both integrations enabled, a developer retains memory search/save and existing tools;
   the experience analyst retains memory search without memory save and also receives `ask_jev`.
 - With JEv disabled, Nexus supplies neither its tool nor its usage guidance and makes no JEv call.

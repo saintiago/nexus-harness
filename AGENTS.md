@@ -1,5 +1,9 @@
 # Documentation reference
 
+Start with current requirements, active corrections and the affected component contracts. This
+index is a navigation aid, not a reading assignment. Follow related documents and historical reports
+when they resolve a specific question; keep unrelated cleanup outside the requested change.
+
 Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
 If code contradicts documentation, correct the code.
 

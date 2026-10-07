@@ -5,9 +5,9 @@ and returns a separate machine-readable outcome. The outcome contains only contr
 functional data consumed by its workflow. Findings, explanations, responses, disagreements and
 evidence descriptions belong in the Markdown report, not in structured reporting fields.
 
-These requirements govern report contracts and their validation across roles. Combined JSON
-narrative/outcome contracts and structured finding-list validation must be replaced to conform to
-this separation. Markdown-byte hashes, report-byte matching gates and formal rejection/correction
+These requirements govern report contracts and their validation across roles. New outcomes keep
+narrative prose separate and carry no structured finding list. Markdown-byte hashes, report-byte
+matching gates and formal rejection/correction
 ledgers are also superseded: readable reports, observed attribution and simple validation-error
 context provide the required reporting evidence. Role responsibilities, workflow decisions and
 revision/check protections remain intact.
@@ -54,7 +54,10 @@ through the normal gates, keeping the original failure readable.
    applicable outcome contract and task context, including repair and focused follow-up variants.
    Concurrent roles have distinct report artifacts. The agent writes the narrative to that path and
    returns only the outcome. It does not choose report destinations or supply Nexus's identity or
-   revision metadata. No fixed report headings, prose schema or length gate is required.
+   revision metadata. No fixed report headings, prose schema or length gate is required. Lead with
+   the result, necessary
+   corrections, verification and unresolved limitations. Include evidence needed by the next actor,
+   without repeated history, unchanged behavior or an exhaustive inspection itinerary.
 2. Give each outcome field a workflow consumer and make its meaning, outcome-dependent requirements
    and role/stage restrictions available before invocation. Developers return only status; reviewers
    return only verdict. Other roles retain only the minimal control and functional data their
@@ -129,11 +132,6 @@ through the normal gates, keeping the original failure readable.
     validation errors as simple context when removing ledger state. Preserve existing pending analysis
     and accepted memory observations/submissions under the
     [memory continuation requirements](../memory/integration.md#durability-and-evaluation).
-    Complete through configured preparation and linked implementation, review, merge and required
-    CI, then activate the checked merged revision for KAN under
-    [installation activation](../application.md#installation-activation). Preserve retained work and
-    pending analysis when switching installations; this requirements stage does not perform those
-    source or activation operations.
 
 ## Observable acceptance examples
 
@@ -157,25 +155,12 @@ through the normal gates, keeping the original failure readable.
 | A replacement remains invalid, or another work item or role starts | An invalid replacement leaves actionable errors for its next responsible attempt. Unrelated work or roles receive no foreign pending error context. |
 | An old analysis already has accepted observations or a pending memory receipt when report validation changes | Continuation preserves the observations and existing submissions; it neither invokes analysis again solely for obsolete hash/ledger requirements nor submits a duplicate lesson. |
 | Retained work has exhausted its allowance, an unresolved blocking problem, approval for another head or failed required checks | Report separation and feedback retention cannot reset allowances, remove correction obligations or permit completion without current required evidence. |
-| The merged change has passed required review and CI and is ready for KAN | Activation waits until users of the current installation finish or reach a normal retained stop, verifies the configured launch target is the checked revision, and preserves KAN configuration, checkpoints, allowances, readable errors/reports and pending analysis. A local build alone does not demonstrate activation. |
 
-## Scope and unsettled decisions
+## Ownership
 
-Existing [workflow](../project-workflow.md), [recovery](../application.md#execution-and-recovery),
+[Workflow](../project-workflow.md), [recovery](../application.md#execution-and-recovery),
 [agent invocation](architecture.md#provided-interface) and
-[delivery protections](../task-engine/actions/complete-task.md#behavior) remain authoritative.
-The requested change concerns reporting artifacts and machine outcomes, not a reporting-terminal
-interaction change. Existing [UX/prototype applicability](../ux-ui.md#preparation-applicability)
-therefore applies. No general retry system, finding lifecycle or unrelated role capability is added.
-
-No material product decision is unsettled by the captured request. Exact schemas, artifact layout,
-metadata representation, legacy-reader compatibility and publication assembly belong to Architecture
-within these requirements. Existing role/action documents must be aligned there: combined report
-fields, structured-finding checks, Markdown hashes/matching gates and formal rejection/correction
-protocols are superseded here. In particular, the shared action report contract and its preparation,
-analysis, Application, Recovery and workspace consumers must remove those obsolete requirements
-together. Workflow responsibilities, source/assessment associations, substantive findings and
-upstream-return routes remain authoritative; they are not report-validation ledgers. Fresh
-preparation memory identities follow the [memory requirements](../memory/integration.md#durability-and-evaluation).
-Implementation, focused behavioral checks, delivery and KAN activation belong to linked delivery
-work, not requirements authoring. No replacement bookkeeping mechanism is added.
+[delivery protections](../task-engine/actions/complete-task.md#behavior) own their existing boundaries.
+The report contracts preserve source/assessment associations, substantive findings, upstream returns,
+finite allowances and current-revision checks. Fresh preparation memory identities follow
+[memory integration](../memory/integration.md#durability-and-evaluation).

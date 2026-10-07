@@ -623,6 +623,8 @@ describe('Review', () => {
       'superseded rules or mechanisms',
       'confirm any shared ownership cause',
       'Accept adequate work and keep optional suggestions distinct',
+      'depth guided by the change',
+      'document indexes and historical references are not mandatory reading lists',
       'no extra attempts or bypass of revision-bound review, merge or check gates',
     ]) {
       expect(occurrences(prompt, obligation), obligation).toBe(1);
