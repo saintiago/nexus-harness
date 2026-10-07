@@ -478,9 +478,13 @@ and restores XState child snapshots without interpreting internal state trees. T
 bound operations, including child operations, and drain them on failure under the runner's existing
 completion contract. All roles share attributable activity events and terminal panes.
 
-AnalyzeExperience remains a shared terminal-handoff action after published success, skip,
-waiting/exhaustion or selected-work failure and finite completion. Preserve the business destination
-if learning is unavailable. Do not analyze intermediate revisions or empty selection.
+AnalyzeExperience captures successful preparation once, after the final implementation handoff,
+with the whole retained preparation evidence under its
+[preparation handoff requirements](task-engine/actions/analyze-experience.md#preparation-handoff-requirements).
+Successful stage publication, evaluated skips and upstream correction routing do not separately
+trigger analysis. Existing waiting/exhaustion and selected-work failure handoffs, idea publication
+and finite completion retain their analysis routes. Preserve the business destination if learning
+is unavailable. Do not analyze intermediate revisions or empty selection.
 
 Test real parent/child composition, later-stage entry, evaluated skips, revision binding, upstream
 return/reassessment, feedback resumption, finite limits, missing inputs, source-write failure/retry,

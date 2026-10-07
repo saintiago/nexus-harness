@@ -68,7 +68,9 @@ Every workflow invokes AnalyzeExperience after each terminal handoff for selecte
 selecting another item, returning a final outcome or transferring a failed attempt to recovery.
 Use the same bound implementation in separate states when destinations differ. Routing and original
 outcomes belong to the workflow, not this action. Ordinary retry rounds and intermediate exchanges
-do not trigger it. Each item in a finite queue produces its own request; queue drain produces none.
+do not trigger it. Successful preparation stages and evaluated skips are intermediate work: their
+analysis is consolidated at the final implementation handoff under the requirements below.
+Each item in a finite queue produces its own request; queue drain produces none.
 
 Finite delivery inserts it after successful CompleteTask and on selected-item routes to blocked:
 PrepareWorkspace failure, StartRound exhaustion, Deliver failure and failed
@@ -99,6 +101,53 @@ Completion/publication actions supply their ordinary evidence and outcomes but n
 or schedule analysis themselves. In particular, a failed source update can yield a failed handoff
 with completed implementation evidence; analysis uses that evidence without treating a Jira status
 as its trigger or rewriting the original outcome.
+
+### Preparation handoff requirements
+
+Affected categories are preparation routing, retained analysis evidence, restart continuity and
+idempotent memory submission. The operator's journey is: progress through preparation, including
+evaluated skips and corrections -> complete the implementation handoff -> capture one successful
+preparation analysis -> resume pending analysis or submissions after interruption. Activities are
+publishing stage outcomes, handing off implementation work, retaining evidence and continuing
+analysis. Failure and attention handoffs remain part of the existing journey.
+
+1. Successful preparation triggers one analysis request at its final successful implementation
+   handoff, after linked implementation work has been handed off. Accepting or skipping a stage,
+   advancing to another stage or returning upstream for correction does not separately trigger
+   analysis. Architecture acceptance alone is not the final successful handoff.
+2. The final successful request includes the retained evidence from the whole preparation being
+   handed off: all its retained stages and rounds, including evaluated skips, earlier revisions,
+   upstream corrections and their associated author/evaluator reports, together with source input
+   and final handoff evidence. Preserve source, stage, round and revision attribution where
+   available. Analysis must not be limited to Architecture or its latest round. Existing evidence
+   retention and readability rules apply to this complete selection.
+3. Preserve existing analysis handoffs for preparation failure, publication failure, implementation
+   handoff failure, waiting for input, exhausted allowances and operational errors. Preserve their
+   original reasons and business destinations. Consolidating success does not postpone these
+   handoffs until preparation eventually succeeds or change idea and finite-delivery analysis.
+4. Replaying the same final handoff reuses its durable request and settled analysis/submission work;
+   a fresh preparation attempt remains distinct under the existing attempt-identity requirements.
+   Pending requests captured before consolidation, including intermediate-stage success requests,
+   remain independently resumable with their original evidence, identities, accepted observations
+   and exact submission payloads. Do not delete, merge, re-key or recapture them to fit the new
+   success trigger. Restart must not create duplicate memory submissions.
+5. Reduce routine calls by changing the success handoff boundary, without JEv or a new screening
+   mechanism. No prediction of lesson usefulness gates capture. Zero observations remains a valid
+   analysis result. Existing disabled/unavailable behavior, explicit agent memory tools, stage
+   evaluation, publication and implementation admission outcomes remain unchanged.
+
+| Situation | Observable result |
+| --- | --- |
+| Requirements, UX, Storybook and Architecture succeed, then implementation handoff succeeds with memory enabled and readable evidence | No intermediate stage schedules analysis; the final handoff records one successful preparation request. |
+| UX and Storybook are evaluated skips between successful Requirements and Architecture, then implementation handoff succeeds | The skips schedule no separate analysis; the one final request retains their outcomes and reports alongside the other preparation evidence. |
+| A later stage returns upstream, earlier work is revised and reevaluated, then preparation is handed off | The correction route schedules no intermediate success analysis. The final request includes retained earlier and revised rounds with their attribution, not just the latest Architecture result. |
+| Architecture is accepted but implementation handoff fails, or another preparation stage fails, waits for input or exhausts its allowance | The existing failure or attention analysis handoff runs with its original reason and destination; no successful final-handoff request is manufactured. |
+| The final handoff is replayed after restart, or a fresh attempt reaches the same final outcome | Replay reuses the original request without duplicate submissions; the fresh attempt has a distinct request and does not overwrite earlier evidence. |
+| An older intermediate-stage request has pending analysis or an accepted observation with a pending receipt when consolidation is installed | Restart continues that request under its original identity and evidence. Receipt continuation uses the settled analysis and exact stored submission, without invoking the analyst again. |
+| The consolidated analysis finds no reusable lesson, or memory is disabled or unavailable | Zero observations is valid; disabled or unavailable memory preserves the existing business destination without an added screening step. |
+
+No material product decision is unsettled. Evidence selection mechanics and workflow binding changes
+belong to Architecture; these requirements do not introduce a new analysis or identity mechanism.
 
 ## Analysis and memory execution
 
