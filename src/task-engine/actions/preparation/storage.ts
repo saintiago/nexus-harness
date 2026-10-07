@@ -39,7 +39,6 @@ import {
   authoredIdentity,
   recordIdentity,
   requireDeclaredWork,
-  requireEvaluationContent,
   sourceInputIdentity,
 } from './evaluation-content.js';
 import { requireRetainedPrototypeEvidence } from './observation.js';
@@ -353,7 +352,8 @@ export type CurrentDecisionState =
 /**
  * Read the current stage decision for the captured ticket. Later stages assess the current shared
  * checkout and return concrete input defects upstream; their document edits do not invalidate an
- * earlier verdict mechanically. Applicable prototype inspection remains specific to its sources.
+ * earlier verdict mechanically. An applicable prototype decision still requires both roles'
+ * readable retained evidence, resolved through the producing outcomes.
  */
 export async function readCurrentDecision(settings: {
   readonly issueRoot: string;
@@ -401,7 +401,6 @@ export async function readCurrentDecision(settings: {
         reason: `the ${stage} stage's current round retains no evaluated authored revision`,
       };
     }
-    const basis = evaluation.basis;
     const verdict = result.outcome === 'skipped' ? 'accepted-skip' : 'accepted';
     await requireRetainedDecision({
       issueRoot,
@@ -413,19 +412,26 @@ export async function readCurrentDecision(settings: {
       evaluation,
       git,
     });
-    if (author.revision !== result.authoredRevision) {
-      return { kind: 'stale', reason: `the ${stage} result reports another authored revision` };
-    }
+    // The result's recorded attribution must identify the producing assessment before any
+    // evidence is resolved through it; a mismatched revision, evaluation or prototype reference
+    // is not the decision this round evaluated.
+    requireRetainedResultAssociation({
+      root,
+      round: plan.round,
+      result,
+      author,
+      evaluation,
+    });
     // An applicable prototype decision also relies on the retained observation records; a record
     // deleted or edited after acceptance makes the decision stale for reuse and handoff alike.
+    // Missing references are resolved from the producing outcomes, never searched or guessed.
     if (stage === 'prototype' && (result.outcome === 'accepted' || result.prototype !== null)) {
       await requireRetainedPrototypeEvidence({
-        git,
-        worktree: preparationWorktree(issueRoot),
         artifactsRoot: path.join(root, 'artifacts'),
+        roundDirectory: roundArtifactDirectory(root, plan.round),
         observations: result.prototypeObservations,
-        assessed: basis.content,
-        observedPaths: result.sourcePaths,
+        author,
+        evaluation,
       });
     }
     return { kind: 'current', decision: { round: plan.round, result, evaluation, author } };
@@ -434,6 +440,52 @@ export async function readCurrentDecision(settings: {
       return { kind: 'stale', reason: error.message };
     }
     throw error;
+  }
+}
+
+/**
+ * Require a retained result to identify the producing assessment it recorded, before a replay or
+ * downstream read resolves evidence through it: the evaluation reference must name the round's
+ * evaluated decision, the authored revision must be the revision that decision assessed and a
+ * retained prototype revision must be the repository revision the evaluation observed. A legacy
+ * evaluation that recorded no repository observation keeps its documented compatibility;
+ * conflicting or unresolvable attribution requires normal recovery or reassessment.
+ */
+export function requireRetainedResultAssociation(settings: {
+  readonly root: string;
+  readonly round: number;
+  readonly result: PreparationResult;
+  readonly author: RetainedStageAuthorOutput;
+  readonly evaluation: RetainedStageEvaluationOutput;
+}): void {
+  const { root, round, result, author, evaluation } = settings;
+  const evaluationFile = roundArtifactFile(
+    root,
+    round,
+    stageEvaluationArtifact.pathFromArtifactsRoot,
+  );
+  if (path.resolve(result.evaluation.path) !== evaluationFile) {
+    throw new Error(
+      `The retained ${result.stage} result names another evaluation than the round's evaluated ` +
+        'decision.',
+    );
+  }
+  if (result.authoredRevision !== author.revision) {
+    throw new Error(
+      `The retained ${result.stage} result reports another authored revision than the evaluated ` +
+        'author.',
+    );
+  }
+  const observed = evaluation.basis.repositoryRevision;
+  if (
+    result.prototype !== null &&
+    observed !== undefined &&
+    observed !== result.prototype.revision
+  ) {
+    throw new Error(
+      `The retained ${result.stage} prototype revision does not match the repository revision ` +
+        'its evaluation observed.',
+    );
   }
 }
 
@@ -555,11 +607,6 @@ export async function requireCurrentAcceptance(settings: AcceptanceSettings): Pr
   // The declared stage work must still be the committed bytes the evaluator assessed: an
   // uncommitted edit after the observation is not covered by the saved decision.
   await requireDeclaredWork({ git, worktree, author, revision: basis.repositoryRevision });
-  await requireEvaluationContent({
-    git,
-    worktree,
-    content: basis.content,
-  });
 }
 
 /** One published upstream return's report association: the returning stage, role and binding. */

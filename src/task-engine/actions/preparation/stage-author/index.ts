@@ -17,10 +17,9 @@ import {
   readAssignedReport,
   responseFormatText,
 } from '../../agent-reports.js';
-import { readRecord, readRequiredRecord } from '../../records.js';
+import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
-  isBoundStageAuthorOutput,
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
@@ -40,14 +39,7 @@ import {
   resolveSkipReference,
   skipReferenceProblem,
 } from '../evaluation-content.js';
-import {
-  evidenceFilePath,
-  observationScopeProblem,
-  observationSubmissionProblem,
-  prototypeObservationSchema,
-  readPrototypeObservation,
-  type PrototypeObservation,
-} from '../observation.js';
+import { readPrototypeObservation } from '../observation.js';
 import {
   outstandingReportFeedback,
   projectOfWorkspace,
@@ -167,13 +159,14 @@ async function declaredPathProblem(
 /**
  * Deletions this stage actually declared and retained for evaluation. Ownership survives later
  * repair, skip and return rounds; it does not authorize absent paths deleted by other stages.
- * Ownership comes from action-observed evidence of the earlier declaration, never from the
- * checkout's present contents: an evaluated declaration recorded a deletion only when the path is
- * absent at the exact revision that round's evaluation assessed, while a path it committed as a
- * file stays a modification even if some later work removed it. Before an evaluation is saved, a
- * validated author observation and a former evaluation's assessed content remain the additional
- * deletion evidence for records written before document bindings were removed. The current round
- * is included so replay after an interrupted evaluation keeps its recorded deletion too.
+ * Ownership comes from a retained authored declaration, never from the checkout's present
+ * contents: the declaration recorded a deletion only when its path is absent at the exact
+ * repository revision that round's evaluation observed, while a path it committed as a file stays
+ * a modification even if some later work removed it. Browser observations and former per-file
+ * content supply no path ownership. The current round is included so replay after an interrupted
+ * evaluation keeps its recorded deletion too; a former unfinished declaration without an
+ * evaluated revision preserves its work and uses existing attention/reassessment handling instead
+ * of inferring ownership from absence.
  */
 async function retainedStageDeletions(
   settings: {
@@ -184,11 +177,6 @@ async function retainedStageDeletions(
   },
   readAuthor: (round: number) => Promise<RetainedStageAuthorOutput | null>,
   readEvaluation: (round: number) => Promise<RetainedStageEvaluationOutput | null>,
-  readObservation: (
-    round: number,
-    file: string,
-    author: RetainedStageAuthorOutput,
-  ) => Promise<PrototypeObservation | null>,
 ): Promise<ReadonlySet<string>> {
   const { git, root, round, worktree } = settings;
   const deleted = new Set<string>();
@@ -202,21 +190,6 @@ async function retainedStageDeletions(
         .filter((value): value is string => value !== null),
     );
     const evaluation = await readEvaluation(retained);
-    let content = evaluation?.basis.content ?? [];
-    if (evaluation === null && author.observation !== null) {
-      const file = evidenceFilePath(
-        roundArtifactDirectory(root, retained),
-        author.observation.path,
-      );
-      if (file !== null) {
-        const observation = await readObservation(retained, file, author);
-        if (observation?.role === 'author') content = observation.content;
-      }
-    }
-    for (const entry of content) {
-      const relative = checkoutRelative(worktree, entry.path);
-      if (!entry.exists && relative !== null && declared.has(relative)) deleted.add(relative);
-    }
     const revision = evaluation?.basis.repositoryRevision;
     if (revision !== undefined) {
       for (const relative of declared) {
@@ -280,31 +253,14 @@ async function reportProblem(
       'record under the round artifact area and declare it'
     );
   } else {
-    let observation: PrototypeObservation;
     try {
-      observation = await readPrototypeObservation({
+      await readPrototypeObservation({
         declared: report.observation.path,
         roundDirectory: settings.roundDirectory,
         role: 'author',
       });
     } catch (error) {
       return messageOf(error);
-    }
-    const scope = observationScopeProblem({
-      worktree: settings.worktree,
-      observation,
-      observedPaths: report.sourcePaths,
-    });
-    if (scope !== null) {
-      return scope;
-    }
-    const submission = await observationSubmissionProblem({
-      git: settings.git,
-      worktree: settings.worktree,
-      observation,
-    });
-    if (submission !== null) {
-      return submission;
     }
   }
   if (report.outcome === 'authored') {
@@ -443,32 +399,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
         error: settings.error,
         assignedReport: settings.report,
       });
-    }
-
-    /**
-     * Read one retained authored report. An unusable retained record is preserved as rejection
-     * evidence under this report responsibility instead of silently failing its next reader.
-     */
-    async function readAuthorRecord<Value>(
-      round: number,
-      file: string,
-      read: () => Promise<Value>,
-      producer: RetainedStageAuthorOutput,
-    ): Promise<Value> {
-      try {
-        return await read();
-      } catch (error) {
-        return await rejectUnusableRecord({
-          areaRoot: root,
-          scope,
-          invocationId: isBoundStageAuthorOutput(producer) ? producer.invocationId : null,
-          operation: 'stage-author',
-          profile: isBoundStageAuthorOutput(producer) ? producer.profile : null,
-          context: `${attribution} Reading retained author round ${String(round)}.`,
-          file,
-          error,
-        });
-      }
     }
 
     async function readAuthor(round: number): Promise<RetainedStageAuthorOutput | null> {
@@ -694,13 +624,6 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
               { git: settings.git, root, round: plan.round, worktree },
               readAuthor,
               readEvaluation,
-              (round, file, producer) =>
-                readAuthorRecord(
-                  round,
-                  file,
-                  () => readRecord(file, { file, schema: prototypeObservationSchema }),
-                  producer,
-                ),
             )
           : new Set(),
     });

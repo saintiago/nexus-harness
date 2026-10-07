@@ -133,7 +133,8 @@ Correction and reevaluation use the retained workspace. Evaluators assess the re
 against the current documents. Later stages may edit the same document without mechanically
 invalidating an earlier verdict; a concrete input defect requires an explicit upstream finding.
 Refreshed human intent and explicit pending corrections require reassessment. Applicable prototype
-inspection remains bound to the inspected sources. Restart retains the workspace, findings,
+inspection retains readable browser evidence and Nexus-observed report/revision attribution, without
+per-file assessment bindings. Restart retains the workspace, findings,
 completed round history and cumulative allowances.
 
 Seek improvements as well as omissions: simpler rules, clearer journeys, lower user effort, fewer
@@ -271,6 +272,79 @@ prototype work permits an evaluated skip. Outputs identify stories/preview, the 
 revision and evaluation evidence. Mocked behavior establishes usability, not persistence, account
 isolation, service integration or deployed behavior. Prototype code stays on retained preparation
 work and is supplied to implementation for reuse.
+
+### Prototype assessment requirements
+
+These requirements govern prototype assessment, role instructions and report contracts, retained
+preparation evidence, changed-path handling, continuation and affected documentation/tests.
+Participants are prototype authors and evaluators, downstream agents reading their evidence, and
+operators resuming preparation. The requested outcome is that genuine browser assessment is judged
+against the ticket and current worktree, without rejection caused by a mismatch between edited-file
+lists and inspected-file inventories.
+
+The journey is: preserve or adapt current prototype work -> commit authored changes -> author
+inspects the running preview -> evaluator independently inspects the current preview against ticket
+scope -> retain reports, screenshots, minimal outcomes and observed attribution -> repair material
+problems or continue preparation and implementation. Retained work resumes through those same gates.
+
+Activities and rules:
+
+1. The prototype evaluator assesses the current worktree and rendered preview against the captured
+   ticket, acceptance examples and applicable UX questions. Declared changed documents and source
+   paths serve only to commit authored work; they neither enumerate assessment coverage nor limit
+   inspection to edited files. Adequate existing prototype work needs no manufactured edits.
+2. Remove assessed-file inventories, per-file observation revisions and presence/deletion bindings,
+   persisted per-file acceptance content, and the dependent scope/content comparisons, schemas,
+   instructions and tests. No replacement assessed-file inventory, file-coverage declaration or
+   per-file hash is required to accept, finalize, replay or consume prototype evidence.
+3. Keep each role's own detailed browser assessment and screenshots as readable round artifacts:
+   preview command/URL, exercised journeys and states, actions, observed results and visual/layout
+   conclusions. Both roles perform real browser interaction and image inspection; the author's
+   evidence cannot replace independent evaluator inspection. Coverage and evidence quality are
+   evaluator judgments grounded in the ticket, not comparisons of file lists or deterministic
+   parsing of narrative.
+4. Keep minimal functional outcomes and Nexus-observed task, role/profile, revision and report
+   association metadata. Preserve report integrity and the existing current-assessment checks for
+   fresh decisions and interrupted finalization. An assessment whose inputs change before it is
+   finalized receives normal reevaluation; removing per-file bindings cannot attach an old report
+   to a different current assessment.
+5. Retained preparations remain resumable without old file inventories or invented observations.
+   Preserve original reports, screenshots, outcome attribution, checkout/branch, explicit pending
+   corrections and consumed allowances. Former inventory fields may remain readable history but
+   cannot gate continuation. Missing or unusable required browser evidence follows existing recovery
+   or reassessment; it cannot become acceptance or a fabricated applicability skip. Concrete changes
+   that make earlier browser evidence inadequate require fresh assessment through normal routes.
+6. Align affected documentation, runtime/profile instructions, saved-record handling, evidence
+   consumers and tests with these rules, removing dependent validation/state rather than leaving
+   obsolete machinery active elsewhere. Preserve evaluated inapplicability skips, upstream correction,
+   finite allowances and implementation review, merge and required CI gates.
+7. After reviewed delivery, merge and required CI, activate the checked revision under
+   [installation activation](application.md#installation-activation), preserving active runtimes and
+   retained work. Continue the retained KAN work through normal gates with the genuine available
+   evidence; activation or compatibility handling cannot manufacture approval or reset checkpoints.
+
+Observable acceptance examples:
+
+| Situation | Observable result |
+| --- | --- |
+| A prototype round declares two edited files while genuine browser evidence discusses twelve relevant files, as reported for KAN-83 round 2 | The evaluator judges the current preview and worktree against the ticket. A file-count/list mismatch causes no rejection during author/evaluator processing, finalization, replay or downstream continuation. Acceptance still requires adequate independent browser assessment and no material problem. |
+| Adequate prototype work already exists and the author declares no changed paths | Both roles inspect the current preview and retain their own evidence. Empty changed-path declarations neither prevent evaluation nor require a reuse skip or new edits. |
+| An unchanged component outside the edited-file list breaks a ticket journey | The evaluator reports the concrete defect and required correction; the changed-file declaration cannot exclude it from assessment. |
+| A new observation includes preview details, exercised states/actions, observed behavior and readable screenshots, but no file inventory or per-file revisions | It is usable evidence under the minimal response contract; absence of removed bookkeeping is not a validation failure. Nexus records task/profile/revision/report attribution separately. |
+| An applicable prototype has no evaluator browser inspection, an unreadable required screenshot, or only a build-success claim | It receives no acceptance. Existing recovery or repair retains the available evidence and reason without inventing inspection or a product requirement. |
+| Current assessment inputs change after evaluator invocation and before finalization | The old decision is not finalized for the changed inputs; normal reevaluation is required without per-file evidence comparison. |
+| A completed retained preparation contains genuine browser reports/screenshots and former per-file fields, or lacks the removed inventories | It resumes under the current contract with original evidence and attribution intact. Removed fields are neither required nor compared; no replacement inventory or fabricated evidence is produced. |
+| A retained evaluation was rejected solely because its genuine observation listed more files than the changed-path declaration | Reconcile the obsolete rejection using the retained output and diagnosis, then continue through current report/evaluation gates. No file-inventory repair is demanded, and history is not rewritten into approval. |
+| Retained required evidence is missing, human intent changed, or a concrete prototype defect remains unresolved | Normal recovery, correction or reassessment applies. Inventory removal cannot turn an unfinished or invalid assessment into approval, erase pending corrections or renew allowances. |
+| The author declares a source edit or stage-owned deletion alongside unrelated local work | Only declared authored work is committed under existing path-scoped ownership checks; unrelated work is preserved. Those paths do not become an evaluation coverage list. |
+| Documentation, role instructions or a downstream evidence consumer still requires per-file bindings | The change is incomplete until the superseded requirement and its dependent machinery/tests are removed consistently. |
+| Delivery is approved but required CI has failed, or the old installation still has active users | The runtime is not switched. After delivery/check and runtime-use conditions are satisfied, the resolved launch target identifies the checked revision and retained KAN work continues without losing work, history or allowances. |
+
+Source: the captured HARN-120 issue description. This supersedes per-file prototype observation
+protections while retaining browser assessment and report/revision attribution. No reporting-terminal
+change is requested; existing UX/prototype applicability rules apply to Nexus itself. No material
+product decision is unsettled. Evidence representation and retained-reader compatibility mechanisms
+belong to Architecture; installation activation and KAN continuation belong to delivery/operations.
 
 ## Architecture
 

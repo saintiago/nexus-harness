@@ -21,12 +21,15 @@ import {
   capturedSourceText,
 } from '../src/task-engine/actions/preparation/readable-source.js';
 import {
+  isBoundStageEvaluationOutput,
   stageEvaluationArtifact,
+  stageEvaluationReportText,
   stagePlanArtifact,
   stageResultArtifact,
   type PreparationStage,
   type StageAuthorOutput,
 } from '../src/task-engine/actions/preparation/artifacts.js';
+import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   readCurrentDecision,
   readStageArtifact,
@@ -39,6 +42,7 @@ import {
 } from '../src/task-engine/actions/report-feedback.js';
 import { stageReportScope } from '../src/task-engine/actions/preparation/artifacts.js';
 import { scriptedGit, repositoryState } from './support/git.js';
+import { savePrototypeObservation } from './support/prototype-observation.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 
 const temporaryDirectories: string[] = [];
@@ -535,7 +539,47 @@ it.each(['author', 'evaluation'] as const)(
   },
 );
 
-it('retains a malformed older prototype observation under its author', async () => {
+it('reads a retained bound evaluation carrying former per-file content as history', async () => {
+  const { root } = await stageArea();
+  const markdown = '# Requirements evaluation report\n\nNarrative.\n';
+  const report = path.join(root, 'artifacts', '1', 'evaluator.md');
+  await writeFile(report, markdown);
+  const content = [{ path: 'docs/requirements.md', revision: '1'.repeat(40), exists: true }];
+  const saved = {
+    basis: {
+      author: { path: path.join(root, 'artifacts', '1', 'author.json') },
+      authorIdentity: 'a'.repeat(64),
+      sourceIdentity: 'b'.repeat(64),
+      upstream: [],
+      repositoryRevision: '1'.repeat(40),
+      content,
+    },
+    assessedRevision: 1,
+    verdict: 'accepted',
+    observation: null,
+    upstream: null,
+    stage,
+    taskKey: 'KAN-76',
+    profile: 'nexus-sol',
+    role: 'evaluator',
+    report: { path: report },
+    reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
+    invocationId: 'invocation-1',
+  };
+  const file = path.join(root, 'artifacts', '1', 'evaluation.json');
+  await writeFile(file, JSON.stringify(saved));
+
+  // A bound record written before the basis dropped per-file content stays readable: the reader
+  // validates the current fields and its bound report, keeping the former inventory unread.
+  const retained = await readStageArtifact(root, 1, stageEvaluationArtifact);
+  if (retained === null || !isBoundStageEvaluationOutput(retained)) {
+    throw new Error('the retained bound evaluation is unreadable');
+  }
+  await expect(stageEvaluationReportText(retained)).resolves.toBe(markdown);
+  expect(await readFile(file, 'utf8')).toBe(JSON.stringify(saved));
+});
+
+it('leaves a malformed older prototype observation untouched while a new round proceeds', async () => {
   const { selectionFile, root } = await stageArea('prototype');
   const file = path.join(root, 'artifacts', '1', 'observation.json');
   const authorFile = path.join(root, 'artifacts', '1', 'author.json');
@@ -543,6 +587,12 @@ it('retains a malformed older prototype observation under its author', async () 
   await writeFile(authorFile, JSON.stringify({ ...retained, observation: { path: file } }));
   const malformed = '{"observation":';
   await writeFile(file, malformed);
+  // The new round supplies its own readable observation; the older record is not consulted,
+  // rewritten or attributed as a new rejection.
+  const observation = await savePrototypeObservation({
+    roundDirectory: path.join(root, 'artifacts', '3'),
+    role: 'author',
+  });
   const author = createStageAuthor({
     selectionFile,
     stage: 'prototype',
@@ -554,17 +604,14 @@ it('retains a malformed older prototype observation under its author', async () 
         outcome: 'authored',
         skip: null,
         sourcePaths: ['docs/requirements.md'],
+        observation: { path: observation },
       },
       [],
     ),
   });
-  await expect(author({ task: 'propose' })).rejects.toThrow(/is not valid JSON/);
-  expect((await readReportFeedback(root))[0]?.record).toMatchObject({
-    scope: { area: root, role: 'prototype-author', reportKind: 'stage-author' },
-    source: { path: file },
-    output: malformed,
-    context: expect.stringContaining('round 1'),
-  });
+  await expect(author({ task: 'propose' })).resolves.toBe('authored');
+  await expect(readFile(file, 'utf8')).resolves.toBe(malformed);
+  await expect(readReportFeedback(root)).resolves.toEqual([]);
 });
 
 it('retains an author report corrupted during evaluation under the author responsibility', async () => {
@@ -983,8 +1030,8 @@ it('surfaces an unusable preceding evaluation to a new round without reusing or 
   await expect(evaluator()).resolves.toBe('accepted-skip');
   const saved = JSON.parse(
     await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
-  ) as { readonly basis: { readonly content: unknown } };
-  expect(saved.basis.content).toEqual([]);
+  ) as { readonly basis: Record<string, unknown> };
+  expect('content' in saved.basis).toBe(false);
   // The accepted replacement retires the rejection while its evidence remains readable history.
   const retained = await readReportFeedback(root);
   expect(retained.map((entry) => entry.record.kind).sort()).toEqual(['correction', 'rejection']);
@@ -1056,7 +1103,7 @@ it.each([
 
     const savedEvaluation = (await readStageArtifact(root, 3, stageEvaluationArtifact))!;
     expect(savedEvaluation.basis.repositoryRevision).toBe(repositoryState().headRevision);
-    expect(savedEvaluation.basis.content).toEqual([]);
+    expect('content' in savedEvaluation.basis).toBe(false);
     await expect(createStageResult(common)({ outcome: 'accepted' })).resolves.toBe('saved');
     const result = (await readStageArtifact(root, 3, stageResultArtifact))!;
     expect(result).toMatchObject({
@@ -1192,9 +1239,9 @@ it('rejects the captured prototype prose citations while repaired references sta
   const evaluation = JSON.parse(
     await readFile(path.join(root, 'artifacts', '1', 'evaluation.json'), 'utf8'),
   ) as {
-    readonly basis: { readonly content: readonly unknown[]; readonly repositoryRevision: string };
+    readonly basis: { readonly repositoryRevision: string };
   };
-  expect(evaluation.basis.content).toEqual([]);
+  expect('content' in evaluation.basis).toBe(false);
   expect(evaluation.basis.repositoryRevision).toBe(revision);
 });
 
@@ -1230,9 +1277,9 @@ it('reads a section citation as evidence and keeps the completed verdict after t
   const evaluation = JSON.parse(
     await readFile(path.join(root, 'artifacts', '3', 'evaluation.json'), 'utf8'),
   ) as {
-    readonly basis: { readonly content: readonly unknown[]; readonly repositoryRevision: string };
+    readonly basis: { readonly repositoryRevision: string };
   };
-  expect(evaluation.basis.content).toEqual([]);
+  expect('content' in evaluation.basis).toBe(false);
   expect(evaluation.basis.repositoryRevision).toBe('1'.repeat(40));
   await createStageResult(common)({ outcome: 'skipped' });
 

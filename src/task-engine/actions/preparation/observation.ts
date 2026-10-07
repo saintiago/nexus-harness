@@ -1,18 +1,17 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import type { GitAdapter } from '../../../adapters/git.js';
 import { messageOf } from '../../../result.js';
 import { describeIssues, parseDocument, readDocumentText } from '../documents.js';
-import { assessedContentSchema, type AssessedContent } from './artifacts.js';
-import { checkoutRelative, requireEvaluationContent } from './evaluation-content.js';
+import type { RetainedStageAuthorOutput, RetainedStageEvaluationOutput } from './artifacts.js';
 import { renderedImageProblem } from './rendered-image.js';
 
 /**
  * The prototype roles' observation contract: one producer-owned record each role saves under its
- * round artifact area and references from its report. The record binds what the role inspected to
- * the evaluated prototype revision; the stage actions validate it before any acceptance relies on
- * it. An image path or a claimed successful build alone is never sufficient evidence.
+ * round artifact area and references from its report. The record keeps each role's browser
+ * assessment and rendered-image evidence readable; Nexus observes task, role/profile, revision and
+ * report attribution separately. An image path or a claimed successful build alone is never
+ * sufficient evidence.
  */
 
 /** One saved prototype observation record, as both prototype roles declare it. */
@@ -21,11 +20,6 @@ export const prototypeObservationSchema = z.strictObject({
   role: z
     .enum(['author', 'evaluator'])
     .describe('The role that performed the observation; it must match the declaring report.'),
-  /** The inspected prototype content, bound to the revision the role observed it at. */
-  content: z
-    .array(assessedContentSchema)
-    .min(1)
-    .describe('The inspected prototype content bound to the revision it was observed at.'),
   /** The preview the role actually used: the exact start command and the URL it reached. */
   preview: z
     .strictObject({
@@ -65,6 +59,19 @@ export const prototypeObservationSchema = z.strictObject({
 
 export type PrototypeObservation = z.infer<typeof prototypeObservationSchema>;
 
+/**
+ * The retained observation reader: a former record's per-file `content` stays readable as opaque
+ * historical data in its recorded position, whether it is present, absent or no longer valid under
+ * its removed schema. Retained readers validate the remaining fields without supplying an empty
+ * inventory, coercing old entries or rewriting saved files.
+ */
+const retainedPrototypeObservationSchema = z.strictObject({
+  role: prototypeObservationSchema.shape.role,
+  content: z.unknown().optional(),
+  preview: prototypeObservationSchema.shape.preview,
+  journeys: prototypeObservationSchema.shape.journeys,
+});
+
 /** The role one prototype observation record must state. */
 export type PrototypeObservationRole = PrototypeObservation['role'];
 
@@ -81,9 +88,8 @@ export function prototypeObservationContract(roundDirectory: string): string {
     '- Start the project\u2019s Storybook preview from the shared checkout with the project\u2019s own',
     '  command, in your own browser session, and release the preview and browser processes after',
     '  the observation.',
-    '- Commit the stage-owned prototype paths you inspected first, then name that commit revision',
-    '  in every content entry; content at the named revision must still match the evaluated',
-    '  revision, so edit, commit and observe in that order.',
+    '- Assess the current worktree and running preview against the ticket and acceptance examples;',
+    '  the paths you declare only commit your authored work and never bound what you inspect.',
     '- Save your screenshots under the round artifact area; each journey needs rendered-image',
     '  evidence a reader can open, not a build log or an image path alone.',
     '- Record the preview start command and URL you used, and the actions you performed.',
@@ -130,7 +136,7 @@ export async function readPrototypeObservation(settings: {
   if (text === null) {
     throw new Error(`The ${settings.role}'s prototype observation "${file}" does not exist.`);
   }
-  const parsed = parseDocument(text, prototypeObservationSchema);
+  const parsed = parseDocument(text, retainedPrototypeObservationSchema);
   if (parsed.kind === 'invalid-json') {
     throw new Error(
       `The ${settings.role}'s prototype observation "${file}" is not valid JSON: ` +
@@ -184,209 +190,7 @@ export async function readPrototypeObservation(settings: {
       }
     }
   }
-  return observation;
-}
-
-/**
- * Why one committed deletion an observation binds is inconsistent with the shared checkout's
- * history, or null: the named revision must be a commit on the retained branch whose parent
- * still tracked the path. This checks the content binding, not stage ownership; StageAuthor
- * establishes ownership independently from pre-invocation tracking or retained stage records.
- */
-async function deletionBindingProblem(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
-  readonly revision: string;
-  readonly relative: string;
-}): Promise<string | null> {
-  const inspection = await settings.git.inspectRepository(settings.worktree);
-  if (!inspection.ok) {
-    throw new Error(inspection.fault.message);
-  }
-  const head = inspection.value.headRevision;
-  if (head === null) {
-    return 'the shared checkout has no revision to attribute the deletion to';
-  }
-  const ancestor = await settings.git.readMergeBase(settings.worktree, settings.revision, head);
-  if (!ancestor.ok || ancestor.value !== settings.revision) {
-    return (
-      `the observation binds the deletion to revision ${settings.revision}, which is not part of ` +
-      'the submitted revision history'
-    );
-  }
-  const before = await settings.git.readFileAtRevision(
-    settings.worktree,
-    `${settings.revision}^`,
-    settings.relative,
-  );
-  return before.ok
-    ? null
-    : `"${settings.relative}" was not tracked before revision ${settings.revision}`;
-}
-
-/**
- * Why the observation does not bind the content the author is submitting, or null when it does:
- * every entry's named revision must retain exactly the content the shared checkout holds now, so
- * the author commits the inspected prototype before observing it. A later edit without fresh
- * observation is rejected instead of silently accepted.
- */
-export async function observationSubmissionProblem(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
-  readonly observation: PrototypeObservation;
-}): Promise<string | null> {
-  const { git, worktree, observation } = settings;
-  for (const entry of observation.content) {
-    const relative = checkoutRelative(worktree, entry.path);
-    if (relative === null) {
-      return `the observation names "${entry.path}", which lies outside the shared preparation checkout`;
-    }
-    const saved = await git.readFileAtRevision(worktree, entry.revision, relative);
-    if (!entry.exists) {
-      if (saved.ok) {
-        return (
-          `the observation reports "${relative}" as deleted while revision ${entry.revision} ` +
-          'retains it'
-        );
-      }
-      const deletion = await deletionBindingProblem({
-        git,
-        worktree,
-        revision: entry.revision,
-        relative,
-      });
-      if (deletion !== null) {
-        return deletion;
-      }
-      continue;
-    }
-    if (!saved.ok) {
-      return (
-        `the observation names revision ${entry.revision}, which does not retain "${relative}"; ` +
-        'commit the inspected content and bind that revision'
-      );
-    }
-    let current: string;
-    try {
-      const entry = await stat(path.join(worktree, relative));
-      if (!entry.isFile()) {
-        return `the observation names "${relative}", which is not a file in the shared checkout`;
-      }
-      current = await readFile(path.join(worktree, relative), 'utf8');
-    } catch (error) {
-      throw new Error(`The observed path "${relative}" could not be read: ${messageOf(error)}`, {
-        cause: error,
-      });
-    }
-    if (saved.value !== current) {
-      return (
-        `the observation of "${relative}" at revision ${entry.revision} differs from the ` +
-        'content being submitted; commit the inspected content and bind that revision'
-      );
-    }
-  }
-  return null;
-}
-
-/**
- * Why the observation's own content does not name usable repository content, or null when it does:
- * every entry must be a unique path inside the shared checkout, and the observation must cover
- * every stage-owned prototype path the author declared.
- */
-export function observationScopeProblem(settings: {
-  readonly worktree: string;
-  readonly observation: PrototypeObservation;
-  /** The stage-owned prototype paths the observation must cover, as the author declared them. */
-  readonly observedPaths: readonly string[];
-}): string | null {
-  const { worktree, observation } = settings;
-  const observed = new Set<string>();
-  for (const entry of observation.content) {
-    const relative = checkoutRelative(worktree, entry.path);
-    if (relative === null) {
-      return `the observation names "${entry.path}", which lies outside the shared preparation checkout`;
-    }
-    if (observed.has(relative)) {
-      return `the observation names "${relative}" more than once`;
-    }
-    observed.add(relative);
-  }
-  for (const value of settings.observedPaths) {
-    const relative = checkoutRelative(worktree, value);
-    if (relative === null || !observed.has(relative)) {
-      return `the observation does not cover the stage-owned prototype path "${value}"`;
-    }
-  }
-  return null;
-}
-
-/**
- * Why one role's observation does not match the evaluated prototype content, or null when it does.
- * Every observed entry must name content this evaluation assessed and carry the same bytes at the
- * observation's revision, and the observation must cover every stage-owned prototype path. A
- * changed prototype therefore cannot reuse an earlier observation.
- */
-export async function observationContentProblem(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
-  readonly observation: PrototypeObservation;
-  readonly assessed: readonly AssessedContent[];
-  /** The stage-owned prototype paths the observation must cover, as the author declared them. */
-  readonly observedPaths: readonly string[];
-}): Promise<string | null> {
-  const { git, worktree, observation } = settings;
-  const scope = observationScopeProblem(settings);
-  if (scope !== null) {
-    return scope;
-  }
-  const assessedByPath = new Map(settings.assessed.map((entry) => [entry.path, entry]));
-  for (const entry of observation.content) {
-    const relative = checkoutRelative(worktree, entry.path) as string;
-    const binding = assessedByPath.get(relative);
-    if (binding === undefined) {
-      return `the observation names "${relative}", which this evaluation did not assess`;
-    }
-    if (binding.exists !== entry.exists) {
-      return (
-        `the observation reports "${relative}" as ` +
-        `${entry.exists ? 'present' : 'absent'} while the evaluation assessed it as ` +
-        `${binding.exists ? 'present' : 'absent'}`
-      );
-    }
-    const observedContent = await git.readFileAtRevision(worktree, entry.revision, relative);
-    const assessedContent = await git.readFileAtRevision(worktree, binding.revision, relative);
-    if (!entry.exists) {
-      if (observedContent.ok || assessedContent.ok) {
-        return `the observation reports "${relative}" as deleted while a named revision retains it`;
-      }
-      const deletion = await deletionBindingProblem({
-        git,
-        worktree,
-        revision: entry.revision,
-        relative,
-      });
-      if (deletion !== null) {
-        return deletion;
-      }
-      continue;
-    }
-    if (!observedContent.ok) {
-      return (
-        `the observation of "${relative}" names revision ${entry.revision}, which does not ` +
-        'retain that file'
-      );
-    }
-    if (!assessedContent.ok) {
-      return `the evaluated revision ${binding.revision} does not retain "${relative}"`;
-    }
-    if (observedContent.value !== assessedContent.value) {
-      return (
-        `the observation of "${relative}" at revision ${entry.revision} differs from the ` +
-        `evaluated revision ${binding.revision}; changed prototype content needs fresh observation`
-      );
-    }
-  }
-  return null;
+  return { role: observation.role, preview: observation.preview, journeys: observation.journeys };
 }
 
 /** One saved prototype observation record a stage result retains: its role and saved path. */
@@ -406,19 +210,16 @@ function retainedRoundDirectory(artifactsRoot: string, file: string): string | n
 }
 
 /**
- * Why one retained observation record no longer authorizes the acceptance it was saved for, or
- * null when it still does: the record and its screenshots must remain readable inside the stage's
- * artifact area and bind the assessed content it was accepted with. A record deleted or edited
- * after the fact invalidates the decision instead of silently authorizing reuse.
+ * Why one retained observation record no longer serves as evidence, or null when it does: the
+ * record and its screenshots must remain readable inside the stage's artifact area, state the
+ * declaring role and fully decode. A record deleted or edited after the fact invalidates the
+ * decision instead of silently authorizing reuse. Former per-file content is never read, compared
+ * or rewritten.
  */
 export async function retainedObservationProblem(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
   /** The stage's artifacts root; a retained record stays inside one of its round directories. */
   readonly artifactsRoot: string;
   readonly observation: RetainedPrototypeObservation;
-  readonly assessed: readonly AssessedContent[];
-  readonly observedPaths: readonly string[];
 }): Promise<string | null> {
   const { observation } = settings;
   const roundDirectory = retainedRoundDirectory(settings.artifactsRoot, observation.path);
@@ -428,36 +229,11 @@ export async function retainedObservationProblem(settings: {
       `stage's artifact area "${settings.artifactsRoot}"`
     );
   }
-  let saved: PrototypeObservation;
   try {
-    saved = await readPrototypeObservation({
+    await readPrototypeObservation({
       declared: observation.path,
       roundDirectory,
       role: observation.role,
-    });
-  } catch (error) {
-    return messageOf(error);
-  }
-  const problem = await observationContentProblem({
-    git: settings.git,
-    worktree: settings.worktree,
-    observation: saved,
-    assessed: settings.assessed,
-    observedPaths: settings.observedPaths,
-  });
-  if (problem !== null) {
-    return problem;
-  }
-  // Every inspected path remains bound to the current preview, including rendered documents.
-  // Documents outside the observation can still change in a later preparation stage.
-  const inspected = new Set(
-    saved.content.map((entry) => checkoutRelative(settings.worktree, entry.path)),
-  );
-  try {
-    await requireEvaluationContent({
-      git: settings.git,
-      worktree: settings.worktree,
-      content: settings.assessed.filter((entry) => inspected.has(entry.path)),
     });
   } catch (error) {
     return messageOf(error);
@@ -467,25 +243,73 @@ export async function retainedObservationProblem(settings: {
 
 /**
  * Require an applicable prototype acceptance's retained evidence: both roles' observation records
- * must still be present, readable and bound to the evaluated content. A missing or unusable
- * record cannot keep authorizing resumed acceptance, reuse or downstream decisions.
+ * must still be present and readable with decodable screenshots. A missing or unusable record
+ * cannot keep authorizing resumed acceptance, reuse or downstream decisions.
+ *
+ * A retained result may omit or empty its saved references: each role's reference is then resolved
+ * from its producing outcome for the same authored revision, relative to the producing round's
+ * artifact area. A present reference must agree with its producing outcome, and a role whose
+ * outcome declares no usable evidence requires normal recovery or reassessment instead of a
+ * searched or guessed record.
  */
 export async function requireRetainedPrototypeEvidence(settings: {
-  readonly git: GitAdapter;
-  readonly worktree: string;
   readonly artifactsRoot: string;
+  /** The producing round's artifact directory, whose role outcomes declare the evidence. */
+  readonly roundDirectory: string;
+  /** The references the result retained; former results may leave them empty or absent. */
   readonly observations: readonly RetainedPrototypeObservation[];
-  readonly assessed: readonly AssessedContent[];
-  readonly observedPaths: readonly string[];
+  readonly author: RetainedStageAuthorOutput;
+  readonly evaluation: RetainedStageEvaluationOutput | null;
 }): Promise<void> {
-  const roles = new Set(settings.observations.map((observation) => observation.role));
-  if (!roles.has('author') || !roles.has('evaluator')) {
+  const declared: readonly (readonly [PrototypeObservationRole, string | null])[] = [
+    ['author', settings.author.observation?.path ?? null],
+    ['evaluator', settings.evaluation?.observation?.path ?? null],
+  ];
+  const retained = new Map<PrototypeObservationRole, string[]>();
+  for (const observation of settings.observations) {
+    const paths = retained.get(observation.role) ?? [];
+    paths.push(observation.path);
+    retained.set(observation.role, paths);
+  }
+  const evidence: RetainedPrototypeObservation[] = [];
+  let missing = false;
+  for (const [role, declaredPath] of declared) {
+    const produced =
+      declaredPath === null ? null : evidenceFilePath(settings.roundDirectory, declaredPath);
+    if (declaredPath !== null && produced === null) {
+      throw new Error(
+        `The retained ${role} prototype observation "${declaredPath}" lies outside its ` +
+          `producing round artifact area "${settings.roundDirectory}".`,
+      );
+    }
+    const saved = retained.get(role) ?? [];
+    if (saved.length === 0) {
+      if (produced === null) {
+        missing = true;
+        continue;
+      }
+      evidence.push({ role, path: produced });
+      continue;
+    }
+    const unique = [...new Set(saved.map((file) => path.resolve(file)))];
+    if (unique.length > 1 || produced === null || path.resolve(produced) !== unique[0]) {
+      throw new Error(
+        `The retained ${role} prototype observation does not agree with the producing ${role} ` +
+          'outcome; normal recovery or reassessment is required.',
+      );
+    }
+    evidence.push({ role, path: produced });
+  }
+  if (missing) {
     throw new Error(
       'The retained prototype acceptance is missing one role\u2019s saved observation record.',
     );
   }
-  for (const observation of settings.observations) {
-    const problem = await retainedObservationProblem({ ...settings, observation });
+  for (const observation of evidence) {
+    const problem = await retainedObservationProblem({
+      artifactsRoot: settings.artifactsRoot,
+      observation,
+    });
     if (problem !== null) {
       throw new Error(
         `The retained ${observation.role} prototype observation is unusable: ${problem}.`,

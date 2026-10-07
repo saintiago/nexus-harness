@@ -1048,7 +1048,14 @@ async function publishPreparation(options: {
       profiles: { author: 'a', evaluator: 'e' },
     }),
   );
-  await writeFile(path.join(stage, 'artifacts/1/result.json'), JSON.stringify(options.result));
+  // The retained result names this round's evaluated decision, exactly as the producer records it.
+  await writeFile(
+    path.join(stage, 'artifacts/1/result.json'),
+    JSON.stringify({
+      ...options.result,
+      evaluation: { path: path.join(stage, 'artifacts/1/evaluation.json') },
+    }),
+  );
   const selectionFile = path.join(directory, 'selection.json');
   const selection = {
     taskKey: 'NEX-1',
@@ -2010,6 +2017,22 @@ async function handoff(options: {
       }),
     );
     const sourcePaths = settings.sourcePaths ?? [];
+    // An applicable prototype's producing outcomes declare their own saved evidence; the result
+    // retains the same references, so every consumer resolves them through the producers.
+    const savedObservations: { readonly role: 'author' | 'evaluator'; readonly path: string }[] =
+      [];
+    if (settings.observations === true) {
+      for (const role of ['author', 'evaluator'] as const) {
+        savedObservations.push({
+          role,
+          path: await savePrototypeObservation({ roundDirectory: artifacts, role }),
+        });
+      }
+    }
+    const observationOf = (role: 'author' | 'evaluator'): { readonly path: string } | null => {
+      const saved = savedObservations.find((candidate) => candidate.role === role);
+      return saved === undefined ? null : { path: saved.path };
+    };
     const author = {
       stage: settings.stage,
       revision: 1,
@@ -2027,7 +2050,7 @@ async function handoff(options: {
           : null,
       question: null,
       upstream: null,
-      observation: null,
+      observation: observationOf('author'),
     };
     const authorFile = path.join(artifacts, 'author.json');
     await writeFile(authorFile, JSON.stringify(author));
@@ -2039,7 +2062,8 @@ async function handoff(options: {
           authorIdentity: authoredIdentity(stageAuthorArtifact.schema.parse(author)),
           sourceIdentity: sourceInputIdentity(fixtureSelection as never),
           upstream: [...upstream],
-          repositoryRevision: '1'.repeat(40),
+          // An applicable prototype's evaluation observes the revision the result retains.
+          repositoryRevision: settings.prototype?.revision ?? '1'.repeat(40),
           content: [
             ...settings.documents
               .filter((document) => document.revision !== null)
@@ -2061,7 +2085,7 @@ async function handoff(options: {
         assessedRevision: 1,
         verdict: settings.outcome === 'skipped' ? 'accepted-skip' : 'accepted',
         reason: 'Assessed the exact retained content.',
-        observation: null,
+        observation: observationOf('evaluator'),
         findings: [],
         upstream: null,
       }),
@@ -2087,20 +2111,8 @@ async function handoff(options: {
         readonly path: string;
       }[],
     };
-    if (settings.observations === true) {
-      for (const role of ['author', 'evaluator'] as const) {
-        result.prototypeObservations.push({
-          role,
-          path: await savePrototypeObservation({
-            roundDirectory: artifacts,
-            role,
-            content: sourcePaths.map((source) => ({
-              path: source,
-              revision: settings.prototype?.revision ?? 'e'.repeat(40),
-            })),
-          }),
-        });
-      }
+    for (const saved of savedObservations) {
+      result.prototypeObservations.push(saved);
     }
     await writeFile(path.join(artifacts, 'result.json'), JSON.stringify(result));
     upstream.push({

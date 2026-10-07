@@ -323,7 +323,6 @@ const reportSamples: readonly {
     schema: prototypeObservationSchema,
     sample: {
       role: 'author',
-      content: [{ path: 'stories/journey.ts', revision: 'a'.repeat(40), exists: true }],
       preview: { command: 'npm run storybook', url: 'http://localhost:6006' },
       journeys: [
         {

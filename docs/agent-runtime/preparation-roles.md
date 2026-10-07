@@ -220,7 +220,7 @@ Realize the connected product's direction under the [product-grounded UI guidanc
 using representative content rather than treating token matching or functional checks as design success.
 Evaluate applicability first under [Nexus UI guidance](../ux-ui.md#preparation-applicability).
 For applicable work, run and interact with the preview, inspect rendered images/layout, and retain
-your own revision-bound observations under the supplied round artifact area using the
+your own browser observations under the supplied round artifact area using the
 [observation contract](../task-engine/actions/preparation-stage.md#prototype-observations).
 Reuse existing components where suitable. Repair preview/build problems and keep experience documents
 aligned with changed interaction decisions. Retain the prototype revision for implementation reuse;
@@ -233,9 +233,11 @@ your own observations under the supplied round artifact area.
 Check the author's evidence as well as performing your inspection. Evaluate a proposed applicability
 skip without manufacturing a preview. Exercise the acceptance examples and UX questions independently.
 Primarily judge the rendered experience under the [product-grounded UI guidance](#product-grounded-ui-work).
-Record what you observed, how it supports or undermines product intent and intended users, and
-identify material visual, interaction or recovery problems. Return to UX when the proposal itself
-needs correction; repair prototype defects within Storybook Refinement.
+Assess the current worktree and preview against ticket scope; changed-path declarations do not
+limit assessment coverage. Record what you observed, how it supports or undermines product intent
+and intended users, and identify material visual, interaction or recovery problems. Keep readable
+browser evidence without assessed-file inventories or per-file revision bindings. Return to UX when
+the proposal itself needs correction; repair prototype defects within Storybook Refinement.
 Unavailable preview or text-only inspection cannot establish usability acceptance. Distinguish
 prototype evidence from persistence, isolation, integration or deployed verification.
 
@@ -252,7 +254,8 @@ in familiarity, goals and usage context rather than assuming an expert user.
 The journey is: understand product direction and user needs -> propose the experience -> evaluate
 the proposal -> render and independently assess the prototype -> correct the owning decisions or
 prototype -> implement and validate the evaluated experience. Existing applicability evaluation,
-stage returns, revision-bound observations and delivery review remain in force.
+stage returns, Nexus-observed revision/report attribution, readable browser evidence and delivery
+review remain in force.
 
 ### Activities and rules
 

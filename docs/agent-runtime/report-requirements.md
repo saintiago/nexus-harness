@@ -91,12 +91,16 @@ If output or its report is rejected, retain the failure evidence
    rejected claims remain evidence, not approved work or governing human intent. A valid correction
    must not erase the historical failure or leave it presented as an outstanding rejection.
 10. Preserve finite round, return and recovery allowances, stage ownership, unresolved problems,
-    current-worktree document evaluation, revision-bound prototype inspection and implementation
+    current-worktree evaluation, readable prototype browser evidence and implementation
     review, and required merge/check protections. Feedback retention uses normal recovery and
     continuation; it does not add an unrelated retry mechanism, grant extra attempts or convert an
     invocation fault into a product verdict.
     Preparation declarations remain changed authoritative documents and additional stage-owned files,
-    never mandatory reading citations. Adequate existing documents receive direct evaluation in the
+    never mandatory reading citations or assessment coverage. Prototype assessment follows the
+    [prototype assessment requirements](../project-workflow.md#prototype-assessment-requirements),
+    without per-file inventories, observation revisions or persisted content bindings. Nexus-observed
+    task/profile/revision/report attribution and fresh-decision integrity checks remain in force.
+    Adequate existing documents receive direct evaluation in the
     current worktree; applicability skips receive evaluation. Do not restore finding IDs, response or
     disposition tracking, mandatory document citations or historical document approval reuse.
 11. Update authoritative report contracts, role instructions, artifact handling, context construction,
@@ -116,7 +120,7 @@ If output or its report is rejected, retain the failure evidence
 | Markdown contains headings, lists, code fences or JSON examples as part of an explanation | It remains readable narrative; none is parsed as an outcome or required to conform to a report schema. Decisions come from the validated outcome and existing workflow evidence. |
 | Existing requirements satisfy a preparation ticket and the author leaves them unchanged | The author writes its Markdown assessment and submits authored work with empty changed-document/source declarations. Current-worktree evaluation proceeds without citations, a reuse skip or historical approval reuse. |
 | A preparation author proposes inapplicability or returns a concrete earlier-input defect | Its Markdown explains why; the outcome carries only the applicable decision/routing and needed functional data. Existing skip evaluation and allowed upstream-return routes remain in force. |
-| Architecture authors a bounded plan, or an applicable prototype is inspected | The structured plan remains available to implementation handoff and inspection references remain available to their evidence checks. Narrative findings and explanations are in Markdown; plan dependency and prototype revision protections still apply. |
+| Architecture authors a bounded plan, or an applicable prototype is inspected | The structured plan remains available to implementation handoff and inspection references remain available to their evidence checks. Narrative findings and explanations are in Markdown; plan dependencies, readable browser evidence and Nexus-observed revision/report attribution still apply, without per-file observation bookkeeping. |
 | Idea refinement frames, revises, discusses or requests focused help | Each role and follow-up has an assigned Markdown report. Research, guidance and concerns reach the editor as narrative, while functional idea/publication data, questions and decisions preserve the existing bounded conversation. Challenger approval remains bound to the assessed idea and editor response. |
 | Recovery decides resume or needs-attention | The outcome carries the decision and the assigned Markdown contains diagnosis, actions and uncertainty. Nexus retains the report, sends the existing notification and applies the same recovery decision. |
 | Experience analysis yields one useful lesson or no useful lesson | The outcome contains the functional memory observations or an empty observation list, separately from a readable Markdown account. Evidence validation, stable submissions and receipt retries remain intact; the business outcome is unchanged and routine narrative is not submitted as a lesson. |

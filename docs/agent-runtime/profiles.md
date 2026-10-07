@@ -82,6 +82,7 @@ server is an execution setup failure, not a usability verdict or applicability s
 
 An isolated, test-consumed Storybook fixture validates this capability for internal Nexus changes.
 Exercise a small journey with a state change, inspect screenshots/layout and retain each role's
-observation against the fixture commit. The fixture does not add product UI or external-service
+observation with Nexus-observed report/revision attribution, without file inventories or per-file
+revision claims. The fixture does not add product UI or external-service
 navigation. See [preparation observations](../task-engine/actions/preparation-stage.md#prototype-observations)
 for the evidence contract.

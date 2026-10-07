@@ -886,7 +886,9 @@ describe('Git adapter', () => {
       JSON.parse(await readFile(path.join(root, 'ux', 'artifacts/2/evaluation.json'), 'utf8')),
     );
     expect(uxEvaluation.basis.repositoryRevision).toBe(uxRevision);
-    expect(uxEvaluation.basis.content).toEqual([]);
+    // No per-file assessed content is recorded: the declared work is committed and the result's
+    // changed set carries the deletion, so the basis holds no file inventory.
+    expect('content' in uxEvaluation.basis).toBe(false);
     expect(ux.documents).toEqual([
       { path: path.join(worktree, 'readme.md'), revision: uxRevision },
       { path: path.join(worktree, 'legacy.md'), revision: uxRevision },
@@ -1458,12 +1460,11 @@ describe('Git adapter', () => {
     const authorObservation = await savePrototypeObservation({
       roundDirectory: artifacts,
       role: 'author',
-      content: [{ path: 'stories/ux.stories.ts', revision: storyRevision }],
     });
+    const savedAuthorObservation = await readFile(authorObservation, 'utf8');
     const evaluatorObservation = await savePrototypeObservation({
       roundDirectory: artifacts,
       role: 'evaluator',
-      content: [{ path: 'stories/ux.stories.ts', revision: storyRevision }],
     });
     const first = await acceptedRound({
       selectionFile,
@@ -1553,7 +1554,7 @@ describe('Git adapter', () => {
       ok: true,
       value: 'export const journey = 1;\n',
     });
-    await expect(readFile(authorObservation, 'utf8')).resolves.toContain('stories/ux.stories.ts');
+    await expect(readFile(authorObservation, 'utf8')).resolves.toBe(savedAuthorObservation);
     // The latest skip is the stage's terminal decision, so its own (empty) change set is what the
     // implementation handoff references; nothing from the earlier acceptance is inferred.
     await expect(readAcceptedDocuments(root)).resolves.toMatchObject({
@@ -2106,69 +2107,56 @@ describe('Git adapter', () => {
     await expect(decision('ux')).resolves.toMatchObject({ kind: 'current' });
   });
 
-  it.each(['author', 'evaluator'] as const)(
-    'requires fresh inspection when a document observed by the prototype %s changes',
-    async (role) => {
-      const { origin, root, worktree, selectionFile } = await preparationWorkspace();
-      await createPrepareStage({
-        selectionFile,
-        repository: { source: origin, mainBranch: 'main' },
-        git,
-        publish: () => undefined,
-      })({ stage: 'prototype' });
-      await commitFiles(
-        worktree,
-        ['docs/journey.mdx', 'docs/shared.md'],
-        'add prototype documents',
-      );
-      await mkdir(path.join(worktree, 'stories'), { recursive: true });
-      await writeFile(path.join(worktree, 'stories/journey.ts'), 'export const journey = 1;\n');
-      await gitCommand(['add', 'stories/journey.ts'], worktree);
-      await gitCommand(['commit', '--quiet', '--message', 'add the story'], worktree);
-      const revision = await headOf(worktree);
-      const artifacts = path.join(root, 'prototype', 'artifacts', '1');
-      const observation = async (observingRole: 'author' | 'evaluator') =>
-        savePrototypeObservation({
-          roundDirectory: artifacts,
-          role: observingRole,
-          content: [
-            { path: 'stories/journey.ts', revision },
-            ...(role === observingRole ? [{ path: 'docs/journey.mdx', revision }] : []),
-          ],
-        });
-      await acceptedRound({
-        selectionFile,
-        root,
-        stage: 'prototype',
-        round: 1,
-        author: {
-          outcome: 'authored',
-          documents: [{ path: 'docs/journey.mdx' }, { path: 'docs/shared.md' }],
-          sourcePaths: ['stories/journey.ts'],
-          plan: [],
-          skip: null,
-          question: null,
-          upstream: null,
-          observation: { path: await observation('author') },
+  it('keeps a completed prototype decision current when inspected documents change later', async () => {
+    const { origin, root, worktree, selectionFile } = await preparationWorkspace();
+    await createPrepareStage({
+      selectionFile,
+      repository: { source: origin, mainBranch: 'main' },
+      git,
+      publish: () => undefined,
+    })({ stage: 'prototype' });
+    await commitFiles(worktree, ['docs/journey.mdx', 'docs/shared.md'], 'add prototype documents');
+    await mkdir(path.join(worktree, 'stories'), { recursive: true });
+    await writeFile(path.join(worktree, 'stories/journey.ts'), 'export const journey = 1;\n');
+    await gitCommand(['add', 'stories/journey.ts'], worktree);
+    await gitCommand(['commit', '--quiet', '--message', 'add the story'], worktree);
+    const artifacts = path.join(root, 'prototype', 'artifacts', '1');
+    await acceptedRound({
+      selectionFile,
+      root,
+      stage: 'prototype',
+      round: 1,
+      author: {
+        outcome: 'authored',
+        documents: [{ path: 'docs/journey.mdx' }, { path: 'docs/shared.md' }],
+        sourcePaths: ['stories/journey.ts'],
+        plan: [],
+        skip: null,
+        question: null,
+        upstream: null,
+        observation: {
+          path: await savePrototypeObservation({ roundDirectory: artifacts, role: 'author' }),
         },
-        evaluatorObservation: await observation('evaluator'),
+      },
+      evaluatorObservation: await savePrototypeObservation({
+        roundDirectory: artifacts,
+        role: 'evaluator',
+      }),
+    });
+    const decision = async () =>
+      readCurrentDecision({
+        issueRoot: root,
+        stage: 'prototype',
+        selection: JSON.parse(await readFile(selectionFile, 'utf8')),
+        git,
       });
-      const decision = async () =>
-        readCurrentDecision({
-          issueRoot: root,
-          stage: 'prototype',
-          selection: JSON.parse(await readFile(selectionFile, 'utf8')),
-          git,
-        });
-      await writeFile(
-        path.join(worktree, 'docs/shared.md'),
-        'A compatible architecture addition.\n',
-      );
-      await expect(decision()).resolves.toMatchObject({ kind: 'current' });
-      await writeFile(path.join(worktree, 'docs/journey.mdx'), 'A changed rendered journey.\n');
-      await expect(decision()).resolves.toMatchObject({ kind: 'stale' });
-    },
-  );
+    // No per-file observation binding is compared with later work: compatible document edits
+    // keep the completed decision current, and concrete inadequacy receives normal reassessment.
+    await writeFile(path.join(worktree, 'docs/shared.md'), 'A compatible architecture addition.\n');
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
+    await writeFile(path.join(worktree, 'docs/journey.mdx'), 'A changed rendered journey.\n');
+    await expect(decision()).resolves.toMatchObject({ kind: 'current' });
+  });
 
   it('delivers two handed-off tickets through separate real-Git pull requests', async () => {
     const { origin } = await repositoryWithOrigin();

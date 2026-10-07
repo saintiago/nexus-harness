@@ -307,7 +307,13 @@ handoff and selection coverage; the serial parent and delivery gates remain unch
 Test prototype evidence validation and fault/repair routing with controlled responses, then run a
 real isolated Storybook fixture in Chromium through Playwright MCP and the actual assigned prototype
 profiles. Both roles interact with a state-changing journey, receive and inspect screenshot images,
-and save separate observations against the fixture commit. A broken journey/layout enters repair;
-corrected content needs fresh evidence and an applicability skip needs none. This targeted host
+and save separate readable observations with Nexus-observed revision/report attribution. A broken
+journey/layout enters repair; corrected work needs fresh inspection and an applicability skip needs
+none. Cover two edited files with broader genuine browser evidence, no changed paths, and a defect
+outside declared edits: changed-path lists neither gate evidence nor limit assessment. Exercise
+finalization, replay, downstream decisions and retained records with former or absent per-file fields.
+Remove tests enforcing assessed-file inventories and per-file observation/content comparisons;
+retain report integrity, fresh-assessment association, missing/unreadable evidence and allowance
+coverage without fabricating legacy evidence. This targeted host
 integration check establishes tool/image delivery that simulated responses cannot prove. The fixture
 is consumed by tests and adds no Nexus product UI.

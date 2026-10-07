@@ -25,6 +25,7 @@ import {
   readStagePlan,
   requireCurrentAcceptance,
   requireRetainedDecision,
+  requireRetainedResultAssociation,
   requireReturnReport,
   requireNeedsInputReport,
   roundArtifactDirectory,
@@ -40,8 +41,9 @@ import { evidenceFilePath, requireRetainedPrototypeEvidence } from '../observati
  * action-observed reason for a question or exhaustion, and the upstream destination, correction
  * and returning Markdown report when one applies. The parent publication reads this saved result;
  * the child returns only its outcome and this reference. Acceptance validates the evaluation's
- * complete basis, so changed authored reports, inputs or assessed content cannot be published
- * from a stale decision.
+ * complete basis — the authored report, captured source input, relied-on upstream results and
+ * observed repository revision — so a changed report or input cannot be published from a stale
+ * decision.
  */
 
 export type StageResultSettings = {
@@ -133,7 +135,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         // A completed round is replayed, not freshly finalized: its retained decision is validated
         // by report association and applicable prototype evidence, so later-stage document edits
         // or a legacy record without a repository observation cannot invalidate it.
-        await requireRetainedDecision({
+        const evaluation = await requireRetainedDecision({
           issueRoot,
           stage: settings.stage,
           selection,
@@ -142,6 +144,15 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
           author,
           evaluation: await readEvaluation(),
           git: settings.git,
+        });
+        // The replay adopts a retained result only while its recorded attribution identifies the
+        // round's producing assessment, before any evidence resolves through it.
+        requireRetainedResultAssociation({
+          root,
+          round: plan.round,
+          result: completed,
+          author,
+          evaluation,
         });
       }
       if (outcome === 'needsInput') {
@@ -175,17 +186,20 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
         settings.stage === 'prototype' &&
         (completed.outcome === 'accepted' || completed.prototype !== null)
       ) {
+        const author = await readAuthor();
+        if (author === null) {
+          throw new Error('A retained prototype must keep its authored report.');
+        }
         const evaluation = await readEvaluation();
         if (evaluation === null) {
           throw new Error('A retained prototype must keep its evaluated decision.');
         }
         await requireRetainedPrototypeEvidence({
-          git: settings.git,
-          worktree,
           artifactsRoot: path.join(root, 'artifacts'),
+          roundDirectory: roundArtifactDirectory(root, plan.round),
           observations: completed.prototypeObservations,
-          assessed: evaluation.basis.content,
-          observedPaths: completed.sourcePaths,
+          author,
+          evaluation,
         });
       }
       const terminal =
@@ -420,15 +434,14 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       if (evaluation === null) {
         throw new Error('An accepted prototype must retain the evaluated decision it relies on.');
       }
-      // Retained references are not enough: the records and screenshots must still be readable and
-      // bound to the assessed content when the acceptance is finalized.
+      // Retained references are not enough: the records and screenshots must still be readable
+      // when the acceptance is finalized.
       await requireRetainedPrototypeEvidence({
-        git: settings.git,
-        worktree,
         artifactsRoot: path.join(root, 'artifacts'),
+        roundDirectory,
         observations: retainedObservations,
-        assessed: evaluation.basis.content,
-        observedPaths: author.sourcePaths,
+        author,
+        evaluation,
       });
     }
 
