@@ -618,9 +618,8 @@ export type ReturnReportReference = {
 };
 
 /**
- * Require one published return's Markdown report to stay readable with the identity its producer
- * saved. The returning role's binding is the only authority for those bytes, so a missing or
- * changed report is preserved under that role's report responsibility as attributable rejection
+ * Require one published return's Markdown report to stay readable. The returning role's binding
+ * names the report, so a missing or unreadable report is preserved under that role's rejection
  * evidence before the read fails. A former combined return carries no bound report and keeps its
  * problem and consequence text as history. Returns the report's Markdown text, or null when the
  * return binds no report.

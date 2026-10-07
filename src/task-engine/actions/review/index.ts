@@ -732,7 +732,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
       verdict: response.verdict,
       role: 'reviewer',
       report: assignedReport,
-      reportIdentity: reportFile.identity,
       invocationId,
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);

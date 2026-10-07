@@ -15,7 +15,6 @@ import type { CheckObservation, GitHubReview } from '../src/adapters/github.js';
 import { parseNexusConfiguration } from '../src/configuration/index.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import {
   devArtifact,
@@ -217,7 +216,6 @@ async function writeDeliveredRound(
     headRevision,
     role: 'developer',
     report: { path: developmentFile },
-    reportIdentity: reportIdentityOf(Buffer.from(developmentReport, 'utf8')),
     invocationId: 'dev-1',
     readinessFailure: null,
   });
@@ -322,7 +320,6 @@ async function saveReview(
     verdict: 'approved',
     role: 'reviewer',
     report: { path: reportFile },
-    reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
     invocationId: `rev-${String(round)}`,
     ...overrides,
   };
@@ -449,7 +446,7 @@ describe('Review', () => {
       role: 'reviewer',
     });
     expect(recorded.output.report.path).toContain(path.join('artifacts', '1', 'reports'));
-    expect(recorded.output.reportIdentity).toMatch(/^[0-9a-f]{64}$/);
+    expect(recorded.output).not.toHaveProperty('reportIdentity');
     expect(recorded.output.invocationId).toBeTruthy();
     expect(recorded.report).toBe(reviewMarkdown);
     expect(gitCalls).toEqual([
@@ -1031,7 +1028,7 @@ describe('Review', () => {
   it.each([false, true])(
     'rejects unusable developer evidence before Review (saved review: %s)',
     async (replay) => {
-      for (const damage of ['missing Markdown', 'changed Markdown', 'foreign task', 'schema']) {
+      for (const damage of ['missing Markdown', 'foreign task', 'schema']) {
         const { workspaceRoot, selectionFile } = await workspace({ name: `${replay}-${damage}` });
         await writeDeliveredRound(workspaceRoot);
         if (replay) await saveReview(workspaceRoot, 1, 'The implementation is approved.');
@@ -1041,9 +1038,8 @@ describe('Review', () => {
         };
         const reportFile = outcome.report.path;
         if (damage === 'missing Markdown') await rm(reportFile);
-        if (damage === 'changed Markdown') await writeFile(reportFile, 'Changed evidence.');
         if (damage === 'foreign task') outcome['taskKey'] = 'NEX-2';
-        if (damage === 'schema') delete outcome['reportIdentity'];
+        if (damage === 'schema') delete outcome['invocationId'];
         await writeFile(file, JSON.stringify(outcome));
         const rejectedOutput = await readFile(file, 'utf8');
         const { github, calls } = scriptedGitHub({});
@@ -1073,7 +1069,7 @@ describe('Review', () => {
         if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
         else
           expect(await readFile(rejection.report!.path, 'utf8')).toBe(
-            damage === 'changed Markdown' ? 'Changed evidence.' : 'Implemented the retry guard.',
+            'Implemented the retry guard.',
           );
       }
     },

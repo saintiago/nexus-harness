@@ -9,7 +9,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
 import { readReportFeedback } from '../src/task-engine/actions/report-feedback.js';
 import type { JiraIssue, JiraTransition } from '../src/adapters/jira.js';
@@ -403,10 +402,9 @@ describe('SelectWork admission and routing', () => {
           role: 'developer',
           invocationId: 'dev-1',
           report: { path: reportFile },
-          reportIdentity: reportIdentityOf(Buffer.from(markdown)),
           readinessFailure: null,
         };
-        if (kind === 'schema') delete outcome['reportIdentity'];
+        if (kind === 'schema') delete outcome['invocationId'];
         await writeFile(file, JSON.stringify(outcome));
         if (kind !== 'missing Markdown') await writeFile(reportFile, markdown);
       }

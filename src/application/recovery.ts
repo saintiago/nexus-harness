@@ -13,8 +13,8 @@ import {
   parseAgentReport,
   readAssignedReport,
   readBoundReport,
-  reportBindingFields,
   responseFormatText,
+  retainedReportBindingFields,
 } from '../task-engine/actions/agent-reports.js';
 import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
 import { completionArtifact } from '../task-engine/actions/complete-task/artifacts.js';
@@ -111,7 +111,7 @@ export const recoveryReportSchema = z.strictObject({
   request: recoveryRequestSchema,
   recoveryAttempt: z.number().int().positive().describe('The recovery allowance this consumed.'),
   decision: recoveryDecisionSchema,
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 /** The recovery report, from the Application provided interface. */
@@ -793,9 +793,10 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       } catch (error) {
         return await rejected(`The recovery invocation failed: ${messageOf(error)}`);
       }
-      let reportFile: { readonly identity: string; readonly text: string };
+      let reportText: string;
       try {
-        reportFile = await readAssignedReport(assignedReport.path, 'Assigned recovery report');
+        reportText = (await readAssignedReport(assignedReport.path, 'Assigned recovery report'))
+          .text;
       } catch (error) {
         return await rejected(`The recovery invocation failed: ${messageOf(error)}`);
       }
@@ -808,7 +809,6 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         recoveryAttempt: invocation,
         decision: response.decision,
         report: assignedReport,
-        reportIdentity: reportFile.identity,
         invocationId,
       };
       try {
@@ -851,12 +851,12 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         type: 'recovered',
         data: { decision: report.decision.kind, report: saved },
       });
-      await deliver(saved, report, reportFile.text, stop.failure);
+      await deliver(saved, report, reportText, stop.failure);
       if (report.decision.kind === 'resume') {
         return { kind: 'resume' };
       }
       return attention(
-        openingNarrativeParagraph(reportFile.text) ??
+        openingNarrativeParagraph(reportText) ??
           `The recovery invocation returned needs-attention; the saved report is at ` +
             `${outcomeFile}.`,
       );

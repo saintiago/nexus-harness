@@ -45,7 +45,6 @@ import { savePrototypeObservation } from './support/prototype-observation.js';
 import { writeAssignedReport } from './support/agent-runner.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
 import { createImplementationHandoff } from '../src/task-engine/actions/project/implementation-handoff/index.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 
 /**
  * Git runs with a supplied environment. Global and system configuration are disabled so the
@@ -769,7 +768,6 @@ describe('Git adapter', () => {
           profile: 'a',
           role: 'author',
           report: { path: reportFile },
-          reportIdentity: reportIdentityOf(Buffer.from(authorMarkdown, 'utf8')),
           invocationId: 'fixture',
         }),
       );

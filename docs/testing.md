@@ -102,24 +102,38 @@ developer/reviewer, all eight preparation roles, the four idea roles, Recovery a
 Recording providers write the assigned Markdown and return only their minimal outcomes. Cover
 developer repair and profile variants, concurrent contributor paths, focused/post-help turns and
 retained-revision completion. Assert outcome schema delivery, observed metadata, report
-references/identity and full necessary Markdown context. Code fences and JSON examples in reports
-remain text, never decisions.
+references/invocation attribution and full necessary Markdown context. Code fences and JSON examples
+in reports remain text, never decisions.
 
 At the shared report boundary test malformed/extra outcome fields, missing/unreadable assigned
-reports, changed associated bytes, and partial outcome persistence. At the owning boundaries retain
+reports and partial outcome persistence. Readable report wording changes and obsolete hashes must
+not reject otherwise usable outcomes. At the owning boundaries retain
 functional-plan/routing/memory validation and applicable input/revision checks. Remove
 narrative-field, structured-finding and prose/verdict-consistency validators and tests together.
-Preserve readable legacy bytes and complete recorded identities, while damaged new bindings cannot
+Preserve readable legacy bytes and complete record values needed for author/evaluation associations,
+without enforcing former Markdown hashes. Damaged new bindings cannot
 fall back to legacy. Verify report-backed PR/review/ticket/notification publication and retained
 publication bodies on replay.
 
 Carry a rejected outcome and available Markdown through recovery, selection reset and worker restart
-into the next responsible invocation. Check attribution, exact rejection reason, matching correction
-retirement and isolation from other roles/items. Keep historical evidence after correction and
+into the next responsible invocation. Check attribution, exact validation reason, clearing after
+owner-validated saved replacements (including negative outcomes and interrupted save/clear), and
+isolation from other roles/items/response variants. No correction ledger or supplied-error proof
+is required. Keep original errors and reports readable after clearing and
 retain allowances and merge/check gates. Memory capture must preserve associated reports
 independently of attempt disposal; zero lessons still writes Markdown, and accepted legacy
 analyses/submission retries reuse their immutable payloads. Controlled agents prove handling, not
 report substance.
+
+At the preparation/binding boundary, replay a handoff after worker restart and assert the same
+request and submission keys; replace attempt state for a fresh same-ticket/stage/round/terminal run
+and assert a distinct request, with the old evidence unchanged. Cover `preparation-advanced`, failures
+before a numbered round, publication/handoff failure and selected preparation operational errors.
+Retained legacy state without the new attempt record must replay its former identity without a
+second request. Keep both old pending analysis and accepted/pending receipts resumable while a new
+attempt is captured, using their exact stored payloads and keys. Exercise installation restart
+without recapture, regeneration or duplicate lesson submission. These checks belong to preparation,
+Application bindings and AnalyzeExperience; they do not duplicate the memory service's algorithms.
 
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's

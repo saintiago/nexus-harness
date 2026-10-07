@@ -1020,7 +1020,7 @@ describe('finite execution journeys', () => {
       decision: { kind: 'resume' },
     });
     expect(savedReport.report.path).toMatch(/\/recovery\/reports\/[^/]+\/recovery\.md$/u);
-    expect(savedReport.reportIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    expect(savedReport).not.toHaveProperty('reportIdentity');
     expect(await readFile(savedReport.report.path, 'utf8')).toBe(recoveryMarkdown);
     expect(journey.notifications).toHaveLength(1);
     expect(journey.notifications[0]?.subject).toContain('resume');

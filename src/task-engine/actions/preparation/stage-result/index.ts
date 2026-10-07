@@ -41,9 +41,9 @@ import { evidenceFilePath, requireRetainedPrototypeEvidence } from '../observati
  * action-observed reason for a question or exhaustion, and the upstream destination, correction
  * and returning Markdown report when one applies. The parent publication reads this saved result;
  * the child returns only its outcome and this reference. Acceptance validates the evaluation's
- * complete basis — the authored report, captured source input, relied-on upstream results and
- * observed repository revision — so a changed report or input cannot be published from a stale
- * decision.
+ * complete basis — the authored outcome, captured source input, relied-on upstream results and
+ * observed repository revision — so changed input or authored work cannot be published from a
+ * stale decision.
  */
 
 export type StageResultSettings = {
@@ -167,7 +167,7 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
       if (outcome !== 'exhausted' && completed.returnFinding?.report != null) {
         // A replayed return keeps its returning role's Markdown readable through the producer's
         // saved binding: an unusable report is preserved as that role's rejection evidence instead
-        // of replaying a correction whose assessment is missing or changed.
+        // of replaying a correction whose assessment is missing or unreadable.
         await requireReturnReport({
           issueRoot,
           workId: selection.taskKey,
@@ -285,7 +285,6 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
                 },
                 profile: evaluation.profile,
                 report: evaluation.report,
-                reportIdentity: evaluation.reportIdentity,
                 invocationId: evaluation.invocationId,
               },
             }
@@ -304,7 +303,6 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
               },
               profile: author.profile,
               report: author.report,
-              reportIdentity: author.reportIdentity,
               invocationId: author.invocationId,
             },
           }
@@ -315,7 +313,8 @@ export function createStageResult(settings: StageResultSettings): BoundAction {
     if (returning !== null) {
       // A return cannot leave this stage without the assessment that explains it: read the
       // returning role's Markdown through its saved binding, preserving an unusable report as that
-      // role's rejection evidence instead of saving a return whose evidence is missing or changed.
+      // role's rejection evidence instead of saving a return whose evidence is missing or
+      // unreadable.
       await requireReturnReport({
         issueRoot,
         workId: selection.taskKey,

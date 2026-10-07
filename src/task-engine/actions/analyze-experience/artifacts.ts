@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { observationSchema, receiptStatuses } from '../../../memory/index.js';
-import { reportBindingFields } from '../agent-reports.js';
+import { retainedReportBindingFields } from '../agent-reports.js';
 
 /**
  * AnalyzeExperience's data contracts: the terminal handoff a workflow binding supplies, the
@@ -169,7 +169,7 @@ const experienceAnalysisFields = {
 export const experienceAnalysisOutputSchema = z.strictObject({
   ...experienceAnalysisFields,
   role: z.literal('experience-analyst'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type ExperienceAnalysisOutput = z.infer<typeof experienceAnalysisOutputSchema>;

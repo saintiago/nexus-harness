@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { readBoundReport, reportBindingFields } from '../agent-reports.js';
+import { readBoundReport, retainedReportBindingFields } from '../agent-reports.js';
 import { roundArtifactPath, type ArtifactDeclaration } from '../artifacts.js';
 import { readRecord } from '../records.js';
 import { projectOfWorkspace, rejectUnusableRecord, type ReportScope } from '../report-feedback.js';
@@ -28,7 +28,7 @@ export const reviewOutputSchema = z.strictObject({
   ...reviewFields,
   taskKey: z.string().min(1).describe('The task key this review belongs to.'),
   role: z.literal('reviewer'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
@@ -87,9 +87,9 @@ export function reviewReportScope(areaRoot: string, taskKey: string): ReportScop
 /**
  * Require one retained review outcome to be usable for a workflow decision: it must describe the
  * expected task (when the retained record names one) and, when it carries the current report
- * binding, its assigned Markdown must be readable with the recorded identity. An unusable outcome
- * is preserved under the reviewer's report responsibility as attributable rejection evidence
- * before the read fails. A retained combined review stays readable history.
+ * binding, its assigned Markdown must be readable. An unusable outcome is preserved under the
+ * reviewer's report responsibility as attributable rejection evidence before the read fails. A
+ * retained combined review stays readable history.
  */
 export async function requireUsableReviewOutcome(settings: {
   readonly areaRoot: string;

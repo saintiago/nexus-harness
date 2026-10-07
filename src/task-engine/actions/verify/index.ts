@@ -118,8 +118,8 @@ export function createVerify(settings: VerifySettings): BoundAction {
       'worktree',
     );
     // The checks run only against a usable saved outcome: it must describe the prepared task and,
-    // when bound, carry its readable report with the recorded identity. An unusable record is
-    // retained as the developer's rejection evidence instead of authorizing checks.
+    // when bound, carry its readable report. An unusable record is retained as the developer's
+    // rejection evidence instead of authorizing checks.
     const development = await readUsableDevelopmentOutcome({
       areaRoot: root,
       taskKey: prepared.taskKey,

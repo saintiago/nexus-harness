@@ -36,7 +36,6 @@ type ReviewOutput = {
   taskKey: string;
   role: 'reviewer';
   report: ArtifactRef;
-  reportIdentity: string;
   invocationId: string;
 };
 
@@ -118,8 +117,11 @@ comment is not the repair input.
 On repetition, inspect the saved report and remote publication for that head before invoking the
 reviewer or publishing again. Never apply approval to a later head.
 Validate the current development outcome through its producer-owned usable-outcome reader before
-both a fresh assessment and saved-review replay. Missing, changed or foreign development evidence
-fails before publication and retains rejection evidence under the developer's responsibility.
+both a fresh assessment and saved-review replay. Missing/unreadable reports, invalid outcomes,
+foreign task evidence or mismatched repository revisions fail before publication and retain
+validation-error context under the developer's responsibility. Readable Markdown wording changes
+do not invalidate evidence. Approved and changesRequested saved replacements clear only the
+reviewer's pending validation-error context under the shared continuation rules.
 
 New agent responses use the strict current response schema. The producer's saved-record reader also
 accepts former finding IDs and disposition fields in retained reports without enforcing removed

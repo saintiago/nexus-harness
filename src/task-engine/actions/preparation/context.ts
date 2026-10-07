@@ -192,7 +192,7 @@ export async function upstreamReferences(
       if (author !== null) {
         if (isBoundStageAuthorOutput(author)) {
           // Referencing an accepted upstream report must not bypass its producer binding: a
-          // missing or changed Markdown is preserved as that author's rejection evidence before
+          // missing or unreadable Markdown is preserved as that author's rejection evidence before
           // any later stage consumes the acceptance.
           await requireStageReport({
             issueRoot,
@@ -332,8 +332,8 @@ async function reportText(settings: {
 
 /**
  * Validate one referenced bound report through its producer binding without placing its body in
- * the prompt. Referencing a report must not bypass record usability: a missing or changed report
- * is preserved as its producer's rejection evidence before the invocation continues.
+ * the prompt. Referencing a report must not bypass record usability: a missing or unreadable
+ * report is preserved as its producer's rejection evidence before the invocation continues.
  */
 async function validateBoundReport(settings: {
   readonly binding: ReportBinding & { readonly profile: string };
@@ -419,9 +419,9 @@ async function returnSection(settings: {
       `The returning role's Markdown report (its problem and consequence): ` +
         `${returned.report.report.path}`,
     );
-    // The report is read through the returning role's saved binding: a missing or changed report
-    // is preserved as that role's rejection evidence and fails this context instead of silently
-    // dropping the assessment or embedding replacement bytes.
+    // The report is read through the returning role's saved binding: a missing or unreadable
+    // report is preserved as that role's rejection evidence and fails this context instead of
+    // silently dropping the assessment or embedding replacement bytes.
     const text = await requireReturnReport({
       issueRoot: issueWorkspaceRootOf(settings.selection),
       workId: settings.selection.taskKey,

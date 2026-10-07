@@ -3,9 +3,10 @@ import type { ReportScope } from '../report-feedback.js';
 import { preparationStages, type PreparationStage } from '../../../configuration/index.js';
 import {
   artifactRefSchema,
+  formerReportIdentityField,
   readBoundReport,
-  reportBindingFields,
   reportBindingSchema,
+  retainedReportBindingFields,
 } from '../agent-reports.js';
 import type { ArtifactDeclaration } from '../artifacts.js';
 import type { RecordDeclaration } from '../records.js';
@@ -198,8 +199,8 @@ export type StageAuthorResponse = z.infer<typeof stageAuthorResponseSchema>;
 
 /**
  * The saved author artifact: the minimal response bound to its stage, authored revision, observed
- * task/profile identity and assigned Markdown report. The action observes the identity, revision
- * and report bytes; none of it is agent output.
+ * task/profile identity and assigned Markdown report. The action observes the identity and
+ * revision and reads the report; none of it is agent output.
  */
 export const stageAuthorOutputSchema = z.strictObject({
   ...stageAuthorResponseSchema.shape,
@@ -208,7 +209,7 @@ export const stageAuthorOutputSchema = z.strictObject({
   taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
   profile: z.string().trim().min(1).describe('The author profile that produced this report.'),
   role: z.literal('author'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type StageAuthorOutput = z.infer<typeof stageAuthorOutputSchema>;
@@ -407,7 +408,7 @@ export const stageEvaluationOutputSchema = z.strictObject({
   taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
   profile: z.string().trim().min(1).describe('The evaluator profile that produced this verdict.'),
   role: z.literal('evaluator'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type StageEvaluationOutput = z.infer<typeof stageEvaluationOutputSchema>;
@@ -427,7 +428,7 @@ export const formerContentStageEvaluationOutputSchema = z.strictObject({
   taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
   profile: z.string().trim().min(1).describe('The evaluator profile that produced this verdict.'),
   role: z.literal('evaluator'),
-  ...reportBindingFields,
+  ...retainedReportBindingFields,
 });
 
 export type FormerContentStageEvaluationOutput = z.infer<
@@ -489,7 +490,7 @@ export function isBoundStageEvaluationOutput(
 
 /**
  * One retained evaluation report's readable narrative: its bound Markdown, or the former combined
- * reason. Callers validate the binding they rely on; this reads the exact bytes the producer saved.
+ * reason. Callers validate the binding they rely on; this reads the producer's saved report.
  */
 export async function stageEvaluationReportText(
   evaluation: RetainedStageEvaluationOutput,
@@ -526,6 +527,7 @@ export function evaluationVerdictProblem(
 export const returnReportSchema = reportBindingSchema.extend({
   outcome: artifactRefSchema,
   profile: z.string().min(1),
+  ...formerReportIdentityField,
 });
 
 export type ReturnReport = z.infer<typeof returnReportSchema>;
@@ -600,7 +602,7 @@ export const preparationResultSchema = z
      * The concrete upstream correction a return carries, with the returning role's Markdown report
      * binding and that role that explains its problem and consequence. Former combined results
      * retain their problem and consequence fields as history; current returns carry the binding
-     * instead, so every consumer reads the assessment through the identity its producer saved.
+     * instead, so every consumer reads the assessment its producer saved.
      */
     returnFinding: z
       .object({

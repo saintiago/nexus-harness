@@ -9,10 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import {
-  openingNarrativeParagraph,
-  reportIdentityOf,
-} from '../src/task-engine/actions/agent-reports.js';
+import { openingNarrativeParagraph } from '../src/task-engine/actions/agent-reports.js';
 import {
   devArtifact,
   developmentReportText,
@@ -41,7 +38,6 @@ const developmentOutput: DevelopmentOutput = {
   headRevision,
   role: 'developer',
   report: { path: 'artifacts/1/reports/dev-1/developer.md' },
-  reportIdentity: 'a'.repeat(64),
   invocationId: 'dev-1',
   readinessFailure: null,
 };
@@ -108,7 +104,6 @@ function reviewOutput(overrides: Partial<ReviewOutput> = {}): ReviewOutput {
     verdict: 'approved',
     role: 'reviewer',
     report: { path: 'artifacts/2/reports/rev-1/reviewer.md' },
-    reportIdentity: 'b'.repeat(64),
     invocationId: 'rev-1',
     ...overrides,
   };
@@ -418,7 +413,7 @@ describe('retained report contracts', () => {
     ).toBe(false);
   });
 
-  it('reads a bound report by its recorded bytes and rejects a changed report', async () => {
+  it('reads a bound report and keeps a readable report usable when its bytes change', async () => {
     const root = await temporaryWorkspace();
     const reportFile = path.join(root, 'artifacts', '1', 'reports', 'dev-1', 'developer.md');
     await mkdir(path.dirname(reportFile), { recursive: true });
@@ -427,7 +422,6 @@ describe('retained report contracts', () => {
     const bound: DevelopmentOutput = {
       ...developmentOutput,
       report: { path: reportFile },
-      reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
     };
 
     await expect(developmentReportText(bound)).resolves.toBe(markdown);
@@ -436,7 +430,7 @@ describe('retained report contracts', () => {
     );
 
     await writeFile(reportFile, `${markdown}Edited after the fact.\n`, 'utf8');
-    await expect(developmentReportText(bound)).rejects.toThrow(/does not match the identity/);
+    await expect(developmentReportText(bound)).resolves.toBe(`${markdown}Edited after the fact.\n`);
   });
 
   it('selects the opening narrative paragraph, not headings, code or list structure', () => {

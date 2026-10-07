@@ -536,8 +536,9 @@ export async function capturedIdeaText(
             if (returned.report !== null) {
               lines.push(`The returning role's Markdown report: ${returned.report.report.path}`);
               // The refinement area sits beside the stage areas under the issue workspace: the
-              // report is read through the returning role's saved binding, so a missing or changed
-              // report is preserved as that role's rejection evidence instead of being embedded.
+              // report is read through the returning role's saved binding, so a missing or
+              // unreadable report is preserved as that role's rejection evidence instead of being
+              // embedded.
               const text = await requireReturnReport({
                 issueRoot: path.dirname(root),
                 workId: input.taskKey,
@@ -683,11 +684,10 @@ async function observedAttributionOf(file: string): Promise<{
 
 /**
  * Read one retained idea report through its producer declaration at an explicit path. A current
- * saved outcome requires its bound Markdown to be readable with the recorded identity and to
- * answer this work item; a retained combined record stays readable history under its producer's
- * own renderer. An unusable record is preserved as rejection evidence under its producer's report
- * responsibility before the read fails, instead of silently letting a later repair drop the
- * correction obligation.
+ * saved outcome requires its bound Markdown to be readable and to answer this work item; a
+ * retained combined record stays readable history under its producer's own renderer. An unusable
+ * record is preserved as rejection evidence under its producer's report responsibility before the
+ * read fails, instead of silently letting a later repair drop the correction obligation.
  */
 export async function readRetainedIdeaReportAtFile<
   Declaration extends AnyIdeaReportDeclaration,
@@ -927,8 +927,6 @@ export type IdeaInvocationOutcome<Schema extends z.ZodType> = {
   readonly response: z.output<Schema>;
   /** The Markdown report path this invocation was assigned. */
   readonly assignedReport: ArtifactRef;
-  /** The assigned report's readable bytes and identity. */
-  readonly reportFile: ReportFile;
   readonly invocationId: string;
   readonly profile: string;
   /**
@@ -1046,29 +1044,28 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
       });
     }
   })();
-  const reportFile = await (async (): Promise<ReportFile> => {
-    try {
-      return await readAssignedReport(assignedReport.path, `Assigned ${settings.role} report`);
-    } catch (error) {
-      return await rejectReport({
-        areaRoot: settings.root,
-        scope,
-        invocationId,
-        operation: settings.operation,
-        profile,
-        context: attribution,
-        source: null,
-        output: result.value.output,
-        assignedReport,
-        reason: messageOf(error),
-        cause: error,
-      });
-    }
-  })();
+  // The assigned Markdown must be a readable regular file before the outcome is saved; its bytes
+  // belong to the workflow that reads the report, not to this invocation boundary.
+  try {
+    await readAssignedReport(assignedReport.path, `Assigned ${settings.role} report`);
+  } catch (error) {
+    return await rejectReport({
+      areaRoot: settings.root,
+      scope,
+      invocationId,
+      operation: settings.operation,
+      profile,
+      context: attribution,
+      source: null,
+      output: result.value.output,
+      assignedReport,
+      reason: messageOf(error),
+      cause: error,
+    });
+  }
   return {
     response,
     assignedReport,
-    reportFile,
     invocationId,
     profile,
     async reject(reason, cause): Promise<never> {

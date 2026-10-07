@@ -122,10 +122,10 @@ adapter](adapters/notifications.md#interface) to publish the associated Markdown
 with its observed identity and decision. Never send outcome JSON as the narrative or infer a
 recovery decision from Markdown.
 
-Import the TaskEngine-owned [report rejection declarations](task-engine/actions/architecture.md#rejection-evidence-and-continuation)
-for readable failure evidence and correction records. Supply relevant rejection references and
-their declared format to recovery, including when selection is later cleared. Application owns
-evidence for its recovery reports; action owners retain their own report feedback. The runtime
+Use the TaskEngine-owned [validation-error context](task-engine/actions/architecture.md#rejection-evidence-and-continuation)
+helpers for readable failure evidence. Supply relevant errors and original report references to
+recovery, including when selection is later cleared. Do not supply a correction-record protocol.
+Application owns evidence for its recovery reports; action owners retain their own report feedback. The runtime
 interface and worker control protocol remain unchanged.
 
 ### Worker entry point
@@ -330,3 +330,15 @@ original fault and wait for active agents to settle before invoking the action a
 Application records one only for an execution fault of the attempt the invocation's own events
 established, and never for a declared blocked outcome or a failed selection, whose terminal handoff
 the workflow already routed or skipped.
+
+Preparation handoff binding imports the preparation-owned attempt and round declarations. For a
+new-format stage, derive the opaque handoff `attemptId` from the retained unique attempt value,
+stage and round (or an explicit no-round value). Use an unambiguous encoding of this tuple, not a
+new UUID at capture time. Normal preparation terminals, publication/handoff failures and preparation
+operational-error capture use this same derivation. Keep the existing workflow and terminal names;
+stage/round distinguishes handoffs within an attempt, and the unique value distinguishes fresh
+attempts. Retries reconstruct the same tuple from retained state. A missing pre-upgrade identity
+uses the former binding's stage/round or no-round value for that retained legacy attempt, including
+its existing operational-error workflow naming. An invalid identity is unavailable capture, never
+an invitation to silently create another request. Selection-failure capture keeps its existing
+ownership contract and does not fabricate a preparation attempt.

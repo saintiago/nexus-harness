@@ -29,7 +29,6 @@ import {
   type PreparationStage,
   type StageAuthorOutput,
 } from '../src/task-engine/actions/preparation/artifacts.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   readCurrentDecision,
   readStageArtifact,
@@ -563,7 +562,6 @@ it('reads a retained bound evaluation carrying former per-file content as histor
     profile: 'nexus-sol',
     role: 'evaluator',
     report: { path: report },
-    reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
     invocationId: 'invocation-1',
   };
   const file = path.join(root, 'artifacts', '1', 'evaluation.json');
@@ -674,7 +672,7 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
     const markdown = await readFile(saved.report.path, 'utf8');
     const changed =
       change === 'binding'
-        ? JSON.stringify({ ...saved, reportIdentity: '0'.repeat(64) })
+        ? JSON.stringify({ ...saved, invocationId: '' })
         : change === 'legitimate'
           ? JSON.stringify({ ...saved, skip: { references: [] } })
           : original;
@@ -690,50 +688,57 @@ it.each(['binding', 'markdown', 'legitimate'] as const)(
         },
       },
     });
+    if (change === 'markdown') {
+      // A readable report whose wording changed during assessment keeps its saved association: the
+      // evaluation completes without a Markdown-byte gate.
+      await expect(evaluator()).resolves.toBe('accepted-skip');
+      await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.not.toBeNull();
+      await expect(readReportFeedback(root)).resolves.toEqual([]);
+      return;
+    }
     await expect(evaluator()).rejects.toThrow(
-      change === 'legitimate' ? /reevaluation is required/ : /does not match/,
+      change === 'legitimate' ? /reevaluation is required/ : /invocationId/,
     );
     await expect(readStageArtifact(root, 3, stageEvaluationArtifact)).resolves.toBeNull();
     const feedback = await readReportFeedback(root);
     if (change === 'legitimate') {
       expect(feedback).toEqual([]);
-    } else {
-      expect(feedback).toHaveLength(1);
-      const rejection = feedback[0]!.record;
-      expect(rejection).toMatchObject({
-        kind: 'rejection',
-        scope: { area: root, workId: 'KAN-76', role: 'requirements-author' },
-        invocationId: saved.invocationId,
-        profile: saved.profile,
-        source: { path: file },
-        output: changed,
-        assignedReport: saved.report,
-        operation: 'stage-author',
-        reason: expect.stringContaining('does not match'),
-      });
-      if (rejection.kind !== 'rejection' || rejection.report === null) {
-        throw new Error('Expected retained author Markdown.');
-      }
-      const rejectedMarkdown = change === 'markdown' ? 'Replacement report.\n' : markdown;
-      await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(rejectedMarkdown);
-      // Repairing history and reevaluating cannot retire the responsible author's obligation.
-      await writeFile(file, original);
-      await writeFile(saved.report.path, markdown);
-      await expect(
-        createStageEvaluator({ ...common, runner: evaluatorRunner(response, []) })(),
-      ).resolves.toBe('accepted-skip');
-      await expect(
-        outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
-      ).resolves.toHaveLength(1);
-      await author({ task: 'propose' });
-      expect(authorContexts[1]).toContain('does not match');
-      expect(authorContexts[1]).toContain(feedback[0]!.path);
-      expect(authorContexts[1]).toContain(rejection.report.path);
-      await expect(
-        outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
-      ).resolves.toEqual([]);
-      await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(rejectedMarkdown);
+      return;
     }
+    expect(feedback).toHaveLength(1);
+    const rejection = feedback[0]!.record;
+    expect(rejection).toMatchObject({
+      kind: 'rejection',
+      scope: { area: root, workId: 'KAN-76', role: 'requirements-author' },
+      invocationId: null,
+      profile: saved.profile,
+      source: { path: file },
+      output: changed,
+      assignedReport: saved.report,
+      operation: 'stage-author',
+      reason: expect.stringContaining('invocationId'),
+    });
+    if (rejection.kind !== 'rejection' || rejection.report === null) {
+      throw new Error('Expected retained author Markdown.');
+    }
+    await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(markdown);
+    // Repairing history and reevaluating cannot retire the responsible author's obligation.
+    await writeFile(file, original);
+    await writeFile(saved.report.path, markdown);
+    await expect(
+      createStageEvaluator({ ...common, runner: evaluatorRunner(response, []) })(),
+    ).resolves.toBe('accepted-skip');
+    await expect(
+      outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+    ).resolves.toHaveLength(1);
+    await author({ task: 'propose' });
+    expect(authorContexts[1]).toContain('invocationId');
+    expect(authorContexts[1]).toContain(feedback[0]!.path);
+    expect(authorContexts[1]).toContain(rejection.report.path);
+    await expect(
+      outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
+    ).resolves.toEqual([]);
+    await expect(readFile(rejection.report.path, 'utf8')).resolves.toBe(markdown);
   },
 );
 
@@ -932,9 +937,16 @@ it.each(
               contexts,
             ),
           });
-    await expect(invoke()).rejects.toThrow(
-      change === 'changed' ? /does not match the identity recorded/ : /does not exist/,
-    );
+    if (change === 'changed') {
+      // Readable replacement wording is not a Markdown-byte gate: the upstream evidence stays
+      // usable and the consuming stage proceeds without retaining a rejection.
+      await expect(invoke()).resolves.toBe(
+        consumer === 'author' ? 'skip-proposed' : 'accepted-skip',
+      );
+      await expect(readReportFeedback(root)).resolves.toEqual([]);
+      return;
+    }
+    await expect(invoke()).rejects.toThrow(/does not exist/);
     expect(contexts).toEqual([]);
     // The producer owns the rejection: the requirements role retains its attributable evidence
     // while the consuming stage records nothing of its own.
@@ -944,10 +956,7 @@ it.each(
       source: { path: record },
       assignedReport: change === 'missing-record' ? null : saved.report,
       operation: `stage-${role}`,
-      reason:
-        change === 'changed'
-          ? expect.stringContaining('does not match')
-          : expect.stringContaining('does not exist'),
+      reason: expect.stringContaining('does not exist'),
     });
     if (change === 'missing-record') {
       expect((await readReportFeedback(root))[0]?.record).toMatchObject({

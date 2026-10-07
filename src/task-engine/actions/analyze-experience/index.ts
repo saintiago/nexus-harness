@@ -545,7 +545,6 @@ export function createAnalyzeExperience(
         binding: isBoundAnalysisOutput(record)
           ? {
               report: record.report,
-              reportIdentity: record.reportIdentity,
               invocationId: record.invocationId,
             }
           : null,
@@ -571,7 +570,7 @@ export function createAnalyzeExperience(
    * evidence was just retained. The last state makes no invocation in the same pass: the next
    * permitted attempt answers that feedback, so repairing or replacing the file cannot drop the
    * correction obligation. A current bound analysis is accepted only while its assigned Markdown
-   * is readable with the recorded identity; a retained former analysis needs no new Markdown.
+   * is readable; a retained former analysis needs no new Markdown.
    */
   type SavedAnalysis =
     | { readonly kind: 'accepted'; readonly analysis: AcceptedAnalysis }
@@ -1025,9 +1024,8 @@ export function createAnalyzeExperience(
       // evidence never converts the failure into acceptance or an extra invocation.
       return await rejected(validated.problem);
     }
-    let reportFile: { readonly identity: string };
     try {
-      reportFile = await readAssignedReport(assignedReport.path, 'Experience analysis report');
+      await readAssignedReport(assignedReport.path, 'Experience analysis report');
     } catch (error) {
       return await rejected(messageOf(error));
     }
@@ -1049,7 +1047,6 @@ export function createAnalyzeExperience(
           relatedMemories: observation.relatedMemories,
         })),
       report: assignedReport,
-      reportIdentity: reportFile.identity,
       invocationId,
     };
     // Report correction replaces the binding, never the already accepted observations or their
@@ -1071,7 +1068,6 @@ export function createAnalyzeExperience(
       observations: output.observations,
       binding: {
         report: output.report,
-        reportIdentity: output.reportIdentity,
         invocationId: output.invocationId,
       },
     };

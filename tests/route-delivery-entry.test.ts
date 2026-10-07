@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTaskEngine, type BoundAction } from '../src/task-engine/index.js';
 import { createRouteDeliveryEntry } from '../src/task-engine/actions/route-delivery-entry/index.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import { developmentReportScope } from '../src/task-engine/actions/develop/artifacts.js';
 import {
   outstandingReportFeedback,
@@ -92,7 +91,6 @@ async function saveBoundDevelopment(root: string, status: 'completed' | 'failed'
     headRevision: 'head',
     role: 'developer',
     report: { path: reportFile },
-    reportIdentity: reportIdentityOf(Buffer.from(markdown)),
     invocationId: 'dev-repair',
     readinessFailure: null,
   };
@@ -167,17 +165,16 @@ describe('retained finite delivery entry', () => {
       await expect(prepared.route()).rejects.toThrow('not "NEX-1"');
     },
   );
-  it.each(['schema', 'foreign task', 'missing Markdown', 'changed Markdown'])(
+  it.each(['schema', 'foreign task', 'missing Markdown'])(
     'retains rejected development evidence at entry for %s',
     async (damage) => {
       const prepared = await entry({ development: 'completed' });
       const saved = await saveBoundDevelopment(prepared.root, 'completed');
       const damaged: Record<string, unknown> = { ...saved.outcome };
-      if (damage === 'schema') delete damaged['reportIdentity'];
+      if (damage === 'schema') delete damaged['invocationId'];
       if (damage === 'foreign task') damaged['taskKey'] = 'OTHER-1';
       await writeFile(saved.file, JSON.stringify(damaged));
       if (damage === 'missing Markdown') await rm(saved.reportFile);
-      if (damage === 'changed Markdown') await writeFile(saved.reportFile, 'Changed evidence.');
       const rejectedOutput = await readFile(saved.file, 'utf8');
 
       await expect(prepared.route()).rejects.toThrow();
@@ -195,12 +192,19 @@ describe('retained finite delivery entry', () => {
       if (damage === 'missing Markdown') expect(rejection.report).toBeNull();
       else {
         expect(rejection.report).not.toBeNull();
-        expect(await readFile(rejection.report!.path, 'utf8')).toBe(
-          damage === 'changed Markdown' ? 'Changed evidence.' : saved.markdown,
-        );
+        expect(await readFile(rejection.report!.path, 'utf8')).toBe(saved.markdown);
       }
     },
   );
+
+  it('routes past a readable development report whose wording changed', async () => {
+    const prepared = await entry({ development: 'completed' });
+    const saved = await saveBoundDevelopment(prepared.root, 'completed');
+    await writeFile(saved.reportFile, 'Reworded after the turn, still readable.\n');
+
+    await expect(prepared.route()).resolves.toBe('verify');
+    await expect(readReportFeedback(prepared.root)).resolves.toEqual([]);
+  });
 
   it.each(['completed', 'failed'] as const)(
     'finishes only the saved %s invocation correction before retained routing',

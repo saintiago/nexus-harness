@@ -621,7 +621,7 @@ describe('experience analysis', () => {
     const output = await analysisOf(retained);
     expect(output).toMatchObject({ role: 'experience-analyst', workId, profile, observations: [] });
     // Every invocation writes its report, including one that found no reusable lesson, and the
-    // saved analysis binds the exact bytes.
+    // saved analysis binds the readable report without a Markdown-byte hash.
     expect(output.report.path).toBe(
       path.join(
         evidenceRootOf(retained),
@@ -633,7 +633,7 @@ describe('experience analysis', () => {
     expect(await readFile(output.report.path, 'utf8')).toBe(
       'The analyst read the retained evidence and recorded its reasoning.\n',
     );
-    expect(output.reportIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    expect(output).not.toHaveProperty('reportIdentity');
     expect(output.invocationId).toBe(retained.requests[0]!.invocationId);
     expect(experienceAnalysisOutputSchema.safeParse(output).success).toBe(true);
   });

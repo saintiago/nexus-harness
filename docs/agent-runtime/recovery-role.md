@@ -60,10 +60,11 @@ the supplied workflow and record formats. Return resume only when the normal que
 do not launch a second queue yourself.
 
 Before repairing or replacing a rejected report, preserve its available output and exact rejection
-reason using the supplied feedback declaration. Keep that evidence outside disposable attempt
-directories and preserve it through selection reset. Historical repair alone does not clear the
-feedback needed by the next responsible invocation. Do not invent unavailable output or metadata,
-or convert a correction record into evaluation, review approval or completion.
+reason as readable validation-error evidence. Keep that evidence outside disposable attempt
+directories and preserve it through selection reset. Historical edits alone do not establish a
+valid outcome; the responsible owner validates and saves the replacement, then clears pending
+context. Do not write correction records, invent unavailable output/metadata or turn context
+clearing into evaluation, review approval or completion.
 
 If project implementation work is needed to unblock execution, create or reuse a blocker ticket
 describing the problem and intended outcome. Make it eligible and rank it first. Move the interrupted

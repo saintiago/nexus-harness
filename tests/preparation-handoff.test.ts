@@ -17,7 +17,6 @@ import { createStageAuthor } from '../src/task-engine/actions/preparation/stage-
 import { createStageEvaluator } from '../src/task-engine/actions/preparation/stage-evaluator/index.js';
 import { createStageResult } from '../src/task-engine/actions/preparation/stage-result/index.js';
 import { createStartStageRound } from '../src/task-engine/actions/preparation/start-stage-round/index.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   authoredIdentity,
   sourceInputIdentity,
@@ -248,15 +247,15 @@ describe('preparation repair rounds', () => {
       outcome: 'authored',
       documents: [{ path: 'docs/ux.md' }],
     });
-    // The action binds the observed identity to the invocation's assigned Markdown report.
+    // The action binds the invocation's assigned Markdown report to the observed attribution.
     expect(saved).toMatchObject({
       profile: 'nexus-sol',
       role: 'author',
       report: { path: expect.stringContaining('author.md') },
-      reportIdentity: expect.any(String),
     });
     expect(saved).not.toHaveProperty('findingResponses');
     expect(saved).not.toHaveProperty('summary');
+    expect(saved).not.toHaveProperty('reportIdentity');
   });
 
   it('rejects a current author response that carries the removed finding-response field', async () => {
@@ -369,6 +368,7 @@ describe('preparation repair rounds', () => {
     expect(saved.basis).not.toHaveProperty('content');
     expect(saved).not.toHaveProperty('findings');
     expect(saved).not.toHaveProperty('priorFindings');
+    expect(saved).not.toHaveProperty('reportIdentity');
   });
 
   it('supplies the parent correction and the approved idea handoff to the stage context', async () => {
@@ -925,10 +925,9 @@ describe('preparation repair rounds', () => {
       stage: 'requirements',
       correction: 'Correct the acceptance example.',
       role: 'evaluator',
-      // The return keeps the producer's saved binding: its Markdown path and recorded identity.
+      // The return keeps the producer's saved binding: its Markdown path and invocation.
       report: {
         report: { path: expect.stringContaining('evaluator.md') },
-        reportIdentity: expect.any(String),
         invocationId: expect.any(String),
       },
     });
@@ -1008,13 +1007,20 @@ describe('preparation repair rounds', () => {
       publish: () => undefined,
     });
 
-    // The evaluator's assigned Markdown is replaced after its binding was saved: the return cannot
-    // leave the stage without the assessment its saved identity names.
+    // The evaluator's assigned Markdown is replaced after its binding was saved: readable wording
+    // changes do not invalidate the saved association, so the return can leave the stage.
     await writeFile(evaluation.report.path, '# Replaced assessment\n\nDifferent bytes.\n');
-    await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
-      /does not match the identity recorded/,
-    );
-    await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+    await expect(readReportFeedback(root)).resolves.toEqual([]);
+
+    // A missing report is unusable evidence: the completed return cannot replay without its
+    // assessment and the producing role's rejection evidence is retained.
+    await rm(evaluation.report.path, { force: true });
+    await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/does not exist/);
+    await expect(artifact(root, 2, 'result.json')).resolves.toMatchObject({
+      outcome: 'returnUpstream',
+      returnFinding: { report: { invocationId: expect.any(String) } },
+    });
     const firstFeedback = await readReportFeedback(root);
     expect(firstFeedback).toHaveLength(1);
     expect(firstFeedback[0]?.record).toMatchObject({
@@ -1023,21 +1029,8 @@ describe('preparation repair rounds', () => {
       assignedReport: { path: evaluation.report.path },
     });
 
-    // A completed return replays only while its returning report stays readable with its recorded
-    // identity; deleting it after finalization is the same unusable evidence, not a silent skip.
-    await writeFile(evaluation.report.path, controlledMarkdown);
-    await expect(finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
-    await rm(evaluation.report.path, { force: true });
-    await expect(finalize({ outcome: 'returnUpstream' })).rejects.toThrow(/does not exist/);
-    await expect(artifact(root, 2, 'result.json')).resolves.toMatchObject({
-      outcome: 'returnUpstream',
-      returnFinding: { report: { reportIdentity: expect.any(String) } },
-    });
-    await expect(readReportFeedback(root)).resolves.toHaveLength(2);
-
-    // The destination context reads the same producer-owned binding: a replaced report is
+    // The destination context reads the same producer-owned binding: an unreadable report is
     // preserved as the returning role's rejection evidence instead of being embedded.
-    await writeFile(evaluation.report.path, '# Replacement\n\nSubstituted evidence.\n');
     await mkdir(path.join(issueRoot, 'parent'), { recursive: true });
     const saved = (await artifact(root, 2, 'result.json')) as {
       readonly returnFinding: unknown;
@@ -1081,10 +1074,10 @@ describe('preparation repair rounds', () => {
       }),
     );
     await expect(destination({ stage: 'requirements', task: 'propose' })).rejects.toThrow(
-      /does not match the identity recorded/,
+      /does not exist/,
     );
     const destinationFeedback = await readReportFeedback(root);
-    expect(destinationFeedback).toHaveLength(3);
+    expect(destinationFeedback).toHaveLength(2);
     expect(destinationFeedback.at(-1)?.record).toMatchObject({
       kind: 'rejection',
       scope: { role: 'ux-evaluator', reportKind: 'stage-evaluation' },
@@ -1137,7 +1130,6 @@ describe('preparation repair rounds', () => {
       profile: 'nexus-sol',
       role: 'evaluator',
       report: { path: reportPath },
-      reportIdentity: reportIdentityOf(Buffer.from(controlledMarkdown, 'utf8')),
       invocationId: 'inv-1',
     };
     await writeFile(evaluationFile, JSON.stringify(current));
@@ -1266,11 +1258,11 @@ describe('preparation retained outcome usability', () => {
         await mkdir(path.join(root, 'artifacts/3'), { recursive: true });
         await writeFile(path.join(root, 'artifacts/3/author.json'), JSON.stringify(author));
       }
-      const damaged = JSON.stringify({
-        ...producer,
-        reportIdentity: malformed ? undefined : '0'.repeat(64),
-      });
+      // A missing binding field damages the record itself; a binding whose report file is gone
+      // damages the stored association. Both are retained under the producing role.
+      const damaged = JSON.stringify(malformed ? { ...producer, report: undefined } : producer);
       await writeFile(file, damaged);
+      if (!malformed) await rm(producer.report.path, { force: true });
       const { runner, contexts } = runnerOf([]);
       const settings = {
         selectionFile,
@@ -1283,7 +1275,7 @@ describe('preparation retained outcome usability', () => {
         consumer === 'author'
           ? createStageAuthor(settings)({ task: 'respond' })
           : createStageEvaluator(settings)();
-      await expect(invocation).rejects.toThrow(malformed ? /reportIdentity/ : /does not match/);
+      await expect(invocation).rejects.toThrow(malformed ? /report/ : /does not exist/);
       expect(contexts).toEqual([]);
       const feedback = await readReportFeedback(root);
       expect(feedback).toHaveLength(1);
@@ -1295,10 +1287,11 @@ describe('preparation retained outcome usability', () => {
         profile: producer.profile,
         source: { path: file },
         output: damaged,
-        assignedReport: producer.report,
+        assignedReport: malformed ? null : producer.report,
       });
       if (rejection.kind !== 'rejection') throw new Error('Expected rejection evidence.');
-      expect(await readFile(rejection.report!.path, 'utf8')).toBe(controlledMarkdown);
+      // Neither damage leaves readable Markdown to copy; the attempted binding stays as evidence.
+      expect(rejection.report).toBeNull();
       await writeFile(file, original);
       expect(
         await outstandingReportFeedback({ areaRoot: root, scope: rejection.scope }),
@@ -1321,16 +1314,23 @@ describe('preparation retained outcome usability', () => {
         role === 'author' ? 'author.json' : 'evaluation.json',
       );
       const original = await readFile(file, 'utf8');
-      const damaged = JSON.stringify({ ...producer, reportIdentity: '0'.repeat(64) });
+      // The saved outcome binds a report path that names no readable report: the return cannot
+      // leave the stage without its assessment, and the producer's rejection evidence is retained.
+      const missing = path.join(fixture.root, 'artifacts/2/reports/missing', `${role}.md`);
+      const damaged = JSON.stringify({ ...producer, report: { path: missing } });
       await writeFile(file, damaged);
       await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
-        /does not match/,
+        /does not exist/,
       );
       await writeFile(file, original);
       await expect(fixture.finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      // A readable report replaced after finalization keeps the saved association: replay
+      // succeeds, while a later deletion is unusable evidence again.
       await writeFile(producer.report.path, 'Changed after finalization.');
+      await expect(fixture.finalize({ outcome: 'returnUpstream' })).resolves.toBe('saved');
+      await rm(producer.report.path, { force: true });
       await expect(fixture.finalize({ outcome: 'returnUpstream' })).rejects.toThrow(
-        /does not match/,
+        /does not exist/,
       );
       const feedback = await readReportFeedback(fixture.root);
       expect(feedback).toHaveLength(2);
@@ -1342,12 +1342,11 @@ describe('preparation retained outcome usability', () => {
           profile: producer.profile,
           source: { path: file },
           output: index === 0 ? damaged : original,
-          assignedReport: producer.report,
+          assignedReport: index === 0 ? { path: missing } : producer.report,
         });
         if (entry.record.kind !== 'rejection') throw new Error('Expected rejection evidence.');
-        expect(await readFile(entry.record.report!.path, 'utf8')).toBe(
-          index === 0 ? controlledMarkdown : 'Changed after finalization.',
-        );
+        // Both rejections are unusable report reads: no Markdown was available to copy.
+        expect(entry.record.report).toBeNull();
       }
     },
   );
@@ -1365,14 +1364,16 @@ describe('preparation retained outcome usability', () => {
       await expect(finalize({ outcome })).rejects.toThrow(/exact/);
       expect(await readReportFeedback(root)).toEqual([]);
 
-      await writeFile(file, JSON.stringify({ ...changed, reportIdentity: '0'.repeat(64) }));
-      await expect(finalize({ outcome })).rejects.toThrow(/does not match/);
+      // An unusable binding is retained before the changed revision can route the record stale.
+      const missing = path.join(root, 'artifacts/2/reports/missing/author.md');
+      await writeFile(file, JSON.stringify({ ...changed, report: { path: missing } }));
+      await expect(finalize({ outcome })).rejects.toThrow(/does not exist/);
       if (outcome === 'accepted') {
         await expect(
           readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
         ).resolves.toMatchObject({
           kind: 'stale',
-          reason: expect.stringContaining('does not match'),
+          reason: expect.stringContaining('does not exist'),
         });
       }
       const feedback = await readReportFeedback(root);
@@ -1383,8 +1384,8 @@ describe('preparation retained outcome usability', () => {
           invocationId: author.invocationId,
           scope: { role: 'ux-author' },
           source: { path: file },
-          assignedReport: author.report,
-          reason: expect.stringContaining('does not match'),
+          assignedReport: { path: missing },
+          reason: expect.stringContaining('does not exist'),
         });
       }
     },
@@ -1458,11 +1459,11 @@ describe('preparation retained outcome usability', () => {
       );
       const original = await readFile(file, 'utf8');
       const damaged = JSON.stringify(
-        { ...producer, reportIdentity: damage === 'missing' ? undefined : '0'.repeat(64) },
+        { ...producer, invocationId: damage === 'missing' ? undefined : '' },
         null,
         2,
       );
-      const reason = damage === 'missing' ? 'reportIdentity' : 'does not match';
+      const reason = 'invocationId';
       await writeFile(file, damaged);
       await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(reason);
       await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1523,10 +1524,10 @@ describe('preparation retained outcome usability', () => {
         role === 'author' ? 'author.json' : 'evaluation.json',
       );
       const original = await readFile(file, 'utf8');
-      const damaged = JSON.stringify({ ...producer, reportIdentity: undefined });
+      const damaged = JSON.stringify({ ...producer, invocationId: undefined });
       const outcome = exit === 'needsInput' ? 'needsInput' : 'returnUpstream';
       await writeFile(file, damaged);
-      await expect(fixture.finalize({ outcome })).rejects.toThrow(/reportIdentity/);
+      await expect(fixture.finalize({ outcome })).rejects.toThrow(/invocationId/);
       await expect(artifact(fixture.root, 2, 'result.json')).rejects.toMatchObject({
         code: 'ENOENT',
       });
@@ -1534,7 +1535,7 @@ describe('preparation retained outcome usability', () => {
       await expect(fixture.finalize({ outcome })).resolves.toBe('saved');
       if (exit === 'needsInput') {
         await writeFile(file, damaged);
-        await expect(fixture.finalize({ outcome })).rejects.toThrow(/reportIdentity/);
+        await expect(fixture.finalize({ outcome })).rejects.toThrow(/invocationId/);
       }
       const feedback = await readReportFeedback(fixture.root);
       expect(feedback).toHaveLength(exit === 'needsInput' ? 2 : 1);
@@ -1563,7 +1564,7 @@ describe('preparation retained outcome usability', () => {
       { ...finding, report: undefined },
       { ...finding, role: undefined },
       { ...finding, role: undefined, report: undefined },
-      ...['report', 'reportIdentity', 'invocationId'].map((field) => ({
+      ...['report', 'invocationId'].map((field) => ({
         ...finding,
         report: { ...binding, [field]: undefined },
       })),
@@ -1656,14 +1657,13 @@ describe('preparation retained outcome usability', () => {
     },
   );
 
-  it.each(['missing', 'directory', 'changed'] as const)(
+  it.each(['missing', 'directory'] as const)(
     'retains author rejection for a %s needs-input report at finalization and replay',
     async (damage) => {
       const { root, author, finalize } = await boundRound('needs-input');
       const corrupt = async () => {
         await rm(author.report.path, { recursive: true, force: true });
         if (damage === 'directory') await mkdir(author.report.path);
-        if (damage === 'changed') await writeFile(author.report.path, 'Replacement report.');
       };
       await corrupt();
       await expect(finalize({ outcome: 'needsInput' })).rejects.toThrow(/report/);
@@ -1689,6 +1689,13 @@ describe('preparation retained outcome usability', () => {
     },
   );
 
+  it('finalizes a needs-input return after its report was reworded readably', async () => {
+    const { root, author, finalize } = await boundRound('needs-input');
+    await writeFile(author.report.path, 'Reworded readable report.\n');
+    await expect(finalize({ outcome: 'needsInput' })).resolves.toBe('saved');
+    await expect(readReportFeedback(root)).resolves.toEqual([]);
+  });
+
   it.each(['author', 'evaluator'] as const)(
     'retains %s report rejection at acceptance, downstream read and completed replay',
     async (role) => {
@@ -1699,14 +1706,23 @@ describe('preparation retained outcome usability', () => {
       await expect(artifact(root, 2, 'result.json')).rejects.toMatchObject({ code: 'ENOENT' });
       await writeFile(producer.report.path, controlledMarkdown);
       await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      // Readable replacement wording keeps the saved association: the current decision still
+      // stands and the completed replay succeeds without a Markdown-byte gate.
       await writeFile(producer.report.path, 'Replacement bytes.');
+      await expect(
+        readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
+      ).resolves.toMatchObject({ kind: 'current' });
+      await expect(finalize({ outcome: 'accepted' })).resolves.toBe('saved');
+      // A report deleted after acceptance is unusable evidence for both the downstream read and
+      // the completed replay, which retain the producer's rejection evidence each time.
+      await rm(producer.report.path);
       await expect(
         readCurrentDecision({ issueRoot, stage: 'ux', selection: selection as never, git }),
       ).resolves.toMatchObject({
         kind: 'stale',
-        reason: expect.stringContaining('does not match'),
+        reason: expect.stringContaining('does not exist'),
       });
-      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not match/);
+      await expect(finalize({ outcome: 'accepted' })).rejects.toThrow(/does not exist/);
       const feedback = await readReportFeedback(root);
       expect(feedback).toHaveLength(3);
       for (const entry of feedback)

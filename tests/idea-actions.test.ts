@@ -15,7 +15,6 @@ import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
-import { reportIdentityOf } from '../src/task-engine/actions/agent-reports.js';
 import {
   challengerArtifact,
   challengerReportSchema,
@@ -266,7 +265,6 @@ async function refinementArea(options?: {
         JSON.stringify({
           ...record,
           report: { path: reportFile },
-          reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
           invocationId,
         }),
       );
@@ -461,7 +459,6 @@ describe('idea editor', () => {
     expect(request?.context).toContain(path.join(area.root, 'worktree'));
     const storedFraming = await area.read<{
       readonly report: { readonly path: string };
-      readonly reportIdentity: string;
       readonly invocationId: string;
     }>(1, framingArtifact.pathFromArtifactsRoot);
     expect(storedFraming).toMatchObject({
@@ -473,9 +470,7 @@ describe('idea editor', () => {
       profile: 'nexus-editor',
     });
     expect(await readFile(storedFraming.report.path, 'utf8')).toBe(controlledReport);
-    expect(storedFraming.reportIdentity).toBe(
-      reportIdentityOf(Buffer.from(controlledReport, 'utf8')),
-    );
+    expect(storedFraming).not.toHaveProperty('reportIdentity');
     expect(area.events.at(-1)).toMatchObject({
       source: 'idea-editor',
       type: 'outcome',
@@ -1145,7 +1140,6 @@ describe('Researcher and Project guide', () => {
     expect(request?.context).toContain('Prefer the smallest change.');
     const stored = await area.read<{
       readonly report: { readonly path: string };
-      readonly reportIdentity: string;
     }>(1, researchArtifact.pathFromArtifactsRoot);
     expect(stored).toMatchObject({
       taskKey: 'NEX-1',
@@ -1154,7 +1148,7 @@ describe('Researcher and Project guide', () => {
       question: null,
     });
     expect(await readFile(stored.report.path, 'utf8')).toBe(researchReport);
-    expect(stored.reportIdentity).toBe(reportIdentityOf(Buffer.from(researchReport, 'utf8')));
+    expect(stored).not.toHaveProperty('reportIdentity');
     expect(area.events.at(-1)).toMatchObject({
       source: 'researcher',
       type: 'outcome',
@@ -1360,7 +1354,6 @@ describe('challenger', () => {
     expect(request?.context).toContain('Reviewers spend time on style defects');
     const stored = await area.read<{
       readonly report: { readonly path: string };
-      readonly reportIdentity: string;
       readonly refinedIdeaIdentity: string;
     }>(1, challengerArtifact.pathFromArtifactsRoot);
     expect(challengerReportSchema.safeParse(stored).success).toBe(true);
@@ -1374,7 +1367,7 @@ describe('challenger', () => {
     });
     expect(stored.refinedIdeaIdentity).toEqual(expect.any(String));
     expect(await readFile(stored.report.path, 'utf8')).toBe(controlledReport);
-    expect(stored.reportIdentity).toBe(reportIdentityOf(Buffer.from(controlledReport, 'utf8')));
+    expect(stored).not.toHaveProperty('reportIdentity');
     expect(area.events.at(-1)).toMatchObject({
       source: 'challenger',
       type: 'outcome',
@@ -2059,7 +2052,7 @@ describe('decision publication', () => {
     },
   );
 
-  it('rejects reusing an approval whose bound Markdown bytes changed', async () => {
+  it('reuses an approval after its bound Markdown was reworded readably', async () => {
     const area = await refinementArea();
     await approvedCycle(area);
     const selectionFile = await selectionFileFor(area);
@@ -2068,8 +2061,9 @@ describe('decision publication', () => {
     await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
     const bindings = await approvalBindings(area);
 
-    await writeFile(bindings.editor, '# Unexamined framing\n', 'utf8');
-    await expect(record({ decision: 'approved' })).rejects.toThrow(/does not match the identity/u);
+    // Readable replacement wording is not a Markdown-byte gate: the saved approval is reused.
+    await writeFile(bindings.editor, '# Reworded readable framing\n', 'utf8');
+    await expect(record({ decision: 'approved' })).resolves.toBe('recorded');
     const scope = {
       project: projectOfWorkspace(path.dirname(area.root)),
       workId: 'NEX-1',
@@ -2077,12 +2071,7 @@ describe('decision publication', () => {
       role: 'idea-editor',
       reportKind: 'idea-framing',
     };
-    const feedback = await outstandingReportFeedback({ areaRoot: area.root, scope });
-    expect(feedback[0]?.record).toMatchObject({
-      invocationId: 'editor-framing-1',
-      output: expect.stringContaining('"framing"'),
-      reason: expect.stringContaining('does not match the identity'),
-    });
+    await expect(outstandingReportFeedback({ areaRoot: area.root, scope })).resolves.toEqual([]);
   });
 
   /**
@@ -2184,34 +2173,41 @@ describe('decision publication', () => {
     },
   );
 
-  it.each(['missing', 'changed'] as const)(
-    'rejects later-cycle approval replay and publication with %s cycle-1 framing Markdown',
-    async (damage) => {
-      const area = await refinementArea({ cycle: 2, route: 'next' });
-      const approval = await recordedTurnApproval(area);
-      const decisionFile = path.join(area.root, 'artifacts/submissions/1/decision.json');
-      const decisionBytes = await readFile(decisionFile, 'utf8');
-      await rm(path.join(area.root, ideaHandoffFile));
-      if (damage === 'missing') {
-        await rm(approval.framingReport);
-      } else {
-        await writeFile(approval.framingReport, '# Changed framing\n');
-      }
+  it('rejects later-cycle approval replay and publication with missing cycle-1 framing Markdown', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const approval = await recordedTurnApproval(area);
+    const decisionFile = path.join(area.root, 'artifacts/submissions/1/decision.json');
+    const decisionBytes = await readFile(decisionFile, 'utf8');
+    await rm(path.join(area.root, ideaHandoffFile));
+    await rm(approval.framingReport);
 
-      await expect(approval.record({ decision: 'approved' })).rejects.toThrow(/does not/u);
-      await expect(approval.publishDecision()).rejects.toThrow(/does not/u);
-      expect(approval.jira.transitions).toEqual([]);
-      expect(approval.jira.comments).toEqual([]);
-      await expect(readFile(decisionFile, 'utf8')).resolves.toBe(decisionBytes);
-      expect(await area.exists(ideaHandoffFile)).toBe(false);
-      const feedback = await readReportFeedback(area.root);
-      expect(feedback[0]?.record).toMatchObject({
-        scope: { role: 'idea-editor', reportKind: 'idea-framing' },
-        invocationId: 'editor-framing-1',
-        source: { path: path.join(area.cycleRoot(1), framingArtifact.pathFromArtifactsRoot) },
-      });
-    },
-  );
+    await expect(approval.record({ decision: 'approved' })).rejects.toThrow(/does not/u);
+    await expect(approval.publishDecision()).rejects.toThrow(/does not/u);
+    expect(approval.jira.transitions).toEqual([]);
+    expect(approval.jira.comments).toEqual([]);
+    await expect(readFile(decisionFile, 'utf8')).resolves.toBe(decisionBytes);
+    expect(await area.exists(ideaHandoffFile)).toBe(false);
+    const feedback = await readReportFeedback(area.root);
+    expect(feedback[0]?.record).toMatchObject({
+      scope: { role: 'idea-editor', reportKind: 'idea-framing' },
+      invocationId: 'editor-framing-1',
+      source: { path: path.join(area.cycleRoot(1), framingArtifact.pathFromArtifactsRoot) },
+    });
+  });
+
+  it('replays and publishes a later-cycle approval after its framing was reworded readably', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'next' });
+    const approval = await recordedTurnApproval(area);
+    await rm(path.join(area.root, ideaHandoffFile));
+    // Readable replacement wording is not a Markdown-byte gate: the retained cycle-1 framing
+    // stays usable for the later-cycle approval's replay and publication.
+    await writeFile(approval.framingReport, '# Reworded framing\n');
+
+    await expect(approval.record({ decision: 'approved' })).resolves.toBe('recorded');
+    await expect(approval.publishDecision()).resolves.toBe('approved');
+    expect(approval.jira.transitions).toEqual(['21']);
+    await expect(readReportFeedback(area.root)).resolves.toEqual([]);
+  });
 
   it.each(['replay', 'publication'] as const)(
     'retains malformed approved revision evidence during %s',
@@ -2286,7 +2282,7 @@ describe('decision publication', () => {
       );
       const intact = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
       const damaged = { ...intact };
-      delete damaged.reportIdentity;
+      delete damaged.taskKey;
       const rejected = JSON.stringify(damaged);
       await writeFile(file, rejected);
       await rm(path.join(area.root, ideaHandoffFile));
@@ -2339,13 +2335,13 @@ describe('decision publication', () => {
       await approvedCycle(area);
       const file = role === 'researcher' ? await writeResearch(area) : await writeGuidance(area);
       const contribution = JSON.parse(await readFile(file, 'utf8')) as { report: { path: string } };
-      await writeFile(contribution.report.path, '# Changed contribution\n');
+      // The contribution's bound report is no longer readable: fresh handoff assembly retains it
+      // under the producing role instead of dropping the contribution silently.
+      await rm(contribution.report.path);
       const jira = source();
       const actions = decisionActions(area, jira, await selectionFileFor(area));
 
-      await expect(actions.record({ decision: 'approved' })).rejects.toThrow(
-        /does not match the identity/u,
-      );
+      await expect(actions.record({ decision: 'approved' })).rejects.toThrow(/does not exist/u);
       expect(await area.exists(ideaHandoffFile)).toBe(false);
       const feedback = await readReportFeedback(area.root);
       expect(feedback[0]?.record).toMatchObject({
@@ -2384,7 +2380,6 @@ describe('retained idea reports', () => {
           role: 'evaluator' as const,
           report: {
             report: { path: report },
-            reportIdentity: reportIdentityOf(Buffer.from(markdown, 'utf8')),
             invocationId: 'inv-1',
             outcome,
             profile: 'nexus-sol',
@@ -2394,16 +2389,25 @@ describe('retained idea reports', () => {
       },
     };
 
-    // The readable report reaches the idea role through its producer-owned identity.
+    // The readable report reaches the idea role through its producer-owned binding.
     const context = await capturedIdeaText(area.root, area.plan, boundInput);
     expect(context).toContain('Correct the acceptance example.');
     expect(context).toContain('The complete returning report:');
     expect(context).toContain('The controlled narrative.');
 
-    // Replacing the bytes after the binding was saved is not embedded as the returning evidence.
+    // Readable replacement wording is embedded as the current returning evidence: no
+    // Markdown-byte gate rejects it.
     await writeFile(report, '# Replacement\n\nSubstituted evidence.\n');
+    await expect(capturedIdeaText(area.root, area.plan, boundInput)).resolves.toContain(
+      'Substituted evidence.',
+    );
+    await expect(readReportFeedback(path.join(path.dirname(area.root), 'ux'))).resolves.toEqual([]);
+
+    // A report deleted after the binding was saved is unusable evidence: it is retained as the
+    // returning role's rejection instead of being silently dropped.
+    await rm(report);
     await expect(capturedIdeaText(area.root, area.plan, boundInput)).rejects.toThrow(
-      /does not match the identity recorded/,
+      /does not exist/,
     );
     const feedback = await readReportFeedback(path.join(path.dirname(area.root), 'ux'));
     expect(feedback).toHaveLength(1);
@@ -2687,7 +2691,6 @@ describe('retained idea reports', () => {
       role: 'researcher',
       profile: 'nexus-research-history',
       question: 'Which earlier evidence mattered?',
-      report: { path: path.join(area.cycleRoot(), 'reports', 'historical', 'researcher.md') },
       invocationId: 'researcher-history-1',
     };
     await writeFile(file, JSON.stringify(damaged), 'utf8');
