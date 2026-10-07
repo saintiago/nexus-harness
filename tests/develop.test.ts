@@ -304,7 +304,7 @@ describe('Develop', () => {
     expect(context).toContain('Earlier rounds: none.');
     // The invocation instructions assign the Markdown report and reserve the action-owned record.
     expect(context).toContain('Assigned Markdown report: ');
-    expect(context).toContain('Write your complete report to that path');
+    expect(context).toContain('Write your concise report to that path');
     expect(context).toContain('development.json');
     expect(context).not.toContain('findingResponses');
     // The action leaves the parent-owned selection record unchanged.
@@ -591,6 +591,11 @@ describe('Develop', () => {
       'Remove superseded rules and mechanisms together with dependent validation',
       'confirmed shared ownership cause',
       'Complete this reconciliation before review',
+      'Run focused checks for the changed behavior',
+      'Nexus Verify runs the complete configured validation',
+      'Document indexes are navigation aids, not reading assignments',
+      'Stop when the requested',
+      'omit repeated history, unchanged behavior and an exhaustive inspection itinerary',
       'preserve task scope and the existing gates',
       // The production developer's product grounding and experience-preservation duties reach
       // every ladder profile and the repair turn (docs/agent-runtime/development-role.md#constant-prompt).

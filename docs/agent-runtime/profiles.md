@@ -94,7 +94,7 @@ inherited `jev` entries, creates no new JEv server and supplies no JEv guidance.
 failure leaves the provider session usable with its other tools.
 
 Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
-[AgentRuntime](architecture.md#optional-jev-judgments), including preparation evaluators, recovery
+[AgentRuntime](architecture.md#advisory-jev-judgments), including preparation evaluators, recovery
 and experience analysis. Check composition with existing tools, rather than treating a template
 entry as evidence of working access. Host-enabled usage logging is verified through the effective
 settings and an evaluation the delivered server records. Disabled access and unavailable-tool

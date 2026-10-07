@@ -4,9 +4,11 @@
 
 Lead preparation guidance with the selected role's purpose, desired outcome and quality standards.
 Supply shared guidance once per invocation; put reporting mechanics after the work and its context.
-Use the connected worktree, captured author input, attributed conversation,
-accepted upstream outputs and project documents. Human intent governs; agent summaries are revisable
-history. Keep source attribution and material uncertainty. Do not retrieve Jira, publish source
+Start with current captured requirements, active corrections and affected component contracts.
+Consult accepted upstream outputs, related documents and historical reports for specific questions;
+document indexes are navigation aids, not reading assignments. Human intent governs; agent summaries
+are revisable history. Keep source attribution and material uncertainty. Do not retrieve Jira, publish
+source
 comments, change issue status or create implementation issues. Return work through the owned output
 schema and artifacts. Source operations belong to the parent.
 
@@ -26,7 +28,9 @@ to the selected role's work; visual and motion assessment belongs only where rel
 
 ### Reporting and workflow boundaries
 
-Write the narrative at the supplied Markdown report path. Return only the minimal response object;
+Write a concise narrative at the supplied Markdown report path: lead with the result, necessary
+corrections, verification and material limitations. Include evidence the next actor needs; omit
+repeated history and exhaustive inspection narratives. Return only the minimal response object;
 do not write or overwrite action-owned `author.json`, `evaluation.json`, `result.json`, `plan.json`
 or state records. The action adds observed identity, revision and report-binding metadata. Authors
 declare changed authoritative documents in `documents`; `sourcePaths` declares additional
@@ -68,7 +72,9 @@ and tests. When repeated exceptions have a confirmed shared ownership cause, cor
 owning boundary; repetition alone does not justify abstraction or redesign.
 
 Evaluators inspect the resulting design and applicable implementation, affected interactions and
-existing behavior, not just additions or the author's summary. Seek contradictions, unnecessary
+existing behavior, not just additions or the author's summary. Expand inspection when evidence
+indicates wider impact or a shared cause; unrelated improvements are not completion requirements.
+Seek contradictions, unnecessary
 complexity, scattered ownership and interaction inconsistencies. Necessary findings identify the
 concrete problem, evidence, consequence and required correction through the existing finding and
 return paths. Preserve stage responsibility, bounded material-quality acceptance and optional suggestions;
@@ -145,17 +151,6 @@ independently evaluate current work -> resolve material problems through existin
 | Existing work meets the requested outcome with no known material issue, while another treatment is equally good | It receives direct acceptance without manufactured edits. Any remaining suggestion explains why it is nonblocking; preference or hypothetical need does not cause another round. |
 | This internal Nexus prompt change reaches UX and Storybook roles | Existing reporting-terminal scope and evaluated skip rules apply; no visual, motion or prototype exercise is invented. Applicable connected-product UI work still requires independent rendered inspection and existing observations. |
 | Revised guidance is delivered | Observed assembled prompts for all eight roles, relevant variants and correction paths satisfy these outcomes and preserve evidence and existing gates. A shorter line count alone does not establish success. |
-
-### Scope and unsettled decisions
-
-Source: the captured HARN-115 description and Aleksei Rysaev's supplied conversation. This follows
-the existing product-grounded guidance from HARN-113. The preserved KAN-82 prompt is motivating
-evidence of verbose assembly, not authority to change KAN's product or active run.
-
-No material product decision remains unsettled in the supplied direction. Prompt composition,
-readable-source transformation and verification design belong to Architecture. This adds no
-judge/reviewer layer, scoring system, report schema, workflow gate or product scope, and deletes
-no history.
 
 ### Interface and composition
 
@@ -348,17 +343,6 @@ their existing boundary.
 | An internal Nexus instruction change does not alter the reporting terminal, or a connected project has no applicable imagery/motion guidance | Existing evaluated UX/prototype skips remain available for the internal change. UI guidance uses available project intent without inventing design documents, imagery or animation obligations. |
 | A preview is unavailable, or only code, text or the author's screenshots have been reviewed | An applicable Storybook prototype receives no design acceptance until the evaluator performs its own required live interaction and image inspection. Execution failures stay at their owning boundary. |
 | Subsequent normal role invocations run after delivery, including a developer repair and relevant profile variants | Supplied guidance includes each role's applicable product-grounding and assessment duties, agrees with owning docs, and preserves applicability, stage-return and delivery-review boundaries. |
-
-### Scope and unsettled decisions
-
-The captured HARN-113 description and owner clarifications require this guidance for creators as
-well as evaluators. KAN-82 is attributed motivating evidence from that input, not independently
-inspected work or a universal aesthetic. Its restart, ticket and workspace are outside this change.
-Nexus's own reporting-terminal experience is unchanged.
-
-No material product decision remains unsettled in the supplied input. Prompt composition and
-verification design belong to Architecture; delivery implements and verifies the guidance. These
-requirements add no role, workflow gate, scoring system or observation schema.
 
 ## Architect
 

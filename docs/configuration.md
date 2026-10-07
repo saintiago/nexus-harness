@@ -147,8 +147,9 @@ Linux native launch follows [profiles](agent-runtime/profiles.md#jev-access).
 
 Resolve `JEV_API_KEY` from the execution host for native MCP launch; configuration contains only
 its reference, never its value. The package owns provider endpoint, schemas, transport and usage
-logging. Missing credentials or an unavailable JEv server cannot prevent ordinary Nexus work:
-use the documented [agent continuation](agent-runtime/architecture.md#optional-jev-judgments).
+logging. Missing credentials do not prevent component construction. When composed JEv access
+cannot answer, follow the documented [advisory judgment guidance](agent-runtime/architecture.md#advisory-jev-judgments):
+continue agent reasoning and checks, disclosing material limitations.
 Preserve existing configuration validation and resolved-setting immutability. Native MCP forwards
 host environment names, never a literal `env` value in tool settings. Keep the host key and the
 optional logging settings available in workers, recovery and experience-analysis providers while

@@ -4,6 +4,11 @@ Test documented behavior at the smallest scope that can reliably prove it. Use m
 fewer focused integration tests and a few system journeys. No fixed percentage or test-count target
 is required. Each broader test must cover a risk that narrower tests cannot establish.
 
+Repository validation runs independent checks with a concurrency limit of two. A single Vitest
+invocation discovers the component, integration and system projects; these scopes classify coverage,
+not mandatory execution phases. During development run focused checks for changed behavior, broadening
+only to resolve a specific integration concern. Nexus Verify owns complete configured validation.
+
 ## Unit and component tests
 
 Exercise real Nexus logic through its public interface. Keep ordinary in-memory collaborators real;

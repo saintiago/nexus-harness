@@ -90,14 +90,18 @@ export const memoryAnalysisGuidance = [
  */
 export const jevUseGuidance = [
   'JEv judgment guidance (the ask_jev tool is available to this invocation):',
-  '- Ask narrow questions with explicit alternatives and only the relevant evidence; batch',
-  '  questions that share one state.',
-  '- JEv returns judgments, not code or prose answers. Use deterministic tools for arithmetic,',
-  '  counting and executable checks.',
-  '- Answers and confidence are evidence for the responsible role, never permission to bypass',
-  '  required stages, independent evaluation, verification or merge checks.',
-  '- If the tool cannot answer, continue the existing reasoning and checks; do not make JEv',
-  '  availability a completion gate.',
+  '- Consult JEv when consequential uncertainty remains: competing contract interpretations,',
+  '  significant design choices or disputed blocking findings. Routine execution, wording and',
+  '  straightforward instruction-following remain your responsibility; availability requires no call.',
+  '- Ask a bounded question with balanced alternatives, relevant authoritative evidence and clear',
+  '  criteria. Distinguish observed facts from assumptions; batch questions sharing one state.',
+  '- Treat answers and confidence as evidence, not binding decisions or proof of correctness.',
+  '  Evaluate them against current human direction, owning contracts and executable evidence.',
+  '  Explain material disagreement. A low score alone is not a defect or a reason to ask again.',
+  '- Follow up only to resolve a specific uncertainty or changed evidence or criteria. Use existing',
+  '  tools for fact lookup, arithmetic, executable checks and code or prose generation.',
+  '- Preserve required stages, independent evaluation, verification and merge checks.',
+  '  If JEv is unavailable, continue your reasoning and checks; disclose a material limitation.',
 ].join('\n');
 
 /** One activity entry the invocation reported while it ran. */

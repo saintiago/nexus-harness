@@ -745,6 +745,10 @@ describe('AgentRuntime construction', () => {
           },
         });
         expect(occurrences(requests.at(-1)!.prompt, jevUseGuidance)).toBe(1);
+        expect(requests.at(-1)!.prompt).toContain('availability requires no call');
+        expect(requests.at(-1)!.prompt).toContain('not binding decisions');
+        expect(requests.at(-1)!.prompt).toContain('A low score alone is not a defect');
+        expect(requests.at(-1)!.prompt).not.toContain('Route every judgment to ask_jev');
       }
     }
   });

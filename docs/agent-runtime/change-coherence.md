@@ -60,21 +60,14 @@ repair necessary findings through finite delivery -> merge and confirm required 
 | Each of the eight preparation roles, developer and reviewer is invoked through its normal path | Captured assembled invocation instructions contain the applicable reconciliation or inspection obligations and preserve scope and acceptance limits. Developer repairs and relevant profile variants retain those obligations. Role documentation agrees with those prompts. |
 | This instruction change reaches UX and Prototype without an explicit reporting-terminal change | Authors propose skips citing existing adequate experience and Nexus UI guidance; evaluators assess those skips. No new Nexus UI or prototype is invented. |
 | A correction exhausts an allowance, changes an approved revision or has failed required checks | Existing exhaustion, reevaluation and delivery protections still apply. Coherence instructions cannot grant another attempt, transfer stale approval or establish completion without the required evidence. |
-| The instruction change is delivered | Delivery occurs after the HARN-96 report-contract fixes, with normal verification, revision-bound review, merge and required post-merge checks passed. An active Nexus runtime is not replaced. |
 
-## Scope and unsettled decisions
+## Ownership
 
-Source: the captured HARN-100 issue description. The existing [preparation roles](preparation-roles.md),
-[DevelopmentRole](development-role.md), [ReviewerRole](reviewer-role.md),
-[project workflow](../project-workflow.md), [findings contract](../task-engine/actions/findings.md)
-and [completion gates](../task-engine/actions/complete-task.md) retain their responsibilities.
-
-This improves cumulative quality during long unattended runs through existing gates. It introduces
-no scoring system, audit workflow, guarantee of zero regressions or unrelated redesign. Nexus
-remains terminal-only; its unchanged UX and prototype stages require evaluated skips under
-[Nexus UI applicability](../ux-ui.md#preparation-applicability).
-
-No material product decision is unsettled. Prompt composition, supporting technical design and
-verification implementation belong to Architecture. HARN-96 readiness and a delivery opportunity
-that does not replace an active runtime must be established from delivery evidence; this
-requirements revision does not establish either condition.
+[Preparation roles](preparation-roles.md), [DevelopmentRole](development-role.md),
+[ReviewerRole](reviewer-role.md), [project workflow](../project-workflow.md),
+[findings](../task-engine/actions/findings.md) and
+[completion](../task-engine/actions/complete-task.md) retain their responsibilities.
+Inspect changed behavior, affected callers and contracts; expand on evidence of a shared cause
+or wider impact. Stop when the requested outcome is met and known material issues are resolved.
+Unrelated improvements do not become completion requirements. Nexus's nonvisual work retains
+evaluated applicability skips under [Nexus UI applicability](../ux-ui.md#preparation-applicability).
