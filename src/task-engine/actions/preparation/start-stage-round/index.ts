@@ -46,6 +46,12 @@ export type StartStageRoundSettings = {
     readonly authors: readonly string[];
     readonly evaluator: string;
   };
+  /**
+   * The applicability policy newly opened rounds are marked with, or null while the JEv
+   * integration is disabled. The marker authorizes StageAuthor's advisory boundary for that
+   * round; an already opened round is never retrofitted.
+   */
+  readonly applicabilityPolicy?: 'jev-v1' | null;
   /** The configured maximum number of rounds this stage may open. */
   readonly maxRounds: number;
   readonly publish: EventPublisher;
@@ -177,6 +183,9 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
         round,
         route: reassessing ? 'reassess' : 'new',
         profiles: { author: authorOf(round), evaluator: settings.profiles.evaluator },
+        ...(settings.applicabilityPolicy == null
+          ? {}
+          : { applicabilityPolicy: settings.applicabilityPolicy }),
       };
       await ensureStageRound(root, plan.round);
       await writeStagePlan(root, plan);
@@ -213,6 +222,9 @@ export function createStartStageRound(settings: StartStageRoundSettings): BoundA
       round,
       route: 'next',
       profiles: { author: authorOf(round), evaluator: settings.profiles.evaluator },
+      ...(settings.applicabilityPolicy == null
+        ? {}
+        : { applicabilityPolicy: settings.applicabilityPolicy }),
     };
     await ensureStageRound(root, plan.round);
     await writeStagePlan(root, plan);

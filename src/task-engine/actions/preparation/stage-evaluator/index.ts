@@ -49,6 +49,12 @@ import {
   type StageEvaluationResponse,
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
+import {
+  applicabilityAdviceOf,
+  applicabilityAdviceText,
+  readStageApplicabilityRecord,
+  type StageApplicabilityAdvice,
+} from '../applicability.js';
 import { capturedSourcePathOf, retainCapturedSource } from '../../readable-source.js';
 import {
   preparationWorktree,
@@ -282,6 +288,44 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       );
     }
     /**
+     * The author's declared applicability advice reaches this evaluator as attributed evidence:
+     * its readable record, decision and reason. An unusable record is preserved under the author's
+     * responsibility instead of being silently replaced or treated as current acceptance.
+     */
+    const authorAdvice: StageApplicabilityAdvice | null = await (async () => {
+      if (!isBoundStageAuthorOutput(author) || author.applicability === undefined) {
+        return null;
+      }
+      try {
+        const record = await readStageApplicabilityRecord({
+          declared: author.applicability,
+          stageRoot: root,
+          stage: settings.stage,
+          taskKey: selection.taskKey,
+          round: plan.round,
+        });
+        if (record === null) {
+          throw new Error(
+            `The declared applicability record "${author.applicability.path}" does not exist.`,
+          );
+        }
+        return applicabilityAdviceOf(record, author.applicability.path);
+      } catch (error) {
+        return await rejectUnusableRecord({
+          areaRoot: root,
+          scope: authorScope,
+          invocationId: author.invocationId,
+          operation: 'stage-author',
+          profile: author.profile,
+          context:
+            `${attribution} Reading the author's retained applicability advice of round ` +
+            `${String(plan.round)}.`,
+          file: author.applicability.path,
+          error,
+        });
+      }
+    })();
+    /**
      * Read one retained evaluation: the evaluator's own earlier report. An unusable record is
      * preserved under this report responsibility, so this invocation fails on explicit evidence
      * and its next permitted invocation receives the correction obligation.
@@ -368,6 +412,10 @@ export function createStageEvaluator(settings: StageEvaluatorSettings): BoundAct
       capturedSource,
       retained: retainedDecision,
       feedback: pending,
+      applicability:
+        authorAdvice === null
+          ? null
+          : async () => applicabilityAdviceText(authorAdvice, 'evaluator'),
       work: [
         `Assess the exact authored revision ${String(author.revision)} and judge whether earlier ` +
           'concerns remain. Accept adequate work, the author\u2019s evaluated skip or a concrete ' +

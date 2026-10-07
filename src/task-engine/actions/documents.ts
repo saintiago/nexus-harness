@@ -1,4 +1,6 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { z } from 'zod';
 import { messageOf } from '../../result.js';
 
@@ -89,5 +91,21 @@ export async function writeDocument(
     throw new Error(`${kind} at "${filePath}" could not be written: ${messageOf(error)}`, {
       cause: error,
     });
+  }
+}
+
+/**
+ * Write one document completely: a sibling temporary file atomically replaces the target, so a
+ * reader never observes partial content. The temporary file is removed on failure.
+ */
+export async function writeDocumentCompletely(filePath: string, content: string): Promise<void> {
+  const temporary = `${filePath}.${randomUUID()}.tmp`;
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await writeFile(temporary, content, 'utf8');
+    await rename(temporary, filePath);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
   }
 }

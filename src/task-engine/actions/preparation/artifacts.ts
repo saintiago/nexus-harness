@@ -76,7 +76,12 @@ export const upstreamStages = ['idea', 'requirements', 'ux', 'prototype'] as con
 
 export type UpstreamStage = (typeof upstreamStages)[number];
 
-/** The stage-round plan: the open round, the route that opened it and the selected profiles. */
+/**
+ * The stage-round plan: the open round, the route that opened it, the selected profiles and the
+ * applicability policy the round was opened under. A round opened while the JEv integration was
+ * enabled carries `applicabilityPolicy: 'jev-v1'`, which authorizes StageAuthor's advisory
+ * boundary for that round; an already opened round is never retrofitted.
+ */
 export const stageRoundPlanFile = 'state/current-round.json';
 
 export const stageRoundPlanSchema = z.object({
@@ -87,6 +92,7 @@ export const stageRoundPlanSchema = z.object({
     author: z.string().trim().min(1),
     evaluator: z.string().trim().min(1),
   }),
+  applicabilityPolicy: z.literal('jev-v1').optional(),
 });
 
 export type StageRoundPlan = z.infer<typeof stageRoundPlanSchema>;
@@ -229,6 +235,12 @@ export const stageAuthorOutputSchema = z.strictObject({
   taskKey: z.string().trim().min(1).describe('The selected issue or task key this report answers.'),
   profile: z.string().trim().min(1).describe('The author profile that produced this report.'),
   role: z.literal('author'),
+  /**
+   * The applicability advice record this round's author received, observed by the action rather
+   * than supplied by the agent. Absent when the round made no applicability request and retained
+   * no fallback record; a former outcome without it stays valid.
+   */
+  applicability: artifactReferenceSchema.optional(),
   ...retainedReportBindingFields,
 });
 

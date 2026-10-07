@@ -285,6 +285,141 @@ export type UpstreamResultReference = {
 };
 
 /**
+ * One accepted upstream result as a later stage reads it, with the producer records behind the
+ * reference: the approved idea refinement handoff, or the earlier preparation stage's current
+ * result, authored revision and evaluation. The readers validate each producer binding before the
+ * reading is exposed, so consumers never bypass a missing or unreadable report.
+ */
+export type UpstreamResultReading = {
+  /** The producing idea or preparation stage. */
+  readonly stage: string;
+  /** The saved result artifact file this reference names. */
+  readonly resultFile: string;
+  /** The earlier preparation stage's area root; null for the approved idea handoff. */
+  readonly root: string | null;
+  /** The earlier stage's current round; null when no round is retained. */
+  readonly round: number | null;
+  readonly result: PreparationResult | null;
+  readonly author: RetainedStageAuthorOutput | null;
+  readonly evaluation: RetainedStageEvaluationOutput | null;
+};
+
+/** The context one later stage's read of an earlier stage's retained role record reports. */
+function upstreamContext(
+  earlier: PreparationStage,
+  role: 'author' | 'evaluator',
+  round: number,
+  stage: PreparationStage,
+): string {
+  return `Reading retained ${earlier} ${role} round ${String(round)} for ${stage} context.`;
+}
+
+/**
+ * Read the retained upstream results one later stage builds on through their producer-owned
+ * readers, in route order. An unreadable required report or record is preserved as its producer's
+ * rejection evidence before the consumer fails.
+ */
+export async function readUpstreamResults(settings: {
+  readonly issueRoot: string;
+  readonly workId: string;
+  readonly stage: PreparationStage;
+}): Promise<UpstreamResultReading[]> {
+  const readings: UpstreamResultReading[] = [];
+  for (const reference of await upstreamResultReferences(settings.issueRoot, settings.stage)) {
+    if (reference.stage === 'idea') {
+      // An approved idea's refinement handoff is an upstream producer-owned reference too: it names
+      // the approved revision and the retained artifacts a preparation stage builds on.
+      readings.push({
+        stage: 'idea',
+        resultFile: reference.resultFile,
+        root: null,
+        round: null,
+        result: null,
+        author: null,
+        evaluation: null,
+      });
+      continue;
+    }
+    const earlier = reference.stage as PreparationStage;
+    const root = stageRoot(settings.issueRoot, earlier);
+    const plan = await readStagePlan(root);
+    if (plan === null) {
+      readings.push({
+        stage: earlier,
+        resultFile: reference.resultFile,
+        root,
+        round: null,
+        result: null,
+        author: null,
+        evaluation: null,
+      });
+      continue;
+    }
+    const result = await readStageArtifact(root, plan.round, stageResultArtifact);
+    const required = result?.outcome === 'accepted' || result?.outcome === 'skipped';
+    const author = await readStageRoleArtifact({
+      issueRoot: settings.issueRoot,
+      stage: earlier,
+      workId: settings.workId,
+      round: plan.round,
+      role: 'author',
+      profile: plan.profiles.author,
+      context: upstreamContext(earlier, 'author', plan.round, settings.stage),
+      required,
+    });
+    if (author !== null && isBoundStageAuthorOutput(author)) {
+      // Referencing an accepted upstream report must not bypass its producer binding: a missing or
+      // unreadable Markdown is preserved as that author's rejection evidence before any later stage
+      // consumes the acceptance.
+      await requireStageReport({
+        issueRoot: settings.issueRoot,
+        workId: settings.workId,
+        stage: earlier,
+        role: 'author',
+        binding: author,
+        profile: author.profile,
+        file: roundArtifactFile(root, plan.round, stageAuthorArtifact.pathFromArtifactsRoot),
+        context: upstreamContext(earlier, 'author', plan.round, settings.stage),
+      });
+    }
+    const evaluation = await readStageRoleArtifact({
+      issueRoot: settings.issueRoot,
+      stage: earlier,
+      workId: settings.workId,
+      round: plan.round,
+      role: 'evaluator',
+      profile: plan.profiles.evaluator,
+      context: upstreamContext(earlier, 'evaluator', plan.round, settings.stage),
+      required,
+    });
+    if (evaluation !== null && isBoundStageEvaluationOutput(evaluation)) {
+      // The accepted result's own assessment is evidence later stages rely on; validate its
+      // Markdown binding under the evaluator's report responsibility before exposing the result.
+      await requireStageReport({
+        issueRoot: settings.issueRoot,
+        workId: settings.workId,
+        stage: earlier,
+        role: 'evaluator',
+        binding: evaluation,
+        profile: evaluation.profile,
+        file: roundArtifactFile(root, plan.round, stageEvaluationArtifact.pathFromArtifactsRoot),
+        context: upstreamContext(earlier, 'evaluator', plan.round, settings.stage),
+      });
+    }
+    readings.push({
+      stage: earlier,
+      resultFile: reference.resultFile,
+      root,
+      round: plan.round,
+      result,
+      author,
+      evaluation,
+    });
+  }
+  return readings;
+}
+
+/**
  * The identity of one stage's accepted work as a later stage relies on it: its outcome and the
  * exact content it retained, not the round that recorded it. Repeating an acceptance with
  * identical content therefore keeps the relied-on identity stable, while a changed document set

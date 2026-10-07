@@ -20,12 +20,19 @@ import {
 import { readRequiredRecord } from '../../records.js';
 import { selectionDeclaration } from '../../select-task/artifacts.js';
 import {
+  applicabilityAdviceText,
+  stageApplicabilityAdvice,
+  type StageApplicabilityAdvice,
+  type StageApplicabilityCapability,
+} from '../applicability.js';
+import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
   stageAuthorResponseSchema,
   stageResultArtifact,
   stageReportScope,
+  isBoundStageAuthorOutput,
   type PreparationStage,
   type RetainedStageAuthorOutput,
   type RetainedStageEvaluationOutput,
@@ -34,6 +41,7 @@ import {
 } from '../artifacts.js';
 import { stageContextText } from '../context.js';
 import { capturedSourcePathOf, retainCapturedSource } from '../../readable-source.js';
+import { sourceInputIdentity } from '../evaluation-content.js';
 import {
   checkoutRelative,
   resolveSkipReference,
@@ -77,6 +85,11 @@ export type StageAuthorSettings = {
   readonly runner: AgentRoleRunner;
   /** The Git capability that observes whether a declared document is a retained deletion. */
   readonly git: GitAdapter;
+  /**
+   * The optional JEv capability Application constructed, or null/absent while the integration is
+   * disabled. The stage author consumes it only through the policy's applicability boundary.
+   */
+  readonly jev?: StageApplicabilityCapability | null;
   readonly publish: EventPublisher;
 };
 
@@ -479,6 +492,61 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       task: selection.task,
       conversation: selection.conversation,
     });
+    /**
+     * The applicability boundary: it runs while this context is assembled, after the earlier
+     * sections validated the required source, upstream and correction context, and before the
+     * author role runs. Its retained advice is the round's own record and is saved in the author
+     * outcome below; an already invoked round reuses what it retained instead of asking again.
+     */
+    const retainedAdvice: { current: StageApplicabilityAdvice | null } = { current: null };
+    const applicabilitySection = async (): Promise<string | null> => {
+      retainedAdvice.current = await stageApplicabilityAdvice({
+        stage: settings.stage,
+        task,
+        selection,
+        plan,
+        stageRoot: root,
+        worktree,
+        git: settings.git,
+        capability: settings.jev ?? null,
+        retainedAuthor: author,
+        precedingEvaluation,
+        pendingFeedback: pending !== null,
+        recheck: async () => {
+          const current = await readRequiredRecord(
+            settings.selectionFile,
+            selectionDeclaration,
+            'Selection',
+          );
+          const inspected = await settings.git.inspectRepository(worktree);
+          if (!inspected.ok) {
+            throw new Error(inspected.fault.message);
+          }
+          return {
+            sourceIdentity: sourceInputIdentity(current),
+            revision: inspected.value.headRevision,
+            trackedChanges: inspected.value.trackedChanges,
+          };
+        },
+        rejectUnusable: async ({ file, error }) =>
+          rejectUnusableRecord({
+            areaRoot: root,
+            scope,
+            invocationId:
+              author !== null && isBoundStageAuthorOutput(author) ? author.invocationId : null,
+            operation: 'stage-author',
+            profile: authorProfile,
+            context:
+              `${attribution} Reading the retained applicability advice of round ` +
+              `${String(plan.round)}.`,
+            file,
+            error,
+          }),
+      });
+      return retainedAdvice.current === null
+        ? null
+        : applicabilityAdviceText(retainedAdvice.current, 'author');
+    };
     const context = await stageContextText({
       selection,
       plan,
@@ -501,6 +569,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
             })()
           : null,
       feedback: pending,
+      applicability: applicabilitySection,
       work: [
         task === 'propose'
           ? plan.route === 'reassess'
@@ -653,6 +722,7 @@ export function createStageAuthor(settings: StageAuthorSettings): BoundAction {
       role: 'author',
       report: assignedReport,
       invocationId,
+      ...(retainedAdvice.current === null ? {} : { applicability: retainedAdvice.current.record }),
     };
     await writeStageArtifact(root, plan.round, stageAuthorArtifact, output);
     const artifact = path.join(

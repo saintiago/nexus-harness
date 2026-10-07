@@ -90,6 +90,7 @@ import {
   selectionFailureHandoff,
   type PreparationTerminal,
 } from './analysis-handoff.js';
+import { createJevCapability } from './jev.js';
 
 /**
  * The worker's action binding: Application assembles every operation the project parent and its
@@ -137,6 +138,10 @@ export function createActionBinding(
     const { project, nexus, paths } = settings;
     const { taskSource } = project;
     const { selectionFile } = paths;
+    // The optional JEv capability: Application constructs the public client from the resolved host
+    // key with the package defaults. Preparation consumes it at its applicability boundary; the
+    // capability's absence disables only that request, never construction or ordinary work.
+    const jev = createJevCapability(nexus, settings.commandEnvironment);
 
     /** The parent's retained selection, resolved when an action runs. */
     const selected = async (): Promise<Selection> =>
@@ -224,6 +229,7 @@ export function createActionBinding(
               evaluator: profiles.evaluator,
             },
             maxRounds: nexus.preparation.maxRounds,
+            applicabilityPolicy: jev === null ? null : 'jev-v1',
             publish,
           }),
         ];
@@ -238,6 +244,7 @@ export function createActionBinding(
           stage,
           runner: stageAuthors[stage],
           git: settings.git,
+          jev,
           publish,
         }),
       ]),

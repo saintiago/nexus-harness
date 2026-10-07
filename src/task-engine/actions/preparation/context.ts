@@ -16,22 +16,18 @@ import {
   stageAuthorArtifact,
   stageEvaluationArtifact,
   stagePlanArtifact,
-  stageResultArtifact,
   type PreparationStage,
   type RetainedStageAuthorOutput,
   type RetainedStageEvaluationOutput,
   type StageRoundPlan,
 } from './artifacts.js';
 import {
-  readStageArtifact,
-  readStageRoleArtifact,
-  readStagePlan,
+  readUpstreamResults,
   requireReturnReport,
-  requireStageReport,
   roundArtifactDirectory,
   roundArtifactFile,
   stageRoot,
-  upstreamResultReferences,
+  type UpstreamResultReading,
 } from './storage.js';
 import { prototypeObservationContract } from './observation.js';
 import { validationErrorContextText, type PendingValidationError } from '../report-feedback.js';
@@ -68,6 +64,12 @@ export const preparationSharedGuidance = [
   'outputs and project documents. Human intent governs; agent summaries are revisable history.',
   'Keep source attribution and material uncertainty. Do not retrieve Jira, publish source comments,',
   'change issue status or create implementation issues; source operations belong to the parent.',
+  'A caller-supplied JEv applicability record is attributed advisory evidence under the',
+  'preparation stage action contract. The author independently checks its basis and stage',
+  'obligations before using it in a skip proposal; the evaluator independently assesses that',
+  'proposal against current intent and work. Neither role returns a JEv record or copies a judgment',
+  'into an acceptance verdict. Missing or uncertain advice keeps the ordinary applicability',
+  'assessment. Optional ask_jev access does not require another call to repeat the caller’s judgment.',
   'Assess only the selected stage’s responsibilities. Shared-memory search/save is explicit when',
   'the invocation carries the memory tools; no preparation role schedules automatic memory',
   'consumption.',
@@ -139,14 +141,28 @@ function artifactPath(
   return roundArtifactFile(stageRoot(issueRoot, stage), round, artifactFile);
 }
 
-/** The context one later stage's read of an earlier stage's retained role record reports. */
-function upstreamContext(
-  earlier: PreparationStage,
-  role: 'author' | 'evaluator',
-  round: number,
-  stage: PreparationStage,
-): string {
-  return `Reading retained ${earlier} ${role} round ${String(round)} for ${stage} context.`;
+/** One upstream reading's attributed reference lines the preparation context renders. */
+function upstreamReferenceLines(reading: UpstreamResultReading): string[] {
+  if (reading.stage === 'idea') {
+    return [`idea refinement approved handoff: ${reading.resultFile}`];
+  }
+  const earlier = reading.stage as PreparationStage;
+  if (reading.root === null || reading.round === null) {
+    return [];
+  }
+  const lines: string[] = [];
+  if (reading.result !== null) {
+    lines.push(`${earlier} stage result (${reading.result.outcome}): ${reading.resultFile}`);
+  }
+  if (reading.author !== null) {
+    lines.push(
+      `${earlier} retained authored revision ${String(reading.author.revision)}: ` +
+        roundArtifactFile(reading.root, reading.round, stageAuthorArtifact.pathFromArtifactsRoot) +
+        (isBoundStageAuthorOutput(reading.author) ? `; report: ${reading.author.report.path}` : ''),
+    );
+  }
+  lines.push(`${earlier} stage history: ${reading.root}`);
+  return lines;
 }
 
 /** One earlier stage's retained result, author and report references a later stage may read. */
@@ -154,105 +170,14 @@ export async function upstreamReferences(
   selection: Selection,
   stage: PreparationStage,
 ): Promise<{ readonly stage: string; readonly lines: string[] }[]> {
-  const issueRoot = issueWorkspaceRootOf(selection);
-  const references: { readonly stage: string; readonly lines: string[] }[] = [];
-  for (const reference of await upstreamResultReferences(issueRoot, stage)) {
-    if (reference.stage === 'idea') {
-      // An approved idea's refinement handoff is an upstream producer-owned reference too: it names
-      // the approved revision and the retained artifacts a preparation stage builds on.
-      references.push({
-        stage: 'idea',
-        lines: [`idea refinement approved handoff: ${reference.resultFile}`],
-      });
-      continue;
-    }
-    const earlier = reference.stage as PreparationStage;
-    const root = stageRoot(issueRoot, earlier);
-    const plan = await readStagePlan(root);
-    const lines: string[] = [];
-    if (plan !== null) {
-      const result = await readStageArtifact(root, plan.round, stageResultArtifact);
-      if (result !== null) {
-        lines.push(`${earlier} stage result (${result.outcome}): ${reference.resultFile}`);
-      }
-      const author = await readStageRoleArtifact({
-        issueRoot,
-        stage: earlier,
-        workId: selection.taskKey,
-        round: plan.round,
-        role: 'author',
-        profile: plan.profiles.author,
-        context: upstreamContext(earlier, 'author', plan.round, stage),
-        required: result?.outcome === 'accepted' || result?.outcome === 'skipped',
-      });
-      if (author !== null) {
-        if (isBoundStageAuthorOutput(author)) {
-          // Referencing an accepted upstream report must not bypass its producer binding: a
-          // missing or unreadable Markdown is preserved as that author's rejection evidence before
-          // any later stage consumes the acceptance.
-          await requireStageReport({
-            issueRoot,
-            workId: selection.taskKey,
-            stage: earlier,
-            role: 'author',
-            binding: author,
-            profile: author.profile,
-            file: artifactPath(
-              issueRoot,
-              earlier,
-              plan.round,
-              stageAuthorArtifact.pathFromArtifactsRoot,
-            ),
-            context: upstreamContext(earlier, 'author', plan.round, stage),
-          });
-        }
-        lines.push(
-          `${earlier} retained authored revision ${String(author.revision)}: ` +
-            artifactPath(
-              issueRoot,
-              earlier,
-              plan.round,
-              stageAuthorArtifact.pathFromArtifactsRoot,
-            ) +
-            (isBoundStageAuthorOutput(author) ? `; report: ${author.report.path}` : ''),
-        );
-      }
-      const evaluation = await readStageRoleArtifact({
-        issueRoot,
-        stage: earlier,
-        workId: selection.taskKey,
-        round: plan.round,
-        role: 'evaluator',
-        profile: plan.profiles.evaluator,
-        context: upstreamContext(earlier, 'evaluator', plan.round, stage),
-        required: result?.outcome === 'accepted' || result?.outcome === 'skipped',
-      });
-      if (evaluation !== null && isBoundStageEvaluationOutput(evaluation)) {
-        // The accepted result's own assessment is evidence later stages rely on; validate its
-        // Markdown binding under the evaluator's report responsibility before exposing the result.
-        await requireStageReport({
-          issueRoot,
-          workId: selection.taskKey,
-          stage: earlier,
-          role: 'evaluator',
-          binding: evaluation,
-          profile: evaluation.profile,
-          file: artifactPath(
-            issueRoot,
-            earlier,
-            plan.round,
-            stageEvaluationArtifact.pathFromArtifactsRoot,
-          ),
-          context: upstreamContext(earlier, 'evaluator', plan.round, stage),
-        });
-      }
-      lines.push(`${earlier} stage history: ${root}`);
-    }
-    if (lines.length > 0) {
-      references.push({ stage: earlier, lines });
-    }
-  }
-  return references;
+  const readings = await readUpstreamResults({
+    issueRoot: issueWorkspaceRootOf(selection),
+    workId: selection.taskKey,
+    stage,
+  });
+  return readings
+    .map((reading) => ({ stage: reading.stage, lines: upstreamReferenceLines(reading) }))
+    .filter((reference) => reference.lines.length > 0);
 }
 
 /** What one stage role invocation needs to assemble its context. */
@@ -285,6 +210,13 @@ export type StageContextSettings = {
   readonly retained: { readonly outcome: string; readonly reason: string | null } | null;
   /** The pending validation error of this stage's role that the invocation must correct. */
   readonly feedback: PendingValidationError | null;
+  /**
+   * The retained JEv applicability advice as the readable section this invocation receives, or
+   * null when the round has none. The author's boundary performs its optional request while this
+   * context is assembled, after the earlier sections validated the required source, upstream and
+   * correction context.
+   */
+  readonly applicability: (() => Promise<string | null>) | null;
   /** The route-specific work instruction for this invocation. */
   readonly work: readonly string[];
   /** The stage-specific declarations, observation rules and response contract for this stage. */
@@ -346,7 +278,7 @@ async function validateBoundReport(settings: {
  * assessment, or the returned assessment whose concrete correction is still the retained pending
  * return from this stage. A consumed return and every accepted assessment are supporting history.
  */
-function activeEvaluation(
+export function activeEvaluation(
   evaluation: RetainedStageEvaluationOutput,
   handoff: ParentHandoff | null,
   stage: PreparationStage,
@@ -691,6 +623,10 @@ async function referencesSection(
         ...history,
       ].join('\n'),
     );
+  }
+  const applicability = settings.applicability === null ? null : await settings.applicability();
+  if (applicability !== null) {
+    lines.push(applicability);
   }
   lines.push(...reassessmentSection(settings, handoff));
   lines.push(['This invocation’s work:', ...settings.work].join('\n'));
