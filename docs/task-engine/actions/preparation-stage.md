@@ -50,8 +50,9 @@ type PreparationResult = {
 };
 ```
 
-This envelope keeps references; producing declarations also retain changed document revisions,
+This envelope keeps references; producing declarations also retain authored-work declarations,
 optional applicability evidence, implementation plan and prototype observations when applicable.
+Changed-path declarations support committing authored work, not assessment coverage.
 Allowed return destinations are earlier stages in the route. Accepted and skipped results require the evaluator's current decision;
 provider/storage failures remain execution faults. Repository conditions can prevent preparation with
 an attributable retained failure reason.
@@ -60,27 +61,23 @@ The operations export one runtime-validated declaration for each persisted recor
 owns its acceptance basis, observed by the action rather than trusted from an agent:
 
 ```ts
-type AssessedContent = { path: string; revision: string; exists: boolean };
 type AcceptanceBasis = {
   author: ArtifactRef;
   authorIdentity: string;
   sourceIdentity: string;
   upstream: { result: ArtifactRef; identity: string }[];
   repositoryRevision?: string; // action-observed; absent only on former saved records
-  content: AssessedContent[]; // applicable prototype content; empty for document stages
 };
 ```
 
 Identities bind complete saved reports or captured source input, including attributed conversation.
 Publication acknowledgements do not themselves replace that captured input. Refreshed human input
-must be reconciled before reuse. Repository paths are canonical checkout-relative paths; a deleted
-file is represented by exists=false at its observed commit. A declaration may name a deletion when
-the path was tracked before the author invocation or the stage's retained authored declarations
-already recorded that deletion. A validated author observation and a former evaluation's assessed
-content remain additional ownership evidence for records written before document bindings were
-removed. An observation naming an ancestral deletion commit establishes absence, not ownership by
-the declaring stage. This permits stage-owned cleanup and replay without manufacturing a replacement
-document. Revisions must remain readable in the retained repository. Result references
+must be reconciled before reuse. Repository paths used to commit authored work are canonical
+checkout-relative paths. A declaration may name a deletion when the path was tracked before the
+author invocation or the stage's retained authored declarations already recorded that deletion.
+Browser observations do not supply path ownership or per-file deletion evidence. This permits
+stage-owned cleanup and replay without manufacturing a replacement document. Observed repository
+revisions remain attributable in the retained repository. Result references
 identify the evaluator decision carrying this basis; a stage name or round number alone is insufficient.
 
 ## Round storage and acceptance
@@ -173,7 +170,10 @@ The [project workflow
 requirements](../../project-workflow.md#current-worktree-evaluation-requirements) own document-stage
 acceptance, compatible shared-document edits, retained continuation and examples. Requirements,
 UX/UI and Architecture assess the ticket against current authoritative documents in the shared
-worktree, regardless of authorship or commit history. Context follows the [preparation prompt
+worktree, regardless of authorship or commit history. Prototype evaluation follows the
+[prototype assessment requirements](../../project-workflow.md#prototype-assessment-requirements):
+inspect the current worktree and preview against ticket scope, without treating changed-path
+declarations as assessment coverage. Context follows the [preparation prompt
 outcomes](../../agent-runtime/preparation-roles.md#preparation-prompt-outcomes): readable captured
 scope and attributed feedback, directly available current corrections, and accessible references
 to upstream artifacts and historical reports. The current author Markdown and functional outcome/plan
@@ -186,15 +186,15 @@ checkout. Named commits exclude unrelated staged work. The evaluator does not ed
 Capture the current author identity, source identity, upstream result identities and repository
 revision before invocation. For a fresh decision and interrupted finalization, require those inputs,
 their associated report bytes and the repository revision to remain unchanged through result
-persistence, with declared stage work still committed and applicable prototype bindings valid.
+persistence, with declared stage work still committed and applicable browser evidence readable.
 Preserve unrelated retained work; do not turn this into a worktree-wide readiness rule. Build caches
 and untracked diagnostic output do not constitute changed assessed work. A changed assessment basis
 requires normal reevaluation rather than binding an old report to current bytes.
 
 This repository observation is a short-lived finalization check, not a document-citation or dependency
-engine. Document stages write no per-document acceptance bindings in `basis.content`; that field
-retains applicable prototype content only. Once a stage advances, compatible later-stage document
-commits or upstream report replacements do not mechanically invalidate its completed verdict.
+engine. No stage writes per-file acceptance content or observation bindings. Once a stage advances,
+compatible later-stage document commits or upstream report replacements do not mechanically
+invalidate its completed verdict.
 Downstream decision reads check the completed report association and captured human intent, explicit
 pending corrections and applicable prototype evidence. They do not compare completed document
 approvals with historical file revisions or demand renewed approval of an unchanged document.
@@ -316,18 +316,18 @@ valid. Completed document decisions do not depend on subsequent citation changes
 `existingDocuments` binding or historical content comparison is created for these citations. Keep the delivered resolver behavior
 where references remain supported, without restoring mandatory citations.
 
-Results retain declared changed documents with their observed revision, stage-owned sources,
-optional skip references and current evaluator reference. They do not create `existingDocuments`
-or infer reused documents from earlier result files. Implementation handoff links the evaluated
+Results retain authored-work declarations, optional skip references and the current evaluator
+reference. Changed-path handling serves authored-work commits, not evidence scope or validity.
+Results do not create `existingDocuments` or infer reused documents from earlier result files. Implementation handoff links the evaluated
 results and plan and can name changed documents and optional evidence without requiring citations
 for unchanged adequate documents. The retained checkout carries accumulated work into implementation.
 
-For an applicable prototype, retain the complete assessed prototype sources, relevant input content
-and both roles' observations under the rules below. Previously built sources are ordinary current
-work; historical approval does not select or authorize them. A new applicable assessment inspects
-the current preview and records current observations. Completed observation evidence remains usable
-while its inspected content remains unchanged; an unrelated documentation commit alone does not
-alter inspected prototype content.
+For an applicable prototype, preserve its work in the shared checkout and both roles' browser
+observations as readable artifacts under the rules below, without assessed-file inventories or
+per-file content bindings. Previously built sources are ordinary current work; historical approval
+does not select or authorize a new assessment. A new applicable assessment inspects the current
+preview and records current observations. Completed evidence remains attributable history; concrete
+changes that undermine its adequacy require normal reassessment, without per-file comparisons.
 
 ## Correction and continuation
 
@@ -352,9 +352,9 @@ assessment, preserving adequate content and repairing affected content. Do not m
 existing-document skips or approval-reuse proposals to reenter a document stage. No semantic
 dependency engine or extra reviewer is required. Before handoff, require completed evaluator
 decisions for the captured ticket, clear explicit pending corrections and validate applicable
-prototype inspection. Return upstream for a concrete input defect, not a compatible shared-document
-edit. Changed human intent, missing/corrupt reports or changed inspected prototype sources require
-normal reassessment.
+prototype evidence. Return upstream for a concrete input defect, not a compatible shared-document
+edit. Changed human intent, missing/corrupt reports or concrete prototype changes that undermine
+prior assessment require normal reassessment. Do not infer evidence validity from file inventories.
 
 Re-entry supplies previous author/evaluator reports through readable, attributed local history
 references. Current upstream requests, unresolved findings and rejection feedback remain directly
@@ -369,7 +369,8 @@ for an older approval. Preserve cumulative round and return allowances.
 
 New responses are strict and omit removed lifecycle fields. Producer-owned saved-record readers
 accept former IDs, response/disposition arrays, `existingDocuments` and prior acceptance-basis
-fields as retained data without enforcing removed matching or citation-reuse rules. Preserve
+fields, including former prototype per-file content, as retained data without enforcing removed
+matching, citation-reuse or observation scope/content rules. Preserve
 original reports byte-for-byte and supply readable references so their full evidence remains
 available. Reading a simplified typed view must not change the complete recorded identity used to
 associate an author with its evaluation or retire rejection feedback. Required control/functional
@@ -387,10 +388,11 @@ rejection before failing or marking a completed decision stale; recovery cannot 
 obligation by repairing the old artifact alone.
 
 Completed document-stage decisions can continue under these association and routing checks, without
-retroactive citation bindings or new report fields. An unfinished legacy document evaluation that
-lacks the fresh repository observation receives normal reevaluation before finalization; never
+retroactive citation bindings or new report fields. An unfinished legacy evaluation that lacks
+the fresh repository observation receives normal reevaluation before finalization; never
 invent that observation from later content. Legacy results carrying an applicable prototype still
-require complete valid prototype evidence even when their saved outcome was skipped. New
+require readable browser assessment and screenshots even when their saved outcome was skipped,
+without requiring or reconstructing per-file inventories or bindings. New
 inapplicability skips retain no applicable prototype bundle.
 
 Reassessment writes a new decision and preserves historical author reports, evaluations, results
@@ -404,12 +406,13 @@ after active runtime users exit; preparation owns no runtime switch or checkpoin
 
 Both prototype roles use a running preview with real browser interaction and image/layout inspection.
 Each role's report references its own saved observation record under its round's artifacts. The record
-identifies role, prototype commit and inspected source paths, preview/start command and URL, relevant
-journeys/states, actions, observed results, screenshots and visual conclusions. An image path or a
-claimed successful build alone is insufficient. Screenshots must fully decode as PNG, JPEG, GIF or
+identifies role, preview/start command and URL, relevant journeys/states, actions, observed results,
+screenshots and visual conclusions. Nexus observes task/profile/revision/report attribution; the
+agent does not inventory assessed files or bind observations to individual file revisions. An image
+path or a claimed successful build alone is insufficient. Screenshots must fully decode as PNG, JPEG, GIF or
 WebP; format headers alone do not establish readable rendered pixels. The evaluator checks that both roles' evidence exists,
-is readable, matches the assessed prototype content and covers applicable acceptance examples and UX
-questions. Agent observations remain attributed evidence, not machine proof of usability.
+is readable and adequately addresses applicable acceptance examples and UX questions against the
+current worktree and preview. These are assessment judgments, not file-list/content comparisons. Agent observations remain attributed evidence, not machine proof of usability.
 
 Apply the [product-grounded UI guidance](../../agent-runtime/preparation-roles.md#product-grounded-ui-work)
 when judging the rendered experience. The evaluator's record describes its independent inspection;
@@ -422,9 +425,9 @@ The prototype author response declares its source paths and observation Artifact
 response declares its separate observation ArtifactRef. Other stage responses and evaluated skips
 carry null. The prototype result retains both observation references for downstream consumers.
 Any result retaining an applicable prototype, including a legacy result saved as a reuse skip,
-requires both roles' readable, current evidence even when its saved observation references are empty
-or absent. Finalization, replay
-and downstream current-decision checks validate these records and screenshots. Only a genuinely
+requires both roles' readable browser evidence even when its saved observation references are empty
+or absent. Former per-file fields cannot gate continuation or substitute for actual evidence.
+Finalization, replay and downstream current-decision checks validate these records and screenshots. Only a genuinely
 non-applicable skip with no retained prototype is exempt.
 These fields belong to the preparation response declarations, with the normal strict
 structured-output/nullability rules. Observation records use one producer-owned runtime schema:
@@ -432,7 +435,6 @@ structured-output/nullability rules. Observation records use one producer-owned 
 ```ts
 type PrototypeObservation = {
   role: 'author' | 'evaluator';
-  content: AssessedContent[];
   preview: { command: string; url: string };
   journeys: {
     example: string;
@@ -445,18 +447,18 @@ type PrototypeObservation = {
 };
 ```
 
-Applicable observations require nonempty content and journeys, coverage of the relevant examples,
-and readable rendered-image evidence. Keep preview output/browser diagnostics with the observation
-when they explain a failure. Store screenshots and reports in the role's round artifact area,
+Applicable observations require exercised journeys, assessment of the relevant examples,
+and readable rendered-image evidence. No assessed-file inventory or per-file revision is required.
+Keep preview output/browser diagnostics with the observation when they explain a failure. Store screenshots and reports in the role's round artifact area,
 without committing execution evidence into product documentation.
 
 Interaction or layout defects become normal findings for repair, or a concrete upstream return when
 an earlier input is wrong. A defect report or upstream return keeps the observation of the preview it
 performed, so the observed evidence reaches the repair handoff; an evaluated applicability skip
-carries none. Changed prototype content requires fresh author and evaluator observation.
-An unrelated documentation commit can retain unchanged prototype content at its original observed
-revision. Missing/unusable evidence cannot produce acceptance. Preview defects are repaired by the
-author; unavailable browser/image capability or invocation faults follow execution recovery, without
+carries none. Prototype repairs receive fresh author and evaluator inspection. Later decisions
+use the existing correction and reassessment routes when evidence no longer supports the requested
+outcome; per-file revision or content comparisons do not decide that adequacy. Missing/unusable
+evidence cannot produce acceptance. Preview defects are repaired by the author; unavailable browser/image capability or invocation faults follow execution recovery, without
 an invented skip, product requirement or verdict. An evaluated non-applicable prototype needs no
 preview evidence. Tool installation belongs to the [profile setup](../../agent-runtime/profiles.md).
 
