@@ -63,6 +63,7 @@ import {
   type ExperienceAnalysisOutput,
   type ExperienceCaptureOutcome,
   type ExperienceHandoff,
+  type ExperienceHandoffIdentity,
   type ExperienceRequest,
   type ExperienceSubmission,
   type RetainedAnalysisOutput,
@@ -145,6 +146,13 @@ type AcceptedAnalysis = {
 export type AnalyzeExperienceOwner = {
   /** Record one terminal handoff once; never waits for an analyst, network call or embedding. */
   capture(handoff: ExperienceHandoff): Promise<ExperienceCaptureResult>;
+  /**
+   * Look up one already recorded handoff by identity, so a binding can reuse it before selecting
+   * replacement evidence. The ordinary capture result for a recorded request, or null when no
+   * request exists; nothing is reselected, copied, re-timed, rewritten or asked of the analyst,
+   * and an unusable record reports unavailable instead of a miss.
+   */
+  replayCapture(identity: ExperienceHandoffIdentity): Promise<ExperienceCaptureResult | null>;
   /**
    * Resume and settle every durable request; the outstanding analysis and submissions it observed,
    * in report order. Problems never fail the business outcome they accompany.
@@ -861,6 +869,58 @@ export function createAnalyzeExperience(
     }
   }
 
+  /**
+   * Replay one already recorded handoff by identity, before a binding selects evidence under its
+   * current rules. The recorded handoff and the capture evidence already recorded beside it are
+   * reused as they stand: no source file is reselected, copied, re-timed or read, nothing is
+   * rewritten, and the request keeps its immutable inputs, pending analysis and submissions. Only
+   * an absent request reports a miss; a request or capture record that cannot be read reports
+   * unavailable, so replacement content can never take its place. Disabled memory performs no
+   * lookup.
+   */
+  async function replayCapture(
+    handoff: ExperienceHandoffIdentity,
+  ): Promise<ExperienceCaptureResult | null> {
+    if (!enabled) {
+      return { outcome: 'skipped', evidence: null, detail: 'the memory integration is disabled' };
+    }
+    const identity = experienceIdentity(handoff);
+    const file = requestFile(identity);
+    let recorded: ExperienceRequest;
+    try {
+      if ((await readDocumentText(file, 'Experience request')) === null) {
+        return null;
+      }
+      recorded = await readRequest(file, identity);
+    } catch (error) {
+      return { outcome: 'unavailable', evidence: null, detail: messageOf(error) };
+    }
+    const evidence = experienceCaptureFile(settings.directory, identity);
+    let text: string | null;
+    try {
+      text = await readDocumentText(evidence, 'Experience capture');
+    } catch (error) {
+      return { outcome: 'unavailable', evidence: null, detail: messageOf(error) };
+    }
+    const captured = text === null ? null : parseDocument(text, experienceCaptureSchema);
+    if (
+      captured === null ||
+      captured.kind !== 'content' ||
+      captured.content.identity !== identity
+    ) {
+      return {
+        outcome: 'unavailable',
+        evidence: null,
+        detail: `the capture evidence at "${evidence}" is missing or unusable`,
+      };
+    }
+    return {
+      outcome: 'recorded',
+      evidence: { path: evidence },
+      detail: handoffLabel(recorded.handoff),
+    };
+  }
+
   /** Record one analysis attempt's outcome with the request's retained evidence. */
   async function recordAttempt(
     identity: string,
@@ -1223,6 +1283,7 @@ export function createAnalyzeExperience(
 
   return {
     capture,
+    replayCapture,
 
     async processPending(): Promise<readonly string[]> {
       if (!enabled || settings.analyze === null || settings.memory === null) {
@@ -1327,9 +1388,38 @@ export function createAnalyzeExperience(
 }
 
 /**
+ * Publish one capture outcome that saved its evidence: the request reference and the short
+ * reported detail. A capture that saved nothing publishes no outcome event; the workflow owns the
+ * terminal outcome either way. A replayed capture publishes through the same event as a new one.
+ */
+export function publishCaptureOutcome(
+  publish: EventPublisher,
+  workId: string,
+  result: ExperienceCaptureResult,
+): void {
+  if (result.evidence === null) {
+    return;
+  }
+  publish(
+    actionOutcomeEvent('analyze-experience', {
+      task: workId,
+      round: null,
+      outcome: result.outcome,
+      detail:
+        result.detail === null
+          ? null
+          : result.detail.length > 160
+            ? `${result.detail.slice(0, 159)}…`
+            : result.detail,
+      artifact: result.evidence,
+    }),
+  );
+}
+
+/**
  * Bind the workflow operation: capture the supplied handoff and publish its capture evidence and
- * outcome. A skipped capture that saved no evidence publishes no outcome event; every capture
- * outcome returns unchanged so the workflow can preserve its original destination.
+ * outcome. Every capture outcome returns unchanged so the workflow can preserve its original
+ * destination.
  */
 export function createAnalyzeExperienceAction(settings: {
   readonly owner: AnalyzeExperienceOwner;
@@ -1338,22 +1428,7 @@ export function createAnalyzeExperienceAction(settings: {
   return async (input?: unknown) => {
     const handoff = input as ExperienceHandoff;
     const result = await settings.owner.capture(handoff);
-    if (result.evidence !== null) {
-      settings.publish(
-        actionOutcomeEvent('analyze-experience', {
-          task: handoff.workId,
-          round: null,
-          outcome: result.outcome,
-          detail:
-            result.detail === null
-              ? null
-              : result.detail.length > 160
-                ? `${result.detail.slice(0, 159)}…`
-                : result.detail,
-          artifact: result.evidence,
-        }),
-      );
-    }
+    publishCaptureOutcome(settings.publish, handoff.workId, result);
     return result.outcome;
   };
 }

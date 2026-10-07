@@ -115,7 +115,6 @@ async function runParent(options: {
 
 describe('project parent terminal capture', () => {
   it.each([
-    ['advanced', 'preparation-advanced', 'blocked', 'requirements'],
     ['waiting', 'preparation-waiting', 'drained', 'requirements'],
     ['exhausted', 'preparation-exhausted', 'drained', 'requirements'],
     // Only the Architecture stage hands off; the other stages never return that outcome.
@@ -134,6 +133,22 @@ describe('project parent terminal capture', () => {
       expect(handoffs).toEqual([{ terminal, stage }]);
     },
   );
+
+  it('routes a successful intermediate publication onward without scheduling analysis', async () => {
+    // An accepted stage and an evaluated skip both publish "advanced", and a later stage's return
+    // upstream publishes it too. Every one routes directly: consolidation captures only the final
+    // implementation handoff, so the advanced publication reaches no capture.
+    const { result, handoffs } = await runParent({
+      selection: 'selected',
+      publication: 'advanced',
+      route: 'requirements',
+    });
+
+    // The advanced publication routes again; this controlled queue holds no further work, so the
+    // missing continuation is attention.
+    expect(result).toEqual({ ok: true, value: 'blocked' });
+    expect(handoffs).toEqual([]);
+  });
 
   it.each([
     { child: 'blocked', publication: 'advanced', terminal: 'preparation-failed' },

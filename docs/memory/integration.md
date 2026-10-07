@@ -4,7 +4,11 @@
 
 [AnalyzeExperience](../task-engine/actions/analyze-experience.md) is the sole automatic Nexus Memory component caller.
 All workflows invoke it after terminal handoffs for selected work, including success, failure and
-human-feedback returns. Task source status is not the analysis trigger. The action owns durable
+human-feedback returns. Successful preparation has one such handoff after implementation work is
+handed off, rather than after each accepted stage or evaluated skip; its
+[handoff requirements](../task-engine/actions/analyze-experience.md#preparation-handoff-requirements)
+govern complete preparation evidence and preservation of older pending requests.
+Task source status is not the analysis trigger. The action owns durable
 capture, analysis, memory search, validated submission and receipt polling. AMEM independently owns
 semantic memory, MCP, embeddings and the ingestion queue.
 
@@ -58,7 +62,7 @@ submission mechanism is introduced.
 | Situation | Observable result |
 | --- | --- |
 | A preparation handoff is captured twice, then retried after a worker restart | All captures refer to the same durable request. Analysis and receipt continuation reuse existing work without duplicate lesson submissions. |
-| A ticket starts fresh preparation and reaches the same stage, round and `preparation-advanced` terminal as an earlier attempt | The new handoff creates a distinct request without an old-request capture conflict. The earlier request and its original evidence remain intact and independently resumable. |
+| A ticket starts fresh preparation and reaches the same stage, round and final successful handoff as an earlier attempt | The new handoff creates a distinct request without an old-request capture conflict. The earlier request and its original evidence remain intact and independently resumable. |
 | A fresh preparation attempt ends before a numbered stage round exists | Its analysis identity still distinguishes it from earlier attempts; replay of that same handoff remains idempotent. |
 | An older request has pending analysis or a pending receipt when a fresh attempt starts or the installation changes | It resumes under its existing identity and retained evidence, preserving accepted observations and submission payloads. The fresh attempt neither overwrites it nor duplicates its submissions. |
 

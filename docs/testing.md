@@ -127,13 +127,24 @@ report substance.
 
 At the preparation/binding boundary, replay a handoff after worker restart and assert the same
 request and submission keys; replace attempt state for a fresh same-ticket/stage/round/terminal run
-and assert a distinct request, with the old evidence unchanged. Cover `preparation-advanced`, failures
-before a numbered round, publication/handoff failure and selected preparation operational errors.
+and assert a distinct request, with the old evidence unchanged. Cover the final successful
+preparation handoff, failures before a numbered round, publication/handoff failure and selected
+preparation operational errors. Retained `preparation-advanced` requests still resume, but new
+intermediate stage advances do not capture them.
 Retained legacy state without the new attempt record must replay its former identity without a
 second request. Keep both old pending analysis and accepted/pending receipts resumable while a new
 attempt is captured, using their exact stored payloads and keys. Exercise installation restart
-without recapture, regeneration or duplicate lesson submission. These checks belong to preparation,
-Application bindings and AnalyzeExperience; they do not duplicate the memory service's algorithms.
+without recapture, regeneration or duplicate lesson submission.
+
+Also restore a parent snapshot paused at the former intermediate-success analysis state: it
+routes onward without a new request, while independently retained requests remain processable.
+Replay an older final request with its narrower artifact list after the evidence-selection upgrade,
+and a new final request after source disposal; neither replaces the request or its copied bytes.
+A missing recorded request selects complete evidence, while a damaged recorded request reports
+unavailable without replacement. Verify ordinary capture still rejects conflicting full inputs.
+
+These checks belong to preparation, Application bindings and AnalyzeExperience; they do not
+duplicate the memory service's algorithms.
 
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's
@@ -259,6 +270,14 @@ preservation, no capture on intermediate retries or empty/failed selection, mult
 finite queue and no stale selection. Cover delivery success/failure, all idea publication returns,
 operational errors after parallel agents settle, and recovery of interrupted requests. Analysis
 is independent of Jira status and does not change completion/publication/recovery gates.
+
+Focused preparation coverage establishes the
+[preparation handoff acceptance examples](task-engine/actions/analyze-experience.md#preparation-handoff-requirements):
+one success request after implementation handoff, none after intermediate acceptances, evaluated
+skips or upstream correction routing, and evidence from all retained preparation stages and rounds
+with associated reports. Preserve failure/attention routes and their business destinations. Cover
+final-handoff replay and fresh-attempt distinction, plus restart of older intermediate-stage pending
+requests and receipt continuation without duplicate submissions.
 
 Action tests cover stable handoff identities, durable capture, no-provider capture path, zero
 lessons, evidence validation, persisted output/provenance reuse and accepted-versus-stored receipts.

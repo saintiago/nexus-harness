@@ -263,11 +263,21 @@ export const experienceAttemptsFileSuffix = '.attempts.jsonl';
 export const experienceActivityFileSuffix = '.activity.jsonl';
 
 /**
+ * The four opaque identities a durable request derives from: enough to look an existing request
+ * up before its full immutable handoff is known. A binding replays a recorded handoff by these
+ * values without reading the store itself.
+ */
+export type ExperienceHandoffIdentity = Pick<
+  ExperienceHandoff,
+  'workId' | 'workflow' | 'attemptId' | 'terminalId'
+>;
+
+/**
  * The durable identity of one terminal handoff: derived from the work, workflow, attempt and
  * terminal identities, so a repeated handoff reuses its recorded request while a new attempt or
  * idea submission carries a new identity. A revision never names a request.
  */
-export function experienceIdentity(handoff: ExperienceHandoff): string {
+export function experienceIdentity(handoff: ExperienceHandoffIdentity): string {
   const digest = createHash('sha256')
     .update(
       [handoff.workId, handoff.workflow, handoff.attemptId, handoff.terminalId].join('\u0000'),

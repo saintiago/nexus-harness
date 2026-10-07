@@ -1,7 +1,10 @@
 import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { ExperienceHandoff } from '../task-engine/actions/analyze-experience/artifacts.js';
+import type {
+  ExperienceHandoff,
+  ExperienceHandoffIdentity,
+} from '../task-engine/actions/analyze-experience/artifacts.js';
 import { reportBindingOf } from '../task-engine/actions/agent-reports.js';
 import { roundArtifactPath } from '../task-engine/actions/artifacts.js';
 import { completionFailureArtifact } from '../task-engine/actions/complete-task/artifacts.js';
@@ -14,6 +17,7 @@ import {
 } from '../task-engine/actions/select-work/artifacts.js';
 import {
   preparationAttemptDeclaration,
+  preparationStages,
   stageRoundPlanDeclaration,
   type PreparationStage,
 } from '../task-engine/actions/preparation/artifacts.js';
@@ -24,7 +28,9 @@ import {
   readStageTerminal,
   readStagePlan,
   stageRoot,
+  stageRounds,
 } from '../task-engine/actions/preparation/storage.js';
+import { reportFeedbackDirectory } from '../task-engine/actions/report-feedback.js';
 import {
   attemptDeclaration,
   attemptFile,
@@ -117,12 +123,13 @@ export const ideaPublicationTerminals = ['idea-approved', 'idea-feedback'] as co
 export type IdeaPublicationTerminal = (typeof ideaPublicationTerminals)[number];
 
 /**
- * The parent's preparation-terminal handoffs: the evaluated stage the parent published, the
- * business destination the analysis preserves and the producer that stated the reason. A skip and
- * an exhaustion are published outcomes too; a blocked preparation never reaches the parent.
+ * The parent's preparation-terminal handoffs a binding captures: the evaluated stage the parent
+ * published, the business destination the analysis preserves and the producer that stated the
+ * reason. A skip and an exhaustion are published outcomes too; a blocked preparation never reaches
+ * the parent. The former intermediate-success terminal is not captured any more: it survives only
+ * as the legacy binding of a retained snapshot paused at that state.
  */
 export const preparationTerminalEntries = {
-  'preparation-advanced': { outcome: 'advanced', destination: 'route' },
   'preparation-handoff': { outcome: 'handed-off', destination: 'select' },
   'preparation-waiting': { outcome: 'needs-input', destination: 'select' },
   'preparation-exhausted': { outcome: 'exhausted', destination: 'select' },
@@ -457,10 +464,86 @@ function preparationHandoffIdentity(settings: {
 }
 
 /**
- * Build the terminal handoff of one published preparation result: the stage area's own retained
- * state and rounds, read through the preparation stage's producer-owned plan declaration. A
- * retained stage attempt names a fresh attempt even when its stage, round and terminal repeat; a
- * pre-upgrade area without the attempt record keeps its former identity.
+ * The retained identity of one preparation stage area: its attempt declaration and round plan,
+ * read through the stage's own producers. A retained stage attempt names a fresh attempt even
+ * when its stage, round and terminal repeat; a pre-upgrade area without the attempt record keeps
+ * its former stage/round tuple.
+ */
+async function preparationAreaIdentity(
+  root: string,
+  stage: PreparationStage,
+): Promise<{ readonly attemptId: string; readonly round: number | null }> {
+  const [plan, attempt] = await Promise.all([
+    readRecord(path.join(root, stageRoundPlanDeclaration.file), stageRoundPlanDeclaration),
+    readRecord(path.join(root, preparationAttemptDeclaration.file), preparationAttemptDeclaration),
+  ]);
+  const round = plan?.round ?? null;
+  return {
+    attemptId: preparationHandoffIdentity({
+      attemptId: attempt?.attemptId ?? null,
+      stage,
+      round,
+      legacy: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
+    }),
+    round,
+  };
+}
+
+/**
+ * The identity one successful implementation handoff replays or records: the existing preparation
+ * handoff derivation from the published stage's retained attempt and round declarations, with the
+ * legacy fallback for a pre-upgrade area. A binding resolves it before evidence discovery, so a
+ * recorded final request is reused instead of rebuilt with a conflicting expanded artifact list.
+ */
+export async function preparationSuccessIdentity(options: {
+  readonly selection: Selection;
+  /** The evaluated stage whose success the implementation handoff completed; Architecture. */
+  readonly stage: PreparationStage;
+}): Promise<ExperienceHandoffIdentity> {
+  const { attemptId } = await preparationAreaIdentity(
+    stageRoot(options.selection.workspace.root, options.stage),
+    options.stage,
+  );
+  return {
+    workId: options.selection.taskKey,
+    workflow: 'preparation',
+    attemptId,
+    terminalId: 'preparation-handoff',
+  };
+}
+
+/**
+ * The complete retained preparation evidence of one successful implementation handoff: the issue
+ * root's parent area and every evaluated stage's retained state, validation history and numbered
+ * round trees, in stable stage, numeric-round and path order. Missing areas contribute nothing,
+ * and cumulative rounds are selected whole so rejected revisions, evaluated skips, corrections
+ * and reevaluations keep their original stage, round and revision attribution.
+ */
+async function preparationSuccessEvidence(issueRoot: string): Promise<string[]> {
+  const selected = new Set<string>();
+  const collect = async (area: string, relative: string): Promise<void> => {
+    for (const file of await retainedFiles(area, relative)) {
+      selected.add(file);
+    }
+  };
+  await collect(issueRoot, parentAreaDirectory);
+  for (const stage of preparationStages) {
+    const area = stageRoot(issueRoot, stage);
+    await collect(area, 'state');
+    await collect(area, reportFeedbackDirectory);
+    for (const round of await stageRounds(area)) {
+      await collect(area, path.join('artifacts', String(round)));
+    }
+  }
+  return [...selected];
+}
+
+/**
+ * Build the terminal handoff of one published preparation result. The final successful handoff
+ * selects the whole retained preparation, because consolidation moved its analysis boundary to
+ * the implementation handoff; every other terminal keeps the published stage area's own retained
+ * state and current round. A fresh attempt's identity distinguishes repeated stage, round and
+ * terminal values.
  */
 export async function preparationHandoff(options: {
   readonly selection: Selection;
@@ -469,26 +552,22 @@ export async function preparationHandoff(options: {
   readonly stage: PreparationStage;
 }): Promise<ExperienceHandoff> {
   const stage = options.stage;
-  const root = stageRoot(options.selection.workspace.root, stage);
-  const plan = await readRecord(
-    path.join(root, stageRoundPlanDeclaration.file),
-    stageRoundPlanDeclaration,
-  );
-  const round = plan?.round ?? null;
-  const attempt = await readRecord(
-    path.join(root, preparationAttemptDeclaration.file),
-    preparationAttemptDeclaration,
-  );
-  const files = [
-    ...(await retainedFiles(root, 'state')),
-    ...(round === null ? [] : await retainedFiles(root, path.join('artifacts', String(round)))),
-  ];
-  const result = await readStageTerminal(root);
   const issueRoot = options.selection.workspace.root;
-  const isHandoff =
-    options.terminal === 'preparation-handoff' || options.terminal === 'handoff-failed';
+  const root = stageRoot(issueRoot, stage);
+  const identity = await preparationAreaIdentity(root, stage);
+  const success = options.terminal === 'preparation-handoff';
+  const files = success
+    ? await preparationSuccessEvidence(issueRoot)
+    : [
+        ...(await retainedFiles(root, 'state')),
+        ...(identity.round === null
+          ? []
+          : await retainedFiles(root, path.join('artifacts', String(identity.round)))),
+      ];
+  const result = await readStageTerminal(root);
+  const isHandoff = success || options.terminal === 'handoff-failed';
   let reason = result?.reason ?? null;
-  if (isHandoff) files.push(...(await retainedFiles(issueRoot, parentAreaDirectory)));
+  if (!success && isHandoff) files.push(...(await retainedFiles(issueRoot, parentAreaDirectory)));
   if (options.terminal === 'handoff-failed') {
     reason =
       (
@@ -511,12 +590,7 @@ export async function preparationHandoff(options: {
   return {
     workId: options.selection.taskKey,
     workflow: 'preparation',
-    attemptId: preparationHandoffIdentity({
-      attemptId: attempt?.attemptId ?? null,
-      stage,
-      round,
-      legacy: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
-    }),
+    attemptId: identity.attemptId,
     terminalId: options.terminal,
     outcome: preparationTerminalEntries[options.terminal].outcome,
     reason,
