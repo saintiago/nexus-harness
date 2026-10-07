@@ -13,6 +13,7 @@ import {
   selectionFailureDeclaration,
 } from '../task-engine/actions/select-work/artifacts.js';
 import {
+  preparationAttemptDeclaration,
   stageRoundPlanDeclaration,
   type PreparationStage,
 } from '../task-engine/actions/preparation/artifacts.js';
@@ -427,9 +428,39 @@ export async function ideaPublicationHandoff(options: {
 }
 
 /**
+ * The opaque handoff attempt identity of one preparation attempt: the retained unique value, the
+ * stage and the round, or an explicit no-round value. The minted value contains no colon, so the
+ * colon-separated tuple is unambiguous and distinct attempts never share an identity.
+ */
+function preparationAttemptIdentity(
+  attemptId: string,
+  stage: PreparationStage,
+  round: number | null,
+): string {
+  return `${attemptId}:${stage}:${round === null ? 'no-round' : `round-${String(round)}`}`;
+}
+
+/**
+ * The identity one preparation area's handoff uses: the retained stage attempt combined with the
+ * stage and round for a new-format stage, or the former stage/round tuple for a pre-upgrade area
+ * that has no attempt record, so a retained legacy attempt replays its former identity.
+ */
+function preparationHandoffIdentity(settings: {
+  readonly attemptId: string | null;
+  readonly stage: PreparationStage;
+  readonly round: number | null;
+  readonly legacy: string;
+}): string {
+  return settings.attemptId === null
+    ? settings.legacy
+    : preparationAttemptIdentity(settings.attemptId, settings.stage, settings.round);
+}
+
+/**
  * Build the terminal handoff of one published preparation result: the stage area's own retained
- * state and rounds, read through the preparation stage's producer-owned plan declaration. The
- * attempt identity names the round the result closed, so repeated capture is identical.
+ * state and rounds, read through the preparation stage's producer-owned plan declaration. A
+ * retained stage attempt names a fresh attempt even when its stage, round and terminal repeat; a
+ * pre-upgrade area without the attempt record keeps its former identity.
  */
 export async function preparationHandoff(options: {
   readonly selection: Selection;
@@ -444,6 +475,10 @@ export async function preparationHandoff(options: {
     stageRoundPlanDeclaration,
   );
   const round = plan?.round ?? null;
+  const attempt = await readRecord(
+    path.join(root, preparationAttemptDeclaration.file),
+    preparationAttemptDeclaration,
+  );
   const files = [
     ...(await retainedFiles(root, 'state')),
     ...(round === null ? [] : await retainedFiles(root, path.join('artifacts', String(round)))),
@@ -476,7 +511,12 @@ export async function preparationHandoff(options: {
   return {
     workId: options.selection.taskKey,
     workflow: 'preparation',
-    attemptId: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
+    attemptId: preparationHandoffIdentity({
+      attemptId: attempt?.attemptId ?? null,
+      stage,
+      round,
+      legacy: round === null ? 'unprepared' : `${stage}-round-${String(round)}`,
+    }),
     terminalId: options.terminal,
     outcome: preparationTerminalEntries[options.terminal].outcome,
     reason,
@@ -556,9 +596,15 @@ export async function operationalErrorHandoff(options: {
   }
   if (selection.stage !== 'delivery') {
     // A preparation stage's attempt retains its rounds and state under its own area; its round is
-    // read through the preparation stage's own plan declaration, not the finite-delivery schema.
+    // read through the preparation stage's own declarations, not the finite-delivery schema. The
+    // operational-error identity is the same derivation the stage's published terminals use, while
+    // a pre-upgrade area keeps its former operational-error tuple and workflow naming.
     const area = stageRoot(root, selection.stage);
     const plan = await readStagePlan(area);
+    const attempt = await readRecord(
+      path.join(area, preparationAttemptDeclaration.file),
+      preparationAttemptDeclaration,
+    );
     const files = [
       ...(await retainedFiles(area, 'state')),
       ...(plan === null
@@ -568,7 +614,12 @@ export async function operationalErrorHandoff(options: {
     return {
       workId: selection.taskKey,
       workflow: selection.stage,
-      attemptId: plan === null ? 'unprepared' : `round-${String(plan.round)}`,
+      attemptId: preparationHandoffIdentity({
+        attemptId: attempt?.attemptId ?? null,
+        stage: selection.stage,
+        round: plan?.round ?? null,
+        legacy: plan === null ? 'unprepared' : `round-${String(plan.round)}`,
+      }),
       terminalId: 'operational-error',
       outcome: 'error',
       reason: options.failure,

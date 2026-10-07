@@ -1,11 +1,12 @@
 /**
  * Focused integration tests: Application's workflow bindings around AnalyzeExperience. They
  * establish the durable attempt identity a finite attempt records, the producer-owned reason
- * records the handoff reconstructs after a restart, the interrupted idea submission resolution and
- * the capture boundary that keeps a discovery failure from replacing a terminal outcome.
+ * records the handoff reconstructs after a restart, the preparation attempt identity a published
+ * stage or operational error names, the interrupted idea submission resolution and the capture
+ * boundary that keeps a discovery failure from replacing a terminal outcome.
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,8 +22,10 @@ import {
   finiteDeliveryHandoff,
   ideaPublicationHandoff,
   operationalErrorHandoff,
+  preparationHandoff,
 } from '../src/application/analysis-handoff.js';
-import type { NexusConfiguration } from '../src/configuration/index.js';
+import type { NexusConfiguration, PreparationStage } from '../src/configuration/index.js';
+import { experienceIdentity } from '../src/task-engine/actions/analyze-experience/artifacts.js';
 import type { Selection } from '../src/task-engine/actions/select-task/artifacts.js';
 import { ideaRoundPlanFile } from '../src/task-engine/actions/start-idea-round/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -72,6 +75,65 @@ function ideaSelectionFor(refinementArea: string): Selection {
     conversation: [],
     workspace: { root: path.dirname(refinementArea) },
     stage: 'idea',
+  };
+}
+
+/** One preparation-stage selection naming the issue root that owns the stage area. */
+function preparationSelectionFor(workspace: string, stage: PreparationStage): Selection {
+  return {
+    taskKey: workId,
+    source: { kind: 'jira', issueId: '10518' },
+    task: { id: '10518', key: workId, fields: {} },
+    conversation: [],
+    workspace: { root: workspace },
+    stage,
+  };
+}
+
+/**
+ * Write one preparation stage area: its attempt identity when the record exists, and an open round
+ * with the round's retained terminal result when a numbered round exists.
+ */
+async function writeStageArea(options: {
+  readonly workspace: string;
+  readonly stage: PreparationStage;
+  readonly attemptId: string | null;
+  readonly round: number | null;
+}): Promise<void> {
+  const root = path.join(options.workspace, options.stage);
+  if (options.attemptId !== null) {
+    await writeJson(path.join(root, 'state', 'attempt.json'), { attemptId: options.attemptId });
+  }
+  if (options.round !== null) {
+    await writeJson(path.join(root, 'state', 'current-round.json'), {
+      stage: options.stage,
+      round: options.round,
+      route: 'next',
+      profiles: { author: 'nexus-flash', evaluator: 'nexus-sol' },
+    });
+    await writeJson(path.join(root, 'artifacts', String(options.round), 'result.json'), {
+      stage: options.stage,
+      outcome: 'accepted',
+      authoredRevision: options.round,
+      documents: [],
+      outputs: [],
+      evaluation: {
+        path: path.join(root, 'artifacts', String(options.round), 'evaluation.json'),
+      },
+      reason: null,
+      returnStage: null,
+      returnFinding: null,
+    });
+  }
+}
+
+/** Enable the capture path of one Nexus configuration over the test's unreachable service. */
+function enableMemory(nexus: NexusConfiguration): void {
+  nexus.memory = {
+    enabled: true,
+    serviceUrl: 'http://127.0.0.1:1',
+    mcp: { command: 'npm', args: ['run', '--silent', 'mcp'], directory: './agentic-memory' },
+    analysisProfile: 'nexus-astra',
   };
 }
 
@@ -257,6 +319,163 @@ describe('terminal handoffs', () => {
   });
 });
 
+describe('preparation attempt identities', () => {
+  it('derives the published terminal identity from the retained attempt, stage and round', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeStageArea({ workspace, stage: 'ux', attemptId: 'attempt-one', round: 2 });
+
+    const handoff = await preparationHandoff({
+      selection: preparationSelectionFor(workspace, 'ux'),
+      terminal: 'preparation-advanced',
+      stage: 'ux',
+    });
+
+    expect(handoff).toMatchObject({
+      workId,
+      workflow: 'preparation',
+      attemptId: 'attempt-one:ux:round-2',
+      terminalId: 'preparation-advanced',
+      outcome: 'advanced',
+    });
+
+    // The publication/handoff failures share the attempt's derivation.
+    const publicationFailed = await preparationHandoff({
+      selection: preparationSelectionFor(workspace, 'ux'),
+      terminal: 'preparation-publication-failed',
+      stage: 'ux',
+    });
+    const handoffFailed = await preparationHandoff({
+      selection: preparationSelectionFor(workspace, 'ux'),
+      terminal: 'handoff-failed',
+      stage: 'ux',
+    });
+    expect(publicationFailed.attemptId).toBe(handoff.attemptId);
+    expect(handoffFailed.attemptId).toBe(handoff.attemptId);
+  });
+
+  it('gives a fresh attempt a distinct request identity for a repeated stage, round and terminal', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeStageArea({ workspace, stage: 'ux', attemptId: 'attempt-one', round: 2 });
+    const selection = preparationSelectionFor(workspace, 'ux');
+
+    const first = await preparationHandoff({
+      selection,
+      terminal: 'preparation-advanced',
+      stage: 'ux',
+    });
+    // Reconstructing the retained attempt's handoff after a restart reuses its request identity.
+    const replay = await preparationHandoff({
+      selection,
+      terminal: 'preparation-advanced',
+      stage: 'ux',
+    });
+    expect(experienceIdentity(replay)).toBe(experienceIdentity(first));
+
+    // A fresh attempt repeats the ticket, stage, round and terminal yet forms its own request.
+    await writeJson(path.join(workspace, 'ux', 'state', 'attempt.json'), {
+      attemptId: 'attempt-two',
+    });
+    const fresh = await preparationHandoff({
+      selection,
+      terminal: 'preparation-advanced',
+      stage: 'ux',
+    });
+
+    expect(fresh.attemptId).toBe('attempt-two:ux:round-2');
+    expect(experienceIdentity(fresh)).not.toBe(experienceIdentity(first));
+  });
+
+  it('distinguishes a failure before a numbered round for each attempt', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeStageArea({
+      workspace,
+      stage: 'requirements',
+      attemptId: 'attempt-one',
+      round: null,
+    });
+    const selection = preparationSelectionFor(workspace, 'requirements');
+
+    const first = await preparationHandoff({
+      selection,
+      terminal: 'preparation-failed',
+      stage: 'requirements',
+    });
+    await writeJson(path.join(workspace, 'requirements', 'state', 'attempt.json'), {
+      attemptId: 'attempt-two',
+    });
+    const second = await preparationHandoff({
+      selection,
+      terminal: 'preparation-failed',
+      stage: 'requirements',
+    });
+
+    expect(first.attemptId).toBe('attempt-one:requirements:no-round');
+    expect(second.attemptId).toBe('attempt-two:requirements:no-round');
+    expect(experienceIdentity(second)).not.toBe(experienceIdentity(first));
+  });
+
+  it('keeps the former identities for a pre-upgrade area with retained current-attempt state', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeStageArea({ workspace, stage: 'ux', attemptId: null, round: 2 });
+    const selection = preparationSelectionFor(workspace, 'ux');
+
+    const terminal = await preparationHandoff({
+      selection,
+      terminal: 'preparation-waiting',
+      stage: 'ux',
+    });
+    const error = await operationalErrorHandoff({ selection, failure: 'the worker stopped' });
+
+    expect(terminal.attemptId).toBe('ux-round-2');
+    expect(error).toMatchObject({ workflow: 'ux', attemptId: 'round-2' });
+
+    // A pre-upgrade attempt that failed before its first round keeps its former no-round value.
+    const legacy = path.join(root, 'workspaces', 'NEX-8');
+    await writeJson(path.join(legacy, 'requirements', 'state', 'failure.json'), {
+      reason: 'the repository condition prevents preparation',
+    });
+    const legacySelection = preparationSelectionFor(legacy, 'requirements');
+    const failed = await preparationHandoff({
+      selection: legacySelection,
+      terminal: 'preparation-failed',
+      stage: 'requirements',
+    });
+    const failedError = await operationalErrorHandoff({
+      selection: legacySelection,
+      failure: 'the worker stopped',
+    });
+
+    expect(failed.attemptId).toBe('unprepared');
+    expect(failedError).toMatchObject({ workflow: 'requirements', attemptId: 'unprepared' });
+  });
+
+  it('uses one derivation for a published terminal and the selected operational error of an attempt', async () => {
+    const root = await temporaryDirectory();
+    const workspace = path.join(root, 'workspaces', workId);
+    await writeStageArea({ workspace, stage: 'architecture', attemptId: 'attempt-one', round: 2 });
+    const selection = preparationSelectionFor(workspace, 'architecture');
+
+    const terminal = await preparationHandoff({
+      selection,
+      terminal: 'preparation-handoff',
+      stage: 'architecture',
+    });
+    const error = await operationalErrorHandoff({ selection, failure: 'the worker stopped' });
+
+    expect(terminal.attemptId).toBe('attempt-one:architecture:round-2');
+    expect(error).toMatchObject({
+      workflow: 'architecture',
+      attemptId: terminal.attemptId,
+      terminalId: 'operational-error',
+      outcome: 'error',
+    });
+  });
+});
+
 /** One binding over a temporary execution directory and the supplied memory configuration. */
 function bindingOver(options: {
   readonly nexus: NexusConfiguration;
@@ -329,5 +548,70 @@ describe('capture boundary', () => {
     );
 
     expect(events).toEqual([]);
+  });
+
+  it('reports an unreadable preparation attempt identity as unavailable instead of capturing', async () => {
+    const directory = await temporaryDirectory();
+    const selectionFile = path.join(directory, 'selection.json');
+    const workspace = path.join(directory, 'workspaces', workId);
+    const attemptFile = path.join(workspace, 'ux', 'state', 'attempt.json');
+    await mkdir(path.dirname(attemptFile), { recursive: true });
+    await writeFile(attemptFile, '{"attemptId":\n', 'utf8');
+    await writeJson(selectionFile, preparationSelectionFor(workspace, 'ux'));
+    const nexus = nexusConfiguration();
+    enableMemory(nexus);
+    const events: EngineEvent[] = [];
+    const binding = bindingOver({ nexus, selectionFile, events });
+
+    await expect(
+      binding.AnalyzeExperience!({ terminal: 'preparation-advanced', stage: 'ux' }),
+    ).resolves.toBe('unavailable');
+
+    expect(events).toEqual([
+      {
+        source: 'analyze-experience',
+        type: 'unavailable',
+        data: {
+          terminal: 'preparation-advanced',
+          reason: expect.stringContaining('attempt.json'),
+        },
+      },
+    ]);
+  });
+
+  it('records a fresh attempt as its own request while the retained attempt keeps its capture', async () => {
+    const directory = await temporaryDirectory();
+    const selectionFile = path.join(directory, 'selection.json');
+    const workspace = path.join(directory, 'workspaces', workId);
+    await writeStageArea({ workspace, stage: 'ux', attemptId: 'attempt-one', round: 2 });
+    await writeJson(selectionFile, preparationSelectionFor(workspace, 'ux'));
+    const nexus = nexusConfiguration();
+    enableMemory(nexus);
+    const events: EngineEvent[] = [];
+    const binding = bindingOver({ nexus, selectionFile, events });
+
+    await expect(
+      binding.AnalyzeExperience!({ terminal: 'preparation-advanced', stage: 'ux' }),
+    ).resolves.toBe('recorded');
+    const requests = path.join(directory, 'memory', 'requests');
+    const captures = path.join(directory, 'memory', 'captures');
+    const retainedRequests = await readdir(requests);
+    const retainedCaptures = await readdir(captures);
+    expect(retainedRequests).toHaveLength(1);
+    const retainedRequest = await readFile(path.join(requests, retainedRequests[0]!), 'utf8');
+    const retainedCapture = await readFile(path.join(captures, retainedCaptures[0]!), 'utf8');
+
+    // The fresh attempt repeats the ticket, stage, round and terminal.
+    await writeJson(path.join(workspace, 'ux', 'state', 'attempt.json'), {
+      attemptId: 'attempt-two',
+    });
+    await expect(
+      binding.AnalyzeExperience!({ terminal: 'preparation-advanced', stage: 'ux' }),
+    ).resolves.toBe('recorded');
+
+    expect(await readdir(requests)).toHaveLength(2);
+    // The retained attempt's request and captured evidence keep their exact bytes.
+    expect(await readFile(path.join(requests, retainedRequests[0]!), 'utf8')).toBe(retainedRequest);
+    expect(await readFile(path.join(captures, retainedCaptures[0]!), 'utf8')).toBe(retainedCapture);
   });
 });

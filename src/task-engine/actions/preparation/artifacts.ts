@@ -51,6 +51,26 @@ export const preparationWorkspaceDeclaration = {
   schema: preparationWorkspaceSchema,
 } satisfies RecordDeclaration<typeof preparationWorkspaceSchema>;
 
+/**
+ * The preparation stage attempt identity: PrepareStage retains one opaque unique value per stage
+ * attempt under the stage area before any fallible repository work, so every terminal handoff of
+ * that attempt, including a failure before a numbered round, names the same attempt. Application's
+ * handoff binding imports this declaration and combines the retained value with the stage and
+ * round; a pre-upgrade stage area without the record keeps its former handoff identities.
+ */
+export const preparationAttemptFile = 'state/attempt.json';
+
+export const preparationAttemptSchema = z.object({
+  attemptId: z.string().trim().min(1),
+});
+
+export type PreparationAttempt = z.infer<typeof preparationAttemptSchema>;
+
+export const preparationAttemptDeclaration = {
+  file: preparationAttemptFile,
+  schema: preparationAttemptSchema,
+} satisfies RecordDeclaration<typeof preparationAttemptSchema>;
+
 /** The earlier stages a preparation result may return work to. */
 export const upstreamStages = ['idea', 'requirements', 'ux', 'prototype'] as const;
 
