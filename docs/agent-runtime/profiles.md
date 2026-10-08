@@ -70,13 +70,13 @@ command = "/absolute/nexus-installation/node_modules/.bin/jev-mcp"
 args = []
 enabled = true
 required = false
-enabled_tools = ["ask_jev"]
+enabled_tools = ["search_repo", "inspect_files"]
 disabled_tools = []
 env_vars = ["JEV_API_KEY", "JEV_USAGE_LOG_PATH", "JEV_USAGE_LOG_CALLER"]
 ```
 
 The absolute command is installation-specific and generated at composition, not committed to
-profile templates. `INVOCATION_ID` is a fresh generated identifier; `ask_jev` remains the tool name.
+profile templates. `INVOCATION_ID` is a fresh generated identifier; the tool names remain `search_repo` and `inspect_files`.
 Codex merges native tables recursively, so replacing individual fields under a fixed server name
 cannot clear an inherited transport or literal environment. The coding adapter first lists the
 effective MCP configuration with the selected profile and invocation directory, without starting
@@ -93,8 +93,8 @@ adds no setting of its own. Omitted/disabled integration, or missing host creden
 inherited `jev` entries, creates no new JEv server and supplies no JEv guidance. An optional startup
 failure leaves the provider session usable with its other tools.
 
-Verify effective `ask_jev` access and a synthetic request for the role/profile combinations in
-[AgentRuntime](architecture.md#advisory-jev-judgments), including preparation evaluators, recovery
+Verify effective `search_repo` and `inspect_files` access and a synthetic request for the role/profile combinations in
+[AgentRuntime](architecture.md#jev-repository-discovery), including preparation evaluators, recovery
 and experience analysis. Check composition with existing tools, rather than treating a template
 entry as evidence of working access. Host-enabled usage logging is verified through the effective
 settings and an evaluation the delivered server records. Disabled access and unavailable-tool

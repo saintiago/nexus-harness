@@ -61,10 +61,10 @@ use explicitly, including every preparation author/evaluator. AnalyzeExperience 
 consumer after selected-work terminal handoffs.
 Workflow routing, direct hand-offs and authoritative artifacts remain unchanged.
 
-[JEv](tech-stack.md#jev-dependency) is an optional external judgment dependency, not another Nexus
-component. Application composes provider-native `ask_jev` access for every agent role from the host
+[JEv](tech-stack.md#jev-dependency) is an optional repository discovery dependency, not another Nexus
+component. Application composes provider-native `search_repo` and `inspect_files` access for every agent role from the host
 credential and the optional host logging settings. AgentRuntime transports the native tool settings
-and guidance. The package owns provider communication and local usage logging. Existing stage
+and guidance. The package owns repository discovery, whole-file screening, provider communication and local usage logging. Existing stage
 routing and acceptance remain authoritative.
 
 ## Application and configuration

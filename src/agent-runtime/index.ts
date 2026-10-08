@@ -84,24 +84,24 @@ export const memoryAnalysisGuidance = [
 ].join('\n');
 
 /**
- * The shared JEv judgment guidance every invocation with composed `ask_jev` access carries. The
+ * The shared repository discovery guidance supplied with the two JEv tools. The
  * AgentRuntime contract owns this policy; composition supplies it once with the enabled tool, and
  * a configured instruction that repeats it is deduplicated.
  */
 export const jevUseGuidance = [
-  'JEv judgment guidance (the ask_jev tool is available to this invocation):',
-  '- Consult JEv when consequential uncertainty remains: competing contract interpretations,',
-  '  significant design choices or disputed blocking findings. Routine execution, wording and',
-  '  straightforward instruction-following remain your responsibility; availability requires no call.',
-  '- Ask a bounded question with balanced alternatives, relevant authoritative evidence and clear',
-  '  criteria. Distinguish observed facts from assumptions; batch questions sharing one state.',
-  '- Treat answers and confidence as evidence, not binding decisions or proof of correctness.',
-  '  Evaluate them against current human direction, owning contracts and executable evidence.',
-  '  Explain material disagreement. A low score alone is not a defect or a reason to ask again.',
-  '- Follow up only to resolve a specific uncertainty or changed evidence or criteria. Use existing',
-  '  tools for fact lookup, arithmetic, executable checks and code or prose generation.',
-  '- Preserve required stages, independent evaluation, verification and merge checks.',
-  '  If JEv is unavailable, continue your reasoning and checks; disclose a material limitation.',
+  'JEv repository guidance (search_repo and inspect_files are available):',
+  '- Before loading many source files, use search_repo for conceptual repository discovery.',
+  '  Exact symbols and literals can use ordinary text search. Scope searches when useful.',
+  '- If the relevant file is already known, read it directly; do not add a screening call.',
+  '- Use inspect_files to screen named files against bounded implementation questions.',
+  '  Both tools read repository source themselves; submit paths and questions, not source text.',
+  '- Results contain paths, typed scores, supplied criteria and coverage, without generated reasons.',
+  '  Read selected whole files yourself, including related callers and helpers when needed.',
+  '- Incomplete coverage and negative assessments do not establish absence or bug freedom.',
+  '  Suspected defects are leads for investigation; scores are advisory evidence.',
+  '- Use your own reasoning for design, contract interpretation and review decisions.',
+  '  Preserve required evaluation, verification, review, merge and post-merge checks.',
+  '- If the tools are unavailable, continue ordinary repository search and file reads.',
 ].join('\n');
 
 /** One activity entry the invocation reported while it ran. */

@@ -82,7 +82,7 @@ function hasHostCredential(nexus: NexusConfiguration, environment: HostEnvironme
 }
 
 /**
- * Whether one invocation composes available `ask_jev` access: the configured integration is
+ * Whether one invocation composes available repository tools access: the configured integration is
  * enabled and its credential names a usable host value. Omitted, disabled and credential-less
  * integrations compose the reserved server disabled and supply no usage guidance. The host value
  * is checked for presence only and never enters Nexus settings, prompts or artifacts.
@@ -107,7 +107,7 @@ export function jevExecutablePath(): string {
 
 /**
  * The reserved `jev` MCP server's provider-native settings for one invocation. Nexus owns this
- * server's composition: its installed command, the single `ask_jev` tool with no inherited
+ * server's composition: its installed command, the search_repo and inspect_files tools with no inherited
  * exclusions, forwarding of the named host settings only, and optional startup. Unavailable access
  * composes the settings disabled. The coding adapter disables inherited `jev` entries and binds
  * available settings to a fresh invocation name. The package's model, timeout and logging defaults
@@ -119,7 +119,7 @@ export function jevAgentSettings(available: boolean): Readonly<Record<string, un
     [`${reservedJevServer}.args`]: [],
     [`${reservedJevServer}.enabled`]: available,
     [`${reservedJevServer}.required`]: false,
-    [`${reservedJevServer}.enabled_tools`]: ['ask_jev'],
+    [`${reservedJevServer}.enabled_tools`]: ['search_repo', 'inspect_files'],
     [`${reservedJevServer}.disabled_tools`]: [],
     [`${reservedJevServer}.env_vars`]: [...jevForwardedEnvironment],
   };
