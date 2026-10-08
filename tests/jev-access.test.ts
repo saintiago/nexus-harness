@@ -113,7 +113,15 @@ describe('installed JEv repository tools', () => {
     const { s } = await session(true);
     try {
       const result = await s.call('inspect_files', request);
-      expect(result.isError).toBe(true);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        files: [],
+        coverage: {
+          complete: false,
+          skipped: [{ path: 'camera.ts', reason: 'evaluation_failed', errorCode: 'rate_limited' }],
+        },
+        usage: { calls: 2 },
+      });
       expect(JSON.stringify(result)).toContain('rate_limited');
       expect(JSON.stringify(result)).not.toContain('raw-provider-error');
       expect((await s.call('search_repo', { query: 'camera' })).isError).toBeFalsy();
