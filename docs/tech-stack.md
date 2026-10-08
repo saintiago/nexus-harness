@@ -41,11 +41,11 @@ small; introduce a dependency when it reduces total implementation and maintenan
 ### JEv dependency
 
 Consume `@saintiago/jev` from the standalone [JEv package](https://github.com/saintiago/jev-mcp),
-using its [public contract at the delivered revision](https://github.com/saintiago/jev-mcp/blob/111a797c157d09ad43325407370ad95ab2cf1580/docs/contracts.md).
+using its [public contract at the delivered revision](https://github.com/saintiago/jev-mcp/blob/248c4e0a0d604cbb9f1aa9fb30760c04c9d59508/docs/contracts.md).
 The package is private and unpublished. Build revision
-`111a797c157d09ad43325407370ad95ab2cf1580` with its locked dependencies on Node 24/npm 11,
+`248c4e0a0d604cbb9f1aa9fb30760c04c9d59508` with its locked dependencies on Node 24/npm 11,
 then run `npm pack`. Retain the resulting package as
-`vendor/saintiago-jev-0.0.0-111a797.tgz`, declare a runtime `file:` dependency on that tarball and
+`vendor/saintiago-jev-0.0.0-248c4e0.tgz`, declare a runtime `file:` dependency on that tarball and
 commit the npm lockfile integrity. A clean `npm ci` must install its public root exports and
 `jev-mcp` executable without a sibling checkout, registry publication or runtime download.
 The tarball contains the delivered package, not Nexus-owned copies of its provider implementation.
