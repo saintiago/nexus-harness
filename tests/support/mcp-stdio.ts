@@ -38,12 +38,17 @@ type JsonRpcMessage = {
 /** Launch the executable and complete the MCP handshake over its standard streams. */
 export async function openMcpSession(
   executable: string,
-  options: { readonly environment?: Readonly<Record<string, string>>; readonly timeoutMs?: number },
+  options: {
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly cwd?: string;
+    readonly timeoutMs?: number;
+  },
 ): Promise<McpSession> {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const child: ChildProcessWithoutNullStreams = spawn(executable, [], {
     env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', ...options.environment },
     stdio: ['pipe', 'pipe', 'pipe'],
+    ...(options.cwd && { cwd: options.cwd }),
   });
   let buffer = '';
   let stderr = '';

@@ -131,43 +131,30 @@ Prompt and settings are values. Receive the provider's output and activity as da
 The adapter may use temporary files when its transport requires them; it does not choose Nexus
 artifact locations.
 
-### Advisory JEv judgments
+### JEv repository discovery
 
-Every role can consult the standalone [JEv package](https://github.com/saintiago/jev-mcp/blob/main/docs/contracts.md)
-through provider-native MCP when enabled: preparation authors/evaluators, idea roles, development,
-review, recovery and experience analysis, including every selectable profile and repair turn.
-Access does not require a call. The responsible role owns its decisions.
+Every enabled role/profile can use `search_repo` and `inspect_files` from the standalone
+[JEv package](https://github.com/saintiago/jev-mcp/blob/main/docs/contracts.md). The tools
+read source directly outside the agent's context. Search finds relevant files; inspection
+screens named files against bounded implementation questions. Results contain paths, typed
+scores, supplied criteria, source state and coverage; no generated reasons or source excerpts.
+Agents read selected whole files and related callers/helpers themselves.
 
-Consult JEv for consequential uncertainty: competing contract interpretations, significant design
-choices or disputed blocking findings. Routine execution, wording and straightforward instructions
-remain with the agent. Ask bounded questions with balanced alternatives, relevant authoritative
-evidence and clear criteria; distinguish assumptions from observed facts and batch questions sharing
-one state. Answers and confidence are evidence, not binding decisions or proof of correctness.
-Evaluate them against current human direction, owning contracts and executable evidence; explain
-material disagreement. A low score alone is not a defect or a reason to ask again. Follow up to resolve
-a specific uncertainty or changed evidence or criteria.
+Known files should be read directly. Exact symbols/literals can use ordinary search. Conceptual search uses JEv candidate screening
+and whole-file validation. Candidate omissions are reported as incomplete coverage. Negative
+judgments do not prove absence or bug freedom; suspected defects remain investigation leads.
+JEv does not decide design, interpret contracts for the agent, approve reviews or replace checks.
+If unavailable, continue ordinary repository search and file reading.
 
-Use existing tools for fact lookup, arithmetic, checks and code/prose generation. JEv does not
-replace required stages, independent review, verification or merge checks. If unavailable, continue
-reasoning and checks and disclose a material limitation.
+The package owns file access, provider calls, schemas, ranking, limits and coverage. Nexus owns
+optional enablement and supplies this guidance once with both tools for every selectable role.
+Other tools and analysis's search-only memory access retain their ownership. Credential and
+native MCP isolation follow [configuration](../configuration.md#jev-settings) and
+[profiles](profiles.md#jev-access). The retired `ask_jev` tool is not exposed.
 
-The package owns provider requests, schemas, response validation, MCP transport and optional usage
-logging. Nexus supplies this guidance once with enabled access and preserves other tools, including
-analysis's search-only memory access. Enablement and credentials follow
-[configuration](../configuration.md#jev-settings); effective tool checks follow
-[profiles](profiles.md#jev-access).
-
-Acceptance examples:
-
-- With JEv enabled, the effective tool catalogue for each role/profile combination exposes
-  `ask_jev`, and the assembled invocation includes the usage guidance once. A reused profile
-  retains only the invoked role's instructions; an invocation can complete without a JEv call.
-- A native MCP call with synthetic state and explicit alternatives returns the package's
-  structured judgment. If the tool cannot answer, the role can continue with a material limitation
-  disclosed; a positive judgment alone cannot satisfy required review or a failing check.
-- With both integrations enabled, a developer retains memory search/save and existing tools;
-  the experience analyst retains memory search without memory save and also receives `ask_jev`.
-- With JEv disabled, Nexus supplies neither its tool nor its usage guidance and makes no JEv call.
+Acceptance: enabled roles discover exactly both repository tools; disabled or credential-less
+invocations receive neither tool nor guidance. Native tool calls read from the invocation's
+repository, return typed assessments and tolerate provider failures without bypassing checks.
 
 Developer and reviewer profiles expose the same tools:
 
@@ -176,7 +163,7 @@ Developer and reviewer profiles expose the same tools:
 - Context7 library documentation.
 - OpenAI documentation MCP.
 - AMEM memory MCP when enabled, with use governed by [Memory integration](../memory/integration.md#agent-use).
-- Optional `ask_jev` when enabled, under the judgment guidance above.
+- Optional `search_repo` and `inspect_files` when enabled, under the discovery guidance above.
 
 Disable personal connectors and unrelated integrations, including the GitHub connector, for both
 profiles. Harness publication remains outside the agent tool set. Use the provider's native settings
