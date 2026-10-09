@@ -14,6 +14,8 @@ The public module is `src/application/index.ts`.
 
 ```text
 nexus queue run --project-config <file>
+nexus evidence list <root> [paths...]
+nexus evidence read <root> <files...> [--max-bytes <n>]
 nexus --help
 ```
 
@@ -22,6 +24,28 @@ supplies the Nexus configuration filepath through the `NEXUS_CONFIG` environment
 project filepath against the working directory.
 Reject missing arguments and unknown options. Help requires no configuration or external connections.
 Launch shortcuts invoke this command; they contain no execution logic.
+
+### Evidence helpers
+
+The evidence commands operate on local files without configuration, external connections or a
+queue run. Paths resolve within the supplied root; reject traversal and symlinks that resolve
+outside it. `list` recursively inventories file paths and byte sizes without reading their contents.
+It reports omitted symlinks and the root's `worktree/` checkout; explicitly list `worktree` or one of
+its subdirectories when repository files are needed. Revision attribution stays in the original
+artifact contents rather than being inferred by the inventory.
+
+`read` returns each selected UTF-8 file's original text, source byte size, returned content bytes and
+explicit truncation flag. The default limit is 64 KiB per file; `--max-bytes` overrides it. Truncation
+does not split a UTF-8 character. Report unreadable, non-text or out-of-root files individually and
+continue reading the other selections. JSON results go to stdout. Exit 0 on success, 1 on file/access
+failure and 2 on invalid arguments.
+
+Each executed command emits one `evidence-helper` JSON record to stderr with timestamp, operation,
+root, requested paths count, files, failures, omissions, source/read/content/stdout byte counts,
+truncated files and duration in milliseconds. Logs contain no file contents. Existing agent activity
+logs retain this record with invocation identity; no separate log store is introduced. Compare helper
+adoption, file failures, returned volume and artifact-handling commands against the prior inline
+scripts; duration and output reduction alone do not establish better analysis quality.
 
 ### Provided interface
 

@@ -180,6 +180,12 @@ attempt never prepared a repository still has a valid invocation location. The a
 initializes its separate worktree as a Git repository before invoking the coding provider, just as
 recovery does; it never initializes or changes the original attempt's workspace.
 
+Application supplies executable [evidence helper](../../application.md#evidence-helpers) commands
+bound to this retained root. Analysts use them instead of writing artifact-listing/reading scripts,
+select relevant files, and increase the read limit when needed evidence is truncated. A known file
+can still be read directly when simpler. Helpers leave interpretation, memory comparison and revision
+attribution to the analyst; their usage records remain in the existing invocation activity log.
+
 Assign each analyst invocation its own Markdown path in the durable request area under the [shared
 report contract](architecture.md#markdown-reports-and-machine-outcomes). The configured analyst
 reads the supplied artifacts and relevant history, searches existing memory for related lessons, and
