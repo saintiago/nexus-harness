@@ -103,14 +103,6 @@ export const jevUseGuidance = [
   '  Ordinary development execution, tests, review and merge obligations still apply.',
 ].join('\n');
 
-/** Additional policy for explicit read-only repository investigation invocations. */
-export const jevInvestigationGuidance = [
-  'Read-only repository investigation: use only retrieve_evidence and expand_evidence for source',
-  'search and reading. Shell execution and other MCP servers are disabled. Do not edit, run checks,',
-  'delegate or use external tools. Return the requested answer with source citations; batch context',
-  'expansion when evidence is insufficient. Missing evidence is uncertainty, never proof of absence.',
-].join('\n');
-
 /** One activity entry the invocation reported while it ran. */
 export type AgentEvent = {
   readonly type: AgentEventKind;
@@ -131,7 +123,6 @@ export type AgentRuntime = {
     additionalContext: string,
     onActivity: (activity: AgentEvent) => void,
     outputSchema?: Readonly<Record<string, unknown>>,
-    mode?: 'investigation',
   ): Promise<AgentResult>;
 };
 
@@ -141,11 +132,6 @@ export type AgentRuntimeSettings = {
   readonly baseInstructions: readonly string[];
   readonly profiles: readonly AgentProfile[];
   readonly invocationLimitMinutes: number;
-  /** Explicit read-only catalogue; absent when managed retrieval is unavailable. */
-  readonly investigation?: {
-    readonly baseInstructions: readonly string[];
-    readonly profiles: readonly AgentProfile[];
-  };
 };
 
 /** The target repository working copy within a workspace root (Workspace design). */
@@ -178,14 +164,8 @@ function assemblePrompt(
 /** Create the agent runtime over the supplied configuration. */
 export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime {
   return {
-    async run(profileId, workspaceRef, additionalContext, onActivity, outputSchema, mode) {
-      const invocation = mode === 'investigation' ? settings.investigation : settings;
-      if (invocation === undefined)
-        return {
-          ok: false,
-          fault: { message: 'Managed repository investigation requires available JEv access.' },
-        };
-      const profile = invocation.profiles.find((candidate) => candidate.id === profileId);
+    async run(profileId, workspaceRef, additionalContext, onActivity, outputSchema) {
+      const profile = settings.profiles.find((candidate) => candidate.id === profileId);
       if (profile === undefined) {
         return { ok: false, fault: { message: `Unknown agent profile "${profileId}".` } };
       }
@@ -218,7 +198,7 @@ export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime
         return await settings.codingRuntime.execute(
           {
             prompt: assemblePrompt(
-              invocation.baseInstructions,
+              settings.baseInstructions,
               profile.instructions,
               additionalContext,
               worktree,

@@ -102,11 +102,6 @@ settings and an evaluation the delivered server records. Disabled access and una
 continuation must also be demonstrated. Nexus adds no MCP client or shared HTTP service for this
 integration.
 
-Explicit read-only investigation uses the separate catalogue in [AgentRuntime](architecture.md#jev-repository-evidence).
-It disables shell/unified execution, browser/apps, web and multi-agent features, selects a read-only
-sandbox and allows only the composed JEv MCP server. Other inherited MCP entries are disabled for
-the invocation, without editing native files. Ordinary delivery roles retain their tools and checks.
-
 ## Prototype browser and image setup
 
 Use Playwright MCP for real browser interaction and screenshot image responses. Install a pinned
@@ -140,7 +135,3 @@ observation with Nexus-observed report/revision attribution, without file invent
 revision claims. The fixture does not add product UI or external-service
 navigation. See [preparation observations](../task-engine/actions/preparation-stage.md#prototype-observations)
 for the evidence contract.
-
-Investigation composition overrides JEv to `required = true`; failed initialization must prevent
-model execution. The current native adapter refuses managed investigation because the provider does
-not enforce disabled collaboration tools. This limitation does not change ordinary role access.

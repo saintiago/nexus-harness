@@ -188,7 +188,3 @@ KAN maps ready delivery work to Implementation. HARN maps ready delivery work to
 selects mapped preparation and implementation work in one ranked queue. Waiting for Feedback and
 Done are not automatically selected. Persist feedback return destinations in the issue source
 handoff record. Role assignments and the Flash/Sol/Astra models follow the workflow's Profiles section.
-
-Explicit investigation composition requires successful JEv initialization (`required = true`).
-The native adapter currently refuses this mode because it cannot enforce disabled collaboration;
-see [Coding runtime](adapters/coding-runtime.md). Ordinary role startup remains optional.
