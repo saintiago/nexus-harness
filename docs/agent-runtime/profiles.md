@@ -35,21 +35,6 @@ the commented environment-variable settings. If the provider requires a custom m
 set its Linux path through `model_catalog_json` in the installed configuration; no host-specific
 catalogue path is included in the templates.
 
-### Optional Python command compatibility
-
-Some agents use `python` for shell helpers. On a host that only provides `python3`, run this
-opt-in setup from the repository root in the same Linux environment used by Nexus workers:
-
-```sh
-sh operations/setup-python-compat.sh
-python --version
-python3 --version
-```
-
-The script links `~/.local/bin/python` to the installed `python3` only when `python` is unavailable.
-It requires `~/.local/bin` on the worker PATH and preserves existing commands and files. Committing
-the script, building Nexus and copying profile templates do not activate it.
-
 ## Effective tools
 
 Profiles layer over the base Codex configuration. They do not replace it or exclude arbitrary
