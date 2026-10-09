@@ -7,29 +7,33 @@ import { createApplication, type Application, type ApplicationSettings } from '.
 import { installationConfigSetting } from './installation.js';
 import { terminalCapabilities, type TerminalOutput } from './terminal.js';
 import { createWorkerLaunch } from './worker-launch.js';
+import { parseEvidenceCommand, runEvidenceCommand, type EvidenceCommand } from './evidence.js';
 
 /**
- * The operator command: parse `nexus queue run --project-config <file>`,
- * `nexus ideas refine --project-config <file>` and `nexus --help`, connect terminal presentation to
- * the Application's combined event subscription, run one execution and map its outcome to the
- * process exit code. Launch shortcuts invoke this command; they contain no execution logic.
+ * The operator command: run the project queue, inspect local evidence or print help. Connect
+ * terminal presentation to the Application's combined event subscription for queue execution and
+ * map the outcome to the process exit code. Launch shortcuts contain no execution logic.
  * Presentation starts before execution and stops when execution ends, including failure.
  */
 
 /** The parsed operator command. */
 export type OperatorCommand =
   | { readonly kind: 'help' }
+  | EvidenceCommand
   | { readonly kind: 'run'; readonly workflow: WorkflowName; readonly projectConfigPath: string }
   | { readonly kind: 'invalid'; readonly reason: string };
 
 /** The documented command forms; help requires no configuration or external connections. */
 export const operatorUsage = `Usage:
   nexus queue run --project-config <file>
+  nexus evidence list <root> [paths...]
+  nexus evidence read <root> <files...> [--max-bytes <n>]
   nexus --help
 
 Runs one execution of the project parent for the project the configuration file describes. The
 parent selects one issue at a time and invokes the child appropriate to its stage. The installation
 names its Nexus configuration filepath through the ${installationConfigSetting} environment setting.
+Evidence commands inspect local artifacts without configuration; reads default to 64 KiB per file.
 `;
 
 /** Reject one input as invalid, naming what the command did not accept. */
@@ -46,9 +50,16 @@ export function parseOperatorCommand(args: readonly string[]): OperatorCommand {
   if (command === '--help') {
     return rest.length === 0 ? { kind: 'help' } : invalid(`Unknown option "${rest[0]}".`);
   }
+  if (command === 'evidence') {
+    try {
+      return parseEvidenceCommand(rest);
+    } catch (error) {
+      return invalid(messageOf(error));
+    }
+  }
   const selected = command === 'queue' ? { workflow: 'project' as const, subcommand: 'run' } : null;
   if (selected === null) {
-    return invalid(`Unknown command "${command}"; the documented command is "queue run".`);
+    return invalid(`Unknown command "${command}"; use "queue run", "evidence" or "--help".`);
   }
   const [subcommand, ...options] = rest;
   if (subcommand !== selected.subcommand) {
@@ -95,8 +106,7 @@ export type OperatorCommandSettings = {
 };
 
 /**
- * Run the operator command and return its process exit code: 0 for help or completed execution,
- * 1 for execution requiring attention or initialization failure, 2 for invalid command input.
+ * Return 0 for success, 1 for execution/access failure, or 2 for invalid command input.
  */
 export async function runOperatorCommand(settings: OperatorCommandSettings): Promise<number> {
   const command = parseOperatorCommand(settings.args);
@@ -107,6 +117,9 @@ export async function runOperatorCommand(settings: OperatorCommandSettings): Pro
   if (command.kind === 'invalid') {
     settings.diagnostics.write(`${command.reason}\n\n${operatorUsage}`);
     return 2;
+  }
+  if (command.kind === 'evidence') {
+    return runEvidenceCommand({ ...settings, command });
   }
   const projectConfigPath = path.resolve(settings.workingDirectory, command.projectConfigPath);
 

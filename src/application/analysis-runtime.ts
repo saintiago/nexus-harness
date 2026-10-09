@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createAgentRuntime, type AgentResult } from '../agent-runtime/index.js';
 import { createCodingRuntime } from '../adapters/coding-runtime.js';
 import type { NexusConfiguration } from '../configuration/index.js';
@@ -71,10 +72,18 @@ export function createAnalysisRuntime(
     let result: AgentResult;
     try {
       await prepareOperationalWorktree(path.join(request.workspace.root, 'worktree'), environment);
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      const helper = `${quote(process.execPath)} ${quote(fileURLToPath(new URL('./cli.js', import.meta.url)))}`;
+      const evidence = quote(request.workspace.root);
       result = await runtime.run(
         memory.analysisProfile,
         request.workspace,
-        request.context,
+        `${request.context}\n\nEvidence helpers (JSON output; usage is logged in this invocation):\n` +
+          `${helper} evidence list ${evidence}\n` +
+          `${helper} evidence read ${evidence} <relative-files...> [--max-bytes <n>]\n` +
+          'Use these instead of writing artifact-listing/reading scripts. Read known files directly ' +
+          'when simpler; select relevant evidence, and increase --max-bytes if a needed file is truncated. ' +
+          'The inventory omits worktree/ unless explicitly selected. Interpret evidence and revisions yourself.',
         (activity) => {
           // The invocation channel carries the activity to the operator and its durable log; the
           // action also retains it with the analysis request that produced the invocation.
