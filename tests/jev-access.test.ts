@@ -35,20 +35,29 @@ afterEach(async () => {
   providers = [];
   await rm(root, { recursive: true, force: true });
 });
-const request = {
-  paths: ['camera.ts'],
-  questions: [{ id: 'camera', question: 'Does this implement camera acquisition?' }],
-};
+const request = { requests: [{ path: 'camera.ts', full: true }] };
 const judgment = {
   model: 'jev-1.13.0',
-  answers: { q0: { type: 'noul', noul: 0.9 } },
+  answers: {
+    f0: { type: 'noul', noul: 0.9 },
+    f1: { type: 'noul', noul: 0.9 },
+    match: { type: 'noul', noul: 0.9 },
+  },
   usage: { input_tokens: 128, output_tokens: 6 },
 };
 async function session(fail = false, logging = false) {
   const provider = await controlledJevProvider();
   providers.push(provider);
   if (fail) provider.fail(429, 'raw-provider-error');
-  else provider.succeed(judgment);
+  else
+    provider.succeed((request: { body: string }) => ({
+      ...judgment,
+      answers: Object.fromEntries(
+        Object.keys(
+          (JSON.parse(request.body) as { questions: Record<string, unknown> }).questions,
+        ).map((id) => [id, { type: 'noul', noul: 0.9 }]),
+      ),
+    }));
   const s = await openMcpSession(jevExecutablePath(), {
     cwd: root,
     environment: {
@@ -65,20 +74,27 @@ describe('installed JEv repository tools', () => {
     await access(jevExecutablePath(), constants.X_OK);
     const { s } = await session();
     try {
-      expect(s.tools.map((t) => t.name)).toEqual(['search_repo', 'inspect_files']);
+      expect(s.tools.map((t) => t.name)).toEqual(['retrieve_evidence', 'expand_evidence']);
     } finally {
       await s.close();
     }
   });
-  it('reads the invocation repository and keeps source out of results', async () => {
+  it('expands source from the invocation repository without provider calls', async () => {
     const { s, provider } = await session();
     try {
-      const result = await s.call('inspect_files', request);
+      const result = await s.call('expand_evidence', request);
       expect(result.structuredContent).toMatchObject({
-        files: [{ path: 'camera.ts', assessments: [{ id: 'camera', score: 0.9 }] }],
+        windows: [
+          {
+            path: 'camera.ts',
+            start: 1,
+            end: 1,
+            text: 'export const camera = "private-source-marker";',
+          },
+        ],
       });
-      expect(JSON.stringify(result)).not.toContain('private-source-marker');
-      expect(JSON.parse(provider.requests[0]!.body).state.code).toContain('private-source-marker');
+      expect(JSON.stringify(result)).toContain('private-source-marker');
+      expect(provider.requests).toHaveLength(0);
     } finally {
       await s.close();
     }
@@ -86,10 +102,10 @@ describe('installed JEv repository tools', () => {
   it('performs literal discovery without provider activity', async () => {
     const { s, provider } = await session();
     try {
-      const result = await s.call('search_repo', { query: 'camera' });
+      const result = await s.call('retrieve_evidence', { terms: ['camera'] });
       expect(result.structuredContent).toMatchObject({
-        method: 'literal',
-        files: [{ path: 'camera.ts', score: 1 }],
+        method: 'exact',
+        windows: [{ path: 'camera.ts' }],
         usage: { calls: 0 },
       });
       expect(provider.requests).toHaveLength(0);
@@ -100,11 +116,16 @@ describe('installed JEv repository tools', () => {
   it('keeps sanitized host usage logging', async () => {
     const { s } = await session(false, true);
     try {
-      await s.call('inspect_files', request);
+      await s.call('retrieve_evidence', { question: 'Find camera evidence' });
       const log = await readFile(path.join(root, 'usage.jsonl'), 'utf8');
       expect(log).not.toContain('private-source-marker');
       expect(log).not.toContain('synthetic-key');
-      expect(JSON.parse(log.trim()).usage).toEqual(judgment.usage);
+      expect(
+        log
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line).usage),
+      ).toContainEqual(judgment.usage);
     } finally {
       await s.close();
     }
@@ -112,10 +133,10 @@ describe('installed JEv repository tools', () => {
   it('reports safe failures and permits ordinary search afterward', async () => {
     const { s } = await session(true);
     try {
-      const result = await s.call('inspect_files', request);
+      const result = await s.call('retrieve_evidence', { question: 'Find camera' });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({
-        files: [],
+        windows: [],
         coverage: {
           complete: false,
           skipped: [{ path: 'camera.ts', reason: 'evaluation_failed', errorCode: 'rate_limited' }],
@@ -124,7 +145,7 @@ describe('installed JEv repository tools', () => {
       });
       expect(JSON.stringify(result)).toContain('rate_limited');
       expect(JSON.stringify(result)).not.toContain('raw-provider-error');
-      expect((await s.call('search_repo', { query: 'camera' })).isError).toBeFalsy();
+      expect((await s.call('retrieve_evidence', { terms: ['camera'] })).isError).toBeFalsy();
     } finally {
       await s.close();
     }

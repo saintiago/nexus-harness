@@ -22,6 +22,8 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-node24-turbo-v1-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-node24-turbo-v1-${{ hashFiles('package-lock.json') }}-
+      - name: Install repository search prerequisite
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: npm ci
       - run: npm run validate
       - run: npm run smoke:help

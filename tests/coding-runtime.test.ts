@@ -217,6 +217,7 @@ describe('Coding runtime adapter', () => {
       { type: 'change', text: 'update src/a.ts' },
       { type: 'change', text: 'src/b.ts' },
       { type: 'message', text: '{"status":"completed"}\n' },
+      { type: 'diagnostic', text: 'Agent token usage: {"input_tokens":10}' },
     ]);
     const invocation = await fixture.invocation();
     expect(invocation?.args).toEqual([
@@ -452,6 +453,7 @@ process.exitCode = 1;
           '[{"title":"Events","url":"https://example.test/events"}]',
       },
       { type: 'message', text: 'done' },
+      { type: 'diagnostic', text: 'Agent token usage: {"input_tokens":10}' },
     ]);
   });
 
@@ -988,5 +990,91 @@ process.stdout.write(${literal(
     );
 
     expect(result).toEqual({ ok: true, value: { output: 'done' } });
+  });
+  it('disables inherited MCP servers outside an explicit investigation allowlist', async () => {
+    const fixture = await providerFixture(
+      `${recordInvocation}\nprocess.stdout.write(${literal(protocol([{ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }, { type: 'turn.completed' }]))});`,
+      { inheritedServers: ['jev', 'filesystem', 'amem'] },
+    );
+    const { result } = await execute(fixture, {
+      toolSettings: {
+        profile,
+        isolatedMcpServers: ['jev', 'filesystem'],
+        exclusiveMcpServers: ['jev'],
+        config: {
+          'mcp_servers.jev.command': 'jev-mcp',
+          'mcp_servers.jev.enabled': true,
+          'features.shell_tool': false,
+          'mcp_servers.filesystem.command': 'filesystem-mcp',
+          'mcp_servers.filesystem.enabled': true,
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const invocation = (await fixture.invocation())!;
+    expect(invocation.args).toContain('mcp_servers.filesystem.enabled=false');
+    expect(invocation.args).toContain('mcp_servers.amem.enabled=false');
+    expect(invocation.args).toContain('mcp_servers.jev.enabled=false');
+    expect(invocation.args).toContain('features.shell_tool=false');
+    expect(invocation.args.some((arg) => arg.includes('nexus-filesystem-'))).toBe(false);
+    expect(invocation.args).toContainEqual(
+      expect.stringMatching(/^mcp_servers\.nexus-jev-.*\.enabled=true$/),
+    );
+  });
+  it('rejects malformed exclusive MCP settings', async () => {
+    const fixture = await providerFixture('');
+    const { result } = await execute(fixture, {
+      toolSettings: { profile, exclusiveMcpServers: 'jev' },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('exclusiveMcpServers') },
+    });
+  });
+  it('records only validated token usage fields from completed turns', async () => {
+    const fixture = await providerFixture(
+      `process.stdout.write(${literal(
+        protocol([
+          { type: 'item.completed', item: { type: 'agent_message', text: 'done' } },
+          {
+            type: 'turn.completed',
+            usage: {
+              input_tokens: 21,
+              cached_input_tokens: 10,
+              output_tokens: 3,
+              source: 'SECRET',
+              bad: -1,
+            },
+          },
+        ]),
+      )});`,
+    );
+    const { activities } = await execute(fixture);
+    expect(activities).toContainEqual({
+      type: 'diagnostic',
+      text: 'Agent token usage: {"input_tokens":21,"cached_input_tokens":10,"output_tokens":3}',
+    });
+    expect(JSON.stringify(activities)).not.toContain('SECRET');
+  });
+  it('refuses managed investigation before provider execution when delegation cannot be disabled', async () => {
+    const fixture = await providerFixture('');
+    const { result } = await execute(fixture, {
+      toolSettings: { profile, managedInvestigation: true },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('cannot enforce disabled collaboration') },
+    });
+    expect(await fixture.invocation()).toBeNull();
+  });
+  it('rejects malformed managed investigation settings', async () => {
+    const fixture = await providerFixture('');
+    const { result } = await execute(fixture, {
+      toolSettings: { profile, managedInvestigation: 'true' },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('must be a boolean') },
+    });
   });
 });

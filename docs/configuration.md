@@ -43,7 +43,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Idea refinement | Four role profile references and the maximum conversation cycles per selection |
 | Memory | Optional enablement, service URL, MCP access and experience-analysis profile |
-| JEv | Optional judgment integration, native MCP `search_repo` and `inspect_files` access, host credential reference and host logging enablement |
+| JEv | Optional repository evidence integration, native MCP `retrieve_evidence` and `expand_evidence` access, host credential reference and host logging enablement |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -124,7 +124,7 @@ configuration; service unavailability degrades only learning. Disabled configura
 
 JEv integration is optional and Nexus-owned. An installation without JEv configuration remains
 valid. Omitted or disabled integration supplies no JEv tools and retains the existing full
-preparation path. Enabled integration composes optional native `search_repo` and `inspect_files` agent access and forwards
+preparation path. Enabled integration composes optional native `retrieve_evidence` and `expand_evidence` agent access and forwards
 the host's documented logging settings.
 The optional `jev` section has `enabled: boolean` and `credential: string`, a reference into
 `credentials`. `credential` is required when enabled and optional when disabled. If present it
@@ -148,7 +148,7 @@ Linux native launch follows [profiles](agent-runtime/profiles.md#jev-access).
 Resolve `JEV_API_KEY` from the execution host for native MCP launch; configuration contains only
 its reference, never its value. The package owns provider endpoint, schemas, transport and usage
 logging. Missing credentials do not prevent component construction. When composed JEv access
-cannot answer, follow the documented [repository discovery guidance](agent-runtime/architecture.md#jev-repository-discovery):
+cannot answer, follow the documented [repository evidence guidance](agent-runtime/architecture.md#jev-repository-evidence):
 continue agent reasoning and checks, disclosing material limitations.
 Preserve existing configuration validation and resolved-setting immutability. Native MCP forwards
 host environment names, never a literal `env` value in tool settings. Keep the host key and the
@@ -156,11 +156,11 @@ optional logging settings available in workers, recovery and experience-analysis
 preserving their existing credential exclusions. With no key, omit the JEv server and usage
 guidance; do not fail general component construction.
 
-Use package defaults (`jev-1.13.0`, 10000 ms). Native launch uses these defaults by forwarding only
+Use package defaults (`jev-1.13.0`, 30000 ms). Native launch uses these defaults by forwarding only
 `JEV_API_KEY` and the package's optional host logging settings `JEV_USAGE_LOG_PATH` and
-`JEV_USAGE_LOG_CALLER`, without inheriting `JEV_MODEL` or `JEV_TIMEOUT_MS`. Logging stays disabled
+`JEV_USAGE_LOG_CALLER` plus `JEV_RETRIEVAL_LOG_PATH`, without inheriting `JEV_MODEL` or `JEV_TIMEOUT_MS`. Logging stays disabled
 until the host sets the path, a caller label alone has no effect, and Nexus adds no destination or
-record schema of its own. Provider-native JEv startup is optional; an unavailable server must not
+record schema of its own. Retrieval logs record metadata only, never source or search questions. Provider-native JEv startup is optional for ordinary roles; an unavailable server must not
 abort an otherwise usable agent invocation. Disabled composition disables any inherited server
 under the reserved `jev` name, including base, selected profile and trusted project settings.
 Available access binds the composed server to a fresh native name for each invocation, so inherited
@@ -171,7 +171,7 @@ files and personal defaults are not rewritten.
 
 Acceptance examples: an existing configuration with no JEv settings loads and runs without JEv
 effects; disabling a configured integration restores that same behavior. With host credentials and
-JEv enabled, native MCP `search_repo` and `inspect_files` access works without placing the secret in saved configuration or
+JEv enabled, native MCP `retrieve_evidence` and `expand_evidence` access works without placing the secret in saved configuration or
 artifacts. With a host logging path set, the delivered server appends local usage records; with the
 credential missing, ordinary preparation and agent work remain possible.
 
@@ -188,3 +188,7 @@ KAN maps ready delivery work to Implementation. HARN maps ready delivery work to
 selects mapped preparation and implementation work in one ranked queue. Waiting for Feedback and
 Done are not automatically selected. Persist feedback return destinations in the issue source
 handoff record. Role assignments and the Flash/Sol/Astra models follow the workflow's Profiles section.
+
+Explicit investigation composition requires successful JEv initialization (`required = true`).
+The native adapter currently refuses this mode because it cannot enforce disabled collaboration;
+see [Coding runtime](adapters/coding-runtime.md). Ordinary role startup remains optional.

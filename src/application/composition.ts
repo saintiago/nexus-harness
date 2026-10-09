@@ -5,6 +5,7 @@ import {
   type IdeaRole,
   ideaEditorRoleInstructions,
   jevUseGuidance,
+  jevInvestigationGuidance,
   memoryAnalysisGuidance,
   memoryUseGuidance,
   preparationRoleInstructions,
@@ -322,6 +323,7 @@ export function createAgentRuntimeSettings(
     memoryUseGuidance,
     memoryAnalysisGuidance,
     jevUseGuidance,
+    jevInvestigationGuidance,
   ]);
   return {
     codingRuntime,
@@ -352,6 +354,41 @@ export function createAgentRuntimeSettings(
           : profile.toolSettings,
       };
     }),
+    ...(jevAvailable
+      ? {
+          investigation: {
+            baseInstructions: [
+              ...nexus.agentRuntime.baseInstructions.filter(
+                (instruction) => !ownedGuidance.has(instruction),
+              ),
+              jevUseGuidance,
+              jevInvestigationGuidance,
+            ],
+            profiles: nexus.agentRuntime.profiles.map((profile) => ({
+              id: profile.id,
+              model: profile.model,
+              effort: profile.effort,
+              instructions: [],
+              toolSettings: {
+                ...withNativeTools(profile, {
+                  ...jevAgentSettings(true),
+                  'mcp_servers.jev.required': true,
+                  'features.shell_tool': false,
+                  'features.unified_exec': false,
+                  'features.apps': false,
+                  'features.browser_use': false,
+                  'features.multi_agent': false,
+                  web_search: 'disabled',
+                  sandbox_mode: 'read-only',
+                  approval_policy: 'never',
+                }),
+                exclusiveMcpServers: ['jev'],
+                managedInvestigation: true,
+              },
+            })),
+          },
+        }
+      : {}),
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
   };
 }
