@@ -91,7 +91,7 @@ argument. Use the shared defaults described in [configuration](../configuration.
 ensure inherited model/timeout variables are excluded from the server environment. A host logging
 path enables the delivered package's local JSONL usage records; Nexus selects no destination and
 adds no setting of its own. Omitted/disabled integration, or missing host credentials, disables
-inherited `jev` entries, creates no new JEv server and supplies no JEv guidance. An optional startup
+inherited `jev` entries, creates no new JEv server and supplies no JEv guidance. For ordinary roles, an optional startup
 failure leaves the provider session usable with its other tools.
 
 Verify effective `retrieve_evidence` and `expand_evidence` access and a synthetic request for the role/profile combinations in
@@ -140,3 +140,7 @@ observation with Nexus-observed report/revision attribution, without file invent
 revision claims. The fixture does not add product UI or external-service
 navigation. See [preparation observations](../task-engine/actions/preparation-stage.md#prototype-observations)
 for the evidence contract.
+
+Investigation composition overrides JEv to `required = true`; failed initialization must prevent
+model execution. The current native adapter refuses managed investigation because the provider does
+not enforce disabled collaboration tools. This limitation does not change ordinary role access.

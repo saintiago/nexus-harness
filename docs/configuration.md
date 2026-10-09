@@ -160,7 +160,7 @@ Use package defaults (`jev-1.13.0`, 30000 ms). Native launch uses these defaults
 `JEV_API_KEY` and the package's optional host logging settings `JEV_USAGE_LOG_PATH` and
 `JEV_USAGE_LOG_CALLER` plus `JEV_RETRIEVAL_LOG_PATH`, without inheriting `JEV_MODEL` or `JEV_TIMEOUT_MS`. Logging stays disabled
 until the host sets the path, a caller label alone has no effect, and Nexus adds no destination or
-record schema of its own. Retrieval logs record metadata only, never source or search questions. Provider-native JEv startup is optional; an unavailable server must not
+record schema of its own. Retrieval logs record metadata only, never source or search questions. Provider-native JEv startup is optional for ordinary roles; an unavailable server must not
 abort an otherwise usable agent invocation. Disabled composition disables any inherited server
 under the reserved `jev` name, including base, selected profile and trusted project settings.
 Available access binds the composed server to a fresh native name for each invocation, so inherited
@@ -188,3 +188,7 @@ KAN maps ready delivery work to Implementation. HARN maps ready delivery work to
 selects mapped preparation and implementation work in one ranked queue. Waiting for Feedback and
 Done are not automatically selected. Persist feedback return destinations in the issue source
 handoff record. Role assignments and the Flash/Sol/Astra models follow the workflow's Profiles section.
+
+Explicit investigation composition requires successful JEv initialization (`required = true`).
+The native adapter currently refuses this mode because it cannot enforce disabled collaboration;
+see [Coding runtime](adapters/coding-runtime.md). Ordinary role startup remains optional.

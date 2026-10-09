@@ -372,6 +372,7 @@ export function createAgentRuntimeSettings(
               toolSettings: {
                 ...withNativeTools(profile, {
                   ...jevAgentSettings(true),
+                  'mcp_servers.jev.required': true,
                   'features.shell_tool': false,
                   'features.unified_exec': false,
                   'features.apps': false,
@@ -382,6 +383,7 @@ export function createAgentRuntimeSettings(
                   approval_policy: 'never',
                 }),
                 exclusiveMcpServers: ['jev'],
+                managedInvestigation: true,
               },
             })),
           },

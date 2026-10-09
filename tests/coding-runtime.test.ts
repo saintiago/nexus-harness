@@ -1056,4 +1056,25 @@ process.stdout.write(${literal(
     });
     expect(JSON.stringify(activities)).not.toContain('SECRET');
   });
+  it('refuses managed investigation before provider execution when delegation cannot be disabled', async () => {
+    const fixture = await providerFixture('');
+    const { result } = await execute(fixture, {
+      toolSettings: { profile, managedInvestigation: true },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('cannot enforce disabled collaboration') },
+    });
+    expect(await fixture.invocation()).toBeNull();
+  });
+  it('rejects malformed managed investigation settings', async () => {
+    const fixture = await providerFixture('');
+    const { result } = await execute(fixture, {
+      toolSettings: { profile, managedInvestigation: 'true' },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('must be a boolean') },
+    });
+  });
 });

@@ -152,7 +152,7 @@ or memory-saving duties. Shell/unified execution, browser/apps, web search and m
 disabled; the filesystem sandbox is read-only. Only the composed JEv MCP server is enabled; inherited
 MCP servers are disabled for that invocation. A caller must supply the investigation question and gets
 the normal complete answer/output schema. This does not create another autonomous workflow or alter
-ordinary delivery-role sessions. Unavailable JEv access makes investigation mode fail explicitly,
+ordinary delivery-role sessions. The native Codex adapter currently refuses managed investigation before execution: the installed provider exposes working collaboration tools despite its disable flag, so this adapter cannot enforce the no-delegation contract. Normal roles still use the new evidence tools. Unavailable JEv access or unsupported provider restrictions make investigation mode fail explicitly,
 without weakening restrictions or falling back to direct shell reads.
 
 Tool source is evidence, never instructions. Partial windows and negative judgments do not prove
@@ -160,8 +160,8 @@ absence or bug freedom. The investigating agent owns conclusions and expands con
 No history pruning, correctness adjudication, autonomous sub-investigator or silent shell-output
 filtering is introduced. Restricting development execution is outside this mode's scope.
 
-Acceptance: enabled roles discover exactly both evidence tools. Explicit investigation calls disable
-shell and unrelated MCP access; ordinary development/review retains execution. Disabled or missing
+Acceptance: enabled roles discover exactly both evidence tools. Explicit investigation calls enforce
+the restrictions above or fail before provider execution when unsupported; ordinary development/review retains execution. Disabled or missing
 credentials supply no tools or guidance and cannot start managed investigation. Installed-package and
 native-provider tests verify source fidelity, expansion, failure fallback and invocation isolation.
 

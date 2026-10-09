@@ -90,6 +90,7 @@ const profileSetting = 'profile';
 const configSetting = 'config';
 const isolatedMcpSetting = 'isolatedMcpServers';
 const exclusiveMcpSetting = 'exclusiveMcpServers';
+const managedInvestigationSetting = 'managedInvestigation';
 
 /** One TOML key: a bare key where the grammar allows it, a quoted key otherwise. */
 function tomlKey(key: string): string {
@@ -142,6 +143,7 @@ type SelectedToolSettings = {
   readonly overrides: readonly string[];
   readonly isolatedServers: readonly string[];
   readonly exclusiveServers?: readonly string[];
+  readonly managedInvestigation: boolean;
 };
 
 /**
@@ -158,7 +160,8 @@ function selectedToolSettings(
       key !== profileSetting &&
       key !== configSetting &&
       key !== isolatedMcpSetting &&
-      key !== exclusiveMcpSetting,
+      key !== exclusiveMcpSetting &&
+      key !== managedInvestigationSetting,
   );
   if (unsupported.length > 0) {
     return fault(`Unsupported Codex tool setting "${unsupported.join('", "')}".`);
@@ -192,6 +195,9 @@ function selectedToolSettings(
       'The Codex tool setting "exclusiveMcpServers" must be an array of native server names.',
     );
   }
+  const managedInvestigation = toolSettings[managedInvestigationSetting];
+  if (managedInvestigation !== undefined && typeof managedInvestigation !== 'boolean')
+    return fault('The Codex tool setting "managedInvestigation" must be a boolean.');
   const overrides: string[] = [];
   if (configured !== undefined) {
     if (typeof configured !== 'object' || configured === null || Array.isArray(configured)) {
@@ -212,6 +218,7 @@ function selectedToolSettings(
     profile,
     overrides,
     isolatedServers,
+    managedInvestigation: managedInvestigation === true,
     ...(exclusiveServers === undefined ? {} : { exclusiveServers }),
   });
 }
@@ -572,6 +579,13 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
       if (!selected.ok) {
         return selected;
       }
+      // The installed native provider exposes working collaboration tools despite
+      // features.multi_agent=false. Until this adapter has an enforced provider
+      // mechanism, it must not represent an instruction as a disabled capability.
+      if (selected.value.managedInvestigation)
+        return fault(
+          'Managed investigation is unavailable: the native Codex adapter cannot enforce disabled collaboration tools.',
+        );
       const configurationPath = profileConfigurationPath(
         selected.value.profile,
         settings.environment,

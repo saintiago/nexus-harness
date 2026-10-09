@@ -1037,7 +1037,9 @@ describe('AgentRuntime construction', () => {
     const request = requests.at(-1)!;
     expect(request.toolSettings).toMatchObject({
       exclusiveMcpServers: ['jev'],
+      managedInvestigation: true,
       config: {
+        'mcp_servers.jev.required': true,
         'features.shell_tool': false,
         'features.unified_exec': false,
         sandbox_mode: 'read-only',
