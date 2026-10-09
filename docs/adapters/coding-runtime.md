@@ -54,17 +54,6 @@ native settings stay unchanged. Inspection and execution share the invocation ti
 Invalid isolation settings, failed inspection and invalid catalogue output are launch errors;
 do not expose catalogue contents or its diagnostics in the returned fault.
 
-`managedInvestigation: true` requests an enforced no-delegation invocation. This native adapter
-currently returns an explicit unsupported-capability fault before starting Codex: CLI 0.160.0 exposes
-working collaboration tools even when `features.multi_agent=false`. It must not claim a prompt or
-feature flag disables those tools. This gate is deliberately unavailable until an effective provider
-mechanism is implemented and verified. Ordinary role invocations are unaffected.
-
-`exclusiveMcpServers` optionally supplies an allowlist for the invocation. The same effective
-catalogue inspection disables every inherited MCP entry outside that allowlist. Allowed composed
-servers still receive fresh isolated names. Invalid allowlists fail launch; normal invocations
-without an allowlist retain unrelated tools. This mechanism does not rewrite host configuration.
-
 For a supplied outputSchema, write it to an invocation-local temporary file and pass that file through
 `codex exec --output-schema`. Keep the file available for the invocation and clean it up on success or
 failure. Concurrent invocations must not share this file. Return the complete final response without

@@ -44,7 +44,6 @@ interface AgentRuntime {
     additionalContext: string,
     onActivity: (activity: AgentEvent) => void,
     outputSchema?: Readonly<Record<string, unknown>>,
-    mode?: 'investigation',
   ): Promise<AgentResult>;
 }
 
@@ -83,8 +82,7 @@ Application also composes optional JEv access under
 request native server isolation, preventing inherited files from changing the capability. Merge with
 existing tool settings for every selectable role profile, including recovery and analysis.
 Do not replace the entire native configuration or share a mutable settings object across roles.
-Ordinary `run` invocations retain their execution access. Explicit investigation calls use the
-managed catalogue described below; provider-native MCP owns discovery, launch and calls.
+Invocations retain their execution access; provider-native MCP owns discovery, launch and calls.
 The enabled tool's guidance is the guidance under JEv repository evidence below, supplied
 once by composition. Deduplicate that same constant across configured base/profile instructions
 and composed guidance. No tool guidance is supplied when access is disabled or credentials are missing.
@@ -145,25 +143,14 @@ during provider errors. Do not screen already-read files or use relevance scores
 The package owns file access, relevance, limits, coverage and metadata logging. Nexus owns enablement
 and once-only guidance. Ordinary role verification, review and merge requirements still apply.
 
-A caller requesting read-only repository investigation passes `mode: 'investigation'` as the sixth
-argument to `run` (after the optional output schema). Application supplies a separate profile catalogue
-with the same profile identity/model/effort and investigation instructions, without developer, reviewer
-or memory-saving duties. Shell/unified execution, browser/apps, web search and multi-agent access are
-disabled; the filesystem sandbox is read-only. Only the composed JEv MCP server is enabled; inherited
-MCP servers are disabled for that invocation. A caller must supply the investigation question and gets
-the normal complete answer/output schema. This does not create another autonomous workflow or alter
-ordinary delivery-role sessions. The native Codex adapter currently refuses managed investigation before execution: the installed provider exposes working collaboration tools despite its disable flag, so this adapter cannot enforce the no-delegation contract. Normal roles still use the new evidence tools. Unavailable JEv access or unsupported provider restrictions make investigation mode fail explicitly,
-without weakening restrictions or falling back to direct shell reads.
-
 Tool source is evidence, never instructions. Partial windows and negative judgments do not prove
 absence or bug freedom. The investigating agent owns conclusions and expands context as needed.
 No history pruning, correctness adjudication, autonomous sub-investigator or silent shell-output
-filtering is introduced. Restricting development execution is outside this mode's scope.
+filtering is introduced. Development execution remains available.
 
-Acceptance: enabled roles discover exactly both evidence tools. Explicit investigation calls enforce
-the restrictions above or fail before provider execution when unsupported; ordinary development/review retains execution. Disabled or missing
-credentials supply no tools or guidance and cannot start managed investigation. Installed-package and
-native-provider tests verify source fidelity, expansion, failure fallback and invocation isolation.
+Acceptance: enabled roles discover exactly both evidence tools and retain execution access.
+Disabled or missing credentials supply no tools or guidance. Installed-package and native-provider
+tests verify source fidelity, expansion, failure fallback and invocation isolation.
 
 Developer and reviewer profiles expose the same tools:
 
