@@ -735,21 +735,21 @@ describe('AgentRuntime construction', () => {
             'mcp_servers.jev.args': [],
             'mcp_servers.jev.enabled': true,
             'mcp_servers.jev.required': false,
-            'mcp_servers.jev.enabled_tools': ['search_repo', 'inspect_files'],
+            'mcp_servers.jev.default_tools_approval_mode': 'approve',
+            'mcp_servers.jev.enabled_tools': ['retrieve_evidence', 'expand_evidence'],
             'mcp_servers.jev.disabled_tools': [],
             'mcp_servers.jev.env_vars': [
               'JEV_API_KEY',
               'JEV_USAGE_LOG_PATH',
               'JEV_USAGE_LOG_CALLER',
+              'JEV_RETRIEVAL_LOG_PATH',
             ],
           },
         });
         expect(occurrences(requests.at(-1)!.prompt, jevUseGuidance)).toBe(1);
-        expect(requests.at(-1)!.prompt).toContain('read it directly; do not add a screening call');
-        expect(requests.at(-1)!.prompt).toContain('scores are advisory evidence');
-        expect(requests.at(-1)!.prompt).toContain(
-          'negative assessments do not establish absence or bug freedom',
-        );
+        expect(requests.at(-1)!.prompt).toContain('Do not re-screen evidence already read');
+        expect(requests.at(-1)!.prompt).toContain('own reasoning and required verification');
+        expect(requests.at(-1)!.prompt).toContain('not complete files or proof of absence');
         expect(requests.at(-1)!.prompt).not.toContain('Route every judgment to ask_jev');
       }
     }
@@ -864,7 +864,7 @@ describe('AgentRuntime construction', () => {
       'mcp_servers.jev.enabled': true,
       'mcp_servers.jev.required': true,
       'mcp_servers.jev.enabled_tools': ['other_tool'],
-      'mcp_servers.jev.disabled_tools': ['search_repo', 'inspect_files'],
+      'mcp_servers.jev.disabled_tools': ['retrieve_evidence', 'expand_evidence'],
       'mcp_servers.jev.env_vars': ['JEV_MODEL'],
       'mcp_servers.jev.env': {
         JEV_MODEL: 'inherited-model',
@@ -879,9 +879,15 @@ describe('AgentRuntime construction', () => {
       'mcp_servers.jev.args': [],
       'mcp_servers.jev.enabled': true,
       'mcp_servers.jev.required': false,
-      'mcp_servers.jev.enabled_tools': ['search_repo', 'inspect_files'],
+      'mcp_servers.jev.default_tools_approval_mode': 'approve',
+      'mcp_servers.jev.enabled_tools': ['retrieve_evidence', 'expand_evidence'],
       'mcp_servers.jev.disabled_tools': [],
-      'mcp_servers.jev.env_vars': ['JEV_API_KEY', 'JEV_USAGE_LOG_PATH', 'JEV_USAGE_LOG_CALLER'],
+      'mcp_servers.jev.env_vars': [
+        'JEV_API_KEY',
+        'JEV_USAGE_LOG_PATH',
+        'JEV_USAGE_LOG_CALLER',
+        'JEV_RETRIEVAL_LOG_PATH',
+      ],
     };
 
     const enabled = nexusConfiguration();
@@ -1011,5 +1017,53 @@ describe('AgentRuntime construction', () => {
     expect(JSON.stringify(settings)).not.toContain(key);
     expect(requests.at(-1)!.prompt).not.toContain(key);
     expect(JSON.stringify(requests.at(-1)!.toolSettings)).not.toContain(key);
+  });
+  it('runs explicit investigations with only retrieval access while keeping normal development unchanged', async () => {
+    const enabled = nexusConfiguration();
+    enabled.jev = { enabled: true, credential: 'jevApiKey' };
+    const { runtime, requests } = harness(
+      parseNexusConfiguration(enabled, installationDirectory),
+      'developer',
+      jevHostEnvironment,
+    );
+    await runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Investigate the parser',
+      () => undefined,
+      undefined,
+      'investigation',
+    );
+    const request = requests.at(-1)!;
+    expect(request.toolSettings).toMatchObject({
+      exclusiveMcpServers: ['jev'],
+      config: {
+        'features.shell_tool': false,
+        'features.unified_exec': false,
+        sandbox_mode: 'read-only',
+        web_search: 'disabled',
+      },
+    });
+    expect(request.prompt).toContain('Read-only repository investigation');
+    expect(request.prompt).not.toContain(developmentRoleInstructions[0]!);
+    await runtime.run('nexus-flash', { root: workspaceRoot }, context, () => undefined);
+    expect(requests.at(-1)!.toolSettings).not.toHaveProperty('exclusiveMcpServers');
+    expect(requests.at(-1)!.prompt).toContain(developmentRoleInstructions[0]!);
+  });
+  it('refuses managed investigation when retrieval is unavailable', async () => {
+    const { runtime, requests } = harness(nexus(), 'developer');
+    const result = await runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      context,
+      () => undefined,
+      undefined,
+      'investigation',
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('requires available JEv') },
+    });
+    expect(requests).toHaveLength(0);
   });
 });

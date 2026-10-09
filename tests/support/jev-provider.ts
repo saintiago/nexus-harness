@@ -38,7 +38,10 @@ async function bodyText(request: IncomingMessage): Promise<string> {
 /** Start one controlled provider on a loopback port with the supplied initial answer. */
 export async function controlledJevProvider(): Promise<ControlledJevProvider> {
   const requests: JevProviderRequest[] = [];
-  let answer: { readonly status: number; readonly body: string } = { status: 200, body: '{}' };
+  let answer: {
+    readonly status: number;
+    readonly body: string | ((request: JevProviderRequest) => unknown);
+  } = { status: 200, body: '{}' };
   const server: Server = createServer((request: IncomingMessage, response: ServerResponse) => {
     void (async () => {
       requests.push({
@@ -48,7 +51,11 @@ export async function controlledJevProvider(): Promise<ControlledJevProvider> {
         body: await bodyText(request),
       });
       response.writeHead(answer.status, { 'content-type': 'application/json' });
-      response.end(answer.body);
+      response.end(
+        typeof answer.body === 'function'
+          ? JSON.stringify(answer.body(requests.at(-1)!))
+          : answer.body,
+      );
     })();
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -57,7 +64,13 @@ export async function controlledJevProvider(): Promise<ControlledJevProvider> {
     origin: `http://127.0.0.1:${String(port)}`,
     requests,
     succeed(body) {
-      answer = { status: 200, body: JSON.stringify(body) };
+      answer = {
+        status: 200,
+        body:
+          typeof body === 'function'
+            ? (body as (request: JevProviderRequest) => unknown)
+            : JSON.stringify(body),
+      };
     },
     fail(status, body) {
       answer = { status, body };

@@ -51,13 +51,17 @@ async function open(enabled = true, fail = false) {
   providers.push(provider);
   if (fail) provider.fail(429, 'raw-provider-error');
   else
-    provider.succeed({
+    provider.succeed((request: { body: string }) => ({
       model: 'jev-1.13.0',
-      answers: { q0: { type: 'noul', noul: 0.9 } },
+      answers: Object.fromEntries(
+        Object.keys(
+          (JSON.parse(request.body) as { questions: Record<string, unknown> }).questions,
+        ).map((id) => [id, { type: 'noul', noul: 0.9 }]),
+      ),
       usage: { input_tokens: 12, output_tokens: 2 },
-    });
+    }));
   const home = await codexHome(
-    '[mcp_servers.jev]\ncommand = "/stale/jev"\ndisabled_tools = ["inspect_files"]\n',
+    '[mcp_servers.jev]\ncommand = "/stale/jev"\ndisabled_tools = ["expand_evidence"]\n',
   );
   homes.push(home);
   const server = await startCodexAppServer({
@@ -87,33 +91,35 @@ describe.skipIf(!installed)('native Codex JEv repository tools', () => {
   it('replaces inherited exclusions and binds inspection to the thread repository', async () => {
     const { server, provider, threadId, status } = await open();
     expect(status?.toolsError).toBeNull();
-    expect(Object.keys(status?.tools ?? {}).sort()).toEqual(['inspect_files', 'search_repo']);
+    expect(Object.keys(status?.tools ?? {}).sort()).toEqual([
+      'expand_evidence',
+      'retrieve_evidence',
+    ]);
     const result = (await server.request('mcpServer/tool/call', {
       server: 'jev',
       threadId,
-      tool: 'inspect_files',
+      tool: 'expand_evidence',
       arguments: {
-        paths: ['camera.ts'],
-        questions: [{ id: 'camera', question: 'Does this implement camera acquisition?' }],
+        requests: [{ path: 'camera.ts', full: true }],
       },
     })) as { structuredContent?: unknown };
     expect(result.structuredContent).toMatchObject({
-      files: [{ path: 'camera.ts', assessments: [{ score: 0.9 }] }],
+      windows: [{ path: 'camera.ts', start: 1, end: 1 }],
     });
-    expect(JSON.parse(provider.requests[0]!.body).state.code).toContain('native-workspace-marker');
-    expect(JSON.stringify(result)).not.toContain('native-workspace-marker');
+    expect(provider.requests).toHaveLength(0);
+    expect(JSON.stringify(result)).toContain('native-workspace-marker');
   }, 15000);
   it('supports native literal search without a JEv call', async () => {
     const { server, provider, threadId } = await open();
     const result = (await server.request('mcpServer/tool/call', {
       server: 'jev',
       threadId,
-      tool: 'search_repo',
-      arguments: { query: 'camera' },
+      tool: 'retrieve_evidence',
+      arguments: { terms: ['camera'] },
     })) as { structuredContent?: unknown };
     expect(result.structuredContent).toMatchObject({
-      method: 'literal',
-      files: [{ path: 'camera.ts', score: 1 }],
+      method: 'exact',
+      windows: [{ path: 'camera.ts' }],
     });
     expect(provider.requests).toHaveLength(0);
   }, 15000);
@@ -122,8 +128,8 @@ describe.skipIf(!installed)('native Codex JEv repository tools', () => {
     const result = await server.request('mcpServer/tool/call', {
       server: 'jev',
       threadId,
-      tool: 'inspect_files',
-      arguments: { paths: ['camera.ts'], questions: [{ id: 'x', question: 'Is this relevant?' }] },
+      tool: 'retrieve_evidence',
+      arguments: { question: 'Find camera evidence' },
     });
     expect(JSON.stringify(result)).toContain('rate_limited');
     expect(

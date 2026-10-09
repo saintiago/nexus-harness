@@ -57,7 +57,7 @@ publication tools are not supplied to stage roles.
 
 Use the delivered JEv package's `jev-mcp` executable through provider-native MCP settings when
 [JEv is enabled](../configuration.md#jev-settings). The server inherits `JEV_API_KEY` and, when the
-host sets them, the optional `JEV_USAGE_LOG_PATH` and `JEV_USAGE_LOG_CALLER` settings from the
+host sets them, the optional `JEV_USAGE_LOG_PATH`, `JEV_USAGE_LOG_CALLER` and `JEV_RETRIEVAL_LOG_PATH` settings from the
 execution host. Keep credential values out of repository configuration, prompts, command arguments,
 reports and other artifacts. Install the [pinned runtime dependency](../tech-stack.md#jev-dependency)
 with Nexus's normal `npm ci`; a separate global package install is unnecessary. Nexus composition
@@ -70,13 +70,14 @@ command = "/absolute/nexus-installation/node_modules/.bin/jev-mcp"
 args = []
 enabled = true
 required = false
-enabled_tools = ["search_repo", "inspect_files"]
+default_tools_approval_mode = "approve"
+enabled_tools = ["retrieve_evidence", "expand_evidence"]
 disabled_tools = []
-env_vars = ["JEV_API_KEY", "JEV_USAGE_LOG_PATH", "JEV_USAGE_LOG_CALLER"]
+env_vars = ["JEV_API_KEY", "JEV_USAGE_LOG_PATH", "JEV_USAGE_LOG_CALLER", "JEV_RETRIEVAL_LOG_PATH"]
 ```
 
 The absolute command is installation-specific and generated at composition, not committed to
-profile templates. `INVOCATION_ID` is a fresh generated identifier; the tool names remain `search_repo` and `inspect_files`.
+profile templates. `INVOCATION_ID` is a fresh generated identifier; the tool names remain `retrieve_evidence` and `expand_evidence`.
 Codex merges native tables recursively, so replacing individual fields under a fixed server name
 cannot clear an inherited transport or literal environment. The coding adapter first lists the
 effective MCP configuration with the selected profile and invocation directory, without starting
@@ -93,13 +94,18 @@ adds no setting of its own. Omitted/disabled integration, or missing host creden
 inherited `jev` entries, creates no new JEv server and supplies no JEv guidance. An optional startup
 failure leaves the provider session usable with its other tools.
 
-Verify effective `search_repo` and `inspect_files` access and a synthetic request for the role/profile combinations in
-[AgentRuntime](architecture.md#jev-repository-discovery), including preparation evaluators, recovery
+Verify effective `retrieve_evidence` and `expand_evidence` access and a synthetic request for the role/profile combinations in
+[AgentRuntime](architecture.md#jev-repository-evidence), including preparation evaluators, recovery
 and experience analysis. Check composition with existing tools, rather than treating a template
 entry as evidence of working access. Host-enabled usage logging is verified through the effective
 settings and an evaluation the delivered server records. Disabled access and unavailable-tool
 continuation must also be demonstrated. Nexus adds no MCP client or shared HTTP service for this
 integration.
+
+Explicit read-only investigation uses the separate catalogue in [AgentRuntime](architecture.md#jev-repository-evidence).
+It disables shell/unified execution, browser/apps, web and multi-agent features, selects a read-only
+sandbox and allows only the composed JEv MCP server. Other inherited MCP entries are disabled for
+the invocation, without editing native files. Ordinary delivery roles retain their tools and checks.
 
 ## Prototype browser and image setup
 

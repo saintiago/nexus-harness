@@ -54,6 +54,11 @@ native settings stay unchanged. Inspection and execution share the invocation ti
 Invalid isolation settings, failed inspection and invalid catalogue output are launch errors;
 do not expose catalogue contents or its diagnostics in the returned fault.
 
+`exclusiveMcpServers` optionally supplies an allowlist for the invocation. The same effective
+catalogue inspection disables every inherited MCP entry outside that allowlist. Allowed composed
+servers still receive fresh isolated names. Invalid allowlists fail launch; normal invocations
+without an allowlist retain unrelated tools. This mechanism does not rewrite host configuration.
+
 For a supplied outputSchema, write it to an invocation-local temporary file and pass that file through
 `codex exec --output-schema`. Keep the file available for the invocation and clean it up on success or
 failure. Concurrent invocations must not share this file. Return the complete final response without
@@ -80,3 +85,8 @@ execute call has its own activity callback and result. The adapter preserves the
 that invocation; the caller supplies the identity used for logs and live presentation. Research
 profiles may use configured internet search tools. The adapter does not interpret workflow outcomes
 or choose routes.
+
+Completed provider turns emit an `Agent token usage:` diagnostic containing only validated
+nonnegative safe-integer input, cached-input and output token counts. Missing usage is unavailable,
+not zero; arbitrary provider fields are omitted. AgentRuntime and retained invocation logs receive
+this diagnostic alongside existing activity, so comparisons need not infer tokens from file size.

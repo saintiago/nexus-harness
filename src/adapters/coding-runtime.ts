@@ -25,7 +25,7 @@ export type CodingRuntimeActivity = {
    * What the entry is: a message the agent produced, a command or tool call it started, the
    * observed result, or a file change. The consumer presents these kinds.
    */
-  readonly type: 'message' | 'command' | 'result' | 'change';
+  readonly type: 'message' | 'command' | 'result' | 'change' | 'diagnostic';
   /**
    * The provider's own text for the entry, complete and unsanitized. The consumer owns wrapping
    * messages and fitting work summaries to its display.
@@ -89,6 +89,7 @@ export type CodingRuntimeSettings = {
 const profileSetting = 'profile';
 const configSetting = 'config';
 const isolatedMcpSetting = 'isolatedMcpServers';
+const exclusiveMcpSetting = 'exclusiveMcpServers';
 
 /** One TOML key: a bare key where the grammar allows it, a quoted key otherwise. */
 function tomlKey(key: string): string {
@@ -140,6 +141,7 @@ type SelectedToolSettings = {
   /** The `--config` arguments in supply order. */
   readonly overrides: readonly string[];
   readonly isolatedServers: readonly string[];
+  readonly exclusiveServers?: readonly string[];
 };
 
 /**
@@ -152,7 +154,11 @@ function selectedToolSettings(
   toolSettings: Readonly<Record<string, unknown>>,
 ): Result<SelectedToolSettings> {
   const unsupported = Object.keys(toolSettings).filter(
-    (key) => key !== profileSetting && key !== configSetting && key !== isolatedMcpSetting,
+    (key) =>
+      key !== profileSetting &&
+      key !== configSetting &&
+      key !== isolatedMcpSetting &&
+      key !== exclusiveMcpSetting,
   );
   if (unsupported.length > 0) {
     return fault(`Unsupported Codex tool setting "${unsupported.join('", "')}".`);
@@ -174,6 +180,18 @@ function selectedToolSettings(
       'The Codex tool setting "isolatedMcpServers" must be an array of native server names.',
     );
   }
+  const exclusiveServers = toolSettings[exclusiveMcpSetting];
+  if (
+    exclusiveServers !== undefined &&
+    (!Array.isArray(exclusiveServers) ||
+      !exclusiveServers.every(
+        (name: unknown) => typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name),
+      ))
+  ) {
+    return fault(
+      'The Codex tool setting "exclusiveMcpServers" must be an array of native server names.',
+    );
+  }
   const overrides: string[] = [];
   if (configured !== undefined) {
     if (typeof configured !== 'object' || configured === null || Array.isArray(configured)) {
@@ -190,7 +208,12 @@ function selectedToolSettings(
       overrides.push(`${key}=${text}`);
     }
   }
-  return ok({ profile, overrides, isolatedServers });
+  return ok({
+    profile,
+    overrides,
+    isolatedServers,
+    ...(exclusiveServers === undefined ? {} : { exclusiveServers }),
+  });
 }
 
 /**
@@ -246,9 +269,17 @@ async function isolateMcpServers(
     return fault('The Codex provider returned an invalid MCP catalogue.');
   }
   const overrides = [...inheritedOverrides];
+  if (selected.exclusiveServers !== undefined) {
+    for (const name of names) {
+      if (!selected.exclusiveServers.includes(name))
+        overrides.push(`mcp_servers.${tomlKey(name)}.enabled=false`);
+    }
+  }
   for (const name of new Set(selected.isolatedServers)) {
     const reserved = `mcp_servers.${name}`;
     if (names.has(name)) overrides.push(`${reserved}.enabled=false`);
+    if (selected.exclusiveServers !== undefined && !selected.exclusiveServers.includes(name))
+      continue;
     // Disabled composition needs only to disable an existing entry. It creates no empty server
     // whose missing transport could itself invalidate otherwise ordinary work.
     if (selected.overrides.includes(`${reserved}.enabled=false`)) continue;
@@ -573,7 +604,10 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
       try {
         const startedAt = Date.now();
         let invocationSettings = selected.value;
-        if (selected.value.isolatedServers.length > 0) {
+        if (
+          selected.value.isolatedServers.length > 0 ||
+          selected.value.exclusiveServers !== undefined
+        ) {
           const isolated = await isolateMcpServers(selected.value, settings, request);
           if (!isolated.ok) return isolated;
           invocationSettings = isolated.value;
@@ -611,6 +645,20 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
             return;
           }
           if (type === 'turn.completed') {
+            const usage = event['usage'];
+            if (typeof usage === 'object' && usage !== null) {
+              const supplied = usage as Record<string, unknown>;
+              const safe = Object.fromEntries(
+                ['input_tokens', 'cached_input_tokens', 'output_tokens'].flatMap((key) => {
+                  const value = supplied[key];
+                  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+                    ? [[key, value]]
+                    : [];
+                }),
+              );
+              if (Object.keys(safe).length)
+                emit({ type: 'diagnostic', text: `Agent token usage: ${JSON.stringify(safe)}` });
+            }
             turnCompleted = true;
             return;
           }
