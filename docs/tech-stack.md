@@ -50,6 +50,9 @@ commit the npm lockfile integrity. A clean `npm ci` must install its public root
 `jev-mcp` executable without a sibling checkout, registry publication or runtime download.
 The tarball contains the delivered package, not Nexus-owned copies of its provider implementation.
 
+Install Git and ripgrep (`rg`) on the runtime PATH; JEv uses both for repository discovery.
+CI installs ripgrep before validating installed-package retrieval.
+
 Use this installed dependency for native stdio MCP `retrieve_evidence` and `expand_evidence` access. Launch its installed `jev-mcp`
 bin from an absolute installation path, independent of the selected project's working directory.
 The package owns validation, provider endpoint, transport, timeouts, safe errors and opt-in local
